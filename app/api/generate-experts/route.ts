@@ -1,7 +1,7 @@
 import Anthropic from '@anthropic-ai/sdk';
 import { NextRequest } from 'next/server';
 
-const client = new Anthropic();
+const client = new Anthropic({ apiKey: process.env.ANTRHOPICKEYREAL });
 
 const SYSTEM_PROMPT = `You are an expert sourcing analyst at a top research firm like AlphaSights or GLG. Your job is to identify the most strategically valuable experts for any business question.
 
