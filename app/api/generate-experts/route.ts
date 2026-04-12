@@ -22,7 +22,7 @@ async function runSerpQuery(query: string): Promise<SerpResult[]> {
     throw new Error('SCRAPINGBEE_KEY environment variable not set.');
   }
 
-  const url = `https://app.scrapingbee.com/api/v1/store/google?api_key=${apiKey}&q=${encodeURIComponent(query)}&nb_results=5`;
+  const url = `https://app.scrapingbee.com/api/v1/store/google?api_key=${apiKey}&search=${encodeURIComponent(query)}&nb_results=5`;
 
   try {
     const res = await fetch(url);

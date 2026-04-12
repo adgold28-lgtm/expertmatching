@@ -5,7 +5,7 @@ export async function GET(request: NextRequest) {
   if (!key) return Response.json({ error: 'SCRAPINGBEE_KEY not set' });
 
   const query = request.nextUrl.searchParams.get('q') || 'solar interconnection manager Texas site:linkedin.com/in';
-  const url = `https://app.scrapingbee.com/api/v1/store/google?api_key=${key}&q=${encodeURIComponent(query)}&nb_results=3`;
+  const url = `https://app.scrapingbee.com/api/v1/store/google?api_key=${key}&search=${encodeURIComponent(query)}&nb_results=3`;
 
   try {
     const res = await fetch(url);
