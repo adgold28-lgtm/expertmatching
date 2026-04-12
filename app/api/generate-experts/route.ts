@@ -91,8 +91,6 @@ Return ONLY valid JSON in this exact structure (no markdown, no code fences):
     const queryGenResponse = await client.messages.create({
       model: 'claude-opus-4-6',
       max_tokens: 1000,
-      // @ts-ignore
-      thinking: { type: 'adaptive' } as any,
       messages: [{ role: 'user', content: queryGenPrompt }],
     });
 
@@ -199,8 +197,6 @@ Return ONLY valid JSON (no markdown, no code fences):
     const extractionResponse = await client.messages.create({
       model: 'claude-opus-4-6',
       max_tokens: 4000,
-      // @ts-ignore
-      thinking: { type: 'adaptive' } as any,
       messages: [{ role: 'user', content: extractionPrompt }],
     });
 
