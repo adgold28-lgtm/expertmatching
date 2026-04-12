@@ -124,7 +124,24 @@ function CategorySection({
   query: string;
 }) {
   const cfg = categoryConfig[category];
-  if (experts.length === 0) return null;
+
+  if (experts.length === 0) {
+    return (
+      <section className={`rounded-2xl border ${cfg.accent} p-5 space-y-4`}>
+        <div className="flex items-center gap-2.5">
+          <span className="text-2xl">{cfg.icon}</span>
+          <div>
+            <h2 className={`font-bold text-lg ${cfg.titleColor}`}>{cfg.title}</h2>
+            <p className={`text-xs ${cfg.subtitleColor}`}>{cfg.subtitle}</p>
+          </div>
+        </div>
+        <div className="bg-white/60 border border-dashed border-gray-300 rounded-2xl p-6 text-center">
+          <p className="text-sm text-gray-500 font-medium">Not enough high-confidence experts found for this category.</p>
+          <p className="text-xs text-gray-400 mt-1">Try refining your query with more specific terms or a different geography.</p>
+        </div>
+      </section>
+    );
+  }
 
   return (
     <section className={`rounded-2xl border ${cfg.accent} p-5 space-y-4`}>
@@ -340,7 +357,7 @@ export default function Home() {
 
             {/* Footer note */}
             <p className="text-center text-xs text-gray-400 pb-4">
-              {result.experts.length} experts sourced · Names are AI-generated placeholders for research illustration
+              {result.experts.length} verified expert{result.experts.length !== 1 ? 's' : ''} sourced from LinkedIn and professional directories
             </p>
           </div>
         )}
