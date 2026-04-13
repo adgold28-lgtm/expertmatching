@@ -73,35 +73,40 @@ function LoadingState() {
 
 // ─── Query Analysis Bar ─────────────────────────────────────────────────────
 
+const CONFIDENCE_CLASS = {
+  High: 'bg-status-success',
+  Medium: 'bg-status-warning',
+  Low: 'bg-status-danger',
+} as const;
+
 function ConfidenceDot({ level }: { level: 'High' | 'Medium' | 'Low' }) {
-  const colors = { High: '#2E7D52', Medium: '#B45309', Low: '#C0392B' };
   return (
     <span
-      className="inline-block w-1.5 h-1.5 rounded-full mr-1.5"
-      style={{ background: colors[level], verticalAlign: 'middle' }}
+      className={`inline-block w-1.5 h-1.5 rounded-full mr-1.5 ${CONFIDENCE_CLASS[level]}`}
+      style={{ verticalAlign: 'middle' }}
     />
   );
 }
 
 function AnalysisBar({ analysis }: { analysis: QueryAnalysis }) {
   return (
-    <div className="animate-fade-in border-b border-[#DDE2E8] bg-white">
+    <div className="animate-fade-in border-b border-frame bg-surface">
       <div className="max-w-6xl mx-auto px-6 sm:px-10 py-4 flex flex-wrap items-center gap-x-8 gap-y-2">
         <div className="flex items-center gap-2">
           <span className="text-[10px] uppercase tracking-widest text-muted font-medium">Industry</span>
           <span className="text-xs text-ink font-medium">{analysis.industry}</span>
         </div>
-        <div className="w-px h-3 bg-[#DDE2E8] hidden sm:block" />
+        <div className="w-px h-3 bg-frame hidden sm:block" />
         <div className="flex items-center gap-2">
           <span className="text-[10px] uppercase tracking-widest text-muted font-medium">Function</span>
           <span className="text-xs text-ink font-medium">{analysis.function}</span>
         </div>
-        <div className="w-px h-3 bg-[#DDE2E8] hidden sm:block" />
+        <div className="w-px h-3 bg-frame hidden sm:block" />
         <div className="flex flex-wrap gap-1.5">
           {analysis.key_topics.slice(0, 4).map((t) => (
             <span
               key={t}
-              className="text-[10px] px-2 py-0.5 border border-[#DDE2E8] text-muted"
+              className="text-[10px] px-2 py-0.5 border border-frame text-muted"
               style={{ letterSpacing: '0.02em' }}
             >
               {t}
@@ -152,7 +157,7 @@ function CategorySection({
 
       {experts.length === 0 ? (
         <div
-          className="py-8 text-center border border-dashed border-[#DDE2E8]"
+          className="py-8 text-center border border-dashed border-frame"
           style={{ background: 'rgba(247,249,252,0.6)' }}
         >
           <p className="text-sm text-muted">No high-confidence experts identified for this category.</p>
@@ -178,7 +183,6 @@ export default function Home() {
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<ExpertResponse | null>(null);
   const [error, setError] = useState('');
-  const [inputFocused, setInputFocused] = useState(false);
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -229,8 +233,8 @@ export default function Home() {
             </span>
           </div>
           <span
-            className="text-[10px] uppercase tracking-widest hidden sm:block"
-            style={{ color: 'rgba(198,167,94,0.7)', letterSpacing: '0.2em' }}
+            className="text-[10px] uppercase tracking-widest text-gold/70 hidden sm:block"
+            style={{ letterSpacing: '0.2em' }}
           >
             Intelligence Platform
           </span>
@@ -238,7 +242,7 @@ export default function Home() {
       </header>
 
       {/* ── Hero / Search ── */}
-      <div className="border-b border-[#DDE2E8] bg-white">
+      <div className="border-b border-frame bg-surface">
         <div className="max-w-6xl mx-auto px-6 sm:px-10 py-14 sm:py-20">
 
           {/* Headline */}
@@ -256,17 +260,20 @@ export default function Home() {
           {/* Search form */}
           <form onSubmit={handleSubmit} className="space-y-4 max-w-3xl">
             <div>
-              <label className="block text-[10px] uppercase tracking-widest text-muted font-medium mb-2" style={{ letterSpacing: '0.18em' }}>
+              <label
+                htmlFor="query"
+                className="block text-xs uppercase tracking-widest text-muted font-medium mb-2"
+                style={{ letterSpacing: '0.18em' }}
+              >
                 Research Question
               </label>
               <textarea
+                id="query"
                 value={query}
                 onChange={(e) => setQuery(e.target.value)}
-                onFocus={() => setInputFocused(true)}
-                onBlur={() => setInputFocused(false)}
                 placeholder="e.g. How does solar interconnection work in Texas, and what are the main bottlenecks operators face?"
                 rows={3}
-                className="input-search w-full px-4 py-3.5 text-sm text-ink placeholder-[#9AABB8] border border-[#DDE2E8] resize-none bg-cream transition-all"
+                className="input-search w-full px-4 py-3.5 text-sm text-ink placeholder-[#9AABB8] border border-frame resize-none bg-cream transition-all"
                 style={{ fontFamily: 'var(--font-libre-franklin)', fontWeight: 300 }}
                 onKeyDown={(e) => {
                   if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) handleSubmit(e as unknown as React.FormEvent);
@@ -281,13 +288,18 @@ export default function Home() {
               <div className="flex gap-3 flex-1">
                 {/* Geography */}
                 <div className="flex-1">
-                  <label className="block text-[10px] uppercase tracking-widest text-muted font-medium mb-1.5" style={{ letterSpacing: '0.18em' }}>
+                  <label
+                    htmlFor="geography"
+                    className="block text-xs uppercase tracking-widest text-muted font-medium mb-1.5"
+                    style={{ letterSpacing: '0.18em' }}
+                  >
                     Geography
                   </label>
                   <select
+                    id="geography"
                     value={geography}
                     onChange={(e) => setGeography(e.target.value)}
-                    className="select-field w-full px-3 py-2.5 text-xs text-ink border border-[#DDE2E8] bg-cream pr-8 focus:outline-none focus:border-navy transition-colors"
+                    className="select-field w-full px-3 py-2.5 text-xs text-ink border border-frame bg-cream pr-8 focus:outline-none focus:border-navy transition-colors"
                     style={{ fontFamily: 'var(--font-libre-franklin)' }}
                   >
                     {GEOGRAPHIES.map((g) => (
@@ -298,13 +310,18 @@ export default function Home() {
 
                 {/* Seniority */}
                 <div className="flex-1">
-                  <label className="block text-[10px] uppercase tracking-widest text-muted font-medium mb-1.5" style={{ letterSpacing: '0.18em' }}>
+                  <label
+                    htmlFor="seniority"
+                    className="block text-xs uppercase tracking-widest text-muted font-medium mb-1.5"
+                    style={{ letterSpacing: '0.18em' }}
+                  >
                     Seniority
                   </label>
                   <select
+                    id="seniority"
                     value={seniority}
                     onChange={(e) => setSeniority(e.target.value)}
-                    className="select-field w-full px-3 py-2.5 text-xs text-ink border border-[#DDE2E8] bg-cream pr-8 focus:outline-none focus:border-navy transition-colors"
+                    className="select-field w-full px-3 py-2.5 text-xs text-ink border border-frame bg-cream pr-8 focus:outline-none focus:border-navy transition-colors"
                     style={{ fontFamily: 'var(--font-libre-franklin)' }}
                   >
                     {SENIORITIES.map((s) => (
@@ -314,19 +331,18 @@ export default function Home() {
                 </div>
               </div>
 
-              {/* Submit */}
+              {/* Submit — CSS hover, no inline handlers */}
               <button
                 type="submit"
                 disabled={!query.trim() || loading}
-                className="shrink-0 flex items-center gap-2.5 px-7 py-2.5 text-xs font-medium uppercase transition-all duration-200 disabled:opacity-40 disabled:cursor-not-allowed"
+                className={`shrink-0 flex items-center gap-2.5 px-7 py-3 text-xs font-medium uppercase transition-all duration-200 disabled:opacity-40 disabled:cursor-not-allowed ${!loading && query.trim() ? 'hover:bg-navy-light' : ''}`}
                 style={{
                   background: loading ? '#5A6B7A' : '#0B1F3B',
                   color: '#C6A75E',
                   letterSpacing: '0.14em',
                   border: '1px solid transparent',
+                  minHeight: '44px',
                 }}
-                onMouseEnter={(e) => { if (!loading && query.trim()) (e.currentTarget as HTMLElement).style.background = '#142d52'; }}
-                onMouseLeave={(e) => { if (!loading && query.trim()) (e.currentTarget as HTMLElement).style.background = '#0B1F3B'; }}
               >
                 {loading ? (
                   <>
@@ -358,8 +374,8 @@ export default function Home() {
                 <button
                   key={q}
                   onClick={() => setQuery(q)}
-                  className="text-xs text-muted hover:text-navy border border-[#DDE2E8] hover:border-navy px-3 py-1.5 transition-colors text-left"
-                  style={{ fontWeight: 300 }}
+                  className="text-xs text-muted hover:text-navy border border-frame hover:border-navy px-3 py-2.5 transition-colors text-left"
+                  style={{ fontWeight: 300, minHeight: '44px' }}
                 >
                   {q}
                 </button>
@@ -375,9 +391,12 @@ export default function Home() {
       {/* ── Results ── */}
       <main className="flex-1 max-w-6xl w-full mx-auto px-6 sm:px-10 py-12">
 
-        {/* Error */}
+        {/* Error — full border, no left-stripe */}
         {error && (
-          <div className="border-l-4 border-red-500 bg-white px-5 py-4 text-sm text-red-700 mb-8" style={{ borderTop: '1px solid #DDE2E8', borderRight: '1px solid #DDE2E8', borderBottom: '1px solid #DDE2E8' }}>
+          <div className="border border-red-200 bg-red-50 px-5 py-4 flex items-start gap-3 text-sm text-red-700 mb-8">
+            <svg className="w-4 h-4 shrink-0 mt-0.5 text-red-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v4m0 4h.01M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" />
+            </svg>
             {error}
           </div>
         )}
@@ -399,23 +418,17 @@ export default function Home() {
           </div>
         )}
 
-        {/* Empty state */}
+        {/* Empty state — editorial, left-aligned */}
         {!loading && !result && !error && (
-          <div className="flex flex-col items-center justify-center py-24 gap-6 text-center">
-            <div
-              className="w-14 h-14 flex items-center justify-center border border-[#DDE2E8]"
-              style={{ background: 'white' }}
-            >
-              <svg className="w-6 h-6 text-gold" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
-                <path strokeLinecap="round" strokeLinejoin="round" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0z" />
-              </svg>
-            </div>
-            <div>
-              <p className="font-display text-xl text-navy font-medium tracking-wide">Ready when you are.</p>
-              <p className="text-sm text-muted mt-2 max-w-xs leading-relaxed" style={{ fontWeight: 300 }}>
-                Enter any business question above. We identify real experts — with sources.
-              </p>
-            </div>
+          <div className="py-20 max-w-lg">
+            <p className="font-display text-2xl text-navy font-light italic leading-snug">
+              What do you need to understand?
+            </p>
+            <p className="mt-4 text-sm text-muted leading-relaxed" style={{ fontWeight: 300 }}>
+              Describe your research question above. ExpertMatch identifies real practitioners,
+              advisors, and domain outsiders — each with verifiable sources.
+            </p>
+            <div className="mt-6 rule-gold w-16" />
           </div>
         )}
       </main>

@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Expert } from '../types';
 
 interface Props {
@@ -14,6 +14,7 @@ export default function OutreachModal({ expert, query, onClose }: Props) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [copied, setCopied] = useState(false);
+  const modalRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     async function generate() {
@@ -35,6 +36,48 @@ export default function OutreachModal({ expert, query, onClose }: Props) {
     generate();
   }, [expert, query]);
 
+  // Focus trap + Escape key handler
+  useEffect(() => {
+    const modal = modalRef.current;
+    if (!modal) return;
+
+    // Focus the modal container on mount so keyboard nav starts inside
+    modal.focus();
+
+    function trap(e: KeyboardEvent) {
+      if (e.key === 'Escape') {
+        onClose();
+        return;
+      }
+      if (e.key !== 'Tab') return;
+
+      const focusable = Array.from(
+        (modal as HTMLDivElement).querySelectorAll<HTMLElement>(
+          'button:not([disabled]), [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'
+        )
+      );
+      if (focusable.length === 0) return;
+
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+
+      if (e.shiftKey) {
+        if (document.activeElement === first) {
+          e.preventDefault();
+          last.focus();
+        }
+      } else {
+        if (document.activeElement === last) {
+          e.preventDefault();
+          first.focus();
+        }
+      }
+    }
+
+    document.addEventListener('keydown', trap);
+    return () => document.removeEventListener('keydown', trap);
+  }, [onClose]);
+
   function handleCopy() {
     navigator.clipboard.writeText(message);
     setCopied(true);
@@ -50,25 +93,37 @@ export default function OutreachModal({ expert, query, onClose }: Props) {
       className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-0 sm:p-6 animate-fade-in"
       style={{ background: 'rgba(11,31,59,0.55)' }}
       onClick={(e) => e.target === e.currentTarget && onClose()}
+      aria-hidden="true"
     >
+      {/* Dialog */}
       <div
-        className="bg-white w-full sm:max-w-2xl max-h-[92vh] flex flex-col animate-slide-up"
+        ref={modalRef}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="outreach-modal-title"
+        tabIndex={-1}
+        className="bg-surface w-full sm:max-w-2xl max-h-[92vh] flex flex-col animate-slide-up focus:outline-none"
         style={{ border: '1px solid #DDE2E8', borderTop: '3px solid #C6A75E' }}
       >
         {/* Header */}
-        <div className="flex items-start justify-between px-7 py-5 border-b border-[#DDE2E8]">
+        <div className="flex items-start justify-between px-7 py-5 border-b border-frame">
           <div>
-            <h2 className="font-display text-xl font-semibold text-navy tracking-wide">
+            <h2
+              id="outreach-modal-title"
+              className="font-display text-xl font-semibold text-navy tracking-wide"
+            >
               Outreach Draft
             </h2>
             <p className="text-xs text-muted mt-1">
               {expert.name} · {expert.title}, {expert.company}
             </p>
           </div>
+          {/* Close — enlarged touch target */}
           <button
             onClick={onClose}
-            className="text-muted hover:text-navy transition-colors p-1 mt-0.5"
-            aria-label="Close"
+            className="text-muted hover:text-navy transition-colors p-2.5 mt-0.5 -mr-1.5"
+            aria-label="Close dialog"
+            style={{ minWidth: '44px', minHeight: '44px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}
           >
             <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
               <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
@@ -81,7 +136,7 @@ export default function OutreachModal({ expert, query, onClose }: Props) {
           {loading ? (
             <div className="flex flex-col items-center justify-center py-16 gap-5">
               <div className="relative w-10 h-10">
-                <div className="absolute inset-0 rounded-full border-2 border-[#DDE2E8]" />
+                <div className="absolute inset-0 rounded-full border-2 border-frame" />
                 <div className="absolute inset-0 rounded-full border-2 border-navy border-t-transparent animate-spin-slow" />
               </div>
               <div className="text-center">
@@ -96,7 +151,8 @@ export default function OutreachModal({ expert, query, onClose }: Props) {
               {subjectLine && (
                 <div>
                   <p className="text-[10px] uppercase tracking-widest text-muted font-medium mb-2">Subject Line</p>
-                  <div className="border-l-2 border-gold pl-4 py-1">
+                  {/* Background tint instead of banned left-stripe border */}
+                  <div className="bg-gold/10 px-4 py-3">
                     <p className="text-sm font-medium text-navy">{subjectLine}</p>
                   </div>
                 </div>
@@ -113,11 +169,11 @@ export default function OutreachModal({ expert, query, onClose }: Props) {
 
         {/* Footer */}
         {!loading && !error && (
-          <div className="px-7 py-5 border-t border-[#DDE2E8] flex gap-3">
+          <div className="px-7 py-5 border-t border-frame flex gap-3">
             <button
               onClick={handleCopy}
               className="flex-1 bg-navy hover:bg-navy-light text-cream text-xs font-medium uppercase tracking-widest py-3 transition-colors flex items-center justify-center gap-2"
-              style={{ letterSpacing: '0.12em' }}
+              style={{ letterSpacing: '0.12em', minHeight: '44px' }}
             >
               {copied ? (
                 <>
@@ -137,8 +193,8 @@ export default function OutreachModal({ expert, query, onClose }: Props) {
             </button>
             <button
               onClick={onClose}
-              className="px-5 py-3 text-xs font-medium text-muted hover:text-navy uppercase tracking-widest border border-[#DDE2E8] hover:border-navy transition-colors"
-              style={{ letterSpacing: '0.12em' }}
+              className="px-5 py-3 text-xs font-medium text-muted hover:text-navy uppercase tracking-widest border border-frame hover:border-navy transition-colors"
+              style={{ letterSpacing: '0.12em', minHeight: '44px' }}
             >
               Dismiss
             </button>

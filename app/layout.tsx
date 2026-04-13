@@ -1,12 +1,12 @@
 import type { Metadata } from 'next';
-import { Cormorant_Garamond, Libre_Franklin } from 'next/font/google';
+import { Spectral, Libre_Franklin } from 'next/font/google';
 import './globals.css';
 
-const cormorant = Cormorant_Garamond({
+const spectral = Spectral({
   subsets: ['latin'],
-  weight: ['300', '400', '500', '600', '700'],
+  weight: ['300', '400', '500', '600', '700', '800'],
   style: ['normal', 'italic'],
-  variable: '--font-cormorant',
+  variable: '--font-spectral',
   display: 'swap',
 });
 
@@ -24,7 +24,7 @@ export const metadata: Metadata = {
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="en" className={`${cormorant.variable} ${libreFranklin.variable}`}>
+    <html lang="en" className={`${spectral.variable} ${libreFranklin.variable}`}>
       <body className="font-body antialiased">{children}</body>
     </html>
   );

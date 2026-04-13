@@ -21,9 +21,9 @@ body {
   color: #1A2733;
 }
 
-/* Display headings use Cormorant */
+/* Display headings use Spectral */
 .font-display {
-  font-family: var(--font-cormorant), Georgia, serif;
+  font-family: var(--font-spectral), Georgia, serif;
 }
 
 /* Refined scrollbar */
@@ -44,26 +44,32 @@ body {
 /* Category divider */
 .rule-divider {
   height: 1px;
-  background-color: #DDE2E8;
+  background-color: var(--border);
 }
 
-/* Expert card */
+/* Expert card — no left-stripe ban violation */
 .expert-card {
   background: #ffffff;
-  border: 1px solid #DDE2E8;
-  border-left: 3px solid #DDE2E8;
-  transition: border-left-color 0.2s ease, box-shadow 0.2s ease, transform 0.2s ease;
+  border: 1px solid var(--border);
+  transition: box-shadow 0.2s ease, transform 0.2s ease;
 }
 .expert-card:hover {
-  border-left-color: #C6A75E;
-  box-shadow: 0 6px 24px rgba(11, 31, 59, 0.08);
-  transform: translateY(-1px);
+  box-shadow: 0 8px 32px rgba(11, 31, 59, 0.10), inset 0 2px 0 #C6A75E;
+  transform: translateY(-2px);
 }
 
-/* Shimmer skeleton */
+/* Shimmer skeleton — uses transform (GPU-composited, no paint) */
 .skeleton {
-  background: linear-gradient(90deg, #EEF1F6 25%, #E4E8ED 50%, #EEF1F6 75%);
-  background-size: 400px 100%;
+  position: relative;
+  overflow: hidden;
+  background-color: #EEF1F6;
+}
+.skeleton::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg, transparent 0%, rgba(255, 255, 255, 0.65) 50%, transparent 100%);
+  transform: translateX(-100%);
   animation: shimmer 1.6s ease-in-out infinite;
 }
 
@@ -82,10 +88,16 @@ body {
   background-position: right 12px center;
 }
 
-/* Staggered card animation */
-.expert-card:nth-child(1) { animation-delay: 0ms; }
-.expert-card:nth-child(2) { animation-delay: 60ms; }
-.expert-card:nth-child(3) { animation-delay: 120ms; }
+/* Global focus-visible ring — gold outline for keyboard nav */
+:focus-visible {
+  outline: 2px solid #C6A75E;
+  outline-offset: 2px;
+}
+
+/* Override focus-visible for inputs (use the input-search custom ring instead) */
+.input-search:focus-visible {
+  outline: none;
+}
 
 /* Source link hover */
 .source-link {

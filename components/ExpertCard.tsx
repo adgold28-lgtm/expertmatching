@@ -29,15 +29,15 @@ function LinkTypeIcon({ type }: { type: SourceLink['type'] }) {
   return <ArrowIcon />;
 }
 
+// Score color via status design tokens
+function scoreClass(score: number): string {
+  if (score >= 80) return 'text-status-success';
+  if (score >= 65) return 'text-status-warning';
+  return 'text-muted';
+}
+
 export default function ExpertCard({ expert, query, index = 0 }: Props) {
   const [showOutreach, setShowOutreach] = useState(false);
-
-  const scoreColor =
-    expert.relevance_score >= 80
-      ? '#2E7D52'
-      : expert.relevance_score >= 65
-      ? '#B45309'
-      : '#5A6B7A';
 
   return (
     <>
@@ -57,10 +57,7 @@ export default function ExpertCard({ expert, query, index = 0 }: Props) {
               <p className="text-sm font-medium text-ink mt-0.5">{expert.company}</p>
             </div>
             <div className="text-right shrink-0">
-              <div
-                className="font-display text-2xl font-semibold leading-none"
-                style={{ color: scoreColor }}
-              >
+              <div className={`font-display text-2xl font-semibold leading-none ${scoreClass(expert.relevance_score)}`}>
                 {expert.relevance_score}
               </div>
               <div className="text-[10px] uppercase tracking-widest text-muted mt-1">Score</div>
@@ -110,7 +107,7 @@ export default function ExpertCard({ expert, query, index = 0 }: Props) {
             <button
               onClick={() => setShowOutreach(true)}
               className="w-full bg-navy text-cream text-xs font-medium uppercase tracking-widest py-3 px-4 transition-all duration-200 hover:bg-navy-light flex items-center justify-center gap-2 group"
-              style={{ letterSpacing: '0.12em' }}
+              style={{ letterSpacing: '0.12em', minHeight: '44px' }}
             >
               <svg className="w-3.5 h-3.5 transition-transform duration-200 group-hover:translate-x-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
                 <path strokeLinecap="round" strokeLinejoin="round" d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />

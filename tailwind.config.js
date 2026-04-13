@@ -29,9 +29,17 @@ module.exports = {
           light: '#2E3F4F',
         },
         muted: '#5A6B7A',
+        // Design tokens
+        surface: '#FFFFFF',
+        frame: '#DDE2E8',
+        status: {
+          success: '#2E7D52',
+          warning: '#B45309',
+          danger: '#BE3A2B',
+        },
       },
       fontFamily: {
-        display: ['var(--font-cormorant)', 'Georgia', 'serif'],
+        display: ['var(--font-spectral)', 'Georgia', 'serif'],
         body: ['var(--font-libre-franklin)', 'Helvetica Neue', 'Arial', 'sans-serif'],
       },
       letterSpacing: {
@@ -54,8 +62,8 @@ module.exports = {
           '100%': { opacity: '1', transform: 'translateY(0)' },
         },
         shimmer: {
-          '0%': { backgroundPosition: '-400px 0' },
-          '100%': { backgroundPosition: '400px 0' },
+          from: { transform: 'translateX(-100%)' },
+          to: { transform: 'translateX(200%)' },
         },
       },
     },
