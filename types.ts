@@ -7,6 +7,12 @@ export interface QueryAnalysis {
   confidence_reason: string;
 }
 
+export interface SourceLink {
+  url: string;
+  label: string;
+  type: 'LinkedIn' | 'Article' | 'Company Website' | 'Professional Directory' | 'Government Website' | 'Other';
+}
+
 export interface Expert {
   id: string;
   name: string;
@@ -19,6 +25,7 @@ export interface Expert {
   relevance_score: number;
   source_url: string;
   source_label: string;
+  source_links: SourceLink[];
 }
 
 export interface InsufficientExperts {

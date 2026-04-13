@@ -1,7 +1,7 @@
 'use client';
 
 import { useState } from 'react';
-import { Expert } from '../types';
+import { Expert, SourceLink } from '../types';
 import OutreachModal from './OutreachModal';
 
 interface Props {
@@ -114,19 +114,41 @@ export default function ExpertCard({ expert, query }: Props) {
           <p className="text-sm text-gray-700 leading-relaxed">{expert.justification}</p>
         </div>
 
-        {/* Verified Source */}
-        {expert.source_url && (
-          <a
-            href={expert.source_url}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="flex items-center gap-1.5 text-xs text-violet-600 hover:text-violet-800 font-medium underline underline-offset-2"
-          >
-            <svg className="w-3.5 h-3.5 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-              <path strokeLinecap="round" strokeLinejoin="round" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" />
-            </svg>
-            Verified Source · {expert.source_label}
-          </a>
+        {/* Source Links */}
+        {expert.source_links && expert.source_links.length > 0 && (
+          <div className="space-y-1.5">
+            <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Sources</p>
+            <div className="flex flex-col gap-1.5">
+              {expert.source_links.map((link: SourceLink, i: number) => (
+                <a
+                  key={i}
+                  href={link.url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="flex items-start gap-2 group"
+                >
+                  <span className="mt-0.5 shrink-0">
+                    {link.type === 'LinkedIn' && (
+                      <span className="inline-flex items-center justify-center w-4 h-4 rounded bg-[#0077b5] text-white text-[8px] font-bold">in</span>
+                    )}
+                    {link.type === 'Article' && (
+                      <svg className="w-4 h-4 text-gray-400 group-hover:text-violet-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M19 20H5a2 2 0 01-2-2V6a2 2 0 012-2h10a2 2 0 012 2v1m2 13a2 2 0 01-2-2V7m2 13a2 2 0 002-2V9a2 2 0 00-2-2h-2m-4-3H9M7 16h6M7 12h6m-6-4h6" />
+                      </svg>
+                    )}
+                    {(link.type === 'Company Website' || link.type === 'Professional Directory' || link.type === 'Government Website' || link.type === 'Other') && (
+                      <svg className="w-4 h-4 text-gray-400 group-hover:text-violet-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1" />
+                      </svg>
+                    )}
+                  </span>
+                  <span className="text-xs text-violet-600 group-hover:text-violet-800 group-hover:underline underline-offset-2 leading-tight line-clamp-2">
+                    {link.label}
+                  </span>
+                </a>
+              ))}
+            </div>
+          </div>
         )}
 
         {/* Outreach button */}

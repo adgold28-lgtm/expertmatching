@@ -159,6 +159,7 @@ CRITICAL RULES:
 - If you cannot find a clearly identified real person in a category, return an empty array for that category — do NOT fabricate anyone.
 - Names must be real human names (first + last name). Skip results that only identify organizations, job boards, or generic pages.
 - source_label should be one of: "LinkedIn", "Company Website", "News Article", "Professional Directory", "Government Website"
+- For source_links, include ALL relevant URLs found in the search results for that person (LinkedIn profile, company bio, news articles, published papers, conference talks, etc.). Each link should have a descriptive label explaining what it is and why it's relevant (e.g. "LinkedIn Profile", "Forbes Interview on AI in Agriculture", "Company Bio at Tyson Foods", "USDA Policy Report").
 
 Also generate a query_analysis object based on the business question.
 
@@ -184,7 +185,19 @@ Return ONLY valid JSON (no markdown, no code fences):
       "justification": "Why this person is relevant to the question — based only on what the search result shows.",
       "relevance_score": 85,
       "source_url": "https://linkedin.com/in/...",
-      "source_label": "LinkedIn"
+      "source_label": "LinkedIn",
+      "source_links": [
+        {
+          "url": "https://linkedin.com/in/...",
+          "label": "LinkedIn Profile",
+          "type": "LinkedIn"
+        },
+        {
+          "url": "https://example.com/article",
+          "label": "Forbes Interview on AI in Poultry Production",
+          "type": "Article"
+        }
+      ]
     }
   ]
 }
