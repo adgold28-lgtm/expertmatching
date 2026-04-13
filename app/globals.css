@@ -3,44 +3,95 @@
 @tailwind utilities;
 
 :root {
-  --foreground-rgb: 30, 20, 60;
-  --background-start-rgb: 245, 243, 255;
-  --background-end-rgb: 237, 233, 254;
+  --navy: #0B1F3B;
+  --gold: #C6A75E;
+  --cream: #F7F9FC;
+  --muted: #5A6B7A;
+  --border: #DDE2E8;
+}
+
+html {
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
 }
 
 body {
-  color: rgb(var(--foreground-rgb));
-  background: linear-gradient(
-    160deg,
-    rgb(var(--background-start-rgb)) 0%,
-    rgb(var(--background-end-rgb)) 100%
-  );
-  min-height: 100vh;
+  font-family: var(--font-libre-franklin), 'Helvetica Neue', Arial, sans-serif;
+  background-color: #F7F9FC;
+  color: #1A2733;
 }
 
-/* Shimmer animation for loading cards */
-@keyframes shimmer {
-  0% { background-position: -200% 0; }
-  100% { background-position: 200% 0; }
+/* Display headings use Cormorant */
+.font-display {
+  font-family: var(--font-cormorant), Georgia, serif;
 }
 
-.shimmer {
-  background: linear-gradient(
-    90deg,
-    #f0ebff 0%,
-    #e4dbff 50%,
-    #f0ebff 100%
-  );
-  background-size: 200% 100%;
-  animation: shimmer 1.5s infinite;
-}
-
-/* Smooth scrollbar */
+/* Refined scrollbar */
 * {
   scrollbar-width: thin;
-  scrollbar-color: #c4b5fd #f5f3ff;
+  scrollbar-color: #DDE2E8 #F7F9FC;
+}
+*::-webkit-scrollbar { width: 5px; }
+*::-webkit-scrollbar-track { background: #F7F9FC; }
+*::-webkit-scrollbar-thumb { background: #C6A75E; border-radius: 2px; }
+
+/* Gold rule */
+.rule-gold {
+  height: 1px;
+  background: linear-gradient(to right, #C6A75E, transparent);
 }
 
-*::-webkit-scrollbar { width: 6px; }
-*::-webkit-scrollbar-track { background: #f5f3ff; }
-*::-webkit-scrollbar-thumb { background-color: #c4b5fd; border-radius: 3px; }
+/* Category divider */
+.rule-divider {
+  height: 1px;
+  background-color: #DDE2E8;
+}
+
+/* Expert card */
+.expert-card {
+  background: #ffffff;
+  border: 1px solid #DDE2E8;
+  border-left: 3px solid #DDE2E8;
+  transition: border-left-color 0.2s ease, box-shadow 0.2s ease, transform 0.2s ease;
+}
+.expert-card:hover {
+  border-left-color: #C6A75E;
+  box-shadow: 0 6px 24px rgba(11, 31, 59, 0.08);
+  transform: translateY(-1px);
+}
+
+/* Shimmer skeleton */
+.skeleton {
+  background: linear-gradient(90deg, #EEF1F6 25%, #E4E8ED 50%, #EEF1F6 75%);
+  background-size: 400px 100%;
+  animation: shimmer 1.6s ease-in-out infinite;
+}
+
+/* Input focus */
+.input-search:focus {
+  outline: none;
+  border-color: #0B1F3B;
+  box-shadow: 0 0 0 3px rgba(198, 167, 94, 0.15);
+}
+
+/* Select */
+.select-field {
+  appearance: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath d='M1 1l4 4 4-4' stroke='%235A6B7A' stroke-width='1.5' fill='none' stroke-linecap='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 12px center;
+}
+
+/* Staggered card animation */
+.expert-card:nth-child(1) { animation-delay: 0ms; }
+.expert-card:nth-child(2) { animation-delay: 60ms; }
+.expert-card:nth-child(3) { animation-delay: 120ms; }
+
+/* Source link hover */
+.source-link {
+  color: var(--muted);
+  transition: color 0.15s ease;
+}
+.source-link:hover {
+  color: var(--navy);
+}

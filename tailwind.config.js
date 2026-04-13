@@ -8,24 +8,41 @@ module.exports = {
   theme: {
     extend: {
       colors: {
-        violet: {
-          25: '#faf8ff',
-          50: '#f5f3ff',
-          100: '#ede9fe',
-          200: '#ddd6fe',
-          300: '#c4b5fd',
-          400: '#a78bfa',
-          500: '#8b5cf6',
-          600: '#7c3aed',
-          700: '#6d28d9',
-          800: '#5b21b6',
-          900: '#4c1d95',
+        navy: {
+          DEFAULT: '#0B1F3B',
+          light: '#142d52',
+          dark: '#060f1d',
+          muted: '#1e3a5f',
         },
+        gold: {
+          DEFAULT: '#C6A75E',
+          light: '#d4bb7d',
+          dark: '#a8893d',
+          pale: '#f0e8d5',
+        },
+        cream: {
+          DEFAULT: '#F7F9FC',
+          dark: '#EEF1F6',
+        },
+        ink: {
+          DEFAULT: '#1A2733',
+          light: '#2E3F4F',
+        },
+        muted: '#5A6B7A',
+      },
+      fontFamily: {
+        display: ['var(--font-cormorant)', 'Georgia', 'serif'],
+        body: ['var(--font-libre-franklin)', 'Helvetica Neue', 'Arial', 'sans-serif'],
+      },
+      letterSpacing: {
+        'widest-2': '0.2em',
+        'widest-3': '0.3em',
       },
       animation: {
-        'pulse-slow': 'pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite',
-        'fade-in': 'fadeIn 0.5s ease-in-out',
-        'slide-up': 'slideUp 0.4s ease-out',
+        'fade-in': 'fadeIn 0.5s ease-out forwards',
+        'slide-up': 'slideUp 0.45s ease-out forwards',
+        'spin-slow': 'spin 1.8s linear infinite',
+        shimmer: 'shimmer 1.6s ease-in-out infinite',
       },
       keyframes: {
         fadeIn: {
@@ -33,8 +50,12 @@ module.exports = {
           '100%': { opacity: '1' },
         },
         slideUp: {
-          '0%': { opacity: '0', transform: 'translateY(16px)' },
+          '0%': { opacity: '0', transform: 'translateY(14px)' },
           '100%': { opacity: '1', transform: 'translateY(0)' },
+        },
+        shimmer: {
+          '0%': { backgroundPosition: '-400px 0' },
+          '100%': { backgroundPosition: '400px 0' },
         },
       },
     },

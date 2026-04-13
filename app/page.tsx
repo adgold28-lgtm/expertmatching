@@ -7,112 +7,119 @@ import { Expert, ExpertResponse, QueryAnalysis } from '../types';
 const GEOGRAPHIES = ['Any Geography', 'United States', 'Europe', 'Asia Pacific', 'Latin America', 'Middle East & Africa', 'Global'];
 const SENIORITIES = ['Any Seniority', 'Mid-Level', 'Senior', 'Executive / C-Suite'];
 
-const confidenceConfig = {
-  High: { color: 'bg-green-100 text-green-700 border-green-200', dot: 'bg-green-500', label: 'High Confidence' },
-  Medium: { color: 'bg-yellow-100 text-yellow-700 border-yellow-200', dot: 'bg-yellow-500', label: 'Medium Confidence' },
-  Low: { color: 'bg-orange-100 text-orange-700 border-orange-200', dot: 'bg-orange-500', label: 'Low Confidence' },
-};
+const EXAMPLE_QUERIES = [
+  'How does grid interconnection work for utility-scale solar in ERCOT?',
+  'What are the key bottlenecks in EV battery supply chain logistics?',
+  'How are large food manufacturers approaching AI in production?',
+];
 
-const categoryConfig = {
+const CATEGORY_META = {
   Operator: {
-    title: 'Operators',
-    subtitle: 'Practitioners directly working in the field',
-    icon: '⚙️',
-    accent: 'border-indigo-200 bg-indigo-50/50',
-    titleColor: 'text-indigo-800',
-    subtitleColor: 'text-indigo-500',
-    countBadge: 'bg-indigo-100 text-indigo-700',
+    label: 'Operators',
+    description: 'Practitioners with direct field experience',
   },
   Advisor: {
-    title: 'Advisors',
-    subtitle: 'Consultants, investors, and analysts who evaluate the space',
-    icon: '💡',
-    accent: 'border-emerald-200 bg-emerald-50/50',
-    titleColor: 'text-emerald-800',
-    subtitleColor: 'text-emerald-500',
-    countBadge: 'bg-emerald-100 text-emerald-700',
+    label: 'Advisors',
+    description: 'Analysts, investors, and consultants who evaluate the space',
   },
   Outsider: {
-    title: 'Outsiders',
-    subtitle: 'Regulatory, enterprise, and independent perspectives',
-    icon: '🔭',
-    accent: 'border-amber-200 bg-amber-50/50',
-    titleColor: 'text-amber-800',
-    subtitleColor: 'text-amber-500',
-    countBadge: 'bg-amber-100 text-amber-700',
+    label: 'Outsiders',
+    description: 'Regulatory, enterprise, and independent perspectives',
   },
 };
+
+// ─── Skeleton ──────────────────────────────────────────────────────────────
 
 function SkeletonCard() {
   return (
-    <div className="bg-white rounded-2xl border border-gray-100 p-5 space-y-4">
-      <div className="flex items-start gap-3">
-        <div className="w-14 h-14 rounded-full shimmer shrink-0" />
-        <div className="flex-1 space-y-2">
-          <div className="h-4 shimmer rounded-lg w-3/4" />
-          <div className="h-3 shimmer rounded-lg w-1/2" />
-          <div className="h-3 shimmer rounded-lg w-2/5" />
+    <div className="expert-card p-6 space-y-5">
+      <div className="flex justify-between items-start">
+        <div className="space-y-2 flex-1">
+          <div className="skeleton h-5 w-2/3 rounded" />
+          <div className="skeleton h-3.5 w-1/2 rounded" />
+          <div className="skeleton h-3.5 w-2/5 rounded" />
         </div>
+        <div className="skeleton h-7 w-8 rounded" />
       </div>
-      <div className="h-3 shimmer rounded-lg w-1/3" />
+      <div className="skeleton h-px w-full" />
       <div className="space-y-2">
-        <div className="h-3 shimmer rounded-lg w-full" />
-        <div className="h-3 shimmer rounded-lg w-5/6" />
-        <div className="h-3 shimmer rounded-lg w-4/5" />
+        <div className="skeleton h-3.5 w-full rounded" />
+        <div className="skeleton h-3.5 w-5/6 rounded" />
+        <div className="skeleton h-3.5 w-4/5 rounded" />
       </div>
-      <div className="h-10 shimmer rounded-xl" />
+      <div className="skeleton h-10 w-full rounded" />
     </div>
   );
 }
 
-function SkeletonSection({ title, icon }: { title: string; icon: string }) {
+function LoadingState() {
   return (
-    <section className="space-y-4">
-      <div className="flex items-center gap-3">
-        <span className="text-2xl">{icon}</span>
-        <div className="space-y-1">
-          <div className="h-5 shimmer rounded-lg w-28" />
-          <div className="h-3 shimmer rounded-lg w-48" />
-        </div>
-      </div>
-      <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
-        {[1, 2].map((i) => <SkeletonCard key={i} />)}
-      </div>
-    </section>
-  );
-}
-
-function QueryBadge({ analysis }: { analysis: QueryAnalysis }) {
-  const conf = confidenceConfig[analysis.confidence];
-
-  return (
-    <div className="bg-white rounded-2xl border border-violet-100 shadow-sm p-5 animate-slide-up">
-      <div className="flex flex-wrap items-start justify-between gap-4">
-        <div className="space-y-3 flex-1">
-          <div className="flex flex-wrap gap-2">
-            <span className="text-xs font-semibold text-gray-500 uppercase tracking-wide self-center mr-1">Industry:</span>
-            <span className="bg-violet-100 text-violet-700 text-xs font-medium px-2.5 py-1 rounded-full">{analysis.industry}</span>
-            <span className="text-xs font-semibold text-gray-500 uppercase tracking-wide self-center ml-2 mr-1">Function:</span>
-            <span className="bg-violet-100 text-violet-700 text-xs font-medium px-2.5 py-1 rounded-full">{analysis.function}</span>
+    <div className="space-y-12 animate-fade-in">
+      {(['Operators', 'Advisors', 'Outsiders'] as const).map((label) => (
+        <div key={label} className="space-y-5">
+          <div className="flex items-center gap-4">
+            <div className="skeleton h-3 w-24 rounded" />
+            <div className="flex-1 rule-divider" />
           </div>
-          <div className="flex flex-wrap gap-1.5">
-            <span className="text-xs text-gray-400 self-center mr-1">Topics:</span>
-            {analysis.key_topics.map((t) => (
-              <span key={t} className="bg-gray-100 text-gray-600 text-xs px-2 py-0.5 rounded-full">{t}</span>
-            ))}
+          <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+            <SkeletonCard />
+            <SkeletonCard />
           </div>
         </div>
-        <div className={`flex items-center gap-2 px-3 py-2 rounded-full border text-xs font-medium ${conf.color} shrink-0`}>
-          <div className={`w-2 h-2 rounded-full ${conf.dot}`} />
-          {conf.label}
-        </div>
-      </div>
-      {analysis.confidence_reason && (
-        <p className="text-xs text-gray-500 mt-3 italic">{analysis.confidence_reason}</p>
-      )}
+      ))}
     </div>
   );
 }
+
+// ─── Query Analysis Bar ─────────────────────────────────────────────────────
+
+function ConfidenceDot({ level }: { level: 'High' | 'Medium' | 'Low' }) {
+  const colors = { High: '#2E7D52', Medium: '#B45309', Low: '#C0392B' };
+  return (
+    <span
+      className="inline-block w-1.5 h-1.5 rounded-full mr-1.5"
+      style={{ background: colors[level], verticalAlign: 'middle' }}
+    />
+  );
+}
+
+function AnalysisBar({ analysis }: { analysis: QueryAnalysis }) {
+  return (
+    <div className="animate-fade-in border-b border-[#DDE2E8] bg-white">
+      <div className="max-w-6xl mx-auto px-6 sm:px-10 py-4 flex flex-wrap items-center gap-x-8 gap-y-2">
+        <div className="flex items-center gap-2">
+          <span className="text-[10px] uppercase tracking-widest text-muted font-medium">Industry</span>
+          <span className="text-xs text-ink font-medium">{analysis.industry}</span>
+        </div>
+        <div className="w-px h-3 bg-[#DDE2E8] hidden sm:block" />
+        <div className="flex items-center gap-2">
+          <span className="text-[10px] uppercase tracking-widest text-muted font-medium">Function</span>
+          <span className="text-xs text-ink font-medium">{analysis.function}</span>
+        </div>
+        <div className="w-px h-3 bg-[#DDE2E8] hidden sm:block" />
+        <div className="flex flex-wrap gap-1.5">
+          {analysis.key_topics.slice(0, 4).map((t) => (
+            <span
+              key={t}
+              className="text-[10px] px-2 py-0.5 border border-[#DDE2E8] text-muted"
+              style={{ letterSpacing: '0.02em' }}
+            >
+              {t}
+            </span>
+          ))}
+        </div>
+        <div className="ml-auto flex items-center gap-1.5">
+          <ConfidenceDot level={analysis.confidence} />
+          <span className="text-[10px] uppercase tracking-widest text-muted font-medium">
+            {analysis.confidence} Confidence
+          </span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── Category Section ───────────────────────────────────────────────────────
 
 function CategorySection({
   category,
@@ -123,48 +130,46 @@ function CategorySection({
   experts: Expert[];
   query: string;
 }) {
-  const cfg = categoryConfig[category];
-
-  if (experts.length === 0) {
-    return (
-      <section className={`rounded-2xl border ${cfg.accent} p-5 space-y-4`}>
-        <div className="flex items-center gap-2.5">
-          <span className="text-2xl">{cfg.icon}</span>
-          <div>
-            <h2 className={`font-bold text-lg ${cfg.titleColor}`}>{cfg.title}</h2>
-            <p className={`text-xs ${cfg.subtitleColor}`}>{cfg.subtitle}</p>
-          </div>
-        </div>
-        <div className="bg-white/60 border border-dashed border-gray-300 rounded-2xl p-6 text-center">
-          <p className="text-sm text-gray-500 font-medium">Not enough high-confidence experts found for this category.</p>
-          <p className="text-xs text-gray-400 mt-1">Try refining your query with more specific terms or a different geography.</p>
-        </div>
-      </section>
-    );
-  }
+  const meta = CATEGORY_META[category];
 
   return (
-    <section className={`rounded-2xl border ${cfg.accent} p-5 space-y-4`}>
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-2.5">
-          <span className="text-2xl">{cfg.icon}</span>
-          <div>
-            <h2 className={`font-bold text-lg ${cfg.titleColor}`}>{cfg.title}</h2>
-            <p className={`text-xs ${cfg.subtitleColor}`}>{cfg.subtitle}</p>
-          </div>
+    <section className="space-y-5">
+      <div className="flex items-center gap-5">
+        <div className="shrink-0">
+          <h2
+            className="text-[11px] font-semibold uppercase text-navy"
+            style={{ letterSpacing: '0.18em' }}
+          >
+            {meta.label}
+          </h2>
+          <p className="text-[11px] text-muted mt-0.5">{meta.description}</p>
         </div>
-        <span className={`text-xs font-bold px-2.5 py-1 rounded-full ${cfg.countBadge}`}>
-          {experts.length} expert{experts.length !== 1 ? 's' : ''}
+        <div className="flex-1 rule-divider" />
+        <span className="text-[11px] text-muted shrink-0">
+          {experts.length > 0 ? `${experts.length} found` : '—'}
         </span>
       </div>
-      <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
-        {experts.map((expert) => (
-          <ExpertCard key={expert.id} expert={expert} query={query} />
-        ))}
-      </div>
+
+      {experts.length === 0 ? (
+        <div
+          className="py-8 text-center border border-dashed border-[#DDE2E8]"
+          style={{ background: 'rgba(247,249,252,0.6)' }}
+        >
+          <p className="text-sm text-muted">No high-confidence experts identified for this category.</p>
+          <p className="text-xs text-muted mt-1 opacity-70">Try a more specific query or different geography.</p>
+        </div>
+      ) : (
+        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+          {experts.map((expert, i) => (
+            <ExpertCard key={expert.id} expert={expert} query={query} index={i} />
+          ))}
+        </div>
+      )}
     </section>
   );
 }
+
+// ─── Main Page ──────────────────────────────────────────────────────────────
 
 export default function Home() {
   const [query, setQuery] = useState('');
@@ -173,32 +178,27 @@ export default function Home() {
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<ExpertResponse | null>(null);
   const [error, setError] = useState('');
+  const [inputFocused, setInputFocused] = useState(false);
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     if (!query.trim() || loading) return;
-
     setLoading(true);
     setResult(null);
     setError('');
-
     try {
       const res = await fetch('/api/generate-experts', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ query: query.trim(), geography, seniority }),
       });
-
       const data = await res.json();
-
       if (data.error) throw new Error(data.error);
-
-      // Assign IDs if missing
-      data.experts = data.experts.map((e: Expert, i: number) => ({
-        ...e,
-        id: e.id || `exp-${i}`,
+      data.experts = data.experts.map((ex: Expert, i: number) => ({
+        ...ex,
+        id: ex.id || `exp-${i}`,
+        source_links: ex.source_links || [],
       }));
-
       setResult(data);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Something went wrong. Please try again.');
@@ -212,188 +212,214 @@ export default function Home() {
   const outsiders = result?.experts.filter((e) => e.category === 'Outsider') ?? [];
 
   return (
-    <div className="min-h-screen">
-      {/* Header */}
-      <header className="sticky top-0 z-40 backdrop-blur-md bg-violet-50/80 border-b border-violet-100">
-        <div className="max-w-6xl mx-auto px-4 sm:px-6 py-4 flex items-center justify-between">
-          <div className="flex items-center gap-2.5">
-            <div className="w-8 h-8 bg-violet-600 rounded-lg flex items-center justify-center shadow-sm">
-              <svg className="w-4.5 h-4.5 text-white" fill="currentColor" viewBox="0 0 20 20">
-                <path d="M9 6a3 3 0 11-6 0 3 3 0 016 0zM17 6a3 3 0 11-6 0 3 3 0 016 0zM12.93 17c.046-.327.07-.66.07-1a6.97 6.97 0 00-1.5-4.33A5 5 0 0119 16v1h-6.07zM6 11a5 5 0 015 5v1H1v-1a5 5 0 015-5z" />
-              </svg>
-            </div>
-            <span className="font-bold text-violet-900 text-lg tracking-tight">ExpertMatch</span>
+    <div className="min-h-screen flex flex-col" style={{ background: '#F7F9FC' }}>
+
+      {/* ── Header ── */}
+      <header className="bg-navy border-b-2 border-gold sticky top-0 z-40">
+        <div className="max-w-6xl mx-auto px-6 sm:px-10 py-4 flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <svg className="w-5 h-5 text-gold shrink-0" fill="currentColor" viewBox="0 0 20 20">
+              <path d="M9 6a3 3 0 11-6 0 3 3 0 016 0zM17 6a3 3 0 11-6 0 3 3 0 016 0zM12.93 17c.046-.327.07-.66.07-1a6.97 6.97 0 00-1.5-4.33A5 5 0 0119 16v1h-6.07zM6 11a5 5 0 015 5v1H1v-1a5 5 0 015-5z" />
+            </svg>
+            <span
+              className="font-display text-cream font-semibold tracking-widest"
+              style={{ letterSpacing: '0.15em', fontSize: '13px' }}
+            >
+              EXPERTMATCH
+            </span>
           </div>
-          <p className="text-xs text-violet-500 hidden sm:block font-medium">AI-Powered Expert Sourcing</p>
+          <span
+            className="text-[10px] uppercase tracking-widest hidden sm:block"
+            style={{ color: 'rgba(198,167,94,0.7)', letterSpacing: '0.2em' }}
+          >
+            Intelligence Platform
+          </span>
         </div>
       </header>
 
-      <main className="max-w-6xl mx-auto px-4 sm:px-6 py-10 space-y-10">
-        {/* Hero */}
-        <div className="text-center space-y-3 pt-4">
-          <h1 className="text-4xl sm:text-5xl font-extrabold text-violet-950 tracking-tight leading-tight">
-            Find the right expert
-            <br />
-            <span className="text-violet-600">for any question.</span>
-          </h1>
-          <p className="text-gray-500 text-lg max-w-xl mx-auto leading-relaxed">
-            Describe your research question. Get a curated, consultant-quality list of experts to interview — instantly.
-          </p>
-        </div>
+      {/* ── Hero / Search ── */}
+      <div className="border-b border-[#DDE2E8] bg-white">
+        <div className="max-w-6xl mx-auto px-6 sm:px-10 py-14 sm:py-20">
 
-        {/* Search Form */}
-        <div className="bg-white rounded-2xl shadow-md border border-violet-100 p-6 space-y-5">
-          <form onSubmit={handleSubmit} className="space-y-5">
+          {/* Headline */}
+          <div className="max-w-2xl mb-10">
+            <h1 className="font-display text-navy leading-tight" style={{ fontSize: 'clamp(2.2rem, 5vw, 3.5rem)', fontWeight: 500, letterSpacing: '-0.01em' }}>
+              Expert intelligence
+              <br />
+              <span style={{ fontStyle: 'italic', fontWeight: 300, color: '#5A6B7A' }}>for critical decisions.</span>
+            </h1>
+            <p className="mt-4 text-sm text-muted leading-relaxed max-w-lg" style={{ fontWeight: 300 }}>
+              Surface the practitioners, advisors, and outliers who have navigated your exact question — with verified sources.
+            </p>
+          </div>
+
+          {/* Search form */}
+          <form onSubmit={handleSubmit} className="space-y-4 max-w-3xl">
             <div>
-              <label className="block text-sm font-semibold text-gray-700 mb-2">
-                Your Research Question
+              <label className="block text-[10px] uppercase tracking-widest text-muted font-medium mb-2" style={{ letterSpacing: '0.18em' }}>
+                Research Question
               </label>
               <textarea
                 value={query}
                 onChange={(e) => setQuery(e.target.value)}
-                placeholder="e.g. How does solar interconnection work in Texas? What are the key bottlenecks operators face?"
+                onFocus={() => setInputFocused(true)}
+                onBlur={() => setInputFocused(false)}
+                placeholder="e.g. How does solar interconnection work in Texas, and what are the main bottlenecks operators face?"
                 rows={3}
-                className="w-full px-4 py-3 rounded-xl border border-gray-200 focus:border-violet-400 focus:ring-2 focus:ring-violet-100 outline-none resize-none text-gray-800 placeholder-gray-400 text-sm transition-colors"
+                className="input-search w-full px-4 py-3.5 text-sm text-ink placeholder-[#9AABB8] border border-[#DDE2E8] resize-none bg-cream transition-all"
+                style={{ fontFamily: 'var(--font-libre-franklin)', fontWeight: 300 }}
                 onKeyDown={(e) => {
                   if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) handleSubmit(e as unknown as React.FormEvent);
                 }}
               />
-              <p className="text-xs text-gray-400 mt-1.5">Press ⌘+Enter to search</p>
+              <p className="text-[10px] text-muted mt-1.5" style={{ letterSpacing: '0.05em' }}>
+                ⌘ + Enter to search
+              </p>
             </div>
 
-            <div className="flex flex-col sm:flex-row gap-3">
-              <div className="flex-1">
-                <label className="block text-xs font-semibold text-gray-500 uppercase tracking-wide mb-1.5">Geography</label>
-                <select
-                  value={geography}
-                  onChange={(e) => setGeography(e.target.value)}
-                  className="w-full px-3 py-2.5 rounded-xl border border-gray-200 focus:border-violet-400 focus:ring-2 focus:ring-violet-100 outline-none text-sm text-gray-700 bg-white transition-colors"
-                >
-                  {GEOGRAPHIES.map((g) => (
-                    <option key={g} value={g === 'Any Geography' ? 'any' : g}>{g}</option>
-                  ))}
-                </select>
+            <div className="flex flex-col sm:flex-row gap-3 items-start sm:items-end">
+              <div className="flex gap-3 flex-1">
+                {/* Geography */}
+                <div className="flex-1">
+                  <label className="block text-[10px] uppercase tracking-widest text-muted font-medium mb-1.5" style={{ letterSpacing: '0.18em' }}>
+                    Geography
+                  </label>
+                  <select
+                    value={geography}
+                    onChange={(e) => setGeography(e.target.value)}
+                    className="select-field w-full px-3 py-2.5 text-xs text-ink border border-[#DDE2E8] bg-cream pr-8 focus:outline-none focus:border-navy transition-colors"
+                    style={{ fontFamily: 'var(--font-libre-franklin)' }}
+                  >
+                    {GEOGRAPHIES.map((g) => (
+                      <option key={g} value={g === 'Any Geography' ? 'any' : g}>{g}</option>
+                    ))}
+                  </select>
+                </div>
+
+                {/* Seniority */}
+                <div className="flex-1">
+                  <label className="block text-[10px] uppercase tracking-widest text-muted font-medium mb-1.5" style={{ letterSpacing: '0.18em' }}>
+                    Seniority
+                  </label>
+                  <select
+                    value={seniority}
+                    onChange={(e) => setSeniority(e.target.value)}
+                    className="select-field w-full px-3 py-2.5 text-xs text-ink border border-[#DDE2E8] bg-cream pr-8 focus:outline-none focus:border-navy transition-colors"
+                    style={{ fontFamily: 'var(--font-libre-franklin)' }}
+                  >
+                    {SENIORITIES.map((s) => (
+                      <option key={s} value={s === 'Any Seniority' ? 'any' : s}>{s}</option>
+                    ))}
+                  </select>
+                </div>
               </div>
 
-              <div className="flex-1">
-                <label className="block text-xs font-semibold text-gray-500 uppercase tracking-wide mb-1.5">Seniority</label>
-                <select
-                  value={seniority}
-                  onChange={(e) => setSeniority(e.target.value)}
-                  className="w-full px-3 py-2.5 rounded-xl border border-gray-200 focus:border-violet-400 focus:ring-2 focus:ring-violet-100 outline-none text-sm text-gray-700 bg-white transition-colors"
-                >
-                  {SENIORITIES.map((s) => (
-                    <option key={s} value={s === 'Any Seniority' ? 'any' : s}>{s}</option>
-                  ))}
-                </select>
-              </div>
-
-              <div className="flex items-end">
-                <button
-                  type="submit"
-                  disabled={!query.trim() || loading}
-                  className="w-full sm:w-auto px-8 py-2.5 bg-violet-600 hover:bg-violet-700 disabled:bg-violet-300 disabled:cursor-not-allowed text-white font-semibold rounded-xl transition-colors text-sm flex items-center justify-center gap-2 focus:outline-none focus:ring-2 focus:ring-violet-500 focus:ring-offset-2"
-                >
-                  {loading ? (
-                    <>
-                      <svg className="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
-                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-                      </svg>
-                      Sourcing...
-                    </>
-                  ) : (
-                    <>
-                      <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
-                        <path strokeLinecap="round" strokeLinejoin="round" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
-                      </svg>
-                      Find Experts
-                    </>
-                  )}
-                </button>
-              </div>
+              {/* Submit */}
+              <button
+                type="submit"
+                disabled={!query.trim() || loading}
+                className="shrink-0 flex items-center gap-2.5 px-7 py-2.5 text-xs font-medium uppercase transition-all duration-200 disabled:opacity-40 disabled:cursor-not-allowed"
+                style={{
+                  background: loading ? '#5A6B7A' : '#0B1F3B',
+                  color: '#C6A75E',
+                  letterSpacing: '0.14em',
+                  border: '1px solid transparent',
+                }}
+                onMouseEnter={(e) => { if (!loading && query.trim()) (e.currentTarget as HTMLElement).style.background = '#142d52'; }}
+                onMouseLeave={(e) => { if (!loading && query.trim()) (e.currentTarget as HTMLElement).style.background = '#0B1F3B'; }}
+              >
+                {loading ? (
+                  <>
+                    <svg className="w-3.5 h-3.5 animate-spin-slow" fill="none" viewBox="0 0 24 24">
+                      <circle className="opacity-20" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" />
+                      <path className="opacity-80" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                    </svg>
+                    Sourcing
+                  </>
+                ) : (
+                  <>
+                    Find Experts
+                    <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M17 8l4 4m0 0l-4 4m4-4H3" />
+                    </svg>
+                  </>
+                )}
+              </button>
             </div>
           </form>
+
+          {/* Example queries */}
+          {!result && !loading && !error && (
+            <div className="mt-8 flex flex-wrap gap-2">
+              <span className="text-[10px] uppercase tracking-widest text-muted self-center mr-1" style={{ letterSpacing: '0.18em' }}>
+                Try:
+              </span>
+              {EXAMPLE_QUERIES.map((q) => (
+                <button
+                  key={q}
+                  onClick={() => setQuery(q)}
+                  className="text-xs text-muted hover:text-navy border border-[#DDE2E8] hover:border-navy px-3 py-1.5 transition-colors text-left"
+                  style={{ fontWeight: 300 }}
+                >
+                  {q}
+                </button>
+              ))}
+            </div>
+          )}
         </div>
+      </div>
+
+      {/* ── Analysis bar ── */}
+      {result && !loading && <AnalysisBar analysis={result.query_analysis} />}
+
+      {/* ── Results ── */}
+      <main className="flex-1 max-w-6xl w-full mx-auto px-6 sm:px-10 py-12">
 
         {/* Error */}
         {error && (
-          <div className="bg-red-50 border border-red-200 rounded-2xl p-4 flex items-start gap-3">
-            <svg className="w-5 h-5 text-red-500 shrink-0 mt-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-              <path strokeLinecap="round" strokeLinejoin="round" d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-            </svg>
-            <p className="text-sm text-red-700">{error}</p>
+          <div className="border-l-4 border-red-500 bg-white px-5 py-4 text-sm text-red-700 mb-8" style={{ borderTop: '1px solid #DDE2E8', borderRight: '1px solid #DDE2E8', borderBottom: '1px solid #DDE2E8' }}>
+            {error}
           </div>
         )}
 
-        {/* Loading skeleton */}
-        {loading && (
-          <div className="space-y-8 animate-fade-in">
-            <div className="bg-white rounded-2xl border border-violet-100 p-5">
-              <div className="flex gap-6">
-                <div className="space-y-2 flex-1">
-                  <div className="h-3.5 shimmer rounded-lg w-1/3" />
-                  <div className="h-3 shimmer rounded-lg w-1/2" />
-                </div>
-                <div className="h-8 shimmer rounded-full w-32" />
-              </div>
-            </div>
-            <SkeletonSection title="Operators" icon="⚙️" />
-            <SkeletonSection title="Advisors" icon="💡" />
-            <SkeletonSection title="Outsiders" icon="🔭" />
-          </div>
-        )}
+        {/* Loading */}
+        {loading && <LoadingState />}
 
         {/* Results */}
         {result && !loading && (
-          <div className="space-y-6 animate-fade-in">
-            {/* Query analysis */}
-            <QueryBadge analysis={result.query_analysis} />
-
-            {/* Expert sections */}
+          <div className="space-y-14 animate-fade-in">
             <CategorySection category="Operator" experts={operators} query={query} />
             <CategorySection category="Advisor" experts={advisors} query={query} />
             <CategorySection category="Outsider" experts={outsiders} query={query} />
 
-            {/* Footer note */}
-            <p className="text-center text-xs text-gray-400 pb-4">
-              {result.experts.length} verified expert{result.experts.length !== 1 ? 's' : ''} sourced from LinkedIn and professional directories
+            <div className="rule-divider" />
+            <p className="text-[10px] uppercase tracking-widest text-muted text-center pb-4" style={{ letterSpacing: '0.18em' }}>
+              {result.experts.length} verified expert{result.experts.length !== 1 ? 's' : ''} · Sources drawn from public professional records
             </p>
           </div>
         )}
 
         {/* Empty state */}
         {!loading && !result && !error && (
-          <div className="text-center py-16 space-y-4">
-            <div className="w-20 h-20 bg-violet-100 rounded-full flex items-center justify-center mx-auto">
-              <svg className="w-10 h-10 text-violet-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
-                <path strokeLinecap="round" strokeLinejoin="round" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z" />
+          <div className="flex flex-col items-center justify-center py-24 gap-6 text-center">
+            <div
+              className="w-14 h-14 flex items-center justify-center border border-[#DDE2E8]"
+              style={{ background: 'white' }}
+            >
+              <svg className="w-6 h-6 text-gold" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0z" />
               </svg>
             </div>
             <div>
-              <p className="font-semibold text-gray-700 text-lg">Ask any business question</p>
-              <p className="text-gray-400 text-sm mt-1 max-w-xs mx-auto">
-                ExpertMatch will identify the most relevant operators, advisors, and outsiders for your research.
+              <p className="font-display text-xl text-navy font-medium tracking-wide">Ready when you are.</p>
+              <p className="text-sm text-muted mt-2 max-w-xs leading-relaxed" style={{ fontWeight: 300 }}>
+                Enter any business question above. We identify real experts — with sources.
               </p>
-            </div>
-            <div className="flex flex-wrap gap-2 justify-center pt-2">
-              {[
-                'How does grid interconnection work for solar in ERCOT?',
-                'What are the key dynamics in US industrial real estate?',
-                'How are large food manufacturers approaching sustainability?',
-              ].map((ex) => (
-                <button
-                  key={ex}
-                  onClick={() => setQuery(ex)}
-                  className="text-xs bg-white border border-violet-200 text-violet-700 hover:bg-violet-50 px-3 py-1.5 rounded-full transition-colors"
-                >
-                  {ex}
-                </button>
-              ))}
             </div>
           </div>
         )}
       </main>
+
     </div>
   );
 }
