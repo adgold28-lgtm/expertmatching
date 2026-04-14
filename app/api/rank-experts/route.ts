@@ -173,15 +173,21 @@ Confidence criteria:
 
     const response = await client.messages.create({
       model: 'claude-opus-4-6',
-      max_tokens: 4000,
+      max_tokens: 8000,
       messages: [{ role: 'user', content: prompt }],
     });
 
     const raw = response.content.find((b) => b.type === 'text')?.text ?? '';
     if (!raw) throw new Error('No response from Claude.');
 
-    // Extract JSON — handle any stray markdown fences
-    const jsonStr = raw.replace(/^```json\s*/i, '').replace(/```\s*$/i, '').trim();
+    // Extract JSON — strip any markdown fences, then find the array bounds
+    let jsonStr = raw.replace(/^```json\s*/i, '').replace(/```\s*$/i, '').trim();
+    // If the response starts with explanation text, find the first '['
+    const arrayStart = jsonStr.indexOf('[');
+    const arrayEnd = jsonStr.lastIndexOf(']');
+    if (arrayStart !== -1 && arrayEnd !== -1 && arrayEnd > arrayStart) {
+      jsonStr = jsonStr.slice(arrayStart, arrayEnd + 1);
+    }
     let aiResults: Array<{
       expertId: string;
       topicRelevance: { score: number; reason: string };
