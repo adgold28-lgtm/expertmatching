@@ -1,5 +1,6 @@
 import Anthropic from '@anthropic-ai/sdk';
 import { NextRequest, NextResponse } from 'next/server';
+import { routeAuthGuard } from '../../../lib/auth';
 import {
   RankableExpert,
   RankedExpertResult,
@@ -57,9 +58,31 @@ function computeRawScore(breakdown: ScoreBreakdown, weights: ScoringWeights): nu
   return Math.round(raw);
 }
 
+// Repair JSON: escape literal newlines/tabs/carriage-returns inside string values
+function repairJsonStrings(str: string): string {
+  let result = '';
+  let inString = false;
+  let escaped = false;
+  for (let i = 0; i < str.length; i++) {
+    const char = str[i];
+    if (escaped) { result += char; escaped = false; continue; }
+    if (char === '\\') { escaped = true; result += char; continue; }
+    if (char === '"') { inString = !inString; result += char; continue; }
+    if (inString && char === '\n') { result += '\\n'; continue; }
+    if (inString && char === '\r') { result += '\\r'; continue; }
+    if (inString && char === '\t') { result += '\\t'; continue; }
+    result += char;
+  }
+  return result;
+}
+
 // ─── Route Handler ────────────────────────────────────────────────────────────
 
 export async function POST(request: NextRequest) {
+  // Route-level auth guard (defense in depth — supplements middleware).
+  const authErr = await routeAuthGuard(request);
+  if (authErr) return authErr;
+
   try {
     const body = (await request.json()) as RankExpertsRequest;
     const { brief, experts, weights } = body;
@@ -144,6 +167,7 @@ EXPERTS TO EVALUATE:
 ${experts.map((e) => buildExpertSummary(e)).join('\n\n---\n\n')}
 
 Respond with ONLY a valid JSON array — no markdown, no explanation, no code fences.
+CRITICAL: All string values must be on a single line. Do NOT include literal newline or tab characters inside any JSON string value. Use a space instead of a line break.
 One object per expert, in the same order as listed. Use this exact schema:
 
 [
@@ -203,7 +227,7 @@ Confidence criteria:
     }>;
 
     try {
-      aiResults = JSON.parse(jsonStr);
+      aiResults = JSON.parse(repairJsonStrings(jsonStr));
     } catch {
       throw new Error('Failed to parse Claude response as JSON.');
     }

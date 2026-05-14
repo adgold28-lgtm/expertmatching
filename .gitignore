@@ -2,3 +2,21 @@
 .next/
 node_modules/
 .vercel
+audit-export*/
+audit-export*.zip
+
+# Local environment / secrets
+.env
+.env.*
+!.env.example
+
+# Claude Code session files (conversation history, agent worktrees)
+.claude/
+
+# macOS junk
+.DS_Store
+**/.DS_Store
+
+# Local audit exports
+audit-*/
+audit-*.zip

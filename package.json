@@ -8,10 +8,19 @@
     "start": "next start"
   },
   "dependencies": {
+    "@ai-sdk/anthropic": "^3.0.75",
     "@anthropic-ai/sdk": "^0.54.0",
+    "@react-pdf/renderer": "^4.5.1",
+    "@stripe/stripe-js": "^9.5.0",
+    "@types/nodemailer": "^8.0.0",
+    "ai": "^6.0.175",
+    "axios": "^1.16.1",
     "next": "^14.2.5",
+    "nodemailer": "^8.0.7",
     "react": "^18",
-    "react-dom": "^18"
+    "react-dom": "^18",
+    "resend": "^6.12.3",
+    "stripe": "^22.1.1"
   },
   "devDependencies": {
     "@types/node": "^20",

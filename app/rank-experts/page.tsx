@@ -1,7 +1,9 @@
 'use client';
 
-import { useState, useId } from 'react';
+import { Suspense, useState, useEffect, useId, useRef } from 'react';
 import Link from 'next/link';
+import { useSearchParams } from 'next/navigation';
+import type { ProjectExpert } from '../../types';
 import {
   ProjectBrief,
   RankableExpert,
@@ -14,6 +16,7 @@ import {
   SeniorityLevel,
   PerspectiveType,
 } from '../../rankExpertsTypes';
+import { useFocusTrap } from '../../lib/useFocusTrap';
 import {
   VALUE_CHAIN_STAGES,
   SENIORITY_LEVELS,
@@ -22,70 +25,40 @@ import {
   recomputeWithWeights,
 } from '../../lib/rankExperts';
 
-// ─── Seed data ────────────────────────────────────────────────────────────────
+// ─── Project expert conversion ────────────────────────────────────────────────
+// Maps a stored ProjectExpert (Expert wrapper) to the RankableExpert shape the
+// ranking engine expects. Fields unavailable in the stored Expert (yearsInIndustry,
+// valueChainStage, etc.) are left blank — the user can fill them in before ranking.
 
-const SEED_EXPERTS: RankableExpert[] = [
-  {
-    id: 'seed-1',
-    fullName: 'Maria Santos',
-    currentTitle: 'VP of Supply Chain',
-    currentCompany: 'Volta Battery Materials',
-    previousTitle: 'Director of Procurement',
-    previousCompany: 'BASF SE',
-    geography: 'United States',
-    linkedinOrSourceUrl: 'https://linkedin.com/in/maria-santos-supply-chain',
-    sourceNotes: 'LinkedIn profile confirmed. Runs a team of 40 overseeing cathode precursor sourcing across North America and Korea.',
-    yearsInIndustry: 14,
-    yearsOutsideIndustry: 0,
+const CATEGORY_TO_PERSPECTIVE: Record<string, PerspectiveType> = {
+  Operator: 'Operator',
+  Advisor:  'Advisor',
+  Outsider: 'Academic',
+};
+
+function projectExpertToRankable(pe: ProjectExpert): RankableExpert {
+  const e = pe.expert;
+  return {
+    id:                         e.id,
+    fullName:                   e.name,
+    currentTitle:               e.title  || '',
+    currentCompany:             e.company || '',
+    previousTitle:              '',
+    previousCompany:            '',
+    geography:                  e.location || '',
+    linkedinOrSourceUrl:        e.linkedin_url || e.source_url || '',
+    sourceNotes:                `Via ${e.source_label || 'expert search'}. ${e.source_url}`,
+    yearsInIndustry:            null,
+    yearsOutsideIndustry:       null,
     lastDirectIndustryRoleYear: null,
-    valueChainStage: 'Raw Materials / Inputs',
-    seniorityLevel: 'VP / GM / Head',
-    perspectiveType: 'Operator',
-    whyRelevant: 'Direct oversight of lithium and cathode active material sourcing. Led the company\'s shift from spot to long-term contracts in 2022. Deep knowledge of upstream supply constraints and contract structures.',
-    conflictsOrConcerns: '',
-    internalNotes: 'Referred by portfolio company CFO.',
-  },
-  {
-    id: 'seed-2',
-    fullName: 'James Whitfield',
-    currentTitle: 'Senior Consultant',
-    currentCompany: 'Whitfield Advisory LLC',
-    previousTitle: 'Director of Inbound Logistics',
-    previousCompany: 'General Motors',
-    geography: 'United States',
-    linkedinOrSourceUrl: 'https://linkedin.com/in/jwhitfield-logistics',
-    sourceNotes: 'LinkedIn and personal website confirmed. Left GM in 2022 after 9 years. Now advises OEMs and tier-1 suppliers on supply chain transformation.',
-    yearsInIndustry: 9,
-    yearsOutsideIndustry: 3,
-    lastDirectIndustryRoleYear: 2022,
-    valueChainStage: 'Distribution / Logistics',
-    seniorityLevel: 'Director',
-    perspectiveType: 'Advisor',
-    whyRelevant: 'Ran inbound logistics for GM\'s EV platforms. Led the battery module transport network redesign for Ultium. Now advising on logistics strategy for a battery-as-a-service startup.',
-    conflictsOrConcerns: 'May have signed an NDA with GM. Verify scope before disclosing GM-specific questions.',
-    internalNotes: '',
-  },
-  {
-    id: 'seed-3',
-    fullName: 'Dr. Priya Mehta',
-    currentTitle: 'Senior Research Analyst, Energy Transition',
-    currentCompany: 'Greenhill & Co.',
-    previousTitle: 'Associate',
-    previousCompany: 'Rocky Mountain Institute',
-    geography: 'United States',
-    linkedinOrSourceUrl: 'https://linkedin.com/in/drpriyamehta-energy',
-    sourceNotes: 'LinkedIn confirmed. Published three reports on EV battery supply chain risk in 2023–2024. PhD in Materials Science from MIT.',
-    yearsInIndustry: 7,
-    yearsOutsideIndustry: 0,
-    lastDirectIndustryRoleYear: null,
-    valueChainStage: 'Investor / Advisor',
-    seniorityLevel: 'Individual Contributor / Specialist',
-    perspectiveType: 'Investor',
-    whyRelevant: 'Covers battery supply chain for institutional investors. Deep technical background in cathode and anode materials. Broad view of market structure, investment flows, and supplier consolidation trends.',
-    conflictsOrConcerns: '',
-    internalNotes: 'Non-operational — useful for market structure and benchmarking, not for process-level questions.',
-  },
-];
+    valueChainStage:            '',
+    seniorityLevel:             '',
+    perspectiveType:            CATEGORY_TO_PERSPECTIVE[e.category] ?? 'Operator',
+    whyRelevant:                e.justification || '',
+    conflictsOrConcerns:        '',
+    internalNotes:              '',
+  };
+}
 
 const EMPTY_BRIEF: ProjectBrief = {
   researchQuestion: '',
@@ -131,12 +104,15 @@ const CONFIDENCE_COLORS = {
 // ─── Score bar ────────────────────────────────────────────────────────────────
 
 function ScoreBar({ score, max, label }: { score: number; max: number; label: string }) {
-  const pct = Math.round((score / max) * 100);
+  const pct = score / max;
   return (
     <div className="flex items-center gap-3">
-      <span className="text-[10px] uppercase tracking-widest text-muted w-44 shrink-0">{label}</span>
-      <div className="flex-1 h-1 bg-cream-dark">
-        <div className="h-full bg-navy transition-all" style={{ width: `${pct}%` }} />
+      <span className="text-[10px] uppercase tracking-widest text-muted w-32 sm:w-44 shrink-0">{label}</span>
+      <div className="flex-1 h-1 bg-cream-dark relative overflow-hidden">
+        <div
+          className="absolute inset-0 bg-navy origin-left transition-transform duration-500"
+          style={{ transform: `scaleX(${pct})` }}
+        />
       </div>
       <span className="text-xs font-medium text-ink w-10 text-right shrink-0">
         {score}/{max}
@@ -157,6 +133,10 @@ function ExpertFormModal({
   onCancel: () => void;
 }) {
   const [form, setForm] = useState<RankableExpert>(initial);
+  const dialogRef = useRef<HTMLDivElement>(null);
+  const fid = useId();
+  const f = (n: string) => `${fid}-${n}`;
+  useFocusTrap(dialogRef, onCancel);
 
   function set<K extends keyof RankableExpert>(key: K, val: RankableExpert[K]) {
     setForm((f) => ({ ...f, [key]: val }));
@@ -178,11 +158,12 @@ function ExpertFormModal({
       onClick={(e) => e.target === e.currentTarget && onCancel()}
     >
       <div
+        ref={dialogRef}
         role="dialog"
         aria-modal="true"
         aria-labelledby="expert-form-title"
         className="bg-surface w-full max-w-2xl max-h-[90vh] flex flex-col focus:outline-none"
-        style={{ border: '1px solid #DDE2E8', borderTop: '3px solid #C6A75E' }}
+        style={{ border: '1px solid var(--border)', borderTop: '3px solid var(--gold)' }}
         tabIndex={-1}
       >
         <div className="flex items-center justify-between px-7 py-5 border-b border-frame">
@@ -207,28 +188,28 @@ function ExpertFormModal({
             <p className="text-[10px] uppercase tracking-widest text-muted font-semibold mb-3" style={{ letterSpacing: '0.18em' }}>Identity</p>
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <div>
-                <label className={labelCls}>Full Name *</label>
-                <input className={inputCls} value={form.fullName} onChange={(e) => set('fullName', e.target.value)} placeholder="Jane Smith" />
+                <label htmlFor={f('fullName')} className={labelCls}>Full Name *</label>
+                <input id={f('fullName')} className={inputCls} value={form.fullName} onChange={(e) => set('fullName', e.target.value)} placeholder="Jane Smith" />
               </div>
               <div>
-                <label className={labelCls}>Geography</label>
-                <input className={inputCls} value={form.geography} onChange={(e) => set('geography', e.target.value)} placeholder="e.g. United States" />
+                <label htmlFor={f('geo')} className={labelCls}>Geography</label>
+                <input id={f('geo')} className={inputCls} value={form.geography} onChange={(e) => set('geography', e.target.value)} placeholder="e.g. United States" />
               </div>
               <div>
-                <label className={labelCls}>Current Title</label>
-                <input className={inputCls} value={form.currentTitle} onChange={(e) => set('currentTitle', e.target.value)} placeholder="VP of Operations" />
+                <label htmlFor={f('currentTitle')} className={labelCls}>Current Title</label>
+                <input id={f('currentTitle')} className={inputCls} value={form.currentTitle} onChange={(e) => set('currentTitle', e.target.value)} placeholder="VP of Operations" />
               </div>
               <div>
-                <label className={labelCls}>Current Company</label>
-                <input className={inputCls} value={form.currentCompany} onChange={(e) => set('currentCompany', e.target.value)} placeholder="Acme Corp" />
+                <label htmlFor={f('currentCompany')} className={labelCls}>Current Company</label>
+                <input id={f('currentCompany')} className={inputCls} value={form.currentCompany} onChange={(e) => set('currentCompany', e.target.value)} placeholder="Acme Corp" />
               </div>
               <div>
-                <label className={labelCls}>Previous Title</label>
-                <input className={inputCls} value={form.previousTitle} onChange={(e) => set('previousTitle', e.target.value)} placeholder="Director of Supply Chain" />
+                <label htmlFor={f('prevTitle')} className={labelCls}>Previous Title</label>
+                <input id={f('prevTitle')} className={inputCls} value={form.previousTitle} onChange={(e) => set('previousTitle', e.target.value)} placeholder="Director of Supply Chain" />
               </div>
               <div>
-                <label className={labelCls}>Previous Company</label>
-                <input className={inputCls} value={form.previousCompany} onChange={(e) => set('previousCompany', e.target.value)} placeholder="Prev Corp" />
+                <label htmlFor={f('prevCompany')} className={labelCls}>Previous Company</label>
+                <input id={f('prevCompany')} className={inputCls} value={form.previousCompany} onChange={(e) => set('previousCompany', e.target.value)} placeholder="Prev Corp" />
               </div>
             </div>
           </div>
@@ -238,22 +219,22 @@ function ExpertFormModal({
             <p className="text-[10px] uppercase tracking-widest text-muted font-semibold mb-3" style={{ letterSpacing: '0.18em' }}>Classification</p>
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
               <div>
-                <label className={labelCls}>Value Chain Stage</label>
-                <select className={selectCls} value={form.valueChainStage} onChange={(e) => set('valueChainStage', e.target.value as ValueChainStage)}>
+                <label htmlFor={f('vcs')} className={labelCls}>Value Chain Stage</label>
+                <select id={f('vcs')} className={selectCls} value={form.valueChainStage} onChange={(e) => set('valueChainStage', e.target.value as ValueChainStage)}>
                   <option value="">— Select —</option>
                   {VALUE_CHAIN_STAGES.map((s) => <option key={s} value={s}>{s}</option>)}
                 </select>
               </div>
               <div>
-                <label className={labelCls}>Seniority Level</label>
-                <select className={selectCls} value={form.seniorityLevel} onChange={(e) => set('seniorityLevel', e.target.value as SeniorityLevel)}>
+                <label htmlFor={f('sl')} className={labelCls}>Seniority Level</label>
+                <select id={f('sl')} className={selectCls} value={form.seniorityLevel} onChange={(e) => set('seniorityLevel', e.target.value as SeniorityLevel)}>
                   <option value="">— Select —</option>
                   {SENIORITY_LEVELS.map((s) => <option key={s} value={s}>{s}</option>)}
                 </select>
               </div>
               <div>
-                <label className={labelCls}>Perspective Type</label>
-                <select className={selectCls} value={form.perspectiveType} onChange={(e) => set('perspectiveType', e.target.value as PerspectiveType)}>
+                <label htmlFor={f('pt')} className={labelCls}>Perspective Type</label>
+                <select id={f('pt')} className={selectCls} value={form.perspectiveType} onChange={(e) => set('perspectiveType', e.target.value as PerspectiveType)}>
                   <option value="">— Select —</option>
                   {PERSPECTIVE_TYPES.map((p) => <option key={p} value={p}>{p}</option>)}
                 </select>
@@ -266,8 +247,9 @@ function ExpertFormModal({
             <p className="text-[10px] uppercase tracking-widest text-muted font-semibold mb-3" style={{ letterSpacing: '0.18em' }}>Experience & Recency</p>
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
               <div>
-                <label className={labelCls}>Years in Industry</label>
+                <label htmlFor={f('yii')} className={labelCls}>Years in Industry</label>
                 <input
+                  id={f('yii')}
                   className={inputCls}
                   type="number"
                   min={0}
@@ -277,8 +259,9 @@ function ExpertFormModal({
                 />
               </div>
               <div>
-                <label className={labelCls}>Years Outside Industry</label>
+                <label htmlFor={f('yoi')} className={labelCls}>Years Outside Industry</label>
                 <input
+                  id={f('yoi')}
                   className={inputCls}
                   type="number"
                   min={0}
@@ -288,8 +271,9 @@ function ExpertFormModal({
                 />
               </div>
               <div>
-                <label className={labelCls}>Last Direct Role Year</label>
+                <label htmlFor={f('ldiry')} className={labelCls}>Last Direct Role Year</label>
                 <input
+                  id={f('ldiry')}
                   className={inputCls}
                   type="number"
                   min={2000}
@@ -307,8 +291,9 @@ function ExpertFormModal({
             <p className="text-[10px] uppercase tracking-widest text-muted font-semibold mb-3" style={{ letterSpacing: '0.18em' }}>Relevance & Sources</p>
             <div className="space-y-4">
               <div>
-                <label className={labelCls}>Why Relevant</label>
+                <label htmlFor={f('wr')} className={labelCls}>Why Relevant</label>
                 <textarea
+                  id={f('wr')}
                   className={inputCls}
                   rows={3}
                   value={form.whyRelevant}
@@ -317,12 +302,13 @@ function ExpertFormModal({
                 />
               </div>
               <div>
-                <label className={labelCls}>LinkedIn / Source URL</label>
-                <input className={inputCls} value={form.linkedinOrSourceUrl} onChange={(e) => set('linkedinOrSourceUrl', e.target.value)} placeholder="https://linkedin.com/in/..." />
+                <label htmlFor={f('url')} className={labelCls}>LinkedIn / Source URL</label>
+                <input id={f('url')} className={inputCls} value={form.linkedinOrSourceUrl} onChange={(e) => set('linkedinOrSourceUrl', e.target.value)} placeholder="https://linkedin.com/in/..." />
               </div>
               <div>
-                <label className={labelCls}>Source Notes</label>
+                <label htmlFor={f('sn')} className={labelCls}>Source Notes</label>
                 <textarea
+                  id={f('sn')}
                   className={inputCls}
                   rows={2}
                   value={form.sourceNotes}
@@ -331,12 +317,12 @@ function ExpertFormModal({
                 />
               </div>
               <div>
-                <label className={labelCls}>Conflicts / Concerns</label>
-                <input className={inputCls} value={form.conflictsOrConcerns} onChange={(e) => set('conflictsOrConcerns', e.target.value)} placeholder="NDAs, competitive employment, etc." />
+                <label htmlFor={f('cc')} className={labelCls}>Conflicts / Concerns</label>
+                <input id={f('cc')} className={inputCls} value={form.conflictsOrConcerns} onChange={(e) => set('conflictsOrConcerns', e.target.value)} placeholder="NDAs, competitive employment, etc." />
               </div>
               <div>
-                <label className={labelCls}>Internal Notes</label>
-                <input className={inputCls} value={form.internalNotes} onChange={(e) => set('internalNotes', e.target.value)} placeholder="Private notes — not sent to AI" />
+                <label htmlFor={f('in')} className={labelCls}>Internal Notes</label>
+                <input id={f('in')} className={inputCls} value={form.internalNotes} onChange={(e) => set('internalNotes', e.target.value)} placeholder="Private notes — not sent to AI" />
               </div>
             </div>
           </div>
@@ -608,9 +594,25 @@ function RankedResultRow({
 
 // ─── Main Page ────────────────────────────────────────────────────────────────
 
+// useSearchParams requires a Suspense boundary in Next.js 14 static rendering.
+// The outer component provides that boundary; the inner component holds all state.
 export default function RankExpertsPage() {
+  return (
+    <Suspense>
+      <RankExpertsPageInner />
+    </Suspense>
+  );
+}
+
+function RankExpertsPageInner() {
+  const searchParams   = useSearchParams();
+  const projectId      = searchParams.get('projectId');
+
   const [brief, setBrief] = useState<ProjectBrief>({ ...EMPTY_BRIEF });
-  const [experts, setExperts] = useState<RankableExpert[]>(SEED_EXPERTS);
+  const [experts, setExperts] = useState<RankableExpert[]>([]);
+  const [projectName, setProjectName]     = useState<string | null>(null);
+  const [loadingProject, setLoadingProject] = useState(false);
+  const [projectLoadError, setProjectLoadError] = useState('');
   const [weights, setWeights] = useState<ScoringWeights>(DEFAULT_WEIGHTS);
   const [results, setResults] = useState<RankedExpertResult[] | null>(null);
   const [loading, setLoading] = useState(false);
@@ -620,6 +622,32 @@ export default function RankExpertsPage() {
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [briefOpen, setBriefOpen] = useState(true);
   const [weightsOpen, setWeightsOpen] = useState(false);
+
+  // Load non-rejected project experts when projectId is present
+  useEffect(() => {
+    if (!projectId) return;
+    setLoadingProject(true);
+    setProjectLoadError('');
+    fetch(`/api/projects/${projectId}`)
+      .then(r => r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`)))
+      .then((data: { project?: { name?: string; experts?: ProjectExpert[] } }) => {
+        const proj = data.project;
+        if (!proj) throw new Error('Project not found');
+        setProjectName(proj.name ?? null);
+        const rankable = (proj.experts ?? [])
+          .filter(pe => pe.status !== 'rejected')
+          .map(projectExpertToRankable);
+        setExperts(rankable);
+        // Pre-fill brief research question from project name if empty
+        if (proj.name) {
+          setBrief(b => b.researchQuestion ? b : { ...b, researchQuestion: proj.name ?? '' });
+        }
+      })
+      .catch((err: Error) => setProjectLoadError(err.message))
+      .finally(() => setLoadingProject(false));
+  // projectId is stable for the lifetime of the page load
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [projectId]);
 
   function setBriefField<K extends keyof ProjectBrief>(key: K, val: ProjectBrief[K]) {
     setBrief((b) => ({ ...b, [key]: val }));
@@ -704,16 +732,23 @@ export default function RankExpertsPage() {
             </Link>
             <span className="w-px h-4 bg-navy-muted hidden sm:block" />
             <span className="text-[10px] uppercase tracking-widest text-gold/70 hidden sm:block" style={{ letterSpacing: '0.2em' }}>
-              Expert Ranking
+              Review Candidates
             </span>
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-5">
             <Link
-              href="/"
+              href="/screen-expert"
               className="text-[10px] uppercase tracking-widest text-gold/60 hover:text-gold transition-colors hidden sm:block"
               style={{ letterSpacing: '0.16em' }}
             >
-              ← Search Experts
+              Expert Vetting ↗
+            </Link>
+            <Link
+              href="/projects"
+              className="text-[10px] uppercase tracking-widest text-gold/60 hover:text-gold transition-colors hidden sm:block"
+              style={{ letterSpacing: '0.16em' }}
+            >
+              ← Projects
             </Link>
           </div>
         </div>
@@ -724,10 +759,10 @@ export default function RankExpertsPage() {
         {/* ── Page intro ── */}
         <div className="max-w-2xl">
           <h1 className="font-display text-navy leading-tight" style={{ fontSize: 'clamp(1.9rem, 4vw, 3rem)', fontWeight: 500 }}>
-            Expert Ranking
+            Review Candidates
           </h1>
           <p className="mt-3 text-sm text-muted leading-relaxed" style={{ fontWeight: 300 }}>
-            Score and rank experts you have already identified. Enter your brief, add your expert roster, then run the ranking engine — deterministic scoring combined with AI-generated rationale and vetting questions.
+            Use this to compare candidates against a brief and decide who belongs in the shortlist. Enter your brief, add your candidate pool, then run the ranking engine — deterministic scoring combined with AI-generated rationale and vetting questions.
           </p>
           <div className="mt-5 rule-gold w-16" />
         </div>
@@ -857,8 +892,36 @@ export default function RankExpertsPage() {
               02 · Expert Roster
             </h2>
             <div className="flex-1 rule-divider" />
+            {projectName && (
+              <span className="text-[10px] text-muted shrink-0 hidden sm:block">
+                From: {projectName}
+              </span>
+            )}
             <span className="text-[11px] text-muted shrink-0">{experts.length} entered</span>
           </div>
+
+          {loadingProject && (
+            <div className="mt-5 flex items-center gap-2 text-xs text-muted">
+              <span className="inline-block w-3 h-3 border border-navy border-t-transparent rounded-full animate-spin" />
+              Loading project candidates…
+            </div>
+          )}
+
+          {projectLoadError && (
+            <p className="mt-5 text-xs text-red-600">
+              Could not load project: {projectLoadError}
+            </p>
+          )}
+
+          {!loadingProject && !projectLoadError && experts.length === 0 && (
+            <div className="mt-5 px-5 py-8 border border-dashed border-frame text-center">
+              <p className="text-sm text-muted" style={{ fontWeight: 300 }}>
+                {projectId
+                  ? 'No candidates in this project yet. Source experts from the Brief tab first, then return here to rank them.'
+                  : 'No candidates entered. Add experts manually or open this page from a project to load its candidates.'}
+              </p>
+            </div>
+          )}
 
           <div className="mt-5 space-y-2">
             {/* Expert list */}

@@ -1,18 +1,30 @@
 import { NextRequest } from 'next/server';
+import { getSearchProvider, searchWithFallback } from '../../../lib/searchProviders';
+import { routeAuthGuard } from '../../../lib/auth';
 
 export async function GET(request: NextRequest) {
-  const key = process.env.SCRAPINGBEE_KEY;
-  if (!key) return Response.json({ error: 'SCRAPINGBEE_KEY not set' });
+  // Debug-only endpoint — not available in production.
+  if (process.env.NODE_ENV === 'production') {
+    return Response.json({ error: 'not_found' }, { status: 404 });
+  }
+
+  // Route-level auth guard (defense in depth — supplements middleware).
+  const authErr = await routeAuthGuard(request);
+  if (authErr) return authErr;
+
+  // Verify at least one provider is configured
+  let providerName: string;
+  try {
+    providerName = getSearchProvider().name;
+  } catch (err) {
+    return Response.json({ error: err instanceof Error ? err.message : 'No search provider configured' });
+  }
 
   const query = request.nextUrl.searchParams.get('q') || 'solar interconnection manager Texas site:linkedin.com/in';
-  const url = `https://app.scrapingbee.com/api/v1/store/google?api_key=${key}&search=${encodeURIComponent(query)}&nb_results=3`;
 
   try {
-    const res = await fetch(url);
-    const text = await res.text();
-    let data;
-    try { data = JSON.parse(text); } catch { data = text; }
-    return Response.json({ status: res.status, query, data });
+    const results = await searchWithFallback({ query, maxResults: 3 });
+    return Response.json({ status: 200, provider: providerName, query, resultCount: results.length, results });
   } catch (err) {
     return Response.json({ error: String(err) });
   }

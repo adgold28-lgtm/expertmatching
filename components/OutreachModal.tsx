@@ -2,18 +2,23 @@
 
 import { useEffect, useRef, useState } from 'react';
 import { Expert } from '../types';
+import { useFocusTrap } from '../lib/useFocusTrap';
 
 interface Props {
   expert: Expert;
   query: string;
   onClose: () => void;
+  prefillEmail?: string;      // verified personal email from Snov/Hunter — shown as "To:" only
+  outreachMode?: 'personal_expert' | 'general_company_contact';  // controls Claude prompt style
+  generalContactEmail?: string; // general inbox (info@, contact@) — shown as "To:" in company-contact mode
 }
 
-export default function OutreachModal({ expert, query, onClose }: Props) {
+export default function OutreachModal({ expert, query, onClose, prefillEmail, outreachMode = 'personal_expert', generalContactEmail }: Props) {
   const [message, setMessage] = useState('');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [copied, setCopied] = useState(false);
+  const [emailCopied, setEmailCopied] = useState(false);
   const modalRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -22,7 +27,7 @@ export default function OutreachModal({ expert, query, onClose }: Props) {
         const res = await fetch('/api/generate-outreach', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ expert, query }),
+          body: JSON.stringify({ expert, query, contactType: outreachMode }),
         });
         const data = await res.json();
         if (data.error) throw new Error(data.error);
@@ -36,52 +41,22 @@ export default function OutreachModal({ expert, query, onClose }: Props) {
     generate();
   }, [expert, query]);
 
-  // Focus trap + Escape key handler
-  useEffect(() => {
-    const modal = modalRef.current;
-    if (!modal) return;
-
-    // Focus the modal container on mount so keyboard nav starts inside
-    modal.focus();
-
-    function trap(e: KeyboardEvent) {
-      if (e.key === 'Escape') {
-        onClose();
-        return;
-      }
-      if (e.key !== 'Tab') return;
-
-      const focusable = Array.from(
-        (modal as HTMLDivElement).querySelectorAll<HTMLElement>(
-          'button:not([disabled]), [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'
-        )
-      );
-      if (focusable.length === 0) return;
-
-      const first = focusable[0];
-      const last = focusable[focusable.length - 1];
-
-      if (e.shiftKey) {
-        if (document.activeElement === first) {
-          e.preventDefault();
-          last.focus();
-        }
-      } else {
-        if (document.activeElement === last) {
-          e.preventDefault();
-          first.focus();
-        }
-      }
-    }
-
-    document.addEventListener('keydown', trap);
-    return () => document.removeEventListener('keydown', trap);
-  }, [onClose]);
+  useFocusTrap(modalRef, onClose);
 
   function handleCopy() {
     navigator.clipboard.writeText(message);
     setCopied(true);
     setTimeout(() => setCopied(false), 2200);
+  }
+
+  function handleCopyEmail() {
+    const emailToCopy = outreachMode === 'general_company_contact'
+      ? generalContactEmail
+      : prefillEmail;
+    if (!emailToCopy) return;
+    navigator.clipboard.writeText(emailToCopy);
+    setEmailCopied(true);
+    setTimeout(() => setEmailCopied(false), 2200);
   }
 
   const lines = message.split('\n');
@@ -93,7 +68,6 @@ export default function OutreachModal({ expert, query, onClose }: Props) {
       className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-0 sm:p-6 animate-fade-in"
       style={{ background: 'rgba(11,31,59,0.55)' }}
       onClick={(e) => e.target === e.currentTarget && onClose()}
-      aria-hidden="true"
     >
       {/* Dialog */}
       <div
@@ -103,7 +77,7 @@ export default function OutreachModal({ expert, query, onClose }: Props) {
         aria-labelledby="outreach-modal-title"
         tabIndex={-1}
         className="bg-surface w-full sm:max-w-2xl max-h-[92vh] flex flex-col animate-slide-up focus:outline-none"
-        style={{ border: '1px solid #DDE2E8', borderTop: '3px solid #C6A75E' }}
+        style={{ border: '1px solid var(--border)', borderTop: '3px solid var(--gold)' }}
       >
         {/* Header */}
         <div className="flex items-start justify-between px-7 py-5 border-b border-frame">
@@ -117,6 +91,39 @@ export default function OutreachModal({ expert, query, onClose }: Props) {
             <p className="text-xs text-muted mt-1">
               {expert.name} · {expert.title}, {expert.company}
             </p>
+            {(prefillEmail || generalContactEmail) && (() => {
+              const displayEmail = outreachMode === 'general_company_contact'
+                ? generalContactEmail
+                : prefillEmail;
+              return displayEmail ? (
+                <div className="flex items-center gap-2 mt-1.5 flex-wrap">
+                  <span className="text-[10px] uppercase tracking-widest text-muted font-medium">To:</span>
+                  <span className="text-xs text-navy font-medium">{displayEmail}</span>
+                  {outreachMode === 'general_company_contact' && (
+                    <span className="text-[9px] font-medium text-amber-700 bg-amber-50 border border-amber-200 px-1.5 py-0.5 uppercase tracking-wide">
+                      Company inbox
+                    </span>
+                  )}
+                  <button
+                    onClick={handleCopyEmail}
+                    className="text-muted hover:text-navy transition-colors"
+                    aria-label="Copy email address"
+                    title={emailCopied ? 'Copied' : 'Copy email'}
+                    style={{ minWidth: '20px', minHeight: '20px' }}
+                  >
+                    {emailCopied ? (
+                      <svg className="w-3 h-3 text-green-600" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+                      </svg>
+                    ) : (
+                      <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
+                      </svg>
+                    )}
+                  </button>
+                </div>
+              ) : null;
+            })()}
           </div>
           {/* Close — enlarged touch target */}
           <button
