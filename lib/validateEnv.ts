@@ -23,6 +23,7 @@ const REQUIRED_VARS = [
   'UPSTASH_REDIS_REST_TOKEN',
   'LOG_HASH_SECRET',
   'NEXT_PUBLIC_APP_URL',
+  'OPENAI_API_KEY',
 ] as const;
 
 export function validateEnv(): void {

@@ -1,6 +1,6 @@
-import { generateText } from 'ai';
 import { NextRequest } from 'next/server';
 import { routeAuthGuard } from '../../../lib/auth';
+import { openai } from '../../../lib/openai';
 
 const MAX_BODY = 8192; // bytes
 
@@ -54,54 +54,68 @@ export async function POST(request: NextRequest) {
   }
 
   try {
-    let prompt: string;
+    let systemPrompt: string;
+    let userPrompt: string;
 
     if (contactType === 'general_company_contact') {
-      // Outreach via a shared/role inbox (info@, contact@, etc.) — the expert
-      // may not read this directly. Ask to be forwarded rather than addressing
-      // the expert as if this is a personal email.
-      prompt = `Write a brief, professional inquiry to be sent to a general company contact inbox (such as info@ or contact@) on behalf of a researcher trying to reach ${name}, ${title} at ${company}.
+      systemPrompt = `You write brief, professional forwarding requests to company contact inboxes. The goal is to be forwarded to a specific person. Be direct and human. No em dashes. No corporate filler. No exclamation marks. Under 100 words.`;
 
-Context:
-- The researcher's question: "${query}"
-- Why ${name} is relevant: "${justification}"
+      userPrompt = `Write a short email to a general company inbox (like info@ or contact@) asking to be connected with ${name}, ${title} at ${company}.
 
-Requirements:
-- 2-3 short paragraphs
-- Address the recipient generically (e.g. "Hello" or "Hi there,") — NOT by the expert's first name
-- Explain briefly who you are looking to reach and why
-- Ask to be forwarded to ${name} or the most relevant person
-- Be concise, polite, and professional — not salesy
-- Subject line on first line formatted as: Subject: [subject here]
-- Then a blank line, then the message starting with "Hello," or "Hi there,"
+Reason for reaching out: "${query}"
+Why ${name} specifically: "${justification}"
 
-Return only the message text with subject line. No extra commentary.`;
+Format:
+Subject: [subject]
+
+Hello,
+
+[2 short paragraphs]
+
+[Sign-off]`;
     } else {
-      // Default: personal outreach to the expert directly
-      prompt = `Write a cold outreach message to ${name}, ${title} at ${company}.
+      systemPrompt = `You write cold outreach emails for an expert network platform. Your emails get responses because they feel like they were written by a sharp analyst who did their homework, not by a sales tool.
 
-Context:
-- The researcher's question: "${query}"
-- Why this expert is relevant: "${justification}"
+STYLE RULES — non-negotiable:
+- No em dashes anywhere. Use periods or commas instead.
+- No "I wanted to reach out", "I hope this finds you well", "touch base", "pick your brain", "synergy", "leverage", "circle back"
+- No exclamation marks
+- No "I came across your profile"
+- Never say "expert network" or "AlphaSights" or "expert call"
+- Short sentences. No padding.
+- Sound like a smart 28-year-old analyst, not a recruiter
+- The ask is always a 20-30 minute call, framed as a conversation not an interview
+- One specific detail about the person that shows you actually know who they are
+- End with a soft, confident ask. Not "would you be open to..." — just "Happy to work around your schedule if you have 20 minutes."
 
-Requirements:
-- 3-4 short paragraphs max
-- Mention their specific role and company naturally
-- Ask for a 20-30 minute introductory call
-- Be warm, respectful, and direct — not salesy
-- Reference the specific topic/question naturally
-- Sound human, not like a template
-- Subject line on first line formatted as: Subject: [subject here]
-- Then a blank line, then the message body starting with "Hi [First Name],"
+FORMAT:
+Subject: [subject line]
 
-Return only the message text with subject line. No extra commentary.`;
+Hi [First Name],
+
+[3-4 short paragraphs]
+
+[Sign-off]`;
+
+      userPrompt = `Write a cold outreach email to ${name}, ${title} at ${company}.
+
+Research question the analyst is working on: "${query}"
+
+Why this specific person: "${justification}"
+
+The email should reference something specific about their background that connects directly to the research question. Do not make up details not provided above. Keep it under 150 words in the body.`;
     }
 
-    const { text } = await generateText({
-      model: 'anthropic/claude-opus-4.6',
-      prompt,
-      maxOutputTokens: 600,
+    const response = await openai.chat.completions.create({
+      model: 'gpt-4o-mini',
+      max_tokens: 600,
+      temperature: 0.7,
+      messages: [
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: userPrompt },
+      ],
     });
+    const text = response.choices[0].message.content ?? '';
 
     return Response.json({ message: text.trim() });
   } catch (err) {

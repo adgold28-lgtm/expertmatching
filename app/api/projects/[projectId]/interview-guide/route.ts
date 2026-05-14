@@ -1,14 +1,17 @@
 import { NextRequest } from 'next/server';
-import Anthropic from '@anthropic-ai/sdk';
+import { routeAuthGuard } from '../../../../../lib/auth';
 import { getProject } from '../../../../../lib/projectStore';
+import { openai } from '../../../../../lib/openai';
 
-const client = new Anthropic({ apiKey: process.env.ANTRHOPICKEYREAL });
-const ID_RE  = /^[a-f0-9]{24}$/;
+const ID_RE = /^[a-f0-9]{24}$/;
 
 export async function POST(
   request: NextRequest,
   { params }: { params: { projectId: string } },
 ) {
+  const authErr = await routeAuthGuard(request);
+  if (authErr) return authErr;
+
   if (!ID_RE.test(params.projectId)) {
     return Response.json({ error: 'invalid_project_id' }, { status: 400 });
   }
@@ -26,54 +29,45 @@ export async function POST(
 
     const { expert } = pe;
 
-    const prompt = `You are preparing for an expert call as part of a due diligence or research project.
+    const systemPrompt = `You generate structured interview guides for expert calls at a primary research firm. The client will use this guide on a 45-60 minute call with an industry expert. Questions must be sharp, specific, and non-generic. No em dashes. No filler. Return only valid JSON, no markdown, no code fences.`;
 
-Research Question: "${project.researchQuestion}"
+    const userPrompt = `Research question: "${project.researchQuestion}"
 
-Expert: ${expert.name}
-Title: ${expert.title}
-Company: ${expert.company}
+Expert: ${expert.name}, ${expert.title} at ${expert.company}
 Background: ${expert.justification}
 
-Generate a structured interview guide. Return ONLY valid JSON (no markdown, no code fences):
+Generate a client interview guide. Every question must be specific to this expert's background and the research question. No generic questions like "what trends are you seeing."
+
+Return ONLY this JSON structure:
 {
-  "opening_script": "2-3 sentences to open the call, establish context, and frame the conversation",
+  "opening_script": "2-3 sentences to open the call, establish context, frame the conversation. Warm but direct. No em dashes.",
   "must_ask": [
-    "Question 1 — non-negotiable, gets at the core research question",
-    "Question 2 — non-negotiable, probes unique insight only this expert can provide",
-    "Question 3 — non-negotiable, challenges conventional wisdom"
+    "Non-negotiable question 1 — core research question",
+    "Non-negotiable question 2 — unique insight only this expert has",
+    "Non-negotiable question 3 — challenges conventional wisdom on this topic"
   ],
   "questions": [
-    "Question 1",
-    "Question 2",
-    "Question 3",
-    "Question 4",
-    "Question 5",
-    "Question 6",
-    "Question 7",
-    "Question 8",
-    "Question 9",
-    "Question 10"
+    "Q1", "Q2", "Q3", "Q4", "Q5",
+    "Q6", "Q7", "Q8", "Q9", "Q10"
   ],
   "diligence_risks": [
     "Risk 1 this expert can help assess",
     "Risk 2 this expert can help assess",
     "Risk 3 this expert can help assess"
   ]
-}
+}`;
 
-Make all questions specific to this expert's background and the research question. Avoid generic questions.`;
-
-    const response = await client.messages.create({
-      model:      'claude-opus-4-6',
+    const response = await openai.chat.completions.create({
+      model:      'gpt-4o-mini',
       max_tokens: 2000,
-      messages:   [{ role: 'user', content: prompt }],
+      temperature: 0.5,
+      messages: [
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: userPrompt },
+      ],
     });
 
-    const block = response.content.find(b => b.type === 'text');
-    if (!block || block.type !== 'text') throw new Error('No text in response');
-
-    let text = block.text.trim();
+    let text = (response.choices[0].message.content ?? '').trim();
     if (text.startsWith('```')) {
       text = text.replace(/^```(?:json)?\n?/, '').replace(/\n?```$/, '');
     }

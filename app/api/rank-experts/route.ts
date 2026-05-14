@@ -1,4 +1,4 @@
-import Anthropic from '@anthropic-ai/sdk';
+import { openai } from '../../../lib/openai';
 import { NextRequest, NextResponse } from 'next/server';
 import { routeAuthGuard } from '../../../lib/auth';
 import {
@@ -15,7 +15,6 @@ import {
   SENIORITY_PERSPECTIVE,
 } from '../../../lib/rankExperts';
 
-const client = new Anthropic({ apiKey: process.env.ANTRHOPICKEYREAL });
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -195,13 +194,13 @@ Confidence criteria:
 - Medium: some gaps or inferred information
 - Low: important details missing, heavy inference required`;
 
-    const response = await client.messages.create({
-      model: 'claude-opus-4-6',
+    const response = await openai.chat.completions.create({
+      model: 'gpt-4o-mini',
       max_tokens: 8000,
       messages: [{ role: 'user', content: prompt }],
     });
 
-    const raw = response.content.find((b) => b.type === 'text')?.text ?? '';
+    const raw = response.choices[0].message.content ?? '';
     if (!raw) throw new Error('No response from Claude.');
 
     // Extract JSON — strip any markdown fences, then find the array bounds

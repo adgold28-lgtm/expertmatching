@@ -1,8 +1,6 @@
-import Anthropic from '@anthropic-ai/sdk';
 import { NextRequest, NextResponse } from 'next/server';
 import { routeAuthGuard } from '../../../lib/auth';
-
-const client = new Anthropic({ apiKey: process.env.ANTRHOPICKEYREAL });
+import { openai } from '../../../lib/openai';
 
 // Repair literal newlines/tabs inside JSON string values before parsing
 function repairJsonStrings(str: string): string {
@@ -58,84 +56,73 @@ export async function POST(req: NextRequest) {
       team_coverage ? `Experts already selected (coverage context): ${team_coverage}` : '',
     ].filter(Boolean).join('\n');
 
-    const prompt = `You are an expert viability screener for a primary research firm. Your job is to evaluate whether a specific candidate expert is a strong fit for a client's project brief. You are commercially minded and skeptical. You reward practical usefulness, not prestige.
+    const prompt = `You are a skeptical expert screener for a primary research firm. Evaluate whether this candidate can answer a client's specific research question on a 30-minute call tomorrow. Reward practical usefulness. Penalize prestige without substance.
 
-## CLIENT BRIEF
-
-Project brief: ${project_brief}
-Industry: ${industry || 'Not specified'}
-Target expert types: ${target_expert_types || 'Not specified'}
-Key topics: ${Array.isArray(key_topics) ? key_topics.join(', ') : (key_topics || 'Not specified')}
+CLIENT BRIEF
+Research question: "${project_brief}"
+Industry: ${industry || 'not specified'}
+Target expert types: ${target_expert_types || 'not specified'}
+Key topics: ${Array.isArray(key_topics) ? key_topics.join(', ') : (key_topics || 'not specified')}
 ${optionalFields}
 
-## CANDIDATE PROFILE
-
+CANDIDATE
 Name: ${candidate_name}
-Role: ${candidate_role || 'Not specified'}
-Company: ${candidate_company || 'Not specified'}
+Role: ${candidate_role || 'not specified'}
+Company: ${candidate_company || 'not specified'}
+Background: ${candidate_profile}
 
-Profile / background:
-${candidate_profile}
+SCORING WEIGHTS
+- Direct relevance to research question: 30 points
+- Value chain clarity: 20 points
+- Practical call usefulness: 20 points
+- Recency of experience: 10 points
+- Distinctive perspective: 10 points
+- No conflicts: 10 points
 
-## YOUR TASK
-
-Evaluate this candidate against the brief. Be skeptical. Penalize candidates who sound impressive but cannot answer a specific project question. Prefer people who can answer the client's questions in a real call tomorrow.
-
-Score using this weighting:
-- 30%: Direct relevance to project brief
-- 20%: Clarity of value chain fit
-- 20%: Practical usefulness on an expert call
-- 10%: Recency of relevant experience
-- 10%: Distinctiveness / non-generic perspective
-- 10%: Compliance / conflict cleanliness
-
-Value chain positions to choose from: Raw materials / sourcing, Manufacturing / processing, Co-manufacturing, Packaging, Distribution / logistics, Retail / category management, Consumer insights / demand, Pricing / risk / policy, Cross-functional operator, Other
-
+Value chain positions: Raw materials / sourcing, Manufacturing / processing, Co-manufacturing, Packaging, Distribution / logistics, Retail / category management, Consumer insights / demand, Pricing / risk / policy, Cross-functional operator, Other
 Archetypes: operator, advisor, outsider, hybrid
-
 Recommendations: Strong yes, Yes, Backup only, No
 
-## OUTPUT FORMAT
-
-Respond with ONLY a valid JSON object matching this exact schema. All string values must be on a single line — no literal newlines or tabs inside string values.
+Return ONLY valid JSON. No markdown. No explanation. All string values on a single line.
 
 {
   "primaryFit": {
-    "valueChainPosition": "string — the most specific value chain position",
+    "valueChainPosition": "most specific position from the list above",
     "archetype": "operator | advisor | outsider | hybrid",
     "scope": "broad | surgical",
-    "scopeExplanation": "string — one sentence on why broad or surgical"
+    "scopeExplanation": "one sentence"
   },
   "viabilityScore": {
-    "score": number between 1 and 100,
+    "score": 0-100,
     "recommendation": "Strong yes | Yes | Backup only | No",
     "scoreBreakdown": {
-      "directRelevance": number out of 30,
-      "valueChainClarity": number out of 20,
-      "callUsefulness": number out of 20,
-      "recency": number out of 10,
-      "distinctiveness": number out of 10,
-      "complianceClean": number out of 10
+      "directRelevance": 0-30,
+      "valueChainClarity": 0-20,
+      "callUsefulness": 0-20,
+      "recency": 0-10,
+      "distinctiveness": 0-10,
+      "complianceClean": 0-10
     }
   },
   "whyFits": ["string", "string", "string"],
   "questionsCanAnswer": ["string", "string", "string"],
   "risksLimitations": ["string", "string"],
-  "bottomLine": "string — 2 to 4 sentences on whether this person is truly viable for the brief"
+  "bottomLine": "2-4 sentences on whether this person is truly viable"
 }`;
 
-    const response = await client.messages.create({
-      model: 'claude-opus-4-6',
+    const response = await openai.chat.completions.create({
+      model: 'gpt-4o-mini',
       max_tokens: 1500,
+      temperature: 0.3,
       messages: [{ role: 'user', content: prompt }],
     });
 
-    const text = response.content[0].type === 'text' ? response.content[0].text : '';
+    const text = response.choices[0].message.content ?? '';
 
     const start = text.indexOf('{');
     const end = text.lastIndexOf('}');
     if (start === -1 || end === -1) {
-      throw new Error('No JSON found in Claude response.');
+      throw new Error('No JSON found in response.');
     }
 
     const evaluation = JSON.parse(repairJsonStrings(text.slice(start, end + 1)));

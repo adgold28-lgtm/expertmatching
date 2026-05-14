@@ -1,10 +1,10 @@
-import Anthropic from '@anthropic-ai/sdk';
 import { NextRequest } from 'next/server';
+import { routeAuthGuard } from '../../../../../lib/auth';
 import { getProject } from '../../../../../lib/projectStore';
+import { openai } from '../../../../../lib/openai';
 import type { ValueChainPosition } from '../../../../../types';
 
-const client = new Anthropic({ apiKey: process.env.ANTRHOPICKEYREAL });
-const ID_RE  = /^[a-f0-9]{24}$/;
+const ID_RE = /^[a-f0-9]{24}$/;
 
 const VALUE_CHAIN_LABEL: Record<ValueChainPosition, string> = {
   supplier:               'Supplier / Input Provider',
@@ -33,6 +33,9 @@ export async function POST(
   request: NextRequest,
   { params }: { params: { projectId: string } },
 ) {
+  const authErr = await routeAuthGuard(request);
+  if (authErr) return authErr;
+
   if (!ID_RE.test(params.projectId)) {
     return Response.json({ error: 'invalid_project_id' }, { status: 400 });
   }
@@ -66,35 +69,34 @@ export async function POST(
     .map(l => `- ${l.label}`)
     .join('\n');
 
-  const prompt = `You are preparing vetting questions for an expert screening call.
-
-Research Question: "${project.researchQuestion}"
+  const userPrompt = `Research question: "${project.researchQuestion}"
 Expert: ${expert.title} at ${expert.company}${vcLabel}
 Background: ${expert.justification}
-${sources ? `Evidence sources:\n${sources}` : ''}
+${sources ? `Evidence:\n${sources}` : ''}
 
-Generate exactly 3 targeted vetting questions to assess:
-1. Depth of specific knowledge on the research question
-2. Directness of hands-on experience relative to their background and value chain position
-3. Any conflict of interest, confidentiality restrictions, or recency of their knowledge
+Write 3 vetting questions for a screening call with this expert. Each question must:
+- Be specific to this person's background and the research question
+- Not be answerable with a yes/no
+- Take under 30 seconds to ask out loud
 
-Return ONLY a JSON array of 3 strings — no markdown, no code fences, no wrapper object:
-["Question 1", "Question 2", "Question 3"]`;
+Question 1: Probe depth of direct experience on the research question
+Question 2: Probe which part of the value chain they actually touched and for how long
+Question 3: Surface any conflicts, NDAs, or recency issues
+
+Return ONLY: ["Question 1", "Question 2", "Question 3"]`;
 
   try {
-    const response = await client.messages.create({
-      model:      'claude-haiku-4-5-20251001',
+    const response = await openai.chat.completions.create({
+      model:      'gpt-4o-mini',
       max_tokens: 400,
-      messages:   [{ role: 'user', content: prompt }],
+      temperature: 0.4,
+      messages: [
+        { role: 'system', content: 'You generate sharp, specific vetting questions for expert screening calls. Return only a JSON array of 3 strings. No markdown. No code fences. No explanation.' },
+        { role: 'user', content: userPrompt },
+      ],
     });
 
-    const block = response.content.find(b => b.type === 'text');
-    if (!block || block.type !== 'text') throw new Error('no text block');
-
-    let text = block.text.trim();
-    if (text.startsWith('```')) {
-      text = text.replace(/^```(?:json)?\n?/, '').replace(/\n?```$/, '');
-    }
+    const text = response.choices[0].message.content ?? '';
     // Extract array even if wrapped in extra text
     const match = text.match(/\[[\s\S]*\]/);
     if (!match) throw new Error('no array in response');

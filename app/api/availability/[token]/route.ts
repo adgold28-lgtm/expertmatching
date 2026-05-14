@@ -9,7 +9,7 @@
 // Never logs: expert name, email, project name, token, raw availability text.
 
 import { NextRequest, NextResponse } from 'next/server';
-import { generateText }              from 'ai';
+import { openai }                    from '../../../../lib/openai';
 import { verifyAvailabilityToken, hashToken } from '../../../../lib/availabilityToken';
 import { getProject, updateExpertStatus, updateProjectFields } from '../../../../lib/projectStore';
 import { fetchCalendlySlots }                 from '../../../../lib/fetchCalendlySlots';
@@ -65,12 +65,13 @@ ${text}
 """`;
 
   try {
-    const { text: raw } = await generateText({
-      model:       'anthropic/claude-haiku-4.5',
-      prompt,
-      maxOutputTokens: 512,
+    const completion = await openai.chat.completions.create({
+      model:       'gpt-4o-mini',
+      max_tokens:  512,
       temperature: 0,
+      messages:    [{ role: 'user', content: prompt }],
     });
+    const raw = completion.choices[0].message.content ?? '';
 
     // Strip markdown code fences if present
     const cleaned = raw.replace(/^```(?:json)?\s*/i, '').replace(/\s*```\s*$/, '').trim();
