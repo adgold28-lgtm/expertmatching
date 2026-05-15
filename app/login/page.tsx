@@ -26,7 +26,7 @@ export default function LoginPage() {
 
       if (res.ok) {
         const params = new URLSearchParams(window.location.search);
-        const rawNext = params.get('next') ?? '/';
+        const rawNext = params.get('next') ?? '/app';
         // Validate redirect target — only allow internal paths (start with '/' but not '//').
         // '//evil.com' and 'https://evil.com' are rejected; only '/dashboard' etc. are accepted.
         const next = rawNext.startsWith('/') && !rawNext.startsWith('//') ? rawNext : '/';
