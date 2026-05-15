@@ -3,7 +3,7 @@ import Link from 'next/link';
 
 export const metadata: Metadata = {
   title: 'Pricing — ExpertMatch',
-  description: 'Flat monthly fee. No per-call markups. Experts keep 70% of every call.',
+  description: 'Flat monthly fee. Per-minute billing on calls. No minimums, no contracts.',
 };
 
 const GOLD = '#C6A75E';
@@ -33,7 +33,7 @@ function Nav() {
             className="text-[11px] uppercase border px-4 py-2 transition-colors"
             style={{ letterSpacing: '0.14em', color: GOLD, borderColor: `${GOLD}40` }}
           >
-            Log In
+            Sign In
           </Link>
         </nav>
       </div>
@@ -58,22 +58,20 @@ function Footer() {
   );
 }
 
-// ─── Plan data ────────────────────────────────────────────────────────────────
-
 const PLANS = [
   {
     name: 'Starter',
     price: '$1,500',
     period: '/month',
-    tagline: 'For small teams running occasional expert projects.',
+    tagline: 'For small teams with occasional expert projects.',
     featured: false,
     features: [
       '3 analyst seats',
       '10 expert calls per month',
       'AI expert sourcing',
-      'Automated outreach sequences',
-      'Scheduling & calendar integration',
-      'Stripe billing & invoicing',
+      'Direct outreach on your behalf',
+      'Calendar and scheduling support',
+      'Per-minute billing and invoicing',
       'Email support',
     ],
   },
@@ -81,7 +79,7 @@ const PLANS = [
     name: 'Growth',
     price: '$3,500',
     period: '/month',
-    tagline: 'For funds running multiple active research workstreams.',
+    tagline: 'For funds with multiple active research workstreams.',
     featured: true,
     features: [
       '10 analyst seats',
@@ -90,7 +88,7 @@ const PLANS = [
       'Priority sourcing queue',
       'Dedicated onboarding session',
       'Custom conflict exclusion rules',
-      'Phone & email support',
+      'Phone and email support',
     ],
   },
   {
@@ -104,47 +102,41 @@ const PLANS = [
       'Unlimited expert calls',
       'Everything in Growth',
       'Custom data integrations',
-      'SOC 2 & compliance package',
+      'SOC 2 and compliance package',
       'SLA with uptime guarantee',
       'Dedicated account manager',
     ],
   },
 ];
 
-// ─── Per-call fee table data ──────────────────────────────────────────────────
-
 const CALL_TIERS = [
-  { tier: 'Mid-Level',        clientPays: '$400', expertReceives: '$280', platformFee: '$120', desc: 'Directors, VPs, Senior Managers' },
-  { tier: 'Senior',           clientPays: '$600', expertReceives: '$420', platformFee: '$180', desc: 'C-1 level: SVPs, Partners, MDs' },
-  { tier: 'Executive / C-Suite', clientPays: '$800', expertReceives: '$560', platformFee: '$240', desc: 'CEOs, CFOs, Board members' },
+  { tier: 'Mid-Level',           rate: '$400/hr', desc: 'Directors, VPs, Senior Managers' },
+  { tier: 'Senior',              rate: '$600/hr', desc: 'C-1 level: SVPs, Partners, MDs' },
+  { tier: 'Executive / C-Suite', rate: '$800/hr', desc: 'CEOs, CFOs, Board members' },
 ];
-
-// ─── FAQ data ─────────────────────────────────────────────────────────────────
 
 const FAQS = [
   {
     q: 'Are there per-call fees on top of the subscription?',
-    a: 'No per-call markups. The per-call rates above are what clients pay experts directly — the platform fee is the difference. These rates are built into your monthly subscription call allowance.',
+    a: 'No. The rates below are what clients pay per call. Calls within your monthly allowance are included in the subscription. Calls beyond your limit are billed at standard rates.',
   },
   {
     q: 'What happens if I exceed my monthly call limit?',
-    a: 'Additional calls beyond your plan limit are billed at the standard per-call rates. We\'ll notify you before you hit the limit so you can upgrade your plan.',
+    a: "Additional calls are billed at the standard per-call rates. We'll notify you before you hit the limit.",
   },
   {
     q: 'How do experts get paid?',
-    a: 'Experts receive 70% of the agreed call rate via Stripe, processed within 5 business days of the completed call. No invoicing required on the expert side.',
+    a: 'Experts are compensated competitively and paid directly through the platform within 5 business days of a completed call. No invoicing required on their end.',
   },
   {
     q: 'Can I switch plans at any time?',
-    a: 'Yes. Plan changes take effect at the start of your next billing cycle. Upgrades can be activated immediately on request.',
+    a: 'Yes. Plan changes take effect at the start of your next billing cycle. Upgrades can be activated immediately.',
   },
   {
     q: 'Is there a setup fee or long-term contract?',
-    a: 'No setup fees. Plans are month-to-month with no minimum commitment. Enterprise contracts are available for teams that prefer annual billing.',
+    a: 'No setup fees. Plans are month-to-month. Enterprise contracts are available for teams that prefer annual billing.',
   },
 ];
-
-// ─── Page ─────────────────────────────────────────────────────────────────────
 
 export default function PricingPage() {
   return (
@@ -165,9 +157,9 @@ export default function PricingPage() {
         >
           Flat fee. No markups.
         </h1>
-        <p className="text-cream/50 text-sm leading-relaxed mx-auto" style={{ maxWidth: '520px', fontWeight: 300 }}>
-          One monthly subscription covers sourcing, outreach, scheduling, and billing.
-          Experts keep 70% of every call — no hidden intermediary fees.
+        <p className="text-cream/50 text-sm leading-relaxed mx-auto" style={{ maxWidth: '480px', fontWeight: 300 }}>
+          One monthly subscription covers sourcing, outreach, and billing.
+          Experts are compensated competitively for their time.
         </p>
       </section>
 
@@ -236,7 +228,7 @@ export default function PricingPage() {
                   style={{
                     letterSpacing: '0.14em',
                     background: featured ? GOLD : 'transparent',
-                    color: featured ? NAVY : NAVY,
+                    color: NAVY,
                     border: featured ? 'none' : `1px solid ${NAVY}30`,
                   }}
                 >
@@ -248,7 +240,7 @@ export default function PricingPage() {
         </div>
       </section>
 
-      {/* ── Per-call fees ── */}
+      {/* ── Per-call rates ── */}
       <section className="py-16 px-6 border-b border-frame" style={{ background: '#F7F9FC' }}>
         <div className="max-w-3xl mx-auto">
           <p
@@ -258,35 +250,30 @@ export default function PricingPage() {
             Per-Call Rates
           </p>
           <p className="text-center text-muted text-sm mb-8" style={{ fontWeight: 300 }}>
-            Call allowances are included in your plan. These rates apply to additional calls or when billing clients directly.
+            Call allowances are included in your plan. These rates apply to additional calls.
           </p>
           <div className="border border-frame overflow-hidden">
             <table className="w-full text-sm border-collapse">
               <thead>
                 <tr style={{ background: NAVY }}>
                   <th className="text-left px-5 py-3.5 text-[10px] uppercase font-medium text-cream/50" style={{ letterSpacing: '0.14em' }}>Seniority Tier</th>
-                  <th className="text-center px-5 py-3.5 text-[10px] uppercase font-medium text-cream/50" style={{ letterSpacing: '0.14em' }}>Client Pays</th>
-                  <th className="text-center px-5 py-3.5 text-[10px] uppercase font-medium" style={{ letterSpacing: '0.14em', color: GOLD }}>Expert Receives</th>
-                  <th className="text-center px-5 py-3.5 text-[10px] uppercase font-medium text-cream/50" style={{ letterSpacing: '0.14em' }}>Platform Fee</th>
+                  <th className="text-left px-5 py-3.5 text-[10px] uppercase font-medium text-cream/50" style={{ letterSpacing: '0.14em' }}>Typical Profiles</th>
+                  <th className="text-center px-5 py-3.5 text-[10px] uppercase font-medium" style={{ letterSpacing: '0.14em', color: GOLD }}>Call Rate</th>
                 </tr>
               </thead>
               <tbody>
-                {CALL_TIERS.map(({ tier, clientPays, expertReceives, platformFee, desc }, i) => (
+                {CALL_TIERS.map(({ tier, rate, desc }, i) => (
                   <tr key={tier} style={{ background: i % 2 === 0 ? '#FFFFFF' : '#F7F9FC' }} className="border-b border-frame last:border-b-0">
-                    <td className="px-5 py-4">
-                      <p className="text-[12px] font-semibold text-ink">{tier}</p>
-                      <p className="text-[11px] text-muted mt-0.5" style={{ fontWeight: 300 }}>{desc}</p>
-                    </td>
-                    <td className="px-5 py-4 text-center text-[13px] font-medium text-ink">{clientPays}</td>
-                    <td className="px-5 py-4 text-center text-[13px] font-semibold" style={{ color: GOLD }}>{expertReceives}</td>
-                    <td className="px-5 py-4 text-center text-[13px] text-muted">{platformFee}</td>
+                    <td className="px-5 py-4 text-[12px] font-semibold text-ink">{tier}</td>
+                    <td className="px-5 py-4 text-[12px] text-muted" style={{ fontWeight: 300 }}>{desc}</td>
+                    <td className="px-5 py-4 text-center text-[13px] font-semibold" style={{ color: GOLD }}>{rate}</td>
                   </tr>
                 ))}
               </tbody>
             </table>
           </div>
           <p className="text-[11px] text-muted mt-3 text-center" style={{ fontWeight: 300 }}>
-            All rates are per 60-minute call. Calls under 60 minutes are billed pro-rata.
+            Billed per minute. Experts are compensated competitively for their time.
           </p>
         </div>
       </section>
@@ -298,7 +285,7 @@ export default function PricingPage() {
             className="text-[10px] uppercase font-medium mb-10 text-center tracking-widest"
             style={{ color: NAVY, letterSpacing: '0.22em' }}
           >
-            Frequently Asked Questions
+            Common Questions
           </p>
           <div className="space-y-6">
             {FAQS.map(({ q, a }) => (
@@ -317,7 +304,7 @@ export default function PricingPage() {
           Questions? Let's talk.
         </h2>
         <p className="text-cream/50 text-sm mb-7" style={{ fontWeight: 300 }}>
-          Request access and we'll walk you through the platform live.
+          Request access and we'll walk you through the platform with a real brief.
         </p>
         <Link
           href="/request-access"

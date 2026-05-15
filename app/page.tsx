@@ -2,14 +2,12 @@ import type { Metadata } from 'next';
 import Link from 'next/link';
 
 export const metadata: Metadata = {
-  title: 'ExpertMatch — Expert Calls. Sourced, Scheduled, and Billed Automatically.',
-  description: 'ExpertMatch replaces manual expert network operations for PE firms and hedge funds. AI-sourced experts, automated outreach, scheduling, and billing — in one platform.',
+  title: 'ExpertMatch — Expert Calls, Sourced and Billed in Hours.',
+  description: 'ExpertMatch replaces traditional expert networks for PE firms and hedge funds. AI-sourced practitioners, direct outreach, per-minute billing. No account managers, no markups.',
 };
 
 const GOLD = '#C6A75E';
 const NAVY = '#0B1F3B';
-
-// ─── Nav ──────────────────────────────────────────────────────────────────────
 
 function Nav() {
   return (
@@ -32,21 +30,15 @@ function Nav() {
           <Link
             href="/login"
             className="text-[11px] uppercase border px-4 py-2 transition-colors"
-            style={{
-              letterSpacing: '0.14em',
-              color: GOLD,
-              borderColor: `${GOLD}40`,
-            }}
+            style={{ letterSpacing: '0.14em', color: GOLD, borderColor: `${GOLD}40` }}
           >
-            Log In
+            Sign In
           </Link>
         </nav>
       </div>
     </header>
   );
 }
-
-// ─── Footer ───────────────────────────────────────────────────────────────────
 
 function Footer() {
   return (
@@ -70,8 +62,6 @@ function Footer() {
   );
 }
 
-// ─── Page ─────────────────────────────────────────────────────────────────────
-
 export default function LandingPage() {
   return (
     <div className="min-h-screen flex flex-col font-body" style={{ background: '#F7F9FC' }}>
@@ -84,45 +74,36 @@ export default function LandingPage() {
             className="text-[10px] uppercase font-medium mb-6 tracking-widest"
             style={{ color: GOLD, letterSpacing: '0.22em' }}
           >
-            Expert Network Operations · Automated
+            Expert Network Operations
           </p>
           <h1
             className="font-display text-cream leading-tight mb-6"
             style={{ fontSize: 'clamp(2.2rem, 5vw, 3.6rem)', fontWeight: 500, letterSpacing: '-0.01em' }}
           >
-            Expert calls. Sourced,<br />
+            Expert calls, sourced<br />
             <span style={{ fontStyle: 'italic', fontWeight: 300, color: 'rgba(255,255,255,0.6)' }}>
-              scheduled, and billed automatically.
+              and billed in hours.
             </span>
           </h1>
           <p
             className="text-cream/60 leading-relaxed mx-auto mb-10"
-            style={{ fontSize: '1rem', maxWidth: '560px', fontWeight: 300 }}
+            style={{ fontSize: '1rem', maxWidth: '520px', fontWeight: 300 }}
           >
-            ExpertMatch replaces your manual expert network workflow. AI sources evidence-backed
-            experts from public records, sends outreach, handles scheduling, and processes
-            payments — without the per-call markups.
+            ExpertMatch replaces traditional expert networks for PE firms running frequent calls.
+            We identify the right practitioners, handle outreach, and bill by the minute.
           </p>
           <div className="flex flex-col sm:flex-row gap-3 justify-center">
             <Link
               href="/request-access"
               className="inline-block px-8 py-3.5 text-[11px] font-medium uppercase transition-colors"
-              style={{
-                background: GOLD,
-                color: NAVY,
-                letterSpacing: '0.14em',
-              }}
+              style={{ background: GOLD, color: NAVY, letterSpacing: '0.14em' }}
             >
               Request Access
             </Link>
             <Link
               href="/pricing"
               className="inline-block px-8 py-3.5 text-[11px] uppercase transition-colors border"
-              style={{
-                color: GOLD,
-                borderColor: `${GOLD}40`,
-                letterSpacing: '0.14em',
-              }}
+              style={{ color: GOLD, borderColor: `${GOLD}40`, letterSpacing: '0.14em' }}
             >
               See Pricing
             </Link>
@@ -134,14 +115,14 @@ export default function LandingPage() {
       <section className="border-b border-frame bg-cream py-10 px-6">
         <div className="max-w-4xl mx-auto grid grid-cols-3 gap-6 text-center">
           {[
-            { stat: '< 2 hrs',  label: 'From brief to expert longlist' },
-            { stat: '70%',      label: 'Expert share of each call fee' },
-            { stat: 'Zero',     label: 'Per-call network markups' },
+            { stat: '< 2 hours',    label: 'Brief to expert shortlist' },
+            { stat: 'Per minute',   label: 'Pay for time used, not a flat hourly rate' },
+            { stat: 'No contracts', label: 'No minimums. No account managers.' },
           ].map(({ stat, label }) => (
             <div key={stat}>
               <p
                 className="font-display"
-                style={{ fontSize: 'clamp(1.6rem, 3vw, 2.4rem)', color: NAVY, fontWeight: 500 }}
+                style={{ fontSize: 'clamp(1.4rem, 2.5vw, 2rem)', color: NAVY, fontWeight: 500 }}
               >
                 {stat}
               </p>
@@ -166,18 +147,18 @@ export default function LandingPage() {
             {[
               {
                 n: '01',
-                title: 'Brief & Source',
-                body: 'Describe your research question. The AI identifies operators, advisors, and domain outsiders — each backed by public evidence.',
+                title: 'Describe your research question',
+                body: 'Tell us the sector, geography, and what you need to understand.',
               },
               {
                 n: '02',
-                title: 'Outreach & Screen',
-                body: 'Automated email sequences contact shortlisted experts. Conflict checks and vetting questions are handled inline.',
+                title: 'We find and contact the right experts',
+                body: 'Operators, advisors, and domain experts are identified from public records and contacted on your behalf.',
               },
               {
                 n: '03',
-                title: 'Schedule & Bill',
-                body: 'Experts submit availability. The platform finds overlap, generates calendar invites, hosts the Zoom call, and sends the invoice.',
+                title: 'Get on a call. Billed by the minute.',
+                body: 'Once an expert confirms, the call is set up. You pay for the time actually used.',
               },
             ].map(({ n, title, body }) => (
               <div key={n} className="flex flex-col">
@@ -189,7 +170,7 @@ export default function LandingPage() {
                 </div>
                 <h3
                   className="text-sm font-semibold text-navy mb-2"
-                  style={{ letterSpacing: '0.04em' }}
+                  style={{ letterSpacing: '0.02em' }}
                 >
                   {title}
                 </h3>
@@ -222,19 +203,19 @@ export default function LandingPage() {
                     ExpertMatch
                   </th>
                   <th className="text-center px-5 py-3.5 text-[10px] uppercase font-medium text-cream/40" style={{ letterSpacing: '0.14em', width: '30%' }}>
-                    AlphaSights / GLG
+                    Traditional Networks
                   </th>
                 </tr>
               </thead>
               <tbody>
                 {[
-                  ['Expert sourcing',          'AI + public records',     'Manual researcher'],
-                  ['Sourcing turnaround',       '< 2 hours',               '2–5 business days'],
-                  ['Outreach automation',       'Included',                'Not offered'],
-                  ['Scheduling',               'Automated overlap finder', 'Manual coordination'],
-                  ['Billing & payments',        'Built-in Stripe',         'Invoice + 30-day net'],
-                  ['Per-call markup',           'None',                    '3–10× expert rate'],
-                  ['Transparency',             'Full sourcing evidence',   'Opaque'],
+                  ['Expert sourcing',     'AI, from public records',  'Manual researcher'],
+                  ['Sourcing turnaround', '< 2 hours',                '2–5 business days'],
+                  ['Outreach',           'Handled for you',           'Not offered'],
+                  ['Scheduling',         'Handled for you',           'Manual back-and-forth'],
+                  ['Billing',            'Per-minute, instant',       'Invoice + 30-day net'],
+                  ['Per-call markup',    'None',                      '3–10× expert rate'],
+                  ['Sourcing evidence',  'Full evidence trail',       'Opaque'],
                 ].map(([cap, em, trad], i) => (
                   <tr
                     key={cap}
@@ -261,10 +242,10 @@ export default function LandingPage() {
             className="text-[10px] uppercase font-medium mb-2 tracking-widest text-center"
             style={{ color: NAVY, letterSpacing: '0.22em' }}
           >
-            Simple Pricing
+            Pricing
           </p>
           <p className="text-center text-muted text-sm mb-10" style={{ fontWeight: 300 }}>
-            Flat monthly seat fee. No per-call markups. Experts keep 70%.
+            Flat monthly fee. Per-minute billing on calls. No contracts.
           </p>
           <div className="grid sm:grid-cols-3 gap-5">
             {[
@@ -272,7 +253,7 @@ export default function LandingPage() {
                 name: 'Starter',
                 price: '$1,500',
                 period: '/month',
-                features: ['3 seats', '10 expert calls/mo', 'AI sourcing', 'Outreach automation', 'Scheduling & billing'],
+                features: ['3 seats', '10 expert calls/mo', 'AI sourcing', 'Outreach automation', 'Call coordination and billing'],
                 featured: false,
               },
               {
@@ -286,7 +267,7 @@ export default function LandingPage() {
                 name: 'Enterprise',
                 price: 'Custom',
                 period: '',
-                features: ['Unlimited seats', 'Unlimited calls', 'Everything in Growth', 'Custom integrations', 'SLA & compliance'],
+                features: ['Unlimited seats', 'Unlimited calls', 'Everything in Growth', 'Custom integrations', 'SLA and compliance'],
                 featured: false,
               },
             ].map(({ name, price, period, features, featured }) => (
@@ -331,12 +312,12 @@ export default function LandingPage() {
                   ))}
                 </ul>
                 <Link
-                  href={name === 'Enterprise' ? '/request-access' : '/request-access'}
+                  href="/request-access"
                   className="block text-center text-[10px] uppercase font-medium py-2.5 transition-colors"
                   style={{
                     letterSpacing: '0.14em',
                     background: featured ? GOLD : 'transparent',
-                    color: featured ? NAVY : NAVY,
+                    color: NAVY,
                     border: featured ? 'none' : `1px solid ${NAVY}40`,
                   }}
                 >
@@ -351,7 +332,7 @@ export default function LandingPage() {
               className="text-[11px] text-muted hover:text-navy transition-colors"
               style={{ letterSpacing: '0.1em' }}
             >
-              See full pricing details →
+              Full pricing details →
             </Link>
           </p>
         </div>
@@ -364,10 +345,10 @@ export default function LandingPage() {
             className="font-display text-cream mb-4"
             style={{ fontSize: 'clamp(1.6rem, 3.5vw, 2.4rem)', fontWeight: 500 }}
           >
-            Ready to cut your expert network costs?
+            See it with a question you're working on.
           </h2>
           <p className="text-cream/50 mb-8 text-sm leading-relaxed" style={{ fontWeight: 300 }}>
-            Request access and we'll walk you through a live demo with your own research question.
+            Request access. We'll run a live sourcing brief on a real question from your pipeline.
           </p>
           <Link
             href="/request-access"
