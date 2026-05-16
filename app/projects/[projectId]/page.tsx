@@ -68,10 +68,10 @@ type NextActionId = 'complete_brief' | 'source_experts' | 'screen_experts' | 'st
 interface NextAction { id: NextActionId; step?: WorkflowStep; message: string; cta: string }
 
 function getNextAction(project: Project): NextAction | null {
-  const { researchQuestion, keyQuestions, experts } = project;
-  const briefComplete = !!researchQuestion && (!!keyQuestions || experts.length > 0);
+  const { researchQuestion, experts } = project;
+  const briefComplete = !!researchQuestion || experts.length > 0;
   if (!briefComplete) {
-    return { id: 'complete_brief', step: 'brief', message: 'Add key questions and context to complete the brief.', cta: 'Complete brief' };
+    return { id: 'complete_brief', step: 'brief', message: 'Describe the business problem and the type of expert you need.', cta: 'Complete brief' };
   }
   const active      = experts.filter(e => e.status !== 'rejected');
   if (active.length === 0) {
@@ -266,17 +266,6 @@ function InterviewGuideModal({ projectId, expertId, expertName, onClose }: {
 
 // ─── Perspective options ──────────────────────────────────────────────────────
 
-const PERSPECTIVES = [
-  { id: 'operator',            label: 'Operator' },
-  { id: 'advisor_consultant',  label: 'Advisor / Consultant' },
-  { id: 'regulator',           label: 'Regulator / Governing Body' },
-  { id: 'customer_end_user',   label: 'Customer / End User' },
-  { id: 'competitor',          label: 'Competitor' },
-  { id: 'supplier_vendor',     label: 'Supplier / Vendor' },
-  { id: 'investor_analyst',    label: 'Investor / Market Analyst' },
-  { id: 'academic_researcher', label: 'Academic / Researcher' },
-];
-
 // ─── Brief section ────────────────────────────────────────────────────────────
 
 function BriefSection({
@@ -294,69 +283,30 @@ function BriefSection({
   onDeleteStart: () => void;
   onExpertsSourced: (experts: import('../../../types').ProjectExpert[]) => void;
 }) {
-  // Research context
-  const [keyQuestions,       setKeyQuestions]       = useState(project.keyQuestions       ?? '');
-  const [initialHypotheses,  setInitialHypotheses]  = useState(project.initialHypotheses  ?? '');
-  const [additionalContext,  setAdditionalContext]  = useState(project.additionalContext   ?? '');
-  // Expertise
-  const [mustHaveExpertise,  setMustHaveExpertise]  = useState(project.mustHaveExpertise  ?? '');
-  const [niceToHaveExpertise,setNiceToHaveExpertise]= useState(project.niceToHaveExpertise?? '');
-  const [perspectivesNeeded, setPerspectivesNeeded] = useState<string[]>(project.perspectivesNeeded ?? []);
-  // Targeting
-  const [targetCompanies,    setTargetCompanies]    = useState(project.targetCompanies    ?? '');
-  const [companiesToAvoid,   setCompaniesToAvoid]   = useState(project.companiesToAvoid   ?? '');
-  const [peopleToAvoid,      setPeopleToAvoid]      = useState(project.peopleToAvoid      ?? '');
-  const [conflictExclusions, setConflictExclusions] = useState(project.conflictExclusions ?? '');
-  // Project config
-  const [timeline,           setTimeline]           = useState(project.timeline           ?? '');
-  const [targetExpertCount,  setTargetExpertCount]  = useState(String(project.targetExpertCount ?? ''));
-  // Internal notes
-  const [notes,              setNotes]              = useState(project.notes              ?? '');
-  const [confNotes,          setConfNotes]          = useState(project.confidentialNotes  ?? '');
-  const [saving,       setSaving]       = useState(false);
-  const [saved,        setSaved]        = useState(false);
-  const [tierFilter,   setTierFilter]   = useState<SeniorityTier | 'all'>('all');
-  const [sourcing,     setSourcing]     = useState(false);
-  const [sourceError,  setSourceError]  = useState('');
+  const [businessProblem, setBusinessProblem] = useState(project.researchQuestion ?? '');
+  const [expertType,      setExpertType]      = useState(project.expertType ?? '');
+  const [outreachMode,    setOutreachMode]    = useState<'review' | 'auto'>(project.outreachMode ?? 'review');
+  const [saving,          setSaving]          = useState(false);
+  const [sourcing,        setSourcing]        = useState(false);
+  const [sourceError,     setSourceError]     = useState('');
 
-  function togglePerspective(id: string) {
-    setPerspectivesNeeded(prev =>
-      prev.includes(id) ? prev.filter(p => p !== id) : [...prev, id],
-    );
-  }
-
-  async function handleSave() {
+  async function handleCompleteBrief() {
     setSaving(true);
     try {
-      const parsed = parseInt(targetExpertCount, 10);
-      const body: Record<string, unknown> = {
-        notes,
-        confidentialNotes:  confNotes,
-        timeline:           timeline           || '',
-        keyQuestions:       keyQuestions       || '',
-        initialHypotheses:  initialHypotheses  || '',
-        additionalContext:  additionalContext  || '',
-        mustHaveExpertise:  mustHaveExpertise  || '',
-        niceToHaveExpertise:niceToHaveExpertise|| '',
-        targetCompanies:    targetCompanies    || '',
-        companiesToAvoid:   companiesToAvoid   || '',
-        peopleToAvoid:      peopleToAvoid      || '',
-        conflictExclusions: conflictExclusions || '',
-        perspectivesNeeded,
-      };
-      if (!isNaN(parsed) && parsed > 0) body.targetExpertCount = parsed;
-
       const res = await fetch(`/api/projects/${project.id}`, {
         method:  'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body:    JSON.stringify(body),
+        body:    JSON.stringify({
+          researchQuestion: businessProblem || undefined,
+          expertType:       expertType      || undefined,
+          outreachMode,
+        }),
       });
       if (res.ok) {
         const d = await res.json() as { project?: Project };
         if (d.project) onSave(d.project);
-        setSaved(true);
-        setTimeout(() => setSaved(false), 2000);
       }
+      onStepChange('source');
     } finally {
       setSaving(false);
     }
@@ -367,53 +317,28 @@ function BriefSection({
     setSourcing(true);
     setSourceError('');
     try {
-      // Save brief first so sourcing uses the latest values
-      const parsed = parseInt(targetExpertCount, 10);
-      const briefBody: Record<string, unknown> = {
-        notes,
-        confidentialNotes:   confNotes,
-        timeline:            timeline            || '',
-        keyQuestions:        keyQuestions        || '',
-        initialHypotheses:   initialHypotheses   || '',
-        additionalContext:   additionalContext   || '',
-        mustHaveExpertise:   mustHaveExpertise   || '',
-        niceToHaveExpertise: niceToHaveExpertise || '',
-        targetCompanies:     targetCompanies     || '',
-        companiesToAvoid:    companiesToAvoid    || '',
-        peopleToAvoid:       peopleToAvoid       || '',
-        conflictExclusions:  conflictExclusions  || '',
-        perspectivesNeeded,
-      };
-      if (!isNaN(parsed) && parsed > 0) briefBody.targetExpertCount = parsed;
-
       await fetch(`/api/projects/${project.id}`, {
         method:  'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body:    JSON.stringify(briefBody),
+        body:    JSON.stringify({
+          researchQuestion: businessProblem || undefined,
+          expertType:       expertType      || undefined,
+          outreachMode,
+        }),
       });
 
-      // Run expert sourcing
       const briefContext = buildBriefContext({
         ...project,
-        keyQuestions,
-        initialHypotheses,
-        additionalContext,
-        mustHaveExpertise,
-        niceToHaveExpertise,
-        targetCompanies,
-        companiesToAvoid,
-        peopleToAvoid,
-        conflictExclusions,
-        perspectivesNeeded,
-        timeline,
-        targetExpertCount: !isNaN(parsed) && parsed > 0 ? parsed : project.targetExpertCount,
+        researchQuestion: businessProblem || project.researchQuestion,
+        expertType:       expertType      || project.expertType,
       });
 
+      const effectiveQuery = businessProblem || project.researchQuestion;
       const res = await fetch('/api/generate-experts', {
         method:  'POST',
         headers: { 'Content-Type': 'application/json' },
         body:    JSON.stringify({
-          query:        project.researchQuestion,
+          query:        effectiveQuery,
           geography:    project.geography || 'any',
           seniority:    project.seniority || 'any',
           briefContext: Object.keys(briefContext).length > 0 ? briefContext : undefined,
@@ -461,297 +386,73 @@ function BriefSection({
 
   const fieldClass = 'w-full px-3 py-2.5 text-sm border border-frame bg-cream focus:outline-none focus:border-navy text-ink resize-y';
   const labelClass = 'block text-[10px] uppercase tracking-widest text-muted font-medium mb-1.5';
-  const hintClass  = 'text-[10px] text-muted/60 mt-1 leading-relaxed';
-  const nextAction = getNextAction(project);
 
   return (
     <div className="space-y-8 max-w-3xl">
 
-      {/* ── Research question — prominent ── */}
-      <div className="border-l-4 border-gold pl-5 space-y-3">
-        <p className="text-[10px] uppercase tracking-widest text-muted font-medium" style={{ letterSpacing: '0.16em' }}>
-          Research Question / Business Problem
-        </p>
-        <p className="font-display text-navy leading-snug" style={{ fontSize: 'clamp(1.1rem, 2.5vw, 1.4rem)', fontWeight: 500 }}>
-          {project.researchQuestion}
-        </p>
-        <p className="text-[11px] text-muted/70 italic leading-relaxed">
-          This brief guides sourcing, screening, outreach, and the client-ready deliverable.
-        </p>
-      </div>
-
-      {/* ── Project metadata tags ── */}
-      {(project.industry || project.function || project.geography || project.seniority) && (
-        <div className="flex flex-wrap gap-2">
-          {project.industry  && (
-            <span className="text-[10px] uppercase tracking-widest text-navy/70 border border-navy/20 bg-navy/5 px-2.5 py-1" style={{ letterSpacing: '0.1em' }}>{project.industry}</span>
-          )}
-          {project.function  && (
-            <span className="text-[10px] uppercase tracking-widest text-navy/70 border border-navy/20 bg-navy/5 px-2.5 py-1" style={{ letterSpacing: '0.1em' }}>{project.function}</span>
-          )}
-          {project.geography && project.geography !== 'any' && (
-            <span className="text-[10px] uppercase tracking-widest text-navy/70 border border-navy/20 bg-navy/5 px-2.5 py-1" style={{ letterSpacing: '0.1em' }}>{project.geography}</span>
-          )}
-          {project.seniority && project.seniority !== 'any' && (
-            <span className="text-[10px] uppercase tracking-widest text-navy/70 border border-navy/20 bg-navy/5 px-2.5 py-1" style={{ letterSpacing: '0.1em' }}>{project.seniority}</span>
-          )}
-          <span className="text-[10px] text-muted px-2.5 py-1">Created {formatDate(project.createdAt)}</span>
+      {/* ── Brief fields ── */}
+      <div className="space-y-6">
+        <div>
+          <label className={labelClass}>What&apos;s the business problem?</label>
+          <textarea
+            value={businessProblem}
+            onChange={e => setBusinessProblem(e.target.value)}
+            rows={5}
+            placeholder="e.g. We're evaluating entry into cold chain logistics in the Southeast"
+            className={fieldClass}
+          />
         </div>
-      )}
 
-      {/* ── Next-best-action card ── */}
-      {nextAction && (
-        <div className="bg-navy/5 border border-navy/15 p-4 flex items-center justify-between gap-4">
-          <div>
-            <p className="text-[9px] uppercase tracking-widest text-navy/50 font-medium mb-0.5" style={{ letterSpacing: '0.14em' }}>Suggested next step</p>
-            <p className="text-sm text-navy leading-snug">{nextAction.message}</p>
-          </div>
-          {nextAction.id === 'export_brief' ? (
-            <button onClick={onExport} className="shrink-0 text-[10px] uppercase tracking-widest bg-navy text-cream px-4 py-2 hover:bg-navy/90 transition-colors whitespace-nowrap" style={{ letterSpacing: '0.12em' }}>
-              {nextAction.cta}
+        <div>
+          <label className={labelClass}>What type of person do you want to talk to?</label>
+          <textarea
+            value={expertType}
+            onChange={e => setExpertType(e.target.value)}
+            rows={5}
+            placeholder="e.g. Former VP of Operations at a regional 3PL or food distributor"
+            className={fieldClass}
+          />
+        </div>
+
+        {/* ── Outreach mode ── */}
+        <div>
+          <label className={labelClass}>Outreach mode</label>
+          <div className="flex border border-frame">
+            <button
+              type="button"
+              onClick={() => setOutreachMode('review')}
+              className="flex-1 text-[10px] uppercase tracking-widest px-4 py-2.5 transition-colors text-left sm:text-center"
+              style={outreachMode === 'review'
+                ? { background: '#0B1F3B', color: '#C6A75E', letterSpacing: '0.1em' }
+                : { background: 'transparent', color: '#9ca3af', letterSpacing: '0.1em' }}
+            >
+              I&apos;ll review before anything sends
             </button>
-          ) : nextAction.step ? (
-            <button onClick={() => onStepChange(nextAction.step!)} className="shrink-0 text-[10px] uppercase tracking-widest bg-navy text-cream px-4 py-2 hover:bg-navy/90 transition-colors whitespace-nowrap" style={{ letterSpacing: '0.12em' }}>
-              {nextAction.cta}
+            <button
+              type="button"
+              onClick={() => setOutreachMode('auto')}
+              className="flex-1 text-[10px] uppercase tracking-widest px-4 py-2.5 transition-colors border-l border-frame text-left sm:text-center"
+              style={outreachMode === 'auto'
+                ? { background: '#0B1F3B', color: '#C6A75E', letterSpacing: '0.1em' }
+                : { background: 'transparent', color: '#9ca3af', letterSpacing: '0.1em' }}
+            >
+              AI drafts and sends automatically
             </button>
-          ) : null}
-        </div>
-      )}
-
-      {/* ══════════════════════════════════════════════════════════
-          SECTION 1 — Research Context
-          ══════════════════════════════════════════════════════════ */}
-      <div className="pt-2 border-t border-frame space-y-5">
-        <p className="text-[10px] uppercase tracking-widest text-navy/50 font-semibold" style={{ letterSpacing: '0.18em' }}>
-          Research Context
-        </p>
-
-        <div>
-          <label className={labelClass}>Key Questions</label>
-          <textarea
-            value={keyQuestions}
-            onChange={e => setKeyQuestions(e.target.value)}
-            rows={4}
-            placeholder="What are the 3–5 core questions this project needs to answer?&#10;&#10;Example: How many elite youth soccer players exist in Arkansas? Who are the main competitors? What substitutes compete for talent?"
-            className={fieldClass}
-          />
-          <p className={hintClass}>Used to target expert discovery and generate vetting questions.</p>
-        </div>
-
-        <div>
-          <label className={labelClass}>Initial Hypotheses</label>
-          <textarea
-            value={initialHypotheses}
-            onChange={e => setInitialHypotheses(e.target.value)}
-            rows={3}
-            placeholder="What do we think is true? What are we trying to validate or challenge?&#10;&#10;Example: Northwest Arkansas may support an MLS NEXT club due to Hispanic population growth, Walton-family investments, and rising soccer participation."
-            className={fieldClass}
-          />
-          <p className={hintClass}>Experts will be sourced who can confirm, refute, or nuance these views.</p>
-        </div>
-
-        <div>
-          <label className={labelClass}>Additional Context</label>
-          <textarea
-            value={additionalContext}
-            onChange={e => setAdditionalContext(e.target.value)}
-            rows={4}
-            placeholder="Local market details, relevant organizations, target segments, assumptions, acronyms, constraints, or anything that helps define the scope."
-            className={fieldClass}
-          />
-          <p className={hintClass}>Sharpens search query generation and relevance scoring.</p>
+          </div>
         </div>
       </div>
 
-      {/* ══════════════════════════════════════════════════════════
-          SECTION 2 — Expertise Requirements
-          ══════════════════════════════════════════════════════════ */}
-      <div className="border-t border-frame space-y-5 pt-5">
-        <p className="text-[10px] uppercase tracking-widest text-navy/50 font-semibold" style={{ letterSpacing: '0.18em' }}>
-          Expertise Requirements
-        </p>
-
-        <div>
-          <label className={labelClass}>Must-Have Expertise</label>
-          <textarea
-            value={mustHaveExpertise}
-            onChange={e => setMustHaveExpertise(e.target.value)}
-            rows={3}
-            placeholder="Hard requirements — candidates without this background will be excluded.&#10;&#10;Example: MLS NEXT operations, youth soccer club leadership, Arkansas soccer market, academy player development."
-            className={fieldClass}
-          />
-          <p className={hintClass}>These become hard requirements in expert scoring.</p>
-        </div>
-
-        <div>
-          <label className={labelClass}>Nice-to-Have Expertise</label>
-          <textarea
-            value={niceToHaveExpertise}
-            onChange={e => setNiceToHaveExpertise(e.target.value)}
-            rows={3}
-            placeholder="Scoring boosts — not required, but preferred.&#10;&#10;Example: Youth sports economics, Hispanic soccer participation, Arkansas high school/club soccer, sports real estate."
-            className={fieldClass}
-          />
-          <p className={hintClass}>Increases relevance score; does not disqualify candidates who lack it.</p>
-        </div>
-
-        <div>
-          <label className={labelClass}>Perspectives Needed</label>
-          <div className="flex flex-wrap gap-2 mt-1">
-            {PERSPECTIVES.map(p => {
-              const active = perspectivesNeeded.includes(p.id);
-              return (
-                <button
-                  key={p.id}
-                  type="button"
-                  onClick={() => togglePerspective(p.id)}
-                  className={`text-[10px] uppercase tracking-widest px-3 py-1.5 border transition-colors ${
-                    active
-                      ? 'bg-navy text-cream border-navy'
-                      : 'bg-cream text-muted border-frame hover:border-navy/40 hover:text-navy'
-                  }`}
-                  style={{ letterSpacing: '0.1em' }}
-                >
-                  {p.label}
-                </button>
-              );
-            })}
-          </div>
-          <p className={hintClass}>Selected perspectives guide expert pool balance. Leave empty to use all.</p>
-        </div>
-      </div>
-
-      {/* ══════════════════════════════════════════════════════════
-          SECTION 3 — Targeting & Exclusions
-          ══════════════════════════════════════════════════════════ */}
-      <div className="border-t border-frame space-y-5 pt-5">
-        <p className="text-[10px] uppercase tracking-widest text-navy/50 font-semibold" style={{ letterSpacing: '0.18em' }}>
-          Targeting &amp; Exclusions
-        </p>
-
-        <div>
-          <label className={labelClass}>Target Companies / Organizations</label>
-          <textarea
-            value={targetCompanies}
-            onChange={e => setTargetCompanies(e.target.value)}
-            rows={3}
-            placeholder="Companies, clubs, associations, or organizations to search within.&#10;&#10;Example: MLS NEXT clubs, USL clubs, Arkansas youth soccer clubs, high school athletic associations, soccer facility operators."
-            className={fieldClass}
-          />
-          <p className={hintClass}>Generates company-specific search queries for these organizations.</p>
-        </div>
-
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-5">
-          <div>
-            <label className={labelClass}>Companies / Organizations to Avoid</label>
-            <textarea
-              value={companiesToAvoid}
-              onChange={e => setCompaniesToAvoid(e.target.value)}
-              rows={3}
-              placeholder="Companies the client is negotiating with, or where conflicts exist."
-              className={fieldClass}
-            />
-          </div>
-          <div>
-            <label className={labelClass}>People to Avoid</label>
-            <textarea
-              value={peopleToAvoid}
-              onChange={e => setPeopleToAvoid(e.target.value)}
-              rows={3}
-              placeholder="Specific individuals to exclude from the shortlist."
-              className={fieldClass}
-            />
-          </div>
-        </div>
-
-        <div>
-          <label className={labelClass}>Conflict / Exclusion Notes</label>
-          <textarea
-            value={conflictExclusions}
-            onChange={e => setConflictExclusions(e.target.value)}
-            rows={3}
-            placeholder="Avoid current employees at organizations the client is actively negotiating with. Avoid experts with direct conflicts or prior relationships that limit objectivity."
-            className={fieldClass}
-          />
-          <p className={hintClass}>Not included in client-facing exports by default.</p>
-        </div>
-      </div>
-
-      {/* ══════════════════════════════════════════════════════════
-          SECTION 4 — Project Config
-          ══════════════════════════════════════════════════════════ */}
-      <div className="border-t border-frame space-y-5 pt-5">
-        <p className="text-[10px] uppercase tracking-widest text-navy/50 font-semibold" style={{ letterSpacing: '0.18em' }}>
-          Project Config
-        </p>
-
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-5">
-          <div>
-            <label className={labelClass}>Timeline</label>
-            <input
-              type="text"
-              value={timeline}
-              onChange={e => setTimeline(e.target.value)}
-              placeholder="e.g. 2 weeks, end of Q2…"
-              className="w-full px-3 py-2.5 text-sm border border-frame bg-cream focus:outline-none focus:border-navy text-ink"
-            />
-          </div>
-          <div>
-            <label className={labelClass}>Target Expert Count</label>
-            <input
-              type="number"
-              min={1}
-              max={200}
-              value={targetExpertCount}
-              onChange={e => setTargetExpertCount(e.target.value)}
-              placeholder="e.g. 8"
-              className="w-full px-3 py-2.5 text-sm border border-frame bg-cream focus:outline-none focus:border-navy text-ink"
-            />
-          </div>
-        </div>
-
-        <div>
-          <label className={labelClass}>
-            Project Notes <span className="normal-case tracking-normal font-normal">(included in export)</span>
-          </label>
-          <textarea
-            value={notes}
-            onChange={e => setNotes(e.target.value)}
-            rows={4}
-            placeholder="Key findings, next steps, client context…"
-            className={fieldClass}
-          />
-        </div>
-
-        <div>
-          <label className={labelClass}>
-            Confidential Notes <span className="normal-case tracking-normal font-normal">(never exported)</span>
-          </label>
-          <textarea
-            value={confNotes}
-            onChange={e => setConfNotes(e.target.value)}
-            rows={3}
-            placeholder="Internal context, client sensitivities, conflict flags…"
-            className={fieldClass}
-          />
-        </div>
-
-        <div className="flex items-center gap-3 pt-1">
-          <button
-            onClick={handleSave}
-            disabled={saving}
-            className="bg-navy text-cream text-[10px] uppercase tracking-widest px-5 py-2.5 hover:bg-navy/90 disabled:opacity-40 transition-colors"
-            style={{ letterSpacing: '0.12em' }}
-          >
-            {saving ? 'Saving…' : 'Save Brief'}
-          </button>
-          {saved && <span className="text-[10px] text-green-700">Saved ✓</span>}
-        </div>
-      </div>
-
-      {/* ── Source Experts button ── */}
+      {/* ── Complete Brief / Source Experts ── */}
       <div className="border-t border-frame pt-6 space-y-3">
-        <div className="flex items-center gap-4">
+        <div className="flex items-center gap-4 flex-wrap">
+          <button
+            onClick={handleCompleteBrief}
+            disabled={saving}
+            className="text-[10px] uppercase tracking-widest px-5 py-2.5 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+            style={{ background: '#0B1F3B', color: '#C6A75E', letterSpacing: '0.14em', minHeight: '40px' }}
+          >
+            {saving ? 'Saving…' : 'Complete Brief →'}
+          </button>
           <button
             onClick={handleSourceExperts}
             disabled={sourcing}
@@ -764,15 +465,13 @@ function BriefSection({
                 Sourcing experts…
               </>
             ) : (
-              <>
-                Source Experts →
-              </>
+              <>Source Experts →</>
             )}
           </button>
-          <p className="text-[10px] text-muted" style={{ fontWeight: 300 }}>
-            Saves the brief, then runs AI sourcing and adds experts to the Source tab.
-          </p>
         </div>
+        <p className="text-[10px] text-muted" style={{ fontWeight: 300 }}>
+          Complete Brief saves and moves to Source. Source Experts saves and runs AI discovery immediately.
+        </p>
         {sourceError && (
           <p className="text-xs text-red-600 border border-red-200 bg-red-50 px-3 py-2">{sourceError}</p>
         )}
@@ -799,19 +498,10 @@ function BriefSection({
 
 function buildBriefContext(project: Project): Record<string, unknown> {
   const bc: Record<string, unknown> = {};
-  if (project.industry?.trim())            bc.industry            = project.industry.trim();
-  if (project.function?.trim())            bc.function            = project.function.trim();
-  if (project.keyQuestions?.trim())        bc.keyQuestions        = project.keyQuestions.trim();
-  if (project.initialHypotheses?.trim())   bc.initialHypotheses   = project.initialHypotheses.trim();
-  if (project.additionalContext?.trim())   bc.additionalContext   = project.additionalContext.trim();
-  if (project.mustHaveExpertise?.trim())   bc.mustHaveExpertise   = project.mustHaveExpertise.trim();
-  if (project.niceToHaveExpertise?.trim()) bc.niceToHaveExpertise = project.niceToHaveExpertise.trim();
-  if (project.targetCompanies?.trim())     bc.targetCompanies     = project.targetCompanies.trim();
-  if (project.companiesToAvoid?.trim())    bc.companiesToAvoid    = project.companiesToAvoid.trim();
-  if (project.peopleToAvoid?.trim())       bc.peopleToAvoid       = project.peopleToAvoid.trim();
-  if (project.conflictExclusions?.trim())  bc.conflictExclusionNotes = project.conflictExclusions.trim();
-  if (project.perspectivesNeeded?.length)  bc.perspectivesNeeded  = project.perspectivesNeeded;
-  if (project.targetExpertCount)           bc.targetExpertCount   = project.targetExpertCount;
+  if (project.industry?.trim())    bc.industry    = project.industry.trim();
+  if (project.expertType?.trim())  bc.expertType  = project.expertType.trim();
+  if (project.geography?.trim() && project.geography !== 'any') bc.geography = project.geography.trim();
+  if (project.seniority?.trim() && project.seniority !== 'any') bc.seniority = project.seniority.trim();
   return bc;
 }
 
@@ -830,10 +520,7 @@ function buildRejectionFeedback(project: Project): Record<string, number> | unde
 
 // Count how many brief context fields have content
 function briefContextDepth(project: Project): number {
-  return [
-    project.keyQuestions, project.initialHypotheses, project.additionalContext,
-    project.mustHaveExpertise, project.targetCompanies,
-  ].filter(v => v?.trim()).length + (project.perspectivesNeeded?.length ? 1 : 0);
+  return [project.researchQuestion, project.expertType].filter(v => v?.trim()).length;
 }
 
 function SourcePanel({
@@ -997,29 +684,12 @@ function SourcePanel({
       {/* Brief context chips (idle only, shows what will be used) */}
       {stage === 'idle' && depth > 0 && (
         <div className="px-5 py-3 flex flex-wrap gap-1.5 border-b border-frame/60 bg-navy/2">
-          {project.keyQuestions?.trim() && (
-            <span className="text-[10px] border border-navy/15 bg-navy/5 text-navy/70 px-2 py-0.5">Key questions</span>
+          {project.researchQuestion?.trim() && (
+            <span className="text-[10px] border border-navy/15 bg-navy/5 text-navy/70 px-2 py-0.5">Business problem</span>
           )}
-          {project.initialHypotheses?.trim() && (
-            <span className="text-[10px] border border-navy/15 bg-navy/5 text-navy/70 px-2 py-0.5">Hypotheses</span>
+          {project.expertType?.trim() && (
+            <span className="text-[10px] border border-gold/30 bg-gold/5 text-amber-700 px-2 py-0.5">Expert type</span>
           )}
-          {project.additionalContext?.trim() && (
-            <span className="text-[10px] border border-navy/15 bg-navy/5 text-navy/70 px-2 py-0.5">Context</span>
-          )}
-          {project.mustHaveExpertise?.trim() && (
-            <span className="text-[10px] border border-gold/30 bg-gold/5 text-amber-700 px-2 py-0.5">Must-have expertise</span>
-          )}
-          {project.targetCompanies?.trim() && (
-            <span className="text-[10px] border border-navy/15 bg-navy/5 text-navy/70 px-2 py-0.5">Target companies</span>
-          )}
-          {(project.companiesToAvoid?.trim() || project.peopleToAvoid?.trim() || project.conflictExclusions?.trim()) && (
-            <span className="text-[10px] border border-red-200 bg-red-50/60 text-red-700 px-2 py-0.5">Exclusions active</span>
-          )}
-          {project.perspectivesNeeded?.length ? (
-            <span className="text-[10px] border border-navy/15 bg-navy/5 text-navy/70 px-2 py-0.5">
-              {project.perspectivesNeeded.length} perspective{project.perspectivesNeeded.length !== 1 ? 's' : ''}
-            </span>
-          ) : null}
         </div>
       )}
 
@@ -1784,23 +1454,16 @@ function ProjectPageInner() {
             </div>
 
             {/* Brief context banner */}
-            {(project.researchQuestion || project.keyQuestions) && (
+            {(project.researchQuestion || project.expertType) && (
               <div className="border border-navy/15 bg-navy/5 px-4 py-3 space-y-1.5">
                 <p className="text-[9px] uppercase tracking-widest text-navy/50 font-medium" style={{ letterSpacing: '0.16em' }}>
                   Evaluating against
                 </p>
-                <p className="text-sm text-navy leading-snug font-medium">{project.researchQuestion}</p>
-                {project.keyQuestions && (
-                  <details className="group">
-                    <summary className="text-[10px] uppercase tracking-widest text-muted hover:text-navy cursor-pointer select-none transition-colors list-none flex items-center gap-1 mt-1"
-                      style={{ letterSpacing: '0.14em' }}>
-                      <svg className="w-3 h-3 shrink-0 transition-transform group-open:rotate-90" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                        <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
-                      </svg>
-                      Key questions
-                    </summary>
-                    <p className="text-[11px] text-muted leading-relaxed mt-1.5 whitespace-pre-line">{project.keyQuestions}</p>
-                  </details>
+                {project.researchQuestion && (
+                  <p className="text-sm text-navy leading-snug font-medium">{project.researchQuestion}</p>
+                )}
+                {project.expertType && (
+                  <p className="text-[11px] text-muted leading-relaxed">{project.expertType}</p>
                 )}
               </div>
             )}

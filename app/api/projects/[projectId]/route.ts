@@ -92,6 +92,15 @@ export async function PUT(
           .filter((v): v is string => typeof v === 'string' && VALID_PERSPECTIVES.has(v))
           .slice(0, 10),
       }),
+      ...(typeof body.researchQuestion === 'string' && {
+        researchQuestion: sanitizeText(body.researchQuestion, LIMITS.researchQuestion) || project.researchQuestion,
+      }),
+      ...(typeof body.expertType === 'string' && {
+        expertType: sanitizeText(body.expertType, LIMITS.functionField) || undefined,
+      }),
+      ...((body.outreachMode === 'auto' || body.outreachMode === 'review') && {
+        outreachMode: body.outreachMode as 'auto' | 'review',
+      }),
     });
 
     return Response.json({ project: updated });
