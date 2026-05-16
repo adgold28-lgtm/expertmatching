@@ -282,7 +282,8 @@ export interface ProjectExpert {
   counterRateProposed?:  number;
   conflictNote?:         string;
   // Billing / Stripe
-  expertRate?:           number | null;  // hourly rate in USD, set during outreach
+  clientRate?:           number | null;  // hourly rate billed to client (margin included)
+  expertRate?:           number | null;  // hourly rate paid to expert (clientRate * 0.70)
   callDurationMin?:      number | null;  // actual call duration in minutes, set at completion
   invoiceAmount?:        number | null;  // computed: rate * duration / 60
   stripePaymentLinkId?:  string | null;
@@ -347,6 +348,10 @@ export interface Project {
   clientCalendarRefreshToken?:   string | null;  // encrypted
   clientCalendarEmail?:          string | null;
   clientCalendlyUrl?:            string;
+  // New brief fields (simplified two-field brief)
+  expertType?: string;              // "who do you want to talk to"
+  // Outreach mode — 'review' (default) queues outreach for approval; 'auto' sends immediately
+  outreachMode?: 'auto' | 'review';
   // Ownership
   ownerEmail:     string;
   collaborators:  string[];

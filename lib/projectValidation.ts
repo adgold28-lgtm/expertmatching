@@ -200,11 +200,13 @@ export function validateProjectExpert(raw: unknown): Expert | null {
 export interface ProjectCreateData {
   name:              string;
   researchQuestion?: string;  // optional — filled later when user runs search
+  expertType?:       string;  // "who do you want to talk to" — maps to function field
   industry:          string;
   function:          string;
   geography:         string;
   seniority:         string;
   notes?:            string;
+  outreachMode?:     'auto' | 'review';
   experts:           Array<{ expert: Expert; status?: ExpertStatus }>;
 }
 
@@ -215,15 +217,23 @@ export function validateCreateProjectInput(
 ): { errors: FieldError[] } | { data: ProjectCreateData } {
   const errors: FieldError[] = [];
 
-  const name             = sanitizeText(body.name,             LIMITS.projectName);
   const researchQuestion = sanitizeText(body.researchQuestion, LIMITS.researchQuestion);
+  const expertType       = sanitizeText(body.expertType,       LIMITS.functionField);
   const industry         = sanitizeText(body.industry,         LIMITS.industry);
-  const fn               = sanitizeText(body.function,         LIMITS.functionField);
+  // function field: use expertType if provided, fall back to body.function
+  const fn               = expertType || sanitizeText(body.function, LIMITS.functionField);
   const geography        = sanitizeText(body.geography,        LIMITS.geography);
   const seniority        = sanitizeText(body.seniority,        LIMITS.seniority);
   const notes            = typeof body.notes === 'string'
     ? sanitizeText(body.notes, LIMITS.notes) || undefined
     : undefined;
+  const outreachMode: 'auto' | 'review' = body.outreachMode === 'auto' ? 'auto' : 'review';
+
+  // Derive name from research question if not provided
+  const rawName = sanitizeText(body.name, LIMITS.projectName);
+  const name    = rawName ||
+    (researchQuestion ? researchQuestion.slice(0, 80).replace(/['"]/g, '').trim() : '') ||
+    `New Research ${new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}`;
 
   if (!name) errors.push({ field: 'name', error: 'required' });
   if (errors.length > 0) return { errors };
@@ -252,5 +262,5 @@ export function validateCreateProjectInput(
     experts.push({ expert, status });
   }
 
-  return { data: { name, researchQuestion: researchQuestion || '', industry, function: fn, geography, seniority, notes, experts } };
+  return { data: { name, researchQuestion: researchQuestion || '', expertType: expertType || undefined, industry, function: fn, geography, seniority, notes, outreachMode, experts } };
 }
