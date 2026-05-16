@@ -11,9 +11,16 @@ interface NavBarProps {
 }
 
 export default async function NavBar({ activePath }: NavBarProps = {}) {
-  const cookieStore = await cookies();
+  const cookieStore = cookies();
   const token = cookieStore.get(COOKIE_NAME)?.value ?? '';
-  const isAuthenticated = token ? (await verifySessionCookie(token)) !== null : false;
+  let isAuthenticated = false;
+  if (token) {
+    try {
+      isAuthenticated = (await verifySessionCookie(token)) !== null;
+    } catch {
+      isAuthenticated = false;
+    }
+  }
 
   return (
     <header style={{ background: NAVY, borderBottom: `2px solid ${GOLD}` }}>
