@@ -71,23 +71,6 @@ function checkAuth(request: NextRequest): Response | null {
   return null;
 }
 
-function checkOrigin(request: NextRequest): Response | null {
-  const origin = request.headers.get('origin');
-  if (!origin) return null; // same-origin or non-browser (server-to-server)
-
-  const appUrl = process.env.NEXT_PUBLIC_APP_URL ?? process.env.APP_URL;
-  if (!appUrl) return null; // not configured — skip (permissive fallback)
-
-  try {
-    const allowed = new URL(appUrl).origin;
-    if (origin !== allowed) {
-      return Response.json({ error: 'forbidden', reason: 'origin_mismatch' }, { status: 403 });
-    }
-  } catch {
-    // Bad APP_URL config — skip check rather than hard-blocking all requests
-  }
-  return null;
-}
 
 function checkContentType(request: NextRequest): Response | null {
   const ct = request.headers.get('content-type') ?? '';
@@ -126,8 +109,7 @@ async function readLimitedJson(
 export function guardReadRequest(request: NextRequest): Response | null {
   return (
     checkKillSwitch() ??
-    checkAuth(request) ??
-    checkOrigin(request)
+    checkAuth(request)
   );
 }
 
@@ -138,7 +120,6 @@ export async function guardMutatingRequest(
   const readErr =
     checkKillSwitch() ??
     checkAuth(request) ??
-    checkOrigin(request) ??
     checkContentType(request);
 
   if (readErr) return { error: readErr };
