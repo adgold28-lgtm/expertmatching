@@ -1,5 +1,5 @@
 import { NextRequest } from 'next/server';
-import { verifyAdminPassword, verifyPassword } from '../../../../lib/authPassword';
+import { verifyPassword, isScryptHash, hashPassword } from '../../../../lib/authPassword';
 import { createSessionCookie, COOKIE_NAME, SESSION_TTL_MS } from '../../../../lib/auth';
 import { getUser, upsertUser } from '../../../../lib/firmStore';
 
@@ -43,23 +43,7 @@ export async function POST(request: NextRequest): Promise<Response> {
   const password = b.password.slice(0, 200);
   const email    = typeof b.email === 'string' ? b.email.trim().toLowerCase().slice(0, 200) : '';
 
-  // ── Emergency admin override ───────────────────────────────────────────────
-  // This ADMIN_EMAIL + ADMIN_PASSWORD_HASH bypass is an emergency bootstrap
-  // mechanism only — intended for initial setup before any admin user exists in
-  // Redis. Do NOT use this as a normal login path. Requires both env vars to be
-  // set and the email to exactly match ADMIN_EMAIL (case-insensitive).
-  if (process.env.ADMIN_PASSWORD_HASH && email && verifyAdminPassword(password, email)) {
-    // Upsert an admin user record in Redis. Don't clobber an existing passwordHash.
-    try {
-      await upsertUser(email, { role: 'admin', status: 'active' });
-    } catch {
-      // Non-fatal: still grant the session even if the upsert fails
-    }
-    const token = await createSessionCookie('admin', email, undefined, { onboardingComplete: true });
-    return sessionResponse(token);
-  }
-
-  // ── Normal user flow ───────────────────────────────────────────────────────
+  // ── User lookup ───────────────────────────────────────────────────────────
   if (!email || !email.includes('@')) {
     return Response.json({ error: 'invalid_credentials' }, { status: 401 });
   }
@@ -81,6 +65,11 @@ export async function POST(request: NextRequest): Promise<Response> {
   if (!verifyPassword(password, user.passwordHash)) {
     console.warn('[auth/login] invalid password');
     return Response.json({ error: 'invalid_credentials' }, { status: 401 });
+  }
+
+  // Upgrade legacy scrypt hash to bcrypt transparently on successful login
+  if (isScryptHash(user.passwordHash)) {
+    upsertUser(user.email, { passwordHash: hashPassword(password) }).catch(() => {});
   }
 
   // Status check

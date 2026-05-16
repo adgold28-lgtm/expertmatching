@@ -33,7 +33,14 @@ export default function LoginPage() {
         router.push(next);
         router.refresh();
       } else {
-        setError('Incorrect credentials. Please try again.');
+        const data = await res.json().catch(() => ({})) as { error?: string };
+        if (data.error === 'account_pending') {
+          setError('Your account is pending activation. Check your email for a setup link.');
+        } else if (data.error === 'account_disabled') {
+          setError('Your account has been disabled. Contact your administrator.');
+        } else {
+          setError('Invalid email or password.');
+        }
         setPassword('');
         emailRef.current?.focus();
       }
