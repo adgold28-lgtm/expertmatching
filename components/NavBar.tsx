@@ -1,6 +1,6 @@
 import { cookies } from 'next/headers';
 import Link from 'next/link';
-import { verifySessionCookie, COOKIE_NAME } from '../lib/auth';
+import { getSessionPayload, COOKIE_NAME } from '../lib/auth';
 import SignOutButton from './SignOutButton';
 
 const GOLD = '#C6A75E';
@@ -10,15 +10,23 @@ interface NavBarProps {
   activePath?: 'pricing';
 }
 
+function displayName(email: string): string {
+  const local = email.split('@')[0] ?? email;
+  // If it looks like a name (john.smith, john_smith), take the first token
+  const first = local.split(/[._]/)[0] ?? local;
+  return first.charAt(0).toUpperCase() + first.slice(1);
+}
+
 export default async function NavBar({ activePath }: NavBarProps = {}) {
   const cookieStore = cookies();
   const token = cookieStore.get(COOKIE_NAME)?.value ?? '';
-  let isAuthenticated = false;
+  let sessionEmail: string | null = null;
   if (token) {
     try {
-      isAuthenticated = (await verifySessionCookie(token)) !== null;
+      const payload = await getSessionPayload(token);
+      sessionEmail = payload?.email ?? null;
     } catch {
-      isAuthenticated = false;
+      sessionEmail = null;
     }
   }
 
@@ -44,8 +52,16 @@ export default async function NavBar({ activePath }: NavBarProps = {}) {
           >
             Pricing
           </Link>
-          {isAuthenticated ? (
-            <SignOutButton />
+          {sessionEmail ? (
+            <div className="flex items-center gap-4">
+              <span
+                className="text-[11px] hidden sm:block"
+                style={{ color: 'rgba(255,255,255,0.6)', letterSpacing: '0.05em' }}
+              >
+                Welcome, {displayName(sessionEmail)}
+              </span>
+              <SignOutButton />
+            </div>
           ) : (
             <Link
               href="/login"
