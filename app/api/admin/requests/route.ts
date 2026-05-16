@@ -4,6 +4,7 @@ import { getUpstashClient } from '../../../../lib/upstashRedis';
 import { generateSignupToken } from '../../../../lib/signupToken';
 import { sendInviteEmail } from '../../../../lib/sendAvailabilityRequest';
 import { setFirmPlan, type FirmPlan } from '../../../../lib/domainWhitelist';
+import { upsertUser, upsertFirm } from '../../../../lib/firmStore';
 
 interface AccessRequest {
   name:        string;
@@ -74,18 +75,34 @@ export async function POST(request: NextRequest): Promise<Response> {
       } catch { /* use default */ }
     }
 
-    // Set firm plan
+    // Set firm plan (old domainWhitelist compat)
     const domain = email.split('@')[1] ?? '';
     if (domain) await setFirmPlan(domain, plan);
 
-    // Generate signup token and store in Redis (7-day TTL)
+    // Upsert firm record in new firmStore + upsert pending user
+    if (domain) {
+      await upsertFirm(domain, { name: firmName, plan, status: 'active' }).catch(() => {});
+      await upsertUser(email, {
+        firmDomain:           domain,
+        firmName,
+        role:                 'user',
+        status:               'pending',
+        passwordHash:         '',
+        createdAt:            Date.now(),
+        inviteTokenExpiresAt: Date.now() + 24 * 60 * 60 * 1000,
+      }).catch(() => {});
+    }
+
+    // Generate signup token and store in Redis (24h TTL)
     const { token, hash, expiry } = generateSignupToken(email, firmName);
     const ttlSeconds = Math.floor((expiry - Date.now()) / 1000);
+    // Store under both old key (backward compat) and new invite-token key
     await redis.set(`signup-token:${hash}`, email, { ex: ttlSeconds });
+    await redis.set(`invite-token:${hash}`, email, { ex: ttlSeconds });
 
-    // Send invite email
+    // Send invite email using new set-password URL
     const appUrl    = process.env.NEXT_PUBLIC_APP_URL ?? '';
-    const signupUrl = `${appUrl}/signup/${token}`;
+    const signupUrl = `${appUrl}/auth/set-password?token=${encodeURIComponent(token)}`;
 
     try {
       await sendInviteEmail(email, firmName, signupUrl);

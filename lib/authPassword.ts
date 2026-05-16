@@ -28,8 +28,15 @@ export function verifyPassword(password: string, storedHash: string): boolean {
   }
 }
 
-export function verifyAdminPassword(password: string): boolean {
-  const stored = process.env.ADMIN_PASSWORD_HASH;
-  if (!stored) return false;
+// SECURITY: The admin password bypass is an emergency bootstrap mechanism only.
+// It requires BOTH ADMIN_PASSWORD_HASH (the stored scrypt hash) AND ADMIN_EMAIL
+// (the exact expected email address). Email comparison is case-insensitive.
+// Do not use this as a normal login path.
+export function verifyAdminPassword(password: string, email: string): boolean {
+  const stored     = process.env.ADMIN_PASSWORD_HASH;
+  const adminEmail = process.env.ADMIN_EMAIL;
+  if (!stored || !adminEmail) return false;
+  // Case-insensitive email match — exact, never substring.
+  if (email.toLowerCase().trim() !== adminEmail.toLowerCase().trim()) return false;
   return verifyPassword(password, stored);
 }

@@ -1,17 +1,9 @@
 import { NextRequest } from 'next/server';
 import { verifyAdminPassword, verifyPassword } from '../../../../lib/authPassword';
-import { createSessionCookie, isAuthEnabled, COOKIE_NAME, SESSION_TTL_MS } from '../../../../lib/auth';
-import { getUpstashClient } from '../../../../lib/upstashRedis';
+import { createSessionCookie, COOKIE_NAME, SESSION_TTL_MS } from '../../../../lib/auth';
+import { getUser, upsertUser } from '../../../../lib/firmStore';
 
 const MAX_BODY = 2048; // bytes — covers email + password with JSON overhead
-
-interface UserRecord {
-  email:        string;
-  firmName:     string;
-  passwordHash: string;
-  createdAt:    number;
-  domain:       string;
-}
 
 export async function POST(request: NextRequest): Promise<Response> {
   // Content-Type guard
@@ -51,33 +43,64 @@ export async function POST(request: NextRequest): Promise<Response> {
   const password = b.password.slice(0, 200);
   const email    = typeof b.email === 'string' ? b.email.trim().toLowerCase().slice(0, 200) : '';
 
-  // ── 1. Admin password check (always tried first, email ignored) ────────────
-  if (verifyAdminPassword(password)) {
-    const token = await createSessionCookie('admin', 'admin');
+  // ── Emergency admin override ───────────────────────────────────────────────
+  // This ADMIN_EMAIL + ADMIN_PASSWORD_HASH bypass is an emergency bootstrap
+  // mechanism only — intended for initial setup before any admin user exists in
+  // Redis. Do NOT use this as a normal login path. Requires both env vars to be
+  // set and the email to exactly match ADMIN_EMAIL (case-insensitive).
+  if (process.env.ADMIN_PASSWORD_HASH && email && verifyAdminPassword(password, email)) {
+    // Upsert an admin user record in Redis. Don't clobber an existing passwordHash.
+    try {
+      await upsertUser(email, { role: 'admin', status: 'active' });
+    } catch {
+      // Non-fatal: still grant the session even if the upsert fails
+    }
+    const token = await createSessionCookie('admin', email);
     return sessionResponse(token);
   }
 
-  // ── 2. Per-user account lookup ─────────────────────────────────────────────
-  if (email && email.includes('@')) {
-    try {
-      const redis = getUpstashClient();
-      if (redis) {
-        const raw = await redis.get(`user:${email}`);
-        if (raw) {
-          const user: UserRecord = JSON.parse(raw);
-          if (verifyPassword(password, user.passwordHash)) {
-            const token = await createSessionCookie('user', user.email, user.firmName);
-            return sessionResponse(token);
-          }
-        }
-      }
-    } catch {
-      // Fall through to generic failure — never leak Redis errors
-    }
+  // ── Normal user flow ───────────────────────────────────────────────────────
+  if (!email || !email.includes('@')) {
+    return Response.json({ error: 'invalid_credentials' }, { status: 401 });
   }
 
-  console.warn('[auth/login] failed login attempt');
-  return Response.json({ error: 'invalid_credentials' }, { status: 401 });
+  let user;
+  try {
+    user = await getUser(email);
+  } catch {
+    console.warn('[auth/login] failed to read user record', { email: '[redacted]' });
+    return Response.json({ error: 'invalid_credentials' }, { status: 401 });
+  }
+
+  if (!user) {
+    console.warn('[auth/login] user not found');
+    return Response.json({ error: 'invalid_credentials' }, { status: 401 });
+  }
+
+  // Password check
+  if (!verifyPassword(password, user.passwordHash)) {
+    console.warn('[auth/login] invalid password');
+    return Response.json({ error: 'invalid_credentials' }, { status: 401 });
+  }
+
+  // Status check
+  if (user.status === 'pending') {
+    return Response.json(
+      { error: 'account_pending', message: 'Your account is pending activation.' },
+      { status: 403 },
+    );
+  }
+
+  if (user.status === 'disabled') {
+    return Response.json(
+      { error: 'account_disabled', message: 'Your account has been disabled. Contact your administrator.' },
+      { status: 403 },
+    );
+  }
+
+  // status === 'active' — grant session
+  const token = await createSessionCookie(user.role, user.email, user.firmName);
+  return sessionResponse(token);
 }
 
 function sessionResponse(token: string): Response {

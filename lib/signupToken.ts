@@ -11,7 +11,7 @@
 
 import { createHmac, createHash, timingSafeEqual, randomBytes } from 'crypto';
 
-const EXPIRY_MS   = 7 * 24 * 60 * 60 * 1000;
+const EXPIRY_MS   = 24 * 60 * 60 * 1000;
 const SEP         = '.';
 const NONCE_BYTES = 16;
 
