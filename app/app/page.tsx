@@ -9,6 +9,21 @@ function formatDate(ts: number) {
   return new Date(ts).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
 }
 
+function getProjectStage(p: ProjectSummary): { label: string; step: number } {
+  if (p.expertCount === 0) return { label: 'Brief',    step: 1 };
+  if (p.shortlistedCount === 0) return { label: 'Sourcing', step: 2 };
+  return { label: 'Outreach', step: 3 };
+}
+
+const STAGE_COLORS: Record<string, { bg: string; text: string }> = {
+  Brief:    { bg: '#F0F2F5',        text: '#6B7C8D' },
+  Sourcing: { bg: '#EBF0F7',        text: '#0B1F3B' },
+  Outreach: { bg: 'rgba(198,167,94,0.15)', text: '#8B6914' },
+  Complete: { bg: '#EDFAF3',        text: '#1A7A4A' },
+};
+
+const STEPS = ['Brief', 'Source', 'Outreach', 'Screen', 'Deliver'];
+
 // ─── Main Page ─────────────────────────────────────────────────────────────────
 
 interface CurrentUser {
@@ -20,19 +35,17 @@ interface CurrentUser {
 export default function AppPage() {
   const router = useRouter();
 
-  // Projects
   const [projects,        setProjects]        = useState<ProjectSummary[]>([]);
   const [projectsLoading, setProjectsLoading] = useState(true);
   const [currentUser,     setCurrentUser]     = useState<CurrentUser | null>(null);
   const [showWelcome,     setShowWelcome]     = useState(false);
 
-  // New Project modal
-  const [showNewProjectModal, setShowNewProjectModal]   = useState(false);
-  const [briefProblem,        setBriefProblem]          = useState('');
-  const [briefExpertType,     setBriefExpertType]       = useState('');
-  const [outreachMode,        setOutreachMode]          = useState<'auto' | 'review'>('review');
-  const [creating,            setCreating]              = useState(false);
-  const [createError,         setCreateError]           = useState('');
+  const [showNewProjectModal, setShowNewProjectModal] = useState(false);
+  const [briefProblem,        setBriefProblem]        = useState('');
+  const [briefExpertType,     setBriefExpertType]     = useState('');
+  const [outreachMode,        setOutreachMode]        = useState<'auto' | 'review'>('review');
+  const [creating,            setCreating]            = useState(false);
+  const [createError,         setCreateError]         = useState('');
 
   useEffect(() => {
     if (typeof window !== 'undefined') {
@@ -114,12 +127,15 @@ export default function AppPage() {
     }
   }
 
+  const sorted       = [...projects].sort((a, b) => b.updatedAt - a.updatedAt);
+  const totalExperts = projects.reduce((sum, p) => sum + p.expertCount, 0);
+
   // ─── Render ─────────────────────────────────────────────────────────────────
 
   return (
-    <div className="min-h-screen flex flex-col" style={{ background: '#F7F9FC' }}>
+    <div className="min-h-screen flex flex-col" style={{ background: '#F7F7F5' }}>
 
-      {/* ── Welcome banner (shown once after onboarding) ── */}
+      {/* ── Welcome banner ── */}
       {showWelcome && (
         <div
           className="flex items-center justify-between px-6 py-3 text-[11px] font-medium"
@@ -140,7 +156,7 @@ export default function AppPage() {
       <header className="bg-navy border-b-2 border-gold sticky top-0 z-40">
         <div className="max-w-6xl mx-auto px-6 sm:px-10 py-4 flex items-center justify-between">
           <Link
-            href="/app"
+            href="/"
             className="font-display text-cream font-semibold"
             style={{ letterSpacing: '0.15em', fontSize: '13px' }}
           >
@@ -150,22 +166,14 @@ export default function AppPage() {
             <button
               onClick={openNewProjectModal}
               className="text-[10px] uppercase font-medium px-4 py-2 transition-colors"
-              style={{
-                background: '#C6A75E',
-                color:      '#0B1F3B',
-                letterSpacing: '0.14em',
-              }}
+              style={{ background: '#C6A75E', color: '#0B1F3B', letterSpacing: '0.14em' }}
             >
               New Project
             </button>
             <button
               onClick={handleSignOut}
               className="text-[10px] uppercase font-medium px-4 py-2 transition-colors border"
-              style={{
-                color:       'rgba(198,167,94,0.6)',
-                borderColor: 'rgba(198,167,94,0.25)',
-                letterSpacing: '0.14em',
-              }}
+              style={{ color: 'rgba(198,167,94,0.6)', borderColor: 'rgba(198,167,94,0.25)', letterSpacing: '0.14em' }}
             >
               Sign Out
             </button>
@@ -173,80 +181,171 @@ export default function AppPage() {
         </div>
       </header>
 
-      {/* ── Projects ── */}
-      <div className="border-b border-frame bg-surface">
+      {/* ── Stats bar ── */}
+      {!projectsLoading && projects.length > 0 && (
+        <div style={{ background: '#fff', borderBottom: '1px solid #E8ECF0' }}>
+          <div className="max-w-6xl mx-auto px-6 sm:px-10">
+            <div className="flex divide-x divide-gray-100">
+              {[
+                { label: 'Total Projects',   value: projects.length },
+                { label: 'Experts Sourced',  value: totalExperts    },
+                { label: 'Calls Completed',  value: 0               },
+              ].map(stat => (
+                <div key={stat.label} className="py-4 pr-8 first:pl-0 pl-8">
+                  <p
+                    className="text-[22px] font-semibold leading-none"
+                    style={{ color: '#0B1F3B', fontFamily: 'var(--font-display)' }}
+                  >
+                    {stat.value}
+                  </p>
+                  <p
+                    className="text-[10px] uppercase tracking-widest mt-1"
+                    style={{ color: '#9AA5B4', letterSpacing: '0.14em' }}
+                  >
+                    {stat.label}
+                  </p>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Project cards ── */}
+      <div className="flex-1">
         <div className="max-w-6xl mx-auto px-6 sm:px-10 py-8">
-          <p className="text-[10px] uppercase tracking-widest text-muted font-medium mb-5" style={{ letterSpacing: '0.2em' }}>
+
+          {/* Section label */}
+          <p
+            className="text-[10px] uppercase tracking-widest font-medium mb-5"
+            style={{ color: '#9AA5B4', letterSpacing: '0.2em' }}
+          >
             Projects
           </p>
 
           {projectsLoading ? (
-            <div className="space-y-2">
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
               {[1, 2, 3].map(i => (
-                <div key={i} className="bg-cream border border-frame px-4 py-3.5 flex items-center gap-6">
-                  <div className="flex-1 space-y-1.5">
-                    <div className="skeleton h-3.5 w-1/2 rounded" />
-                    <div className="skeleton h-3 w-3/4 rounded" />
-                  </div>
-                  <div className="shrink-0 flex items-center gap-5">
-                    <div className="skeleton h-3 w-16 rounded hidden sm:block" />
-                    <div className="skeleton h-3 w-20 rounded hidden md:block" />
-                    <div className="skeleton h-3 w-10 rounded" />
-                  </div>
+                <div key={i} className="bg-white rounded-sm p-5 shadow-sm border border-gray-100 space-y-3">
+                  <div className="skeleton h-4 w-2/3 rounded" />
+                  <div className="skeleton h-3 w-1/3 rounded" />
+                  <div className="skeleton h-2 w-full rounded mt-4" />
                 </div>
               ))}
             </div>
-          ) : projects.length > 0 ? (
-            <div className="space-y-2">
-              {[...projects].sort((a, b) => b.updatedAt - a.updatedAt).slice(0, 8).map(p => (
-                <Link
-                  key={p.id}
-                  href={`/projects/${p.id}`}
-                  className="flex items-center gap-6 bg-cream border border-frame hover:border-navy/40 px-4 py-3.5 transition-colors group"
-                >
-                  <div className="flex-1 min-w-0">
-                    <p className="text-xs font-semibold text-navy group-hover:underline underline-offset-2 leading-snug truncate">
-                      {p.name || (p.researchQuestion ? p.researchQuestion.slice(0, 60) : 'Untitled Project')}
-                    </p>
-                    {p.researchQuestion && (
-                      <p className="text-[11px] text-muted mt-0.5 truncate leading-relaxed" style={{ fontWeight: 300 }}>
-                        {p.researchQuestion}
+          ) : sorted.length > 0 ? (
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+              {sorted.map(p => {
+                const { label: stageLabel, step } = getProjectStage(p);
+                const pill = STAGE_COLORS[stageLabel] ?? STAGE_COLORS.Brief;
+                const projectName = p.name || (p.researchQuestion ? p.researchQuestion.slice(0, 60) : 'Untitled Project');
+
+                return (
+                  <div
+                    key={p.id}
+                    className="bg-white rounded-sm shadow-sm border border-gray-100 flex flex-col hover:shadow-md transition-shadow"
+                  >
+                    <div className="p-5 flex-1 space-y-3">
+                      {/* Status pill */}
+                      <div className="flex items-center justify-between">
+                        <span
+                          className="text-[9px] uppercase tracking-widest font-semibold px-2 py-0.5"
+                          style={{ background: pill.bg, color: pill.text, letterSpacing: '0.12em' }}
+                        >
+                          {stageLabel}
+                        </span>
+                        <span className="text-[10px]" style={{ color: '#9AA5B4' }}>
+                          {formatDate(p.createdAt)}
+                        </span>
+                      </div>
+
+                      {/* Project name */}
+                      <p
+                        className="font-semibold leading-snug line-clamp-2"
+                        style={{ color: '#0B1F3B', fontSize: '14px' }}
+                      >
+                        {projectName}
                       </p>
-                    )}
+
+                      {/* Expert count */}
+                      <div className="flex items-center gap-1.5">
+                        <svg className="w-3.5 h-3.5 shrink-0" style={{ color: '#9AA5B4' }} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M15 19.128a9.38 9.38 0 002.625.372 9.337 9.337 0 004.121-.952 4.125 4.125 0 00-7.533-2.493M15 19.128v-.003c0-1.113-.285-2.16-.786-3.07M15 19.128v.106A12.318 12.318 0 018.624 21c-2.331 0-4.512-.645-6.374-1.766l-.001-.109a6.375 6.375 0 0111.964-3.07M12 6.375a3.375 3.375 0 11-6.75 0 3.375 3.375 0 016.75 0zm8.25 2.25a2.625 2.625 0 11-5.25 0 2.625 2.625 0 015.25 0z" />
+                        </svg>
+                        <span className="text-[11px]" style={{ color: '#9AA5B4' }}>
+                          {p.expertCount} expert{p.expertCount !== 1 ? 's' : ''}
+                        </span>
+                      </div>
+
+                      {/* Progress bar — 5 steps */}
+                      <div className="flex gap-1 pt-1">
+                        {STEPS.map((s, i) => (
+                          <div
+                            key={s}
+                            className="flex-1 h-1 rounded-full transition-colors"
+                            style={{ background: i < step ? '#0B1F3B' : '#E8ECF0' }}
+                            title={s}
+                          />
+                        ))}
+                      </div>
+                      <div className="flex justify-between">
+                        {STEPS.map((s, i) => (
+                          <span
+                            key={s}
+                            className="text-[8px] uppercase"
+                            style={{
+                              color: i < step ? '#0B1F3B' : '#C4CDD6',
+                              letterSpacing: '0.06em',
+                              width: '20%',
+                              textAlign: i === 0 ? 'left' : i === STEPS.length - 1 ? 'right' : 'center',
+                            }}
+                          >
+                            {s}
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+
+                    {/* Card footer — Open button */}
+                    <div className="px-5 pb-5">
+                      <Link
+                        href={`/projects/${p.id}`}
+                        className="block w-full text-center text-[10px] uppercase tracking-widest font-medium py-2 transition-colors"
+                        style={{ background: '#C6A75E', color: '#0B1F3B', letterSpacing: '0.14em' }}
+                      >
+                        Open →
+                      </Link>
+                    </div>
                   </div>
-                  <div className="shrink-0 flex items-center gap-5">
-                    {currentUser && p.ownerEmail && p.ownerEmail !== currentUser.email && (
-                      <span className="text-[10px] text-muted hidden sm:block italic">
-                        Shared by {p.ownerEmail.split('@')[0].split('.')[0]}
-                      </span>
-                    )}
-                    {currentUser && p.ownerEmail === currentUser.email && (p.collaborators?.length ?? 0) > 0 && (
-                      <span className="text-[10px] text-muted hidden sm:block">
-                        Shared with {p.collaborators.length}
-                      </span>
-                    )}
-                    <span className="text-[10px] text-muted hidden sm:block">
-                      {p.expertCount} expert{p.expertCount !== 1 ? 's' : ''}
-                    </span>
-                    <span className="text-[10px] text-muted hidden md:block">
-                      {formatDate(p.updatedAt)}
-                    </span>
-                    <span
-                      className="text-[10px] uppercase font-medium group-hover:text-navy transition-colors"
-                      style={{ color: '#C6A75E', letterSpacing: '0.12em' }}
-                    >
-                      Open →
-                    </span>
-                  </div>
-                </Link>
-              ))}
+                );
+              })}
             </div>
           ) : (
-            <div className="py-10 text-center border border-dashed border-frame" style={{ background: 'rgba(247,249,252,0.6)' }}>
-              <p className="text-sm text-muted mb-4">No projects yet. Create a project to get started.</p>
+            /* ── Empty state ── */
+            <div className="flex flex-col items-center justify-center py-24 px-4 text-center">
+              <div
+                className="w-12 h-12 flex items-center justify-center mb-6 rounded-full"
+                style={{ background: 'rgba(198,167,94,0.12)' }}
+              >
+                <svg className="w-6 h-6" style={{ color: '#C6A75E' }} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M21 21l-5.197-5.197m0 0A7.5 7.5 0 105.196 15.803a7.5 7.5 0 0010.607 0z" />
+                </svg>
+              </div>
+              <p
+                className="font-semibold mb-2"
+                style={{ color: '#0B1F3B', fontSize: '16px' }}
+              >
+                Start your first project
+              </p>
+              <p
+                className="text-sm mb-8 max-w-sm leading-relaxed"
+                style={{ color: '#9AA5B4', fontWeight: 300 }}
+              >
+                Describe the business problem and we&apos;ll find the right experts.
+              </p>
               <button
                 onClick={openNewProjectModal}
-                className="text-[10px] uppercase font-medium px-5 py-2.5 transition-colors"
+                className="text-[10px] uppercase font-medium px-6 py-3 transition-colors"
                 style={{ background: '#C6A75E', color: '#0B1F3B', letterSpacing: '0.14em' }}
               >
                 New Project
@@ -343,9 +442,9 @@ export default function AppPage() {
                     onClick={() => setOutreachMode('review')}
                     className="flex-1 px-4 py-2.5 text-[11px] font-medium transition-colors text-left"
                     style={{
-                      background:    outreachMode === 'review' ? '#0B1F3B' : 'transparent',
-                      color:         outreachMode === 'review' ? '#C6A75E' : '#6B7C8D',
-                      borderRight:   '1px solid #E2E8ED',
+                      background:  outreachMode === 'review' ? '#0B1F3B' : 'transparent',
+                      color:       outreachMode === 'review' ? '#C6A75E' : '#6B7C8D',
+                      borderRight: '1px solid #E2E8ED',
                       letterSpacing: '0.04em',
                     }}
                   >
