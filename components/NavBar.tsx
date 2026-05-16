@@ -54,6 +54,13 @@ export default async function NavBar({ activePath }: NavBarProps = {}) {
           </Link>
           {sessionEmail ? (
             <div className="flex items-center gap-4">
+              <Link
+                href="/app"
+                className="text-[11px] uppercase font-medium px-4 py-2 transition-colors"
+                style={{ background: GOLD, color: NAVY, letterSpacing: '0.14em' }}
+              >
+                Open ExpertMatch
+              </Link>
               <span
                 className="text-[11px] hidden sm:block"
                 style={{ color: 'rgba(255,255,255,0.6)', letterSpacing: '0.05em' }}

@@ -28,18 +28,29 @@ const PUBLIC_PREFIXES = [
   '/api/auth/set-password',  // set-password API — token-gated at the handler level
 ];
 
+// Paths that bounce authenticated users to the app — they should never be
+// stranded on a marketing or auth page when they're already signed in.
+const APP_REDIRECT_PATHS = new Set(['/', '/login']);
+
 export async function middleware(request: NextRequest): Promise<NextResponse> {
   const { pathname } = request.nextUrl;
 
-  if (PUBLIC_PATHS.has(pathname)) return NextResponse.next();
+  // Webhooks, Stripe, expert-facing pages — always pass through without auth.
   if (PUBLIC_PREFIXES.some(p => pathname.startsWith(p))) return NextResponse.next();
 
-  // Production is always auth-gated (isAuthEnabled() returns true there).
-  // In development, allow through if APP_AUTH_ENABLED !== 'true'.
+  // In development, auth is optional — let everything through.
   if (!isAuthEnabled()) return NextResponse.next();
 
   const cookieValue = request.cookies.get(COOKIE_NAME)?.value ?? '';
   const valid       = cookieValue ? await verifySessionCookie(cookieValue) : false;
+
+  // Authenticated users on the marketing site or login page go straight to the app.
+  if (valid && APP_REDIRECT_PATHS.has(pathname)) {
+    return NextResponse.redirect(new URL('/app', request.url));
+  }
+
+  // Public marketing and auth pages — unauthenticated users can view them.
+  if (PUBLIC_PATHS.has(pathname)) return NextResponse.next();
 
   if (valid) return NextResponse.next();
 
