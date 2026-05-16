@@ -23,6 +23,9 @@ Last updated: May 2026
       headline changed to "Find the expert you're looking for"
 - [x] Exa AI integration: exa-js installed, ExaProvider added as primary search provider
       (SEARCH_PROVIDER=exa or auto-selected when EXA_API_KEY is set)
+- [x] Brief page simplified: two optional textareas (business problem + expert type),
+      outreach mode toggle (pill selector) on brief page, "Complete Brief" saves + navigates to Source
+      Old fields (Key Questions, Hypotheses, Additional Context, Expertise Requirements, etc.) removed
 
 ## NEXT (makes the product real)
 - [ ] Calendar OAuth integration (Google + Outlook) — stubs exist in /api/onboarding/calendar
