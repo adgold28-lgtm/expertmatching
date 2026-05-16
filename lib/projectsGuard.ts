@@ -27,13 +27,13 @@ function guardLog(action: string, reason: string): void {
 }
 
 function checkKillSwitch(): Response | null {
-  if (process.env.PROJECTS_ENABLED !== 'true') {
+  if (process.env.PROJECTS_ENABLED === 'false') {
     guardLog('kill_switch', 'projects_disabled');
     return Response.json(
       {
         error:   'service_unavailable',
         reason:  'projects_disabled',
-        message: 'Projects are disabled. Set PROJECTS_ENABLED=true.',
+        message: 'Projects are disabled. Set PROJECTS_ENABLED=false to disable.',
       },
       { status: 503 },
     );
