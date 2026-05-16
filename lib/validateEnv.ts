@@ -6,6 +6,7 @@
 
 const REQUIRED_VARS = [
   'AVAILABILITY_TOKEN_SECRET',
+  'SIGNUP_TOKEN_SECRET',
   'ENCRYPTION_KEY',
   'SESSION_SECRET',
   'STRIPE_SECRET_KEY',
@@ -24,6 +25,13 @@ const REQUIRED_VARS = [
   'LOG_HASH_SECRET',
   'NEXT_PUBLIC_APP_URL',
   'OPENAI_API_KEY',
+  // Phase 4 — email sequence + inbound
+  'QSTASH_TOKEN',
+  'QSTASH_CURRENT_SIGNING_KEY',
+  'QSTASH_NEXT_SIGNING_KEY',
+  'RESEND_WEBHOOK_SECRET',
+  // Phase 6 — Stripe Connect
+  'STRIPE_CONNECT_CLIENT_ID',
 ] as const;
 
 export function validateEnv(): void {

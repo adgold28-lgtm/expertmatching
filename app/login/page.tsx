@@ -4,10 +4,11 @@ import { useState, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 
 export default function LoginPage() {
+  const [email,    setEmail]    = useState('');
   const [password, setPassword] = useState('');
   const [error,    setError]    = useState<string | null>(null);
   const [loading,  setLoading]  = useState(false);
-  const inputRef = useRef<HTMLInputElement>(null);
+  const emailRef = useRef<HTMLInputElement>(null);
   const router   = useRouter();
 
   async function handleSubmit(e: React.FormEvent) {
@@ -21,21 +22,20 @@ export default function LoginPage() {
       const res = await fetch('/api/auth/login', {
         method:  'POST',
         headers: { 'Content-Type': 'application/json' },
-        body:    JSON.stringify({ password }),
+        body:    JSON.stringify({ email: email.trim(), password }),
       });
 
       if (res.ok) {
         const params = new URLSearchParams(window.location.search);
         const rawNext = params.get('next') ?? '/app';
-        // Validate redirect target — only allow internal paths (start with '/' but not '//').
-        // '//evil.com' and 'https://evil.com' are rejected; only '/dashboard' etc. are accepted.
-        const next = rawNext.startsWith('/') && !rawNext.startsWith('//') ? rawNext : '/';
+        // Only allow internal paths — reject '//evil.com' and absolute URLs.
+        const next = rawNext.startsWith('/') && !rawNext.startsWith('//') ? rawNext : '/app';
         router.push(next);
         router.refresh();
       } else {
-        setError('Incorrect password. Please try again.');
+        setError('Incorrect credentials. Please try again.');
         setPassword('');
-        inputRef.current?.focus();
+        emailRef.current?.focus();
       }
     } catch {
       setError('Connection error. Please try again.');
@@ -70,6 +70,29 @@ export default function LoginPage() {
           <form onSubmit={handleSubmit} className="space-y-4">
             <div>
               <label
+                htmlFor="email"
+                className="block text-[10px] uppercase tracking-widest text-muted mb-1.5"
+                style={{ letterSpacing: '0.14em' }}
+              >
+                Email
+              </label>
+              <input
+                ref={emailRef}
+                id="email"
+                type="email"
+                autoComplete="email"
+                // eslint-disable-next-line jsx-a11y/no-autofocus
+                autoFocus
+                value={email}
+                onChange={e => setEmail(e.target.value)}
+                className="w-full border border-frame bg-cream px-3 py-2.5 text-sm text-ink placeholder:text-muted/50 focus:outline-none focus:border-navy transition-colors"
+                placeholder="you@firm.com"
+                disabled={loading}
+              />
+            </div>
+
+            <div>
+              <label
                 htmlFor="password"
                 className="block text-[10px] uppercase tracking-widest text-muted mb-1.5"
                 style={{ letterSpacing: '0.14em' }}
@@ -77,17 +100,14 @@ export default function LoginPage() {
                 Password
               </label>
               <input
-                ref={inputRef}
                 id="password"
                 type="password"
                 autoComplete="current-password"
                 required
-                // eslint-disable-next-line jsx-a11y/no-autofocus
-                autoFocus
                 value={password}
                 onChange={e => setPassword(e.target.value)}
                 className="w-full border border-frame bg-cream px-3 py-2.5 text-sm text-ink placeholder:text-muted/50 focus:outline-none focus:border-navy transition-colors"
-                placeholder="Enter your access password"
+                placeholder="Enter your password"
                 disabled={loading}
               />
             </div>

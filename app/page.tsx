@@ -1,44 +1,15 @@
 import type { Metadata } from 'next';
 import Link from 'next/link';
+import NavBar from '../components/NavBar';
 
 export const metadata: Metadata = {
   title: 'ExpertMatch — Expert Calls, Sourced and Billed in Hours.',
-  description: 'ExpertMatch replaces traditional expert networks for PE firms and hedge funds. AI-sourced practitioners, direct outreach, per-minute billing. No account managers, no markups.',
+  description: 'ExpertMatch replaces traditional expert networks for PE firms, hedge funds, and strategy consultants. AI-sourced practitioners, direct outreach, per-minute billing. No account managers, no markups.',
 };
 
 const GOLD = '#C6A75E';
 const NAVY = '#0B1F3B';
 
-function Nav() {
-  return (
-    <header style={{ background: NAVY, borderBottom: `2px solid ${GOLD}` }}>
-      <div className="max-w-6xl mx-auto px-6 sm:px-10 py-4 flex items-center justify-between">
-        <span
-          className="font-display text-cream font-semibold"
-          style={{ letterSpacing: '0.15em', fontSize: '13px' }}
-        >
-          EXPERTMATCH
-        </span>
-        <nav className="flex items-center gap-6">
-          <Link
-            href="/pricing"
-            className="text-[11px] uppercase text-cream/60 hover:text-cream transition-colors hidden sm:block"
-            style={{ letterSpacing: '0.14em' }}
-          >
-            Pricing
-          </Link>
-          <Link
-            href="/login"
-            className="text-[11px] uppercase border px-4 py-2 transition-colors"
-            style={{ letterSpacing: '0.14em', color: GOLD, borderColor: `${GOLD}40` }}
-          >
-            Sign In
-          </Link>
-        </nav>
-      </div>
-    </header>
-  );
-}
 
 function Footer() {
   return (
@@ -65,7 +36,7 @@ function Footer() {
 export default function LandingPage() {
   return (
     <div className="min-h-screen flex flex-col font-body" style={{ background: '#F7F9FC' }}>
-      <Nav />
+      <NavBar />
 
       {/* ── Hero ── */}
       <section style={{ background: NAVY }} className="py-24 sm:py-32 px-6">
@@ -89,7 +60,7 @@ export default function LandingPage() {
             className="text-cream/60 leading-relaxed mx-auto mb-10"
             style={{ fontSize: '1rem', maxWidth: '520px', fontWeight: 300 }}
           >
-            ExpertMatch replaces traditional expert networks for PE firms running frequent calls.
+            ExpertMatch replaces traditional expert networks for PE firms, hedge funds, and strategy consultants.
             We identify the right practitioners, handle outreach, and bill by the minute.
           </p>
           <div className="flex flex-col sm:flex-row gap-3 justify-center">

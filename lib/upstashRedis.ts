@@ -84,6 +84,50 @@ export class UpstashRedis {
     const results = await this.pipeline([['EVAL', script, '1', lockKey, requestId]]);
     return (results[0].result as number) === 1;
   }
+
+  // Atomic GET + DEL: returns the value if the key existed, null otherwise.
+  // Used for single-use token consumption.
+  async getAndDel(key: string): Promise<string | null> {
+    const script = "local v = redis.call('GET', KEYS[1]); if v then redis.call('DEL', KEYS[1]) end; return v";
+    const results = await this.pipeline([['EVAL', script, '1', key]]);
+    return (results[0].result as string | null) ?? null;
+  }
+
+  async sadd(key: string, ...members: string[]): Promise<number> {
+    const results = await this.pipeline([['SADD', key, ...members]]);
+    return (results[0].result as number) ?? 0;
+  }
+
+  async srem(key: string, ...members: string[]): Promise<number> {
+    const results = await this.pipeline([['SREM', key, ...members]]);
+    return (results[0].result as number) ?? 0;
+  }
+
+  async smembers(key: string): Promise<string[]> {
+    const results = await this.pipeline([['SMEMBERS', key]]);
+    return (results[0].result as string[]) ?? [];
+  }
+
+  async sismember(key: string, member: string): Promise<boolean> {
+    const results = await this.pipeline([['SISMEMBER', key, member]]);
+    return (results[0].result as number) === 1;
+  }
+
+  async scard(key: string): Promise<number> {
+    const results = await this.pipeline([['SCARD', key]]);
+    return (results[0].result as number) ?? 0;
+  }
+
+  async keys(pattern: string): Promise<string[]> {
+    const results = await this.pipeline([['KEYS', pattern]]);
+    return (results[0].result as string[]) ?? [];
+  }
+
+  async delMany(keys: string[]): Promise<number> {
+    if (keys.length === 0) return 0;
+    const results = await this.pipeline([['DEL', ...keys]]);
+    return (results[0].result as number) ?? 0;
+  }
 }
 
 let _client: UpstashRedis | null = null;

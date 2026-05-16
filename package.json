@@ -13,6 +13,7 @@
     "@react-pdf/renderer": "^4.5.1",
     "@stripe/stripe-js": "^9.5.0",
     "@types/nodemailer": "^8.0.0",
+    "@upstash/qstash": "^2.11.0",
     "ai": "^6.0.175",
     "axios": "^1.16.1",
     "bcryptjs": "^3.0.3",

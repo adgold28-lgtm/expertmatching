@@ -1,5 +1,6 @@
 import type { Metadata } from 'next';
 import Link from 'next/link';
+import NavBar from '../../components/NavBar';
 
 export const metadata: Metadata = {
   title: 'Pricing — ExpertMatch',
@@ -9,37 +10,6 @@ export const metadata: Metadata = {
 const GOLD = '#C6A75E';
 const NAVY = '#0B1F3B';
 
-function Nav() {
-  return (
-    <header style={{ background: NAVY, borderBottom: `2px solid ${GOLD}` }}>
-      <div className="max-w-6xl mx-auto px-6 sm:px-10 py-4 flex items-center justify-between">
-        <Link
-          href="/"
-          className="font-display text-cream font-semibold"
-          style={{ letterSpacing: '0.15em', fontSize: '13px' }}
-        >
-          EXPERTMATCH
-        </Link>
-        <nav className="flex items-center gap-6">
-          <Link
-            href="/pricing"
-            className="text-[11px] uppercase font-medium hidden sm:block"
-            style={{ letterSpacing: '0.14em', color: GOLD }}
-          >
-            Pricing
-          </Link>
-          <Link
-            href="/login"
-            className="text-[11px] uppercase border px-4 py-2 transition-colors"
-            style={{ letterSpacing: '0.14em', color: GOLD, borderColor: `${GOLD}40` }}
-          >
-            Sign In
-          </Link>
-        </nav>
-      </div>
-    </header>
-  );
-}
 
 function Footer() {
   return (
@@ -141,7 +111,7 @@ const FAQS = [
 export default function PricingPage() {
   return (
     <div className="min-h-screen flex flex-col font-body" style={{ background: '#F7F9FC' }}>
-      <Nav />
+      <NavBar activePath="pricing" />
 
       {/* ── Hero ── */}
       <section style={{ background: NAVY }} className="py-20 px-6 text-center">

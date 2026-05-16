@@ -1,14 +1,16 @@
 import { NextRequest } from 'next/server';
-import { createProject, listProjects } from '../../../lib/projectStore';
+import { createProject, listProjectsForUser } from '../../../lib/projectStore';
 import { guardReadRequest, guardMutatingRequest } from '../../../lib/projectsGuard';
 import { validateCreateProjectInput } from '../../../lib/projectValidation';
+import { getSessionUser } from '../../../lib/auth';
 
 export async function GET(request: NextRequest) {
   const err = guardReadRequest(request);
   if (err) return err;
 
   try {
-    const projects = await listProjects();
+    const { email, role } = await getSessionUser(request);
+    const projects = await listProjectsForUser(email, role);
     return Response.json({ projects });
   } catch (err) {
     console.error('[api/projects] GET error:', err instanceof Error ? err.message : String(err));
@@ -28,7 +30,8 @@ export async function POST(request: NextRequest) {
   const { data } = validated;
 
   try {
-    const project = await createProject(data);
+    const { email } = await getSessionUser(request);
+    const project = await createProject(data, email);
     return Response.json({ project }, { status: 201 });
   } catch (err) {
     console.error('[api/projects] POST error:', err instanceof Error ? err.message : String(err));

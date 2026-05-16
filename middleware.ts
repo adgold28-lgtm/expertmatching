@@ -14,10 +14,16 @@ const PUBLIC_PATHS = new Set([
 
 // Path prefixes that bypass auth (public pages — no session required).
 const PUBLIC_PREFIXES = [
-  '/availability/',      // expert-facing availability submission page
-  '/api/availability/',  // public POST endpoint for availability submissions
-  '/api/webhooks/',      // Stripe and other provider webhooks — verified by payload signature
-  '/payment/',           // public payment success/cancel pages
+  '/availability/',         // expert-facing availability submission page
+  '/api/availability/',     // public POST endpoint for availability submissions
+  '/api/webhooks/',         // Stripe and other provider webhooks — verified by payload signature
+  '/payment/',              // public payment success/cancel pages
+  '/signup/',               // invite-only account creation pages
+  '/api/signup/',           // public signup POST endpoint (token-gated)
+  '/api/inbound-email',     // Resend inbound email webhook — verified by payload signature
+  '/api/email-sequence/',   // QStash-triggered email sequence — verified by QStash signature
+  '/expert-onboarding/',    // expert Stripe Connect onboarding pages
+  '/api/expert-onboarding/', // expert onboarding token exchange
 ];
 
 export async function middleware(request: NextRequest): Promise<NextResponse> {

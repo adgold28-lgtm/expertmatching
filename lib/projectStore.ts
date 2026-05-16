@@ -7,7 +7,6 @@
 //   projects:index            → JSON array of ProjectSummary (lightweight list view)
 //
 // NEVER log: project names, research questions, confidential notes, or expert names.
-// TODO: Add proper per-user auth before multi-tenant deployment.
 
 import { randomBytes } from 'crypto';
 import type { Expert, Project, ProjectExpert, ProjectSummary, ExpertStatus, RejectionReason, ValueChainPosition, ScreeningStatus, SuggestedDomain, PublicContactEmail, AvailabilitySlot, OverlapSlot } from '../types';
@@ -17,7 +16,7 @@ import { getUpstashClient, type UpstashRedis } from './upstashRedis';
 
 export interface CreateProjectInput {
   name: string;
-  researchQuestion: string;
+  researchQuestion?: string;  // optional — filled later when user runs search
   industry: string;
   function: string;
   geography: string;
@@ -94,6 +93,21 @@ export interface UpdateExpertInput {
   zoomMeetingStarted?: boolean;
   zoomMeetingEndedAt?: number | null;
   actualDurationMin?:  number | null;
+  // Email sequence fields
+  outreachToken?:        string;
+  outreachStep?:         'email1' | 'email2' | 'email3';
+  email1SentAt?:         number;
+  email2SentAt?:         number;
+  email3SentAt?:         number;
+  replyDetectedAt?:      number;
+  replyIntent?:          'interested' | 'declined' | 'counter_rate' | 'conflict' | 'unclear';
+  counterRateProposed?:  number;
+  conflictNote?:         string;
+  // Stripe Connect
+  stripeConnectAccountId?:  string;
+  stripeTransferId?:        string;
+  expertPaidAt?:            number;
+  expertOnboardingStatus?:  'pending' | 'complete' | 'failed';
 }
 
 export interface UpdateProjectInput {
@@ -138,14 +152,25 @@ function generateProjectId(): string {
 
 function toSummary(p: Project): ProjectSummary {
   return {
-    id:              p.id,
-    name:            p.name,
+    id:               p.id,
+    name:             p.name,
     researchQuestion: p.researchQuestion,
-    expertCount:     p.experts.length,
+    expertCount:      p.experts.length,
     shortlistedCount: p.experts.filter(e => e.status === 'shortlisted').length,
-    createdAt:       p.createdAt,
-    updatedAt:       p.updatedAt,
+    createdAt:        p.createdAt,
+    updatedAt:        p.updatedAt,
+    ownerEmail:       p.ownerEmail,
+    collaborators:    p.collaborators,
   };
+}
+
+// Migration: backfill ownership fields missing from old records.
+function parseProject(raw: string): Project {
+  const p = JSON.parse(raw) as Project;
+  const ownerEmail   = p.ownerEmail   ?? 'admin';
+  const collaborators = p.collaborators ?? [];
+  const firmDomain   = p.firmDomain   ?? (ownerEmail === 'admin' ? '*' : (ownerEmail.split('@')[1] ?? 'admin'));
+  return { ...p, ownerEmail, collaborators, firmDomain };
 }
 
 function makeProjectExperts(experts: Array<{ expert: Expert; status?: ExpertStatus }>): ProjectExpert[] {
@@ -158,12 +183,19 @@ function makeProjectExperts(experts: Array<{ expert: Expert; status?: ExpertStat
   }));
 }
 
+function canAccess(p: { ownerEmail: string; collaborators: string[] }, email: string, role: 'admin' | 'user'): boolean {
+  if (role === 'admin') return true;
+  return p.ownerEmail === email || p.collaborators.includes(email);
+}
+
 // ─── Store interface ──────────────────────────────────────────────────────────
 
 interface ProjectStore {
-  createProject(input: CreateProjectInput): Promise<Project>;
+  createProject(input: CreateProjectInput, ownerEmail: string): Promise<Project>;
   getProject(id: string): Promise<Project | null>;
+  getProjectForUser(id: string, email: string, role: 'admin' | 'user'): Promise<Project | null>;
   listProjects(): Promise<ProjectSummary[]>;
+  listProjectsForUser(email: string, role: 'admin' | 'user'): Promise<ProjectSummary[]>;
   updateProject(project: Project): Promise<Project>;
   deleteProject(id: string): Promise<{ success: boolean }>;
   addExpertsToProject(id: string, experts: Array<{ expert: Expert; status?: ExpertStatus }>): Promise<Project>;
@@ -171,6 +203,8 @@ interface ProjectStore {
   updateProjectFields(id: string, input: UpdateProjectInput): Promise<Project>;
   addExpertNote(id: string, expertId: string, note: string): Promise<Project>;
   removeExpertFromProject(id: string, expertId: string): Promise<Project>;
+  addCollaborator(id: string, ownerEmail: string, collaboratorEmail: string): Promise<Project>;
+  removeCollaborator(id: string, ownerEmail: string, collaboratorEmail: string): Promise<Project>;
 }
 
 // ─── In-memory (dev only) ─────────────────────────────────────────────────────
@@ -178,12 +212,13 @@ interface ProjectStore {
 class InMemoryProjectStore implements ProjectStore {
   private data = new Map<string, Project>();
 
-  async createProject(input: CreateProjectInput): Promise<Project> {
-    const now = Date.now();
+  async createProject(input: CreateProjectInput, ownerEmail: string): Promise<Project> {
+    const now      = Date.now();
+    const firmDomain = ownerEmail === 'admin' ? '*' : (ownerEmail.split('@')[1] ?? 'admin');
     const project: Project = {
       id:               generateProjectId(),
       name:             input.name,
-      researchQuestion: input.researchQuestion,
+      researchQuestion: input.researchQuestion ?? '',
       industry:         input.industry,
       function:         input.function,
       geography:        input.geography,
@@ -192,6 +227,9 @@ class InMemoryProjectStore implements ProjectStore {
       updatedAt:        now,
       experts:          makeProjectExperts(input.experts ?? []),
       notes:            input.notes,
+      ownerEmail,
+      collaborators:    [],
+      firmDomain,
     };
     this.data.set(project.id, project);
     return project;
@@ -201,8 +239,21 @@ class InMemoryProjectStore implements ProjectStore {
     return this.data.get(id) ?? null;
   }
 
+  async getProjectForUser(id: string, email: string, role: 'admin' | 'user'): Promise<Project | null> {
+    const project = this.data.get(id) ?? null;
+    if (!project) return null;
+    return canAccess(project, email, role) ? project : null;
+  }
+
   async listProjects(): Promise<ProjectSummary[]> {
     return Array.from(this.data.values())
+      .map(toSummary)
+      .sort((a, b) => b.updatedAt - a.updatedAt);
+  }
+
+  async listProjectsForUser(email: string, role: 'admin' | 'user'): Promise<ProjectSummary[]> {
+    return Array.from(this.data.values())
+      .filter(p => canAccess(p, email, role))
       .map(toSummary)
       .sort((a, b) => b.updatedAt - a.updatedAt);
   }
@@ -259,6 +310,21 @@ class InMemoryProjectStore implements ProjectStore {
     this.data.delete(id);
     return { success: true };
   }
+
+  async addCollaborator(id: string, ownerEmail: string, collaboratorEmail: string): Promise<Project> {
+    const project = await this.getProject(id);
+    if (!project) throw new Error(`Project not found: ${id}`);
+    if (project.ownerEmail !== ownerEmail) throw new Error('Only the project owner can add collaborators');
+    if (project.collaborators.includes(collaboratorEmail)) return project;
+    return this.updateProject({ ...project, collaborators: [...project.collaborators, collaboratorEmail] });
+  }
+
+  async removeCollaborator(id: string, ownerEmail: string, collaboratorEmail: string): Promise<Project> {
+    const project = await this.getProject(id);
+    if (!project) throw new Error(`Project not found: ${id}`);
+    if (project.ownerEmail !== ownerEmail) throw new Error('Only the project owner can remove collaborators');
+    return this.updateProject({ ...project, collaborators: project.collaborators.filter(e => e !== collaboratorEmail) });
+  }
 }
 
 // ─── Upstash Redis (production) ───────────────────────────────────────────────
@@ -292,8 +358,6 @@ class UpstashProjectStore implements ProjectStore {
     }
 
     if (!acquired) {
-      // Could not acquire — proceed without lock rather than blocking the request.
-      // TODO: replace with Redis WATCH / optimistic concurrency for strict safety.
       console.warn('[projectStore] index lock contention — proceeding without lock');
     }
 
@@ -306,12 +370,13 @@ class UpstashProjectStore implements ProjectStore {
     }
   }
 
-  async createProject(input: CreateProjectInput): Promise<Project> {
-    const now = Date.now();
+  async createProject(input: CreateProjectInput, ownerEmail: string): Promise<Project> {
+    const now        = Date.now();
+    const firmDomain = ownerEmail === 'admin' ? '*' : (ownerEmail.split('@')[1] ?? 'admin');
     const project: Project = {
       id:               generateProjectId(),
       name:             input.name,
-      researchQuestion: input.researchQuestion,
+      researchQuestion: input.researchQuestion ?? '',
       industry:         input.industry,
       function:         input.function,
       geography:        input.geography,
@@ -320,6 +385,9 @@ class UpstashProjectStore implements ProjectStore {
       updatedAt:        now,
       experts:          makeProjectExperts(input.experts ?? []),
       notes:            input.notes,
+      ownerEmail,
+      collaborators:    [],
+      firmDomain,
     };
     await this.redis.set(`project:${project.id}`, JSON.stringify(project));
     await this.withIndexLock(async () => {
@@ -334,11 +402,23 @@ class UpstashProjectStore implements ProjectStore {
     if (!ID_RE.test(id)) return null;
     const raw = await this.redis.get(`project:${id}`);
     if (!raw) return null;
-    try { return JSON.parse(raw) as Project; } catch { return null; }
+    try { return parseProject(raw); } catch { return null; }
+  }
+
+  async getProjectForUser(id: string, email: string, role: 'admin' | 'user'): Promise<Project | null> {
+    const project = await this.getProject(id);
+    if (!project) return null;
+    return canAccess(project, email, role) ? project : null;
   }
 
   async listProjects(): Promise<ProjectSummary[]> {
     return this.getIndex();
+  }
+
+  async listProjectsForUser(email: string, role: 'admin' | 'user'): Promise<ProjectSummary[]> {
+    const all = await this.getIndex();
+    if (role === 'admin') return all;
+    return all.filter(s => canAccess(s, email, role));
   }
 
   async updateProject(project: Project): Promise<Project> {
@@ -354,7 +434,6 @@ class UpstashProjectStore implements ProjectStore {
 
   async deleteProject(id: string): Promise<{ success: boolean }> {
     if (!ID_RE.test(id)) return { success: false };
-    // Delete the project document; remove it from the index under the advisory lock.
     await this.redis.del(`project:${id}`);
     await this.withIndexLock(async () => {
       const index    = await this.getIndex();
@@ -404,6 +483,21 @@ class UpstashProjectStore implements ProjectStore {
     if (!project) throw new Error(`Project not found: ${id}`);
     return this.updateProject({ ...project, experts: project.experts.filter(pe => pe.expert.id !== expertId) });
   }
+
+  async addCollaborator(id: string, ownerEmail: string, collaboratorEmail: string): Promise<Project> {
+    const project = await this.getProject(id);
+    if (!project) throw new Error(`Project not found: ${id}`);
+    if (project.ownerEmail !== ownerEmail) throw new Error('Only the project owner can add collaborators');
+    if (project.collaborators.includes(collaboratorEmail)) return project;
+    return this.updateProject({ ...project, collaborators: [...project.collaborators, collaboratorEmail] });
+  }
+
+  async removeCollaborator(id: string, ownerEmail: string, collaboratorEmail: string): Promise<Project> {
+    const project = await this.getProject(id);
+    if (!project) throw new Error(`Project not found: ${id}`);
+    if (project.ownerEmail !== ownerEmail) throw new Error('Only the project owner can remove collaborators');
+    return this.updateProject({ ...project, collaborators: project.collaborators.filter(e => e !== collaboratorEmail) });
+  }
 }
 
 // ─── Factory ─────────────────────────────────────────────────────────────────
@@ -427,17 +521,30 @@ function getProjectStore(): ProjectStore {
 
 // ─── Public API ───────────────────────────────────────────────────────────────
 
-export function createProject(input: CreateProjectInput): Promise<Project> {
-  return getProjectStore().createProject(input);
+export function createProject(input: CreateProjectInput, ownerEmail: string): Promise<Project> {
+  return getProjectStore().createProject(input, ownerEmail);
 }
 
+// Internal use only — no access control. Used by webhooks, Stripe, Zoom, availability.
 export function getProject(id: string): Promise<Project | null> {
   if (!ID_RE.test(id)) return Promise.resolve(null);
   return getProjectStore().getProject(id);
 }
 
+// Access-controlled lookup — returns null if user has no access.
+export function getProjectForUser(id: string, email: string, role: 'admin' | 'user'): Promise<Project | null> {
+  if (!ID_RE.test(id)) return Promise.resolve(null);
+  return getProjectStore().getProjectForUser(id, email, role);
+}
+
+// Internal use only — returns all projects. Used by Zoom webhooks.
 export function listProjects(): Promise<ProjectSummary[]> {
   return getProjectStore().listProjects();
+}
+
+// Access-controlled list — returns only projects the user owns or collaborates on.
+export function listProjectsForUser(email: string, role: 'admin' | 'user'): Promise<ProjectSummary[]> {
+  return getProjectStore().listProjectsForUser(email, role);
 }
 
 export function updateProject(project: Project): Promise<Project> {
@@ -474,4 +581,12 @@ export function addExpertNote(id: string, expertId: string, note: string): Promi
 
 export function removeExpertFromProject(id: string, expertId: string): Promise<Project> {
   return getProjectStore().removeExpertFromProject(id, expertId);
+}
+
+export function addCollaborator(id: string, ownerEmail: string, collaboratorEmail: string): Promise<Project> {
+  return getProjectStore().addCollaborator(id, ownerEmail, collaboratorEmail);
+}
+
+export function removeCollaborator(id: string, ownerEmail: string, collaboratorEmail: string): Promise<Project> {
+  return getProjectStore().removeCollaborator(id, ownerEmail, collaboratorEmail);
 }

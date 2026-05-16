@@ -3,6 +3,7 @@
 import { useState } from 'react';
 import { Expert, SourceLink, EvidenceItem } from '../types';
 import { isLinkedInProfileUrl } from '../lib/domainSuggestions';
+import { classifySeniority, TIER_PRICING } from '../lib/seniorityClassifier';
 import OutreachModal from './OutreachModal';
 import ContactSection from './ContactSection';
 
@@ -49,6 +50,8 @@ function scoreClass(score: number): string {
 
 export default function ExpertCard({ expert, query, index = 0, quickActions, hideContact = false }: Props) {
   const [showOutreach, setShowOutreach] = useState(false);
+  const tier    = classifySeniority(expert.title ?? '');
+  const pricing = TIER_PRICING[tier];
 
   return (
     <>
@@ -72,6 +75,14 @@ export default function ExpertCard({ expert, query, index = 0, quickActions, hid
                 {expert.relevance_score > 0 ? expert.relevance_score : '—'}
               </div>
               <div className="text-[10px] uppercase tracking-widest text-muted mt-1">Score</div>
+              <div className={`mt-1.5 text-[9px] uppercase tracking-widest font-semibold px-1.5 py-0.5 ${
+                tier === 'executive' ? 'bg-amber-50 text-amber-700 border border-amber-200' :
+                tier === 'senior'    ? 'bg-teal-50 text-teal-700 border border-teal-200' :
+                                       'bg-slate-50 text-slate-500 border border-slate-200'
+              }`} style={{ letterSpacing: '0.1em' }}>
+                {tier === 'executive' ? 'Executive' : tier === 'senior' ? 'Senior' : 'Mid-Level'}
+              </div>
+              <div className="text-[9px] text-muted mt-0.5">${pricing.callRate}/call</div>
             </div>
           </div>
 

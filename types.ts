@@ -25,6 +25,15 @@ export interface EvidenceItem {
   confidence?: 'high' | 'medium' | 'low';
 }
 
+export type SeniorityTier = 'executive' | 'senior' | 'mid';
+export interface TierPricing {
+  tier:        SeniorityTier;
+  label:       string;
+  callRate:    number;
+  expertRate:  number;
+  platformFee: number;
+}
+
 export interface Expert {
   id: string;
   name: string;
@@ -43,6 +52,8 @@ export interface Expert {
   linkedin_confidence?: 'high' | 'medium' | 'low';
   linkedin_source?: string;
   valueChainLabel?: string;   // human-readable supply-chain position label (e.g. "Fiber & Textile Science")
+  seniorityTier?: SeniorityTier;
+  tierPricing?:   TierPricing;
 }
 
 export interface InsufficientExperts {
@@ -134,7 +145,15 @@ export type ExpertStatus =
   | 'contacted'
   | 'replied'
   | 'scheduled'
-  | 'completed';
+  | 'completed'
+  | 'email2_sent'
+  | 'rate_negotiation'
+  | 'conflict_flagged'
+  | 'rejected_after_outreach'
+  | 'scheduling_sent';
+
+export type EmailStep = 'email1' | 'email2' | 'email3';
+export type ReplyIntent = 'interested' | 'declined' | 'counter_rate' | 'conflict' | 'unclear';
 
 export type RejectionReason =
   | 'too_generic'
@@ -251,6 +270,17 @@ export interface ProjectExpert {
   overlapResult?:    OverlapSlot | null;
   overlapCheckedAt?: number;
   calendarEventId?:  string;
+  agreedRate?: number;
+  // Email sequence fields
+  outreachToken?:        string;
+  outreachStep?:         'email1' | 'email2' | 'email3';
+  email1SentAt?:         number;
+  email2SentAt?:         number;
+  email3SentAt?:         number;
+  replyDetectedAt?:      number;
+  replyIntent?:          'interested' | 'declined' | 'counter_rate' | 'conflict' | 'unclear';
+  counterRateProposed?:  number;
+  conflictNote?:         string;
   // Billing / Stripe
   expertRate?:           number | null;  // hourly rate in USD, set during outreach
   callDurationMin?:      number | null;  // actual call duration in minutes, set at completion
@@ -267,6 +297,11 @@ export interface ProjectExpert {
   zoomMeetingStarted?: boolean;
   zoomMeetingEndedAt?: number | null;  // Unix ms timestamp
   actualDurationMin?:  number | null;  // from Zoom webhook, overrides manual callDurationMin
+  // Stripe Connect — expert payouts
+  stripeConnectAccountId?:  string;
+  stripeTransferId?:        string;
+  expertPaidAt?:            number;
+  expertOnboardingStatus?:  'pending' | 'complete' | 'failed';
   addedAt: number;
   updatedAt: number;
 }
@@ -312,6 +347,10 @@ export interface Project {
   clientCalendarRefreshToken?:   string | null;  // encrypted
   clientCalendarEmail?:          string | null;
   clientCalendlyUrl?:            string;
+  // Ownership
+  ownerEmail:     string;
+  collaborators:  string[];
+  firmDomain:     string;
 }
 
 export interface ProjectSummary {
@@ -322,6 +361,8 @@ export interface ProjectSummary {
   shortlistedCount: number;
   createdAt: number;
   updatedAt: number;
+  ownerEmail:    string;
+  collaborators: string[];
 }
 
 // ─── Contact enrichment ──────────────────────────────────────────────────────

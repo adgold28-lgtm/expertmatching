@@ -13,9 +13,12 @@ export function getStripe(): Stripe {
 // Named export kept for convenience — lazily initialised on first use.
 // Do NOT call this at module-load time in route files; it will fail during build.
 export const stripe = {
-  get customers()    { return getStripe().customers; },
-  get products()     { return getStripe().products; },
-  get prices()       { return getStripe().prices; },
-  get paymentLinks() { return getStripe().paymentLinks; },
-  get webhooks()     { return getStripe().webhooks; },
+  get customers()     { return getStripe().customers; },
+  get products()      { return getStripe().products; },
+  get prices()        { return getStripe().prices; },
+  get paymentLinks()  { return getStripe().paymentLinks; },
+  get webhooks()      { return getStripe().webhooks; },
+  get accounts()      { return getStripe().accounts; },
+  get accountLinks()  { return getStripe().accountLinks; },
+  get transfers()     { return getStripe().transfers; },
 };

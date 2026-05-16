@@ -1,8 +1,6 @@
 import type { Metadata } from 'next';
 import { Spectral, Libre_Franklin } from 'next/font/google';
-import { cookies } from 'next/headers';
 import './globals.css';
-import SignOutWidget from '../components/SignOutWidget';
 
 const spectral = Spectral({
   subsets: ['latin'],
@@ -25,15 +23,9 @@ export const metadata: Metadata = {
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
-  const cookieStore = cookies();
-  const isAuthenticated = cookieStore.has('expertmatch_session');
-
   return (
     <html lang="en" className={`${spectral.variable} ${libreFranklin.variable}`}>
-      <body className="font-body antialiased">
-        {children}
-        {isAuthenticated && <SignOutWidget />}
-      </body>
+      <body className="font-body antialiased">{children}</body>
     </html>
   );
 }

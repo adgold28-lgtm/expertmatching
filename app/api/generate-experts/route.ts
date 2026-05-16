@@ -403,6 +403,8 @@ async function inferValueChain(
 Research question: "${query.trim()}"
 ${briefSnippet ? `Brief context:\n${briefSnippet}` : ''}
 
+GOAL-ORIENTED REFRAMING: When the research question is goal-oriented ("I want to X", "How do I X", "We are considering X"), reframe it as: "Who has successfully done X or directly advised on X?" Then identify the specific job titles, companies, and industry segments where those people work or have worked. A former VP of Manufacturing at a sporting goods company is far more valuable than a market research analyst who studies the sector.
+
 Think through each question:
 1. What specific product, process, or object is the research question about?
 2. Who manufactures or produces it? (fabricators, assemblers, material makers, component suppliers)
@@ -411,34 +413,39 @@ Think through each question:
 5. Who buys or procures it? (the end market)
 6. Who analyzes or advises on it?
 7. Is the stated industry the END MARKET (buyer) rather than where the real experts live?
+8. Who has DONE this before — not who studies it? (former operators, founders, executives who ran this)
+9. Who are the adjacent experts that a practitioner would consult? (legal, regulatory, sourcing, distribution)
+
+EXPERT POOL REQUIREMENT: You MUST identify at least 5 distinct expert archetypes even for niche topics. For a manufacturing/market-entry question these always include: (1) materials/ingredient suppliers, (2) equipment vendors, (3) contract manufacturers or operators, (4) industry consultants and former operators, (5) regulatory or compliance experts, (6) import/distribution/logistics specialists, (7) investors or PE professionals in the sector, (8) trade association executives.
 
 Return ONLY valid JSON, no prose, no markdown:
 {
   "endMarket": "stated industry or buyer role (e.g. Banking/payment card issuers)",
-  "actualExpertPools": ["all relevant expert pools in this value chain"],
-  "primaryExpertPools": ["most direct experts — manufacturers, technical producers, material suppliers"],
-  "secondaryExpertPools": ["useful but indirect — buyers with material programs, market analysts"],
+  "actualExpertPools": ["all relevant expert pools — minimum 5 distinct archetypes"],
+  "primaryExpertPools": ["most direct experts — former operators, manufacturers, technical producers, material suppliers — people who HAVE DONE this"],
+  "secondaryExpertPools": ["useful but indirect — consultants who advise on it, analysts, buyers with material programs"],
   "excludedOrLowPriorityPools": ["generic end-market roles with no technical evidence value"],
   "keyTechnicalConstraints": ["specific constraints that govern expert relevance"],
-  "mustSearchTerms": ["specific company names", "technical terms", "industry jargon for queries — for waste_byproduct_reuse include: waste stream keywords, transformation process terms, and application-specific vocabulary"],
+  "mustSearchTerms": ["specific company names in this space", "technical job titles", "industry jargon", "relevant trade associations", "contract manufacturer names", "equipment vendor names", "regulatory bodies — minimum 8 terms for market_entry and general briefTypes"],
   "mustAvoidWeakMatches": ["overly broad or generic terms that produce irrelevant results"],
   "valueChainLabels": ["list of 3–5 human-readable position labels for this specific value chain, e.g. for waste-to-textiles: ['Waste Source / Byproducts', 'Fiber & Textile Science', 'Biomaterials / Keratin', 'Commercialization', 'Adjacent Materials']"],
-  "briefType": "general"
+  "briefType": "general",
+  "queryDiversityCheck": ["operator archetype covered", "advisor archetype covered", "outsider/regulatory archetype covered"]
 }
 
 briefType options:
 - "product_material_substitution": brief asks about replacing the MATERIAL or SUBSTRATE of an existing physical product (e.g. plastic card → bamboo card)
 - "waste_byproduct_reuse": brief asks about CONVERTING a waste stream, agricultural byproduct, or industrial residue into a new material, product, or application (e.g. poultry feathers → textile fiber, brewery waste → protein material, bone → bioplastic)
-- "market_entry": brief asks about entering a specific geographic or segment market
+- "market_entry": brief asks about entering a specific geographic or segment market — ALWAYS include in mustSearchTerms: former operators at companies in target industry, contract manufacturers, industry consultants, PE/investment professionals who invested in this sector, trade association executives
 - "operational": brief asks about improving operations, processes, or AI adoption within an industry
 - "acquisition": brief asks about buying, investing in, or acquiring a company, asset, or creator
-- "general": any other research question`;
+- "general": any other research question — treat like market_entry for mustSearchTerms depth`;
 
   try {
     const { value: resp, retries } = await callWithRetry(
       () => client.messages.create({
         model:      'claude-haiku-4-5',
-        max_tokens: 1200,
+        max_tokens: 1800,
         messages:   [{ role: 'user', content: prompt }],
       }),
       1,
@@ -675,22 +682,61 @@ function buildSearchQueriesFromBrief(
   pairs.push({ category: 'Outsider', query:
     `${base.slice(0, 55)} "think tank" OR policy analyst OR strategist`.trim() });
 
-  // When value chain interpretation is available, add supply-chain-targeted queries
-  // to the programmatic fallback. These target manufacturers, suppliers, and
-  // technical constraint-setters rather than just end-market roles.
+  // When value chain interpretation is available, add supply-chain-targeted queries.
   if (vci && vci.mustSearchTerms.length > 0) {
-    const scTerms = vci.mustSearchTerms.slice(0, 8);
+    const scTerms = vci.mustSearchTerms.slice(0, 10);
     const constraint = vci.keyTechnicalConstraints[0]?.slice(0, 35) ?? 'expert';
-    // Up to 3 additional Operator queries targeting the supply chain
-    for (let i = 0; i < Math.min(3, scTerms.length); i++) {
+    const primaryPool = vci.primaryExpertPools[0]?.slice(0, 45) ?? base;
+
+    // Up to 4 Operator queries targeting the supply chain
+    for (let i = 0; i < Math.min(4, scTerms.length); i++) {
       pairs.push({ category: 'Operator', query:
         `"${scTerms[i].slice(0, 50)}" ${constraint} expert OR engineer OR director profile OR interview` });
     }
-    // 1 additional Advisor query for supply-chain-specific market coverage
-    if (scTerms.length >= 2) {
+    // 2 Advisor queries for supply-chain-specific coverage
+    pairs.push({ category: 'Advisor', query:
+      `${primaryPool} consultant OR advisor "former" OR "ex-" OR "previously" profile`.trim() });
+    if (scTerms.length >= 3) {
       pairs.push({ category: 'Advisor', query:
-        `${vci.primaryExpertPools[0]?.slice(0, 45) ?? base} sustainable OR alternative consultant OR analyst published`.trim() });
+        `${scTerms[2].slice(0, 50)} consultant OR analyst published OR keynote OR whitepaper`.trim() });
     }
+
+    // For market_entry and general briefTypes, add practitioner-focused angles
+    if (vci.briefType === 'market_entry' || vci.briefType === 'general') {
+      // Former operators who have done this
+      pairs.push({ category: 'Operator', query:
+        `"former" OR "ex-" ${primaryPool} "VP" OR "director" OR "founder" OR "president" site:linkedin.com/in${geoMod}`.trim() });
+      // Contract manufacturers
+      pairs.push({ category: 'Operator', query:
+        `${base.slice(0, 50)} "contract manufacturer" OR "contract manufacturing" OR "OEM" OR "toll manufacturer" executive`.trim() });
+      // PE/investment professionals in the sector
+      pairs.push({ category: 'Advisor', query:
+        `${base.slice(0, 50)} "private equity" OR "portfolio" OR "venture" OR "invested in" OR "invested" investor partner`.trim() });
+      // Trade association executives
+      pairs.push({ category: 'Outsider', query:
+        `${base.slice(0, 50)} "trade association" OR "industry association" OR "trade group" executive OR director`.trim() });
+      // Import / distribution / logistics
+      pairs.push({ category: 'Operator', query:
+        `${base.slice(0, 50)} "import" OR "distribution" OR "supply chain" OR "logistics" director OR VP${geoMod}`.trim() });
+    }
+  }
+
+  // ── queryDiversityCheck ────────────────────────────────────────────────────
+  // Verify at least 3 archetypes are covered. The 12 base queries always cover
+  // all three, but VCI-supplemental queries may skew Operator-heavy. This
+  // check is a safeguard for degenerate cases where base queries were trimmed.
+  const archetypesCovered = new Set(pairs.map(p => p.category));
+  if (!archetypesCovered.has('Operator')) {
+    pairs.push({ category: 'Operator', query:
+      `site:linkedin.com/in "${liTerms}" ${seniorTerms}${geoMod}`.trim() });
+  }
+  if (!archetypesCovered.has('Advisor')) {
+    pairs.push({ category: 'Advisor', query:
+      `"${base.slice(0, 55)}" consultant OR advisor profile OR interview`.trim() });
+  }
+  if (!archetypesCovered.has('Outsider')) {
+    pairs.push({ category: 'Outsider', query:
+      `${base.slice(0, 55)} government OR regulator OR academic OR researcher`.trim() });
   }
 
   return pairs;
@@ -835,10 +881,14 @@ export async function POST(request: NextRequest) {
           .filter((n): n is string => typeof n === 'string')
           .map(n => n.trim())
           .filter(Boolean)
+          .slice(0, 50)
       : [];
     const excludeNamesSet = excludeNames.length > 0
       ? new Set(excludeNames.map(n => n.toLowerCase()))
       : null;
+    const topLevelAdditionalContext = typeof body.additionalContext === 'string'
+      ? body.additionalContext.trim().slice(0, 2000)
+      : '';
 
     if (!query?.trim()) {
       return Response.json({ error: 'Query is required' }, { status: 400 });
@@ -868,8 +918,10 @@ export async function POST(request: NextRequest) {
       seniority && seniority !== 'any' ? `Seniority: ${seniority}` : null,
     ].filter(Boolean).join('\n');
 
-    const queryBriefBlock = buildQueryBriefBlock(briefContext);
-    const exclusionsBlock = buildExclusionsBlock(briefContext);
+    const queryBriefBlock = buildQueryBriefBlock(briefContext) +
+      (topLevelAdditionalContext ? `\n\nAdditional search context (use to sharpen queries):\n${topLevelAdditionalContext}` : '');
+    const exclusionsBlock = buildExclusionsBlock(briefContext) +
+      (excludeNames.length > 0 ? `\n\nAlready-found experts — do NOT re-surface:\n${excludeNames.slice(0, 50).join(', ')}` : '');
 
     // ── Step 1: Build 12 targeted search queries ──────────────────────────────
     // Primary: Haiku LLM call — knows real company/publication/conference names.

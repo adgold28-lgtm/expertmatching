@@ -16,9 +16,13 @@ import { sendAvailabilityRequest }    from '../../../../../../../lib/sendAvailab
 // 5 requests per expert per hour (to prevent spamming the expert).
 
 import { createHmac } from 'crypto';
-import { createRateLimiterStore } from '../../../../../../../lib/rateLimiter';
+import { createRateLimiterStore, type RateLimiterStore } from '../../../../../../../lib/rateLimiter';
 
-const rl = createRateLimiterStore();
+let _rl: RateLimiterStore | null = null;
+function getRl(): RateLimiterStore {
+  if (!_rl) _rl = createRateLimiterStore();
+  return _rl;
+}
 
 function pseudonymize(value: string): string {
   const secret = process.env.LOG_HASH_SECRET ?? 'dev-fallback-secret';
@@ -45,7 +49,7 @@ export async function POST(
 
   // ── 3. Rate limit: 5 sends / expert / hour ────────────────────────────────
   const rlKey   = `rl:avail-req:${pseudonymize(`${projectId}:${expertId}`)}:1h`;
-  const rlCheck = await rl.increment(rlKey, 60 * 60 * 1000);
+  const rlCheck = await getRl().increment(rlKey, 60 * 60 * 1000);
   if (rlCheck.count > 5) {
     const retryAfterS = Math.ceil(rlCheck.ttlMs / 1000);
     return NextResponse.json(

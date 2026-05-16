@@ -22,7 +22,11 @@ const NAME_RE      = /^[A-Za-z\s'\-]{1,80}$/;
 // ─── Rate limiting ────────────────────────────────────────────────────────────
 // 3 sends per project per hour
 
-const rl = createRateLimiterStore();
+let _rl: ReturnType<typeof createRateLimiterStore> | null = null;
+function getRl() {
+  if (!_rl) _rl = createRateLimiterStore();
+  return _rl;
+}
 
 function pseudonymize(value: string): string {
   const secret = process.env.LOG_HASH_SECRET ?? 'dev-fallback-secret';
@@ -67,7 +71,7 @@ export async function POST(
 
   // ── 4. Rate limit: 3 sends / project / hour ───────────────────────────────
   const rlKey   = `rl:client-avail-req:${pseudonymize(projectId)}:1h`;
-  const rlCheck = await rl.increment(rlKey, 60 * 60 * 1000);
+  const rlCheck = await getRl().increment(rlKey, 60 * 60 * 1000);
   if (rlCheck.count > 3) {
     const retryAfterS = Math.ceil(rlCheck.ttlMs / 1000);
     return NextResponse.json(

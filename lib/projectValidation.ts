@@ -198,14 +198,14 @@ export function validateProjectExpert(raw: unknown): Expert | null {
 // ─── Project creation input validation ───────────────────────────────────────
 
 export interface ProjectCreateData {
-  name:             string;
-  researchQuestion: string;
-  industry:         string;
-  function:         string;
-  geography:        string;
-  seniority:        string;
-  notes?:           string;
-  experts:          Array<{ expert: Expert; status?: ExpertStatus }>;
+  name:              string;
+  researchQuestion?: string;  // optional — filled later when user runs search
+  industry:          string;
+  function:          string;
+  geography:         string;
+  seniority:         string;
+  notes?:            string;
+  experts:           Array<{ expert: Expert; status?: ExpertStatus }>;
 }
 
 export interface FieldError { field: string; error: string; }
@@ -225,8 +225,7 @@ export function validateCreateProjectInput(
     ? sanitizeText(body.notes, LIMITS.notes) || undefined
     : undefined;
 
-  if (!name)             errors.push({ field: 'name',             error: 'required' });
-  if (!researchQuestion) errors.push({ field: 'researchQuestion', error: 'required' });
+  if (!name) errors.push({ field: 'name', error: 'required' });
   if (errors.length > 0) return { errors };
 
   // Validate experts array (may be empty for a fresh project)
@@ -253,5 +252,5 @@ export function validateCreateProjectInput(
     experts.push({ expert, status });
   }
 
-  return { data: { name, researchQuestion, industry, function: fn, geography, seniority, notes, experts } };
+  return { data: { name, researchQuestion: researchQuestion || '', industry, function: fn, geography, seniority, notes, experts } };
 }

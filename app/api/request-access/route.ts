@@ -1,6 +1,9 @@
 import { NextRequest } from 'next/server';
 import { Resend } from 'resend';
 import { getUpstashClient } from '../../../lib/upstashRedis';
+import { isApprovedDomain } from '../../../lib/domainWhitelist';
+import { generateSignupToken } from '../../../lib/signupToken';
+import { sendInviteEmail } from '../../../lib/sendAvailabilityRequest';
 
 interface AccessRequest {
   name:        string;
@@ -63,14 +66,42 @@ export async function POST(request: NextRequest) {
     submittedAt: Date.now(),
   };
 
-  // Store in Redis — best effort
+  const domain = record.email.split('@')[1] ?? '';
+
+  // Check if domain is already approved — if so, send invite immediately
+  let autoApproved = false;
+  if (domain) {
+    try {
+      autoApproved = await isApprovedDomain(domain);
+    } catch {
+      autoApproved = false;
+    }
+  }
+
+  if (autoApproved && process.env.NEXT_PUBLIC_APP_URL) {
+    try {
+      const { token, hash, expiry } = generateSignupToken(record.email, record.firm);
+      const redis = getUpstashClient();
+      if (redis) {
+        const ttlSeconds = Math.floor((expiry - Date.now()) / 1000);
+        await redis.set(`signup-token:${hash}`, record.email, { ex: ttlSeconds });
+      }
+      const signupUrl = `${process.env.NEXT_PUBLIC_APP_URL}/signup/${token}`;
+      await sendInviteEmail(record.email, record.firm, signupUrl);
+      console.log('[request-access] auto-approved invite sent', { domain });
+      return Response.json({ ok: true });
+    } catch {
+      // Fall through to manual review on any error
+      autoApproved = false;
+    }
+  }
+
+  // Store as pending and notify admin
   try {
     const redis = getUpstashClient();
     if (redis) {
-      // Individual record keyed by email — overwrites on re-submit
       await redis.set(`access-request:${record.email}`, JSON.stringify(record));
 
-      // Append to list (newest-first), cap at 500
       const listKey = 'access-requests:list';
       const existing = await redis.get(listKey);
       let list: AccessRequest[] = [];
@@ -81,7 +112,6 @@ export async function POST(request: NextRequest) {
           list = [];
         }
       }
-      // Remove any existing entry for this email, prepend new one
       list = [record, ...list.filter(r => r.email !== record.email)].slice(0, 500);
       await redis.set(listKey, JSON.stringify(list));
     }
@@ -89,7 +119,7 @@ export async function POST(request: NextRequest) {
     // Redis failure must not fail the request
   }
 
-  // Notify — non-blocking, never fails the response
+  // Notify admin — non-blocking
   if (process.env.DISABLE_EMAILS !== 'true') {
     const resend = getResend();
     const from   = process.env.OUTREACH_FROM_EMAIL;

@@ -1,7 +1,8 @@
 import { NextRequest } from 'next/server';
-import { getProject, updateProject, deleteProject } from '../../../../lib/projectStore';
+import { getProject, getProjectForUser, updateProject, deleteProject } from '../../../../lib/projectStore';
 import { guardReadRequest, guardMutatingRequest } from '../../../../lib/projectsGuard';
 import { sanitizeText, LIMITS, VALID_PERSPECTIVES } from '../../../../lib/projectValidation';
+import { getSessionUser } from '../../../../lib/auth';
 
 const ID_RE = /^[a-f0-9]{24}$/;
 
@@ -16,7 +17,8 @@ export async function GET(
     return Response.json({ error: 'invalid_project_id' }, { status: 400 });
   }
   try {
-    const project = await getProject(params.projectId);
+    const { email, role } = await getSessionUser(request);
+    const project = await getProjectForUser(params.projectId, email, role);
     if (!project) return Response.json({ error: 'not_found' }, { status: 404 });
     return Response.json({ project });
   } catch (err) {
@@ -37,7 +39,8 @@ export async function PUT(
     return Response.json({ error: 'invalid_project_id' }, { status: 400 });
   }
   try {
-    const project = await getProject(params.projectId);
+    const { email, role } = await getSessionUser(request);
+    const project = await getProjectForUser(params.projectId, email, role);
     if (!project) return Response.json({ error: 'not_found' }, { status: 404 });
 
     const updated = await updateProject({
@@ -111,12 +114,16 @@ export async function DELETE(
     return Response.json({ error: 'invalid_project_id' }, { status: 400 });
   }
   try {
-    // Confirm the project exists before deleting so we can return 404 properly.
-    const project = await getProject(params.projectId);
+    const { email, role } = await getSessionUser(request);
+    const project = await getProjectForUser(params.projectId, email, role);
     if (!project) return Response.json({ error: 'not_found' }, { status: 404 });
 
+    // Only owner (or admin) can delete.
+    if (role !== 'admin' && project.ownerEmail !== email) {
+      return Response.json({ error: 'forbidden' }, { status: 403 });
+    }
+
     const result = await deleteProject(params.projectId);
-    // Safe log — no project name, research question, or notes.
     console.info('[api/projects/[id]] DELETE', JSON.stringify({ action: 'delete_project', result: result.success ? 'success' : 'failure' }));
     if (!result.success) {
       return Response.json({ error: 'failed_to_delete_project' }, { status: 500 });

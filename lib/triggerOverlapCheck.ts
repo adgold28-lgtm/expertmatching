@@ -8,7 +8,11 @@ import { getProject, updateExpertStatus, updateProjectFields } from './projectSt
 import { computeOverlap }       from './computeOverlap';
 import { fetchCalendlySlots }   from './fetchCalendlySlots';
 import { fetchGoogleFreebusy }  from './fetchGoogleFreebusy';
+import { createZoomMeeting }    from './createZoomMeeting';
+import { generateIcs }          from './generateIcs';
+import { sendConfirmationEmail } from './sendAvailabilityRequest';
 import type { AvailabilitySlot } from '../types';
+import { randomBytes }          from 'crypto';
 
 // ─── Timezone extraction ──────────────────────────────────────────────────────
 
@@ -109,17 +113,97 @@ export async function triggerOverlapCheck(
 
     // ── 8. Act on result ─────────────────────────────────────────────────
     if (result.found && result.bestSlot) {
+      const slot = result.bestSlot;
       try {
-        const { createCalendarInvite } = await import('./createCalendarInvite');
-        await createCalendarInvite(projectId, expertId, result.bestSlot);
+        const durationMin = slot.durationMin ?? 60;
+
+        // Create Zoom meeting
+        const zoomMeeting = await createZoomMeeting(
+          `Expert Call — ${project.name}`,
+          slot.startUtc,
+          durationMin,
+          pe.expert.name,
+        );
+
+        // Build end time from start + duration
+        const startMs = new Date(slot.startUtc).getTime();
+        const endUtc  = new Date(startMs + durationMin * 60 * 1000).toISOString();
+
+        const joinUrl = zoomMeeting?.joinUrl ?? 'Video call — link to follow';
+        const uid     = randomBytes(16).toString('hex');
+
+        // Update ProjectExpert with scheduled status + Zoom details
+        await updateExpertStatus(projectId, expertId, {
+          status:          'scheduled',
+          scheduledTime:   slot.startExpert,
+          ...(zoomMeeting ? {
+            zoomMeetingId: zoomMeeting.meetingId,
+            zoomJoinUrl:   zoomMeeting.joinUrl,
+            zoomStartUrl:  zoomMeeting.startUrl,
+          } : {}),
+        });
+
+        // Generate .ics and send confirmation to both parties
+        try {
+          const attendees = [
+            pe.contactEmail,
+            project.clientEmail,
+          ].filter((e): e is string => typeof e === 'string' && e.trim().length > 0);
+
+          const organizer = process.env.OUTREACH_FROM_EMAIL?.match(/<(.+)>/)?.[1]
+            ?? process.env.OUTREACH_FROM_EMAIL
+            ?? 'asher@expertmatch.fit';
+
+          const description = [
+            `Expert: ${pe.expert.name}, ${pe.expert.title} at ${pe.expert.company}`,
+            '',
+            zoomMeeting ? `Join Zoom: ${zoomMeeting.joinUrl}` : '',
+            zoomMeeting ? `Meeting ID: ${zoomMeeting.meetingId}` : '',
+          ].filter(l => l.length > 0).join('\\n');
+
+          generateIcs({
+            title:       `Expert Call — ${project.name}`,
+            startUtc:    slot.startUtc,
+            endUtc,
+            description,
+            location:    joinUrl,
+            organizer,
+            attendees,
+            uid,
+          });
+
+          if (pe.contactEmail && project.clientEmail) {
+            await sendConfirmationEmail(
+              pe.contactEmail,
+              project.clientEmail,
+              {
+                title:       `Expert Call — ${project.name}`,
+                startUtc:    slot.startUtc,
+                endUtc,
+                description,
+                location:    joinUrl,
+                organizer,
+                attendees,
+                uid,
+              },
+              pe.expert.name,
+              project.clientName ?? 'Client',
+            );
+          }
+        } catch (icsErr) {
+          console.error('[triggerOverlapCheck] ICS/confirmation error:',
+            icsErr instanceof Error ? icsErr.message.slice(0, 120) : 'unknown');
+          // Non-fatal — meeting is already created and status updated
+        }
+
+        console.log('[triggerOverlapCheck] scheduled and ICS sent', { projectId, status: 'ok' });
       } catch (err) {
-        console.error('[triggerOverlapCheck] createCalendarInvite failed:',
+        console.error('[triggerOverlapCheck] scheduling failed:',
           err instanceof Error ? err.message.slice(0, 120) : 'unknown');
       }
     } else {
       // No overlap found — log only, no PII
       console.log('[triggerOverlapCheck] no overlap found for project', { projectId });
-      // Stub: in production, send a "no common time" email to both parties
     }
 
   } catch (err) {

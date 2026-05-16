@@ -9,25 +9,27 @@ export function hashPassword(password: string): string {
   return `scrypt:${salt}:${hash}`;
 }
 
-export function verifyAdminPassword(password: string): boolean {
-  const stored = process.env.ADMIN_PASSWORD_HASH;
-  if (!stored) return false;
-
-  const parts = stored.split(':');
+export function verifyPassword(password: string, storedHash: string): boolean {
+  const parts = storedHash.split(':');
   if (parts.length !== 3 || parts[0] !== 'scrypt') return false;
   const [, salt, storedHex] = parts;
 
   try {
-    const inputHash  = scryptSync(password, salt, 64);
-    const storedHash = Buffer.from(storedHex, 'hex');
-    // Pad both to the same length before timingSafeEqual (requires equal-length buffers).
-    const len = Math.max(inputHash.length, storedHash.length);
+    const inputHash = scryptSync(password, salt, 64);
+    const stored    = Buffer.from(storedHex, 'hex');
+    const len = Math.max(inputHash.length, stored.length);
     const a   = Buffer.alloc(len);
     const b   = Buffer.alloc(len);
     inputHash.copy(a);
-    storedHash.copy(b);
-    return inputHash.length === storedHash.length && timingSafeEqual(a, b);
+    stored.copy(b);
+    return inputHash.length === stored.length && timingSafeEqual(a, b);
   } catch {
     return false;
   }
+}
+
+export function verifyAdminPassword(password: string): boolean {
+  const stored = process.env.ADMIN_PASSWORD_HASH;
+  if (!stored) return false;
+  return verifyPassword(password, stored);
 }

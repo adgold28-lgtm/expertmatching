@@ -3,7 +3,8 @@
 import { useCallback, useEffect, useRef, useState, Suspense } from 'react';
 import Link from 'next/link';
 import { useParams, useRouter, useSearchParams } from 'next/navigation';
-import type { Project, ProjectExpert, ExpertStatus, Expert, ExpertResponse } from '../../../types';
+import type { Project, ProjectExpert, ExpertStatus, Expert, ExpertResponse, SeniorityTier } from '../../../types';
+import { classifySeniority } from '../../../lib/seniorityClassifier';
 import ProjectExpertCard from '../../../components/ProjectExpertCard';
 import { downloadProjectBriefPdf } from '../../../lib/exportBrief';
 import ScreeningCard from '../../../components/ScreeningCard';
@@ -284,12 +285,14 @@ function BriefSection({
   onStepChange,
   onExport,
   onDeleteStart,
+  onExpertsSourced,
 }: {
   project: Project;
   onSave: (updates: Partial<Project>) => void;
   onStepChange: (step: WorkflowStep) => void;
   onExport: () => void;
   onDeleteStart: () => void;
+  onExpertsSourced: (experts: import('../../../types').ProjectExpert[]) => void;
 }) {
   // Research context
   const [keyQuestions,       setKeyQuestions]       = useState(project.keyQuestions       ?? '');
@@ -310,8 +313,11 @@ function BriefSection({
   // Internal notes
   const [notes,              setNotes]              = useState(project.notes              ?? '');
   const [confNotes,          setConfNotes]          = useState(project.confidentialNotes  ?? '');
-  const [saving, setSaving] = useState(false);
-  const [saved,  setSaved]  = useState(false);
+  const [saving,       setSaving]       = useState(false);
+  const [saved,        setSaved]        = useState(false);
+  const [tierFilter,   setTierFilter]   = useState<SeniorityTier | 'all'>('all');
+  const [sourcing,     setSourcing]     = useState(false);
+  const [sourceError,  setSourceError]  = useState('');
 
   function togglePerspective(id: string) {
     setPerspectivesNeeded(prev =>
@@ -353,6 +359,103 @@ function BriefSection({
       }
     } finally {
       setSaving(false);
+    }
+  }
+
+  async function handleSourceExperts() {
+    if (sourcing) return;
+    setSourcing(true);
+    setSourceError('');
+    try {
+      // Save brief first so sourcing uses the latest values
+      const parsed = parseInt(targetExpertCount, 10);
+      const briefBody: Record<string, unknown> = {
+        notes,
+        confidentialNotes:   confNotes,
+        timeline:            timeline            || '',
+        keyQuestions:        keyQuestions        || '',
+        initialHypotheses:   initialHypotheses   || '',
+        additionalContext:   additionalContext   || '',
+        mustHaveExpertise:   mustHaveExpertise   || '',
+        niceToHaveExpertise: niceToHaveExpertise || '',
+        targetCompanies:     targetCompanies     || '',
+        companiesToAvoid:    companiesToAvoid    || '',
+        peopleToAvoid:       peopleToAvoid       || '',
+        conflictExclusions:  conflictExclusions  || '',
+        perspectivesNeeded,
+      };
+      if (!isNaN(parsed) && parsed > 0) briefBody.targetExpertCount = parsed;
+
+      await fetch(`/api/projects/${project.id}`, {
+        method:  'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify(briefBody),
+      });
+
+      // Run expert sourcing
+      const briefContext = buildBriefContext({
+        ...project,
+        keyQuestions,
+        initialHypotheses,
+        additionalContext,
+        mustHaveExpertise,
+        niceToHaveExpertise,
+        targetCompanies,
+        companiesToAvoid,
+        peopleToAvoid,
+        conflictExclusions,
+        perspectivesNeeded,
+        timeline,
+        targetExpertCount: !isNaN(parsed) && parsed > 0 ? parsed : project.targetExpertCount,
+      });
+
+      const res = await fetch('/api/generate-experts', {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({
+          query:        project.researchQuestion,
+          geography:    project.geography || 'any',
+          seniority:    project.seniority || 'any',
+          briefContext: Object.keys(briefContext).length > 0 ? briefContext : undefined,
+        }),
+      });
+      const data = await res.json() as ExpertResponse & { error?: string; message?: string };
+      if (data.error) {
+        const friendly = data.error === 'expert_generation_parse_failed'
+          ? 'Expert generation failed while formatting results. Please try again or simplify the brief.'
+          : (data.message ?? data.error);
+        throw new Error(friendly);
+      }
+
+      const experts: Expert[] = (data.experts ?? []).map((e: Expert, i: number) => ({
+        ...e,
+        id:           e.id || `src-${i}`,
+        source_links: e.source_links ?? [],
+      }));
+
+      if (experts.length === 0) {
+        throw new Error('No experts found. Try broadening the brief or adjusting the research question.');
+      }
+
+      // Save experts to the project
+      const patchRes = await fetch(`/api/projects/${project.id}/experts`, {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({ experts: experts.map(expert => ({ expert, status: 'discovered' })) }),
+      });
+      const patchData = await patchRes.json() as { project?: { experts: import('../../../types').ProjectExpert[] }; error?: string };
+      if (!patchRes.ok) throw new Error(patchData.error ?? 'Failed to save experts.');
+
+      if (patchData.project?.experts) {
+        onExpertsSourced(patchData.project.experts);
+      }
+
+      // Switch to Source tab
+      onStepChange('source');
+    } catch (err) {
+      setSourceError(err instanceof Error ? err.message : 'Sourcing failed. Please try again.');
+    } finally {
+      setSourcing(false);
     }
   }
 
@@ -644,6 +747,35 @@ function BriefSection({
           </button>
           {saved && <span className="text-[10px] text-green-700">Saved ✓</span>}
         </div>
+      </div>
+
+      {/* ── Source Experts button ── */}
+      <div className="border-t border-frame pt-6 space-y-3">
+        <div className="flex items-center gap-4">
+          <button
+            onClick={handleSourceExperts}
+            disabled={sourcing}
+            className="flex items-center gap-2.5 text-[10px] uppercase tracking-widest px-5 py-2.5 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+            style={{ background: '#C6A75E', color: '#0B1F3B', letterSpacing: '0.14em', minHeight: '40px' }}
+          >
+            {sourcing ? (
+              <>
+                <span className="inline-block w-3 h-3 border border-[#0B1F3B] border-t-transparent rounded-full animate-spin shrink-0" />
+                Sourcing experts…
+              </>
+            ) : (
+              <>
+                Source Experts →
+              </>
+            )}
+          </button>
+          <p className="text-[10px] text-muted" style={{ fontWeight: 300 }}>
+            Saves the brief, then runs AI sourcing and adds experts to the Source tab.
+          </p>
+        </div>
+        {sourceError && (
+          <p className="text-xs text-red-600 border border-red-200 bg-red-50 px-3 py-2">{sourceError}</p>
+        )}
       </div>
 
       {/* ── Danger zone ── */}
@@ -1128,6 +1260,145 @@ function DeleteConfirmOverlay({
   );
 }
 
+// ─── Share modal ─────────────────────────────────────────────────────────────
+
+function ShareModal({
+  projectId,
+  collaborators,
+  onUpdate,
+  onClose,
+}: {
+  projectId:     string;
+  collaborators: string[];
+  onUpdate:      (updated: Project) => void;
+  onClose:       () => void;
+}) {
+  const [email,   setEmail]   = useState('');
+  const [loading, setLoading] = useState(false);
+  const [error,   setError]   = useState('');
+  const ref = useRef<HTMLDivElement>(null);
+  useFocusTrap(ref, onClose);
+
+  async function add(e: React.FormEvent) {
+    e.preventDefault();
+    const trimmed = email.trim().toLowerCase();
+    if (!trimmed || loading) return;
+    setLoading(true);
+    setError('');
+    try {
+      const res = await fetch(`/api/projects/${projectId}/collaborators`, {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({ email: trimmed }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.message ?? data.error ?? 'Failed to add collaborator');
+      onUpdate(data.project);
+      setEmail('');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Something went wrong');
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function remove(collaboratorEmail: string) {
+    setLoading(true);
+    setError('');
+    try {
+      const res = await fetch(`/api/projects/${projectId}/collaborators`, {
+        method:  'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({ email: collaboratorEmail }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.message ?? data.error ?? 'Failed to remove collaborator');
+      onUpdate(data.project);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Something went wrong');
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center px-4" style={{ background: 'rgba(11,31,59,0.55)' }}>
+      <div
+        ref={ref}
+        className="bg-white border border-frame w-full max-w-md shadow-xl"
+        role="dialog"
+        aria-modal="true"
+        aria-label="Share project"
+      >
+        <div className="flex items-center justify-between px-6 py-4 border-b border-frame">
+          <p className="text-[10px] uppercase tracking-widest text-navy font-medium" style={{ letterSpacing: '0.2em' }}>
+            Share Project
+          </p>
+          <button
+            onClick={onClose}
+            className="text-muted hover:text-navy transition-colors"
+            aria-label="Close"
+          >
+            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+            </svg>
+          </button>
+        </div>
+
+        <div className="px-6 py-5 space-y-5">
+          <form onSubmit={add} className="flex items-end gap-2">
+            <div className="flex-1">
+              <label className="block text-[10px] uppercase tracking-widest text-muted mb-1.5" style={{ letterSpacing: '0.14em' }}>
+                Add by email
+              </label>
+              <input
+                type="email"
+                value={email}
+                onChange={e => setEmail(e.target.value)}
+                placeholder="colleague@firm.com"
+                disabled={loading}
+                className="w-full border border-frame bg-cream px-3 py-2.5 text-xs text-ink focus:outline-none focus:border-navy transition-colors placeholder-muted/50"
+              />
+            </div>
+            <button
+              type="submit"
+              disabled={!email.trim() || loading}
+              className="text-[10px] uppercase tracking-widest px-4 py-2.5 transition-colors disabled:opacity-40 shrink-0"
+              style={{ background: '#0B1F3B', color: '#C6A75E', letterSpacing: '0.12em' }}
+            >
+              Invite
+            </button>
+          </form>
+
+          {error && <p className="text-[11px] text-red-600">{error}</p>}
+
+          {collaborators.length > 0 ? (
+            <div className="space-y-2">
+              <p className="text-[10px] uppercase tracking-widest text-muted" style={{ letterSpacing: '0.14em' }}>
+                Collaborators
+              </p>
+              {collaborators.map(c => (
+                <div key={c} className="flex items-center justify-between px-3 py-2 bg-cream border border-frame">
+                  <span className="text-xs text-ink">{c}</span>
+                  <button
+                    onClick={() => remove(c)}
+                    disabled={loading}
+                    className="text-[10px] text-muted hover:text-red-600 transition-colors disabled:opacity-40"
+                  >
+                    Remove
+                  </button>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <p className="text-xs text-muted">No collaborators yet.</p>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ─── Inner page (uses useSearchParams) ───────────────────────────────────────
 
 function ProjectPageInner() {
@@ -1147,6 +1418,10 @@ function ProjectPageInner() {
   const [guideExpert, setGuideExpert] = useState<{ id: string; name: string } | null>(null);
   const [profilePE,   setProfilePE]   = useState<ProjectExpert | null>(null);
   const [showDelete,  setShowDelete]  = useState(false);
+  const [showShare,   setShowShare]   = useState(false);
+  const [currentUserEmail, setCurrentUserEmail] = useState<string>('');
+  const [currentUserRole,  setCurrentUserRole]  = useState<'admin' | 'user'>('user');
+  const [tierFilter,  setTierFilter]  = useState<SeniorityTier | 'all'>('all');
 
   useEffect(() => {
     fetch(`/api/projects/${projectId}`)
@@ -1157,6 +1432,14 @@ function ProjectPageInner() {
       })
       .catch(() => setError('Failed to load project.'))
       .finally(() => setLoading(false));
+
+    fetch('/api/auth/me')
+      .then(r => r.json())
+      .then((d: { email?: string; role?: 'admin' | 'user' }) => {
+        if (d.email) setCurrentUserEmail(d.email);
+        if (d.role)  setCurrentUserRole(d.role);
+      })
+      .catch(() => {});
   }, [projectId]);
 
   // Sync active step to URL query param (shallow replace — no scroll)
@@ -1200,7 +1483,7 @@ function ProjectPageInner() {
     return (
       <div className="min-h-screen flex flex-col items-center justify-center gap-4" style={{ background: '#F7F9FC' }}>
         <p className="text-sm text-red-600">{error || 'Project not found.'}</p>
-        <Link href="/projects" className="text-xs text-muted hover:text-navy underline">Back to Projects</Link>
+        <Link href="/app" className="text-xs text-muted hover:text-navy underline">Back to Projects</Link>
       </div>
     );
   }
@@ -1222,7 +1505,7 @@ function ProjectPageInner() {
       <header className="bg-navy border-b-2 border-gold sticky top-0 z-40">
         <div className="max-w-6xl mx-auto px-6 sm:px-10 py-4 flex items-center justify-between gap-4">
           <Link
-            href="/projects"
+            href="/app"
             className="text-[10px] uppercase tracking-widest text-gold/60 hover:text-gold transition-colors shrink-0"
             style={{ letterSpacing: '0.18em' }}
           >
@@ -1243,6 +1526,15 @@ function ProjectPageInner() {
           >
             Client View ↗
           </Link>
+          {(currentUserRole === 'admin' || project.ownerEmail === currentUserEmail) && (
+            <button
+              onClick={() => setShowShare(true)}
+              className="shrink-0 text-[10px] uppercase tracking-widest text-gold/70 hover:text-gold border border-gold/30 hover:border-gold px-3 py-1.5 transition-colors"
+              style={{ letterSpacing: '0.12em' }}
+            >
+              Share
+            </button>
+          )}
           <button
             onClick={() => { downloadProjectBriefPdf(project); }}
             className="shrink-0 text-[10px] uppercase tracking-widest text-gold/70 hover:text-gold border border-gold/30 hover:border-gold px-3 py-1.5 transition-colors"
@@ -1340,6 +1632,16 @@ function ProjectPageInner() {
             onStepChange={navigateTo}
             onExport={() => { downloadProjectBriefPdf(project); }}
             onDeleteStart={() => setShowDelete(true)}
+            onExpertsSourced={newPEs => {
+              setProject(prev => {
+                if (!prev) return prev;
+                const existingIds = new Set(prev.experts.map(pe => pe.expert.id));
+                const trulyNew = newPEs.filter(pe => !existingIds.has(pe.expert.id));
+                return trulyNew.length > 0
+                  ? { ...prev, experts: [...prev.experts, ...trulyNew] }
+                  : prev;
+              });
+            }}
           />
         )}
 
@@ -1377,25 +1679,54 @@ function ProjectPageInner() {
             {/* Discovery pool */}
             {sourceExperts.length > 0 && (
               <>
-                <div className="flex items-center gap-4 pt-2">
+                <div className="flex items-center gap-4 pt-2 flex-wrap">
                   <p className="text-[10px] uppercase tracking-widest text-muted font-medium shrink-0" style={{ letterSpacing: '0.16em' }}>
                     Discovery Pool
                   </p>
                   <div className="flex-1 rule-divider" />
+                  {/* Tier filter buttons */}
+                  <div className="flex items-center gap-1.5 shrink-0">
+                    {(['all', 'executive', 'senior', 'mid'] as const).map(t => (
+                      <button
+                        key={t}
+                        onClick={() => setTierFilter(t)}
+                        className={`text-[9px] uppercase tracking-widest px-2 py-1 border transition-colors ${
+                          tierFilter === t
+                            ? 'bg-navy text-cream border-navy'
+                            : 'border-frame text-muted hover:border-navy/40 hover:text-navy'
+                        }`}
+                        style={{ letterSpacing: '0.1em' }}
+                      >
+                        {t === 'all' ? 'All' : t === 'executive' ? 'Executive' : t === 'senior' ? 'Senior' : 'Mid-Level'}
+                      </button>
+                    ))}
+                  </div>
                   <span className="text-[10px] text-muted shrink-0">{sourceExperts.length} expert{sourceExperts.length !== 1 ? 's' : ''}</span>
                 </div>
                 <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-5">
-                  {sourceExperts.map(pe => (
-                    <ProjectExpertCard
-                      key={pe.expert.id}
-                      projectExpert={pe}
-                      projectId={projectId}
-                      query={project.researchQuestion}
-                      onUpdate={handleExpertUpdate}
-                      onRemove={handleExpertRemove}
-                      onInterviewGuide={id => setGuideExpert({ id, name: pe.expert.name })}
-                    />
-                  ))}
+                  {[...sourceExperts]
+                    .filter(pe => {
+                      if (tierFilter === 'all') return true;
+                      return classifySeniority(pe.expert.title ?? '') === tierFilter;
+                    })
+                    .sort((a, b) => {
+                      const tierOrder: Record<string, number> = { executive: 0, senior: 1, mid: 2 };
+                      const ta = tierOrder[classifySeniority(a.expert.title ?? '')] ?? 2;
+                      const tb = tierOrder[classifySeniority(b.expert.title ?? '')] ?? 2;
+                      if (ta !== tb) return ta - tb;
+                      return (b.expert.relevance_score ?? 0) - (a.expert.relevance_score ?? 0);
+                    })
+                    .map(pe => (
+                      <ProjectExpertCard
+                        key={pe.expert.id}
+                        projectExpert={pe}
+                        projectId={projectId}
+                        query={project.researchQuestion}
+                        onUpdate={handleExpertUpdate}
+                        onRemove={handleExpertRemove}
+                        onInterviewGuide={id => setGuideExpert({ id, name: pe.expert.name })}
+                      />
+                    ))}
                 </div>
               </>
             )}
@@ -1704,6 +2035,14 @@ function ProjectPageInner() {
           projectId={projectId}
           onCancel={() => setShowDelete(false)}
           onDeleted={() => router.push('/projects')}
+        />
+      )}
+      {showShare && project && (
+        <ShareModal
+          projectId={projectId}
+          collaborators={project.collaborators ?? []}
+          onUpdate={(updated) => setProject(updated)}
+          onClose={() => setShowShare(false)}
         />
       )}
     </div>

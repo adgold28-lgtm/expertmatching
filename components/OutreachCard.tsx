@@ -13,76 +13,80 @@ const TIMEZONES = ['ET', 'CT', 'MT', 'PT', 'GMT'] as const;
 type Timezone = (typeof TIMEZONES)[number];
 
 const STATUS_PILL: Record<string, string> = {
-  contact_found:    'text-sky-600   border-sky-200   bg-sky-50',
-  outreach_drafted: 'text-sky-700   border-sky-300   bg-sky-50',
-  contacted:        'text-amber-700 border-amber-300 bg-amber-50',
-  replied:          'text-amber-700 border-amber-400 bg-amber-50',
-  scheduled:        'text-green-700 border-green-200 bg-green-50',
-  completed:        'text-navy      border-navy/20   bg-navy/5',
+  contact_found:            'text-sky-600   border-sky-200   bg-sky-50',
+  outreach_drafted:         'text-sky-700   border-sky-300   bg-sky-50',
+  contacted:                'text-amber-700 border-amber-300 bg-amber-50',
+  email2_sent:              'text-amber-700 border-amber-300 bg-amber-50',
+  replied:                  'text-amber-700 border-amber-400 bg-amber-50',
+  scheduling_sent:          'text-teal-700  border-teal-300  bg-teal-50',
+  scheduled:                'text-green-700 border-green-200 bg-green-50',
+  completed:                'text-navy      border-navy/20   bg-navy/5',
+  rate_negotiation:         'text-amber-700 border-amber-400 bg-amber-50',
+  conflict_flagged:         'text-red-700   border-red-300   bg-red-50',
+  rejected_after_outreach:  'text-slate-500 border-slate-200 bg-slate-50',
 };
 
 const STATUS_LABEL: Record<string, string> = {
-  contact_found:    'Contact Found',
-  outreach_drafted: 'Draft Ready',
-  contacted:        'Contacted',
-  replied:          'Replied',
-  scheduled:        'Scheduled',
-  completed:        'Completed',
+  contact_found:            'Contact Found',
+  outreach_drafted:         'Draft Ready',
+  contacted:                'Email 1 Sent',
+  email2_sent:              'Email 2 Sent',
+  replied:                  'Replied',
+  scheduling_sent:          'Scheduling Sent',
+  scheduled:                'Scheduled',
+  completed:                'Completed',
+  rate_negotiation:         'Rate Negotiation',
+  conflict_flagged:         'Conflict Flagged',
+  rejected_after_outreach:  'Declined',
 };
 
-const STEP_SHORT: Record<number, string> = {
-  1: 'Email', 2: 'Draft', 3: 'Send', 4: 'Reply', 5: 'Slot', 6: 'Call', 7: 'Done',
-};
+// ─── Helpers ──────────────────────────────────────────────────────────────────
 
-// ─── Step derivation ──────────────────────────────────────────────────────────
-
-type Step = 1 | 2 | 3 | 4 | 5 | 6 | 7;
-
-function deriveStep(pe: ProjectExpert): Step {
-  const s = pe.status as ExpertStatus;
-  if (s === 'completed')        return 7;
-  if (s === 'scheduled')        return 6;
-  if (s === 'replied')          return 5;
-  if (s === 'contacted')        return 4;
-  if (s === 'outreach_drafted') return 3;
-  if (pe.contactEmail)          return 2;   // contact_found + email known
-  return 1;                                  // contact_found + no email yet
+function formatDate(ts: number | undefined | null): string {
+  if (!ts) return '';
+  return new Date(ts).toLocaleDateString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
 }
 
-// ─── Step tracker ─────────────────────────────────────────────────────────────
+function formatDateShort(ts: number | undefined | null): string {
+  if (!ts) return '';
+  return new Date(ts).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+}
 
-function StepTracker({ current }: { current: Step }) {
-  const steps = [1, 2, 3, 4, 5, 6, 7] as Step[];
+// ─── Sequence timeline entry ──────────────────────────────────────────────────
+
+function TimelineEntry({
+  done,
+  active,
+  label,
+  timestamp,
+  note,
+}: {
+  done:       boolean;
+  active?:    boolean;
+  label:      string;
+  timestamp?: number | null;
+  note?:      string;
+}) {
   return (
-    <div className="flex items-start">
-      {steps.map((s, i) => {
-        const done   = s < current;
-        const active = s === current;
-        return (
-          <div key={s} className="flex items-center">
-            <div className="flex flex-col items-center gap-0.5">
-              <div className={`w-[18px] h-[18px] rounded-full flex items-center justify-center text-[7px] font-bold shrink-0 ${
-                done   ? 'bg-teal-600 text-white' :
-                active ? 'bg-navy text-cream' :
-                         'bg-slate-100 text-slate-300 border border-slate-200'
-              }`}>
-                {done ? '✓' : s}
-              </div>
-              <span
-                className={`text-[7px] text-center leading-none ${
-                  active ? 'text-navy font-semibold' : done ? 'text-teal-600' : 'text-slate-300'
-                }`}
-                style={{ width: '26px' }}
-              >
-                {STEP_SHORT[s]}
-              </span>
-            </div>
-            {i < steps.length - 1 && (
-              <div className={`w-3 h-px self-start mt-[9px] shrink-0 ${s < current ? 'bg-teal-500' : 'bg-slate-200'}`} />
-            )}
-          </div>
-        );
-      })}
+    <div className="flex items-start gap-2.5">
+      <div className={`mt-0.5 w-[14px] h-[14px] rounded-full shrink-0 flex items-center justify-center text-[7px] font-bold ${
+        done
+          ? 'bg-teal-600 text-white'
+          : active
+          ? 'bg-navy text-cream'
+          : 'border border-slate-300 bg-cream'
+      }`}>
+        {done ? '✓' : ''}
+      </div>
+      <div className="flex-1 min-w-0">
+        <p className={`text-[11px] leading-snug ${done ? 'text-ink' : active ? 'text-navy font-medium' : 'text-muted/60'}`}>
+          {label}
+          {timestamp ? (
+            <span className="text-muted ml-1.5 font-normal">{formatDate(timestamp)}</span>
+          ) : null}
+        </p>
+        {note && <p className="text-[10px] text-muted mt-0.5 italic">{note}</p>}
+      </div>
     </div>
   );
 }
@@ -94,7 +98,7 @@ function EmailRow({
   onCopy,
   copied,
 }: {
-  pe: ProjectExpert;
+  pe:     ProjectExpert;
   onCopy: () => void;
   copied: boolean;
 }) {
@@ -141,33 +145,6 @@ function EmailRow({
   );
 }
 
-// ─── Draft preview ────────────────────────────────────────────────────────────
-
-function DraftPreview({ pe }: { pe: ProjectExpert }) {
-  if (!pe.outreachDraft) return null;
-  return (
-    <div className="bg-slate-50 border border-frame px-3 py-2 space-y-1">
-      {pe.outreachSubject && (
-        <p className="text-[11px] font-medium text-navy truncate">{pe.outreachSubject}</p>
-      )}
-      <p className="text-[10px] text-muted leading-relaxed line-clamp-2">{pe.outreachDraft}</p>
-    </div>
-  );
-}
-
-// ─── Calendar invite stub ─────────────────────────────────────────────────────
-
-// TODO: wire to Google Calendar API next session
-function createCalendarInviteStub(expertName: string, scheduledTime: string): void {
-  console.log('[OutreachCard] Create Calendar Invite — stub, wire to Google Calendar:', { expertName, scheduledTime });
-}
-
-// ─── Helpers ──────────────────────────────────────────────────────────────────
-
-function formatDate(ts: number): string {
-  return new Date(ts).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
-}
-
 // ─── Props ────────────────────────────────────────────────────────────────────
 
 interface Props {
@@ -191,46 +168,53 @@ export default function OutreachCard({
 }: Props) {
   const { expert } = projectExpert;
 
-  const [saving,          setSaving]         = useState(false);
-  const [showOutreach,    setShowOutreach]    = useState(false);
-  const [showEmailLookup, setShowEmailLookup] = useState(false);
-  const [showRecheck,     setShowRecheck]     = useState(false);
-  const [showDraftEditor, setShowDraftEditor] = useState(false);
-  const [draftText,       setDraftText]       = useState(projectExpert.outreachDraft ?? '');
-  const [subjectText,     setSubjectText]     = useState(projectExpert.outreachSubject ?? '');
-  const [draftSaving,     setDraftSaving]     = useState(false);
-  const [slotDate,        setSlotDate]        = useState('');
-  const [slotTz,          setSlotTz]          = useState<Timezone>('ET');
-  const [copiedEmail,     setCopiedEmail]     = useState(false);
-  // Step 5: availability request
-  const [availSending,    setAvailSending]    = useState(false);
-  const [availError,      setAvailError]      = useState('');
-  const [availSentAt,     setAvailSentAt]     = useState<number | null>(null);
-  const [showManualSlot,  setShowManualSlot]  = useState(false);
-  // Interview prep (collapsible — visible at steps 3 & 4)
-  const [showPrep,        setShowPrep]        = useState(false);
-  const [prepGenerating,  setPrepGenerating]  = useState(false);
-  const [prepError,       setPrepError]       = useState('');
-  const [prepQuestions,   setPrepQuestions]   = useState<string[]>(projectExpert.vettingQuestions ?? []);
-  // Expert rate (step 2)
-  const [rateInput,       setRateInput]       = useState(projectExpert.expertRate != null ? String(projectExpert.expertRate) : '');
-  const [rateEditing,     setRateEditing]     = useState(projectExpert.expertRate == null);
-  const [rateSaving,      setRateSaving]      = useState(false);
-  const [rateError,       setRateError]       = useState('');
-  // Completion modal (step 6)
-  const [showCompleteModal,    setShowCompleteModal]    = useState(false);
-  const [completeDuration,     setCompleteDuration]     = useState('');
-  const [completeError,        setCompleteError]        = useState('');
-  const [completeSubmitting,   setCompleteSubmitting]   = useState(false);
-  const [completeRateError,    setCompleteRateError]    = useState('');
+  const [saving,              setSaving]            = useState(false);
+  const [showOutreach,        setShowOutreach]       = useState(false);
+  const [showEmailLookup,     setShowEmailLookup]    = useState(false);
+  const [showRecheck,         setShowRecheck]        = useState(false);
+  const [copiedEmail,         setCopiedEmail]        = useState(false);
+  // Rate setting
+  const [rateInput,           setRateInput]          = useState(projectExpert.expertRate != null ? String(projectExpert.expertRate) : '');
+  const [rateEditing,         setRateEditing]        = useState(projectExpert.expertRate == null);
+  const [rateSaving,          setRateSaving]         = useState(false);
+  const [rateError,           setRateError]          = useState('');
+  // Sequence trigger (email1 send button)
+  const [sequenceSending,     setSequenceSending]    = useState(false);
+  const [sequenceError,       setSequenceError]      = useState('');
+  // Rate negotiation approval
+  const [approveRate,         setApproveRate]        = useState('');
+  const [approveSaving,       setApproveSaving]      = useState(false);
+  const [approveError,        setApproveError]       = useState('');
+  // Scheduling fallback
+  const [slotDate,            setSlotDate]           = useState('');
+  const [slotTz,              setSlotTz]             = useState<Timezone>('ET');
+  // Completion modal
+  const [showCompleteModal,   setShowCompleteModal]  = useState(false);
+  const [completeDuration,    setCompleteDuration]   = useState('');
+  const [completeError,       setCompleteError]      = useState('');
+  const [completeSubmitting,  setCompleteSubmitting] = useState(false);
+  const [completeRateError,   setCompleteRateError]  = useState('');
 
-  const step            = deriveStep(projectExpert);
   const status          = projectExpert.status as ExpertStatus;
   const statusPillClass = STATUS_PILL[status] ?? 'text-muted border-frame';
 
   const linkedInLinks = (expert.source_links ?? []).filter(
     l => l.type === 'LinkedIn' && isLinkedInProfileUrl(l.url),
   );
+
+  // Sequence phase detection
+  const hasEmail1  = !!projectExpert.email1SentAt;
+  const hasReply   = !!projectExpert.replyDetectedAt;
+  const hasEmail2  = !!projectExpert.email2SentAt;
+  const hasEmail3  = !!projectExpert.email3SentAt;
+  const isScheduled  = status === 'scheduled' || status === 'completed';
+  const isCompleted  = status === 'completed';
+
+  const inSequence = [
+    'contacted', 'email2_sent', 'replied', 'scheduling_sent',
+    'scheduled', 'completed', 'rate_negotiation', 'conflict_flagged',
+    'rejected_after_outreach',
+  ].includes(status);
 
   // ── API helpers ─────────────────────────────────────────────────────────────
 
@@ -251,31 +235,6 @@ export default function OutreachCard({
     }
   }
 
-  // saveDraft also advances status to outreach_drafted when called from step 2
-  async function saveDraft() {
-    setDraftSaving(true);
-    try {
-      const fields: Record<string, unknown> = {
-        outreachDraft:   draftText.trim(),
-        outreachSubject: subjectText.trim(),
-      };
-      if (status === 'contact_found') fields.status = 'outreach_drafted';
-      const res = await fetch(`/api/projects/${projectId}/experts/${expert.id}`, {
-        method:  'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body:    JSON.stringify(fields),
-      });
-      const data = await res.json() as { project?: { experts: ProjectExpert[] } };
-      if (res.ok) {
-        const updated = data.project?.experts.find(e => e.expert.id === expert.id);
-        if (updated) onUpdate(updated);
-        setShowDraftEditor(false);
-      }
-    } finally {
-      setDraftSaving(false);
-    }
-  }
-
   function handleContactUpdated(updated: ProjectExpert) {
     setShowEmailLookup(false);
     setShowRecheck(false);
@@ -288,74 +247,6 @@ export default function OutreachCard({
     navigator.clipboard.writeText(projectExpert.contactEmail);
     setCopiedEmail(true);
     setTimeout(() => setCopiedEmail(false), 2000);
-  }
-
-  function openDraftEditor() {
-    setDraftText(projectExpert.outreachDraft ?? '');
-    setSubjectText(projectExpert.outreachSubject ?? '');
-    setShowDraftEditor(true);
-  }
-
-  async function generatePrepQuestions() {
-    setPrepGenerating(true);
-    setPrepError('');
-    try {
-      const res  = await fetch(`/api/projects/${projectId}/vetting-questions`, {
-        method:  'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body:    JSON.stringify({ expertId: expert.id }),
-      });
-      const data = await res.json() as { questions?: string[]; source?: string; error?: string };
-      if (!res.ok || !data.questions) {
-        setPrepError('Failed to generate questions. Try again.');
-        return;
-      }
-      setPrepQuestions(data.questions);
-      // Persist to projectExpert so questions survive tab switches
-      await patch({ vettingQuestions: data.questions });
-    } catch {
-      setPrepError('Network error. Try again.');
-    } finally {
-      setPrepGenerating(false);
-    }
-  }
-
-  async function requestAvailability() {
-    setAvailSending(true);
-    setAvailError('');
-    try {
-      const res  = await fetch(`/api/projects/${projectId}/experts/${expert.id}/request-availability`, {
-        method:  'POST',
-        headers: { 'Content-Type': 'application/json' },
-      });
-      const data = await res.json() as { ok?: boolean; error?: string; expiresAt?: number };
-      if (!res.ok) {
-        if (res.status === 422) {
-          setAvailError('No email address on file — find the expert\'s email first.');
-        } else if (res.status === 429) {
-          setAvailError('Too many requests. Try again in a few minutes.');
-        } else {
-          setAvailError(data.error ?? 'Failed to send request. Please try again.');
-        }
-        return;
-      }
-      setAvailSentAt(Date.now());
-      // Optimistically reload the expert state (server also updated availabilityRequestedAt)
-      const projectRes = await fetch(`/api/projects/${projectId}/experts/${expert.id}`, {
-        method:  'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body:    JSON.stringify({ availabilityRequestedAt: Date.now() }),
-      });
-      const projectData = await projectRes.json() as { project?: { experts: import('../types').ProjectExpert[] } };
-      if (projectRes.ok) {
-        const updated = projectData.project?.experts.find(e => e.expert.id === expert.id);
-        if (updated) onUpdate(updated);
-      }
-    } catch {
-      setAvailError('Network error. Please try again.');
-    } finally {
-      setAvailSending(false);
-    }
   }
 
   async function saveRate() {
@@ -384,6 +275,72 @@ export default function OutreachCard({
     }
   }
 
+  // Trigger email1 directly (not via QStash — immediate local trigger)
+  async function triggerEmail1() {
+    if (!projectExpert.contactEmail) {
+      setSequenceError('No email address on file — find the email first.');
+      return;
+    }
+    if (!projectExpert.expertRate) {
+      setSequenceError('Set expert rate before sending.');
+      return;
+    }
+    setSequenceSending(true);
+    setSequenceError('');
+    try {
+      const res = await fetch('/api/email-sequence/trigger', {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({
+          projectId,
+          expertId: expert.id,
+          step:     'email1',
+          // Token is generated server-side for email1 if not yet assigned
+          token:    projectExpert.outreachToken ?? '',
+        }),
+      });
+      const data = await res.json() as { ok?: boolean; error?: string };
+      if (!res.ok) {
+        setSequenceError(data.error === 'no_email'
+          ? 'No email address on file.'
+          : data.error ?? 'Failed to send. Please try again.');
+        return;
+      }
+      // Optimistically refresh
+      const projectRes = await fetch(`/api/projects/${projectId}/experts/${expert.id}`, {
+        method:  'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({ email1SentAt: Date.now() }),
+      });
+      const projectData = await projectRes.json() as { project?: { experts: ProjectExpert[] } };
+      if (projectRes.ok) {
+        const updated = projectData.project?.experts.find(e => e.expert.id === expert.id);
+        if (updated) onUpdate(updated);
+      }
+    } catch {
+      setSequenceError('Network error. Please try again.');
+    } finally {
+      setSequenceSending(false);
+    }
+  }
+
+  // Approve a counter-rate and send email2
+  async function approveCounterRate() {
+    setApproveError('');
+    const parsed = parseFloat(approveRate);
+    if (!approveRate.trim() || isNaN(parsed) || parsed < 1 || parsed > 9999) {
+      setApproveError('Enter a valid rate between $1 and $9,999/hr');
+      return;
+    }
+    setApproveSaving(true);
+    try {
+      // Update rate, then schedule email2
+      await patch({ expertRate: Math.round(parsed), status: 'replied', replyIntent: 'interested' });
+    } finally {
+      setApproveSaving(false);
+    }
+  }
+
   async function submitComplete() {
     setCompleteError('');
     const dur = parseInt(completeDuration, 10);
@@ -409,7 +366,6 @@ export default function OutreachCard({
         return;
       }
       setShowCompleteModal(false);
-      // Optimistically update local state
       const optimistic: ProjectExpert = {
         ...projectExpert,
         status: 'completed',
@@ -426,102 +382,6 @@ export default function OutreachCard({
       setCompleteSubmitting(false);
     }
   }
-
-  // ── Interview prep block (collapsible, steps 3 & 4) ────────────────────────
-  // Defined at render time to avoid hook ordering issues.
-
-  const effectivePrepQuestions = prepQuestions.length > 0
-    ? prepQuestions
-    : (projectExpert.vettingQuestions ?? []);
-
-  const interviewPrepBlock = (
-    <div className="pt-3 border-t border-frame space-y-2">
-      <div className="flex items-center justify-between gap-2">
-        <button
-          onClick={() => setShowPrep(p => !p)}
-          className="text-[10px] uppercase tracking-widest text-muted hover:text-navy transition-colors"
-          style={{ letterSpacing: '0.14em' }}
-        >
-          {showPrep ? 'Hide prep ↑' : effectivePrepQuestions.length > 0 ? 'Vetting call prep ↓' : '+ Vetting call prep'}
-        </button>
-        {showPrep && (
-          <button
-            onClick={generatePrepQuestions}
-            disabled={prepGenerating || saving}
-            className="text-[10px] uppercase tracking-widest text-muted hover:text-navy border border-frame hover:border-navy px-2 py-1 transition-colors disabled:opacity-40"
-          >
-            {prepGenerating ? 'Generating…' : effectivePrepQuestions.length > 0 ? 'Regenerate' : 'Generate Questions'}
-          </button>
-        )}
-      </div>
-
-      {showPrep && (
-        <div className="space-y-2">
-          {prepError && <p className="text-[10px] text-red-600">{prepError}</p>}
-
-          {effectivePrepQuestions.length > 0 ? (
-            <ol className="space-y-1.5 list-none">
-              {effectivePrepQuestions.map((q, i) => (
-                <li key={i} className="flex gap-2 text-[11px] text-ink leading-snug">
-                  <span className="shrink-0 font-medium text-navy">{i + 1}.</span>
-                  {q}
-                </li>
-              ))}
-            </ol>
-          ) : !prepGenerating && (
-            <p className="text-[10px] text-muted/60 italic">
-              Generate AI-tailored questions to use on the vetting call.
-            </p>
-          )}
-
-          {prepGenerating && (
-            <div className="flex items-center gap-2 text-[11px] text-muted">
-              <span className="inline-block w-3 h-3 border border-navy border-t-transparent rounded-full animate-spin shrink-0" />
-              Generating…
-            </div>
-          )}
-        </div>
-      )}
-    </div>
-  );
-
-  // ── Shared draft editor markup ───────────────────────────────────────────────
-  // Defined as a render-time block (not a component) to avoid hook-ordering issues.
-
-  const draftEditorBlock = (
-    <div className="space-y-2">
-      <input
-        type="text"
-        value={subjectText}
-        onChange={e => setSubjectText(e.target.value)}
-        placeholder="Subject line…"
-        className="w-full px-2.5 py-1.5 text-[11px] border border-frame bg-cream focus:outline-none focus:border-navy text-ink"
-      />
-      <textarea
-        value={draftText}
-        onChange={e => setDraftText(e.target.value)}
-        placeholder="Outreach message body…"
-        rows={5}
-        className="w-full px-2.5 py-2 text-[11px] border border-frame bg-cream focus:outline-none focus:border-navy text-ink resize-none"
-        autoFocus
-      />
-      <div className="flex items-center gap-2">
-        <button
-          onClick={saveDraft}
-          disabled={draftSaving}
-          className="text-[10px] uppercase tracking-widest bg-navy text-cream px-3 py-1.5 hover:bg-navy/90 disabled:opacity-40 transition-colors"
-        >
-          {draftSaving ? 'Saving…' : 'Save draft'}
-        </button>
-        <button
-          onClick={() => setShowDraftEditor(false)}
-          className="text-[10px] uppercase tracking-widest text-muted hover:text-navy transition-colors"
-        >
-          Cancel
-        </button>
-      </div>
-    </div>
-  );
 
   // ── Render ───────────────────────────────────────────────────────────────────
 
@@ -555,425 +415,390 @@ export default function OutreachCard({
 
       <div className="px-4 py-3 flex-1 space-y-4">
 
-        {/* ── Step tracker ── */}
-        <StepTracker current={step} />
-
-        {/* ── Active step panel ── */}
-        <div className="border-t border-frame pt-3 space-y-3">
-
-          {/* ─────────────────────────────────────────────────────────────
+        {/* ── Contact section — always visible when no email yet ── */}
+        {!projectExpert.contactEmail && !inSequence && (
+          <div className="space-y-2">
+            <p className="text-[9px] uppercase tracking-widest text-muted font-medium" style={{ letterSpacing: '0.18em' }}>
               Step 1 — Find Email
-              ───────────────────────────────────────────────────────────── */}
-          {step === 1 && (
-            <>
-              <p className="text-[9px] uppercase tracking-widest text-muted font-medium" style={{ letterSpacing: '0.18em' }}>
-                Step 1 — Find Email
-              </p>
-              {!showEmailLookup ? (
-                <button
-                  onClick={() => setShowEmailLookup(true)}
-                  className="text-[10px] uppercase tracking-widest bg-navy text-cream px-3 py-1.5 hover:bg-navy/90 transition-colors"
-                  style={{ letterSpacing: '0.1em' }}
-                >
-                  Find professional email
-                </button>
-              ) : (
-                <div className="space-y-2">
-                  <button
-                    onClick={() => setShowEmailLookup(false)}
-                    className="text-[10px] uppercase tracking-widest text-muted hover:text-navy transition-colors"
-                  >
-                    Cancel ✕
-                  </button>
-                  <ContactSection
-                    expert={expert}
-                    query={query}
-                    projectId={projectId}
-                    expertId={expert.id}
-                    initialState="confirming"
-                    onContactUpdated={handleContactUpdated}
-                  />
-                </div>
-              )}
-            </>
-          )}
-
-          {/* ─────────────────────────────────────────────────────────────
-              Step 2 — Draft Outreach
-              ───────────────────────────────────────────────────────────── */}
-          {step === 2 && (
-            <>
-              <p className="text-[9px] uppercase tracking-widest text-muted font-medium" style={{ letterSpacing: '0.18em' }}>
-                Step 2 — Draft Outreach
-              </p>
-
-              <EmailRow pe={projectExpert} onCopy={copyEmail} copied={copiedEmail} />
-
-              {/* Expert rate */}
-              <div className="space-y-1.5">
-                <p className="text-[9px] uppercase tracking-widest text-muted font-medium" style={{ letterSpacing: '0.18em' }}>
-                  Expert Rate
-                </p>
-                {rateEditing ? (
-                  <div className="space-y-1">
-                    <div className="flex items-center gap-1.5">
-                      <span className="text-[11px] text-muted">$</span>
-                      <input
-                        type="number"
-                        min={1}
-                        max={9999}
-                        value={rateInput}
-                        onChange={e => setRateInput(e.target.value)}
-                        placeholder="e.g. 500"
-                        className="w-24 px-2 py-1 text-[11px] border border-frame bg-cream focus:outline-none focus:border-navy text-ink"
-                      />
-                      <span className="text-[11px] text-muted">/hr</span>
-                      <button
-                        onClick={saveRate}
-                        disabled={rateSaving}
-                        className="text-[10px] uppercase tracking-widest bg-navy text-cream px-2.5 py-1 hover:bg-navy/90 disabled:opacity-40 transition-colors"
-                        style={{ letterSpacing: '0.1em' }}
-                      >
-                        {rateSaving ? '…' : 'Save'}
-                      </button>
-                    </div>
-                    {rateError && <p className="text-[10px] text-red-600">{rateError}</p>}
-                  </div>
-                ) : (
-                  <div className="flex items-center gap-2">
-                    <span className="text-[12px] text-ink font-medium">${projectExpert.expertRate}/hr</span>
-                    <button
-                      onClick={() => setRateEditing(true)}
-                      className="text-[10px] text-muted hover:text-navy underline-offset-2 hover:underline transition-colors"
-                    >
-                      Edit
-                    </button>
-                  </div>
-                )}
-              </div>
-
-              {/* Re-check email toggle */}
-              <div className="space-y-2">
-                <button
-                  onClick={() => setShowRecheck(r => !r)}
-                  className="text-[10px] uppercase tracking-widest text-muted hover:text-navy transition-colors"
-                >
-                  {showRecheck ? 'Close ✕' : 'Re-check email ↻'}
-                </button>
-                {showRecheck && (
-                  <ContactSection
-                    expert={expert}
-                    query={query}
-                    projectId={projectId}
-                    expertId={expert.id}
-                    initialState="confirming"
-                    onContactUpdated={handleContactUpdated}
-                  />
-                )}
-              </div>
-
-              {/* Draft area */}
-              {showDraftEditor ? draftEditorBlock : (
-                <div className="space-y-2">
-                  {projectExpert.outreachDraft ? (
-                    <>
-                      <DraftPreview pe={projectExpert} />
-                      <div className="flex items-center gap-3">
-                        <button
-                          onClick={openDraftEditor}
-                          className="text-[10px] uppercase tracking-widest text-muted hover:text-navy transition-colors"
-                        >
-                          Edit draft
-                        </button>
-                        <button
-                          onClick={() => setShowOutreach(true)}
-                          className="text-[10px] uppercase tracking-widest text-muted hover:text-navy transition-colors"
-                        >
-                          Regenerate ↻
-                        </button>
-                      </div>
-                      <button
-                        onClick={() => patch({ status: 'outreach_drafted' })}
-                        disabled={saving}
-                        className="text-[10px] uppercase tracking-widest bg-navy text-cream px-3 py-1.5 hover:bg-navy/90 disabled:opacity-40 transition-colors"
-                        style={{ letterSpacing: '0.1em' }}
-                      >
-                        {saving ? '…' : 'Draft Ready →'}
-                      </button>
-                    </>
-                  ) : (
-                    <div className="flex items-center gap-2 flex-wrap">
-                      <button
-                        onClick={() => setShowOutreach(true)}
-                        className="text-[10px] uppercase tracking-widest bg-navy text-cream px-3 py-1.5 hover:bg-navy/90 transition-colors"
-                        style={{ letterSpacing: '0.1em' }}
-                      >
-                        Generate draft
-                      </button>
-                      <button
-                        onClick={openDraftEditor}
-                        className="text-[10px] uppercase tracking-widest text-muted hover:text-navy border border-frame hover:border-navy px-2 py-1 transition-colors"
-                      >
-                        Write manually
-                      </button>
-                    </div>
-                  )}
-                </div>
-              )}
-            </>
-          )}
-
-          {/* ─────────────────────────────────────────────────────────────
-              Step 3 — Mark Sent
-              ───────────────────────────────────────────────────────────── */}
-          {step === 3 && (
-            <>
-              <p className="text-[9px] uppercase tracking-widest text-muted font-medium" style={{ letterSpacing: '0.18em' }}>
-                Step 3 — Mark Sent
-              </p>
-
-              <EmailRow pe={projectExpert} onCopy={copyEmail} copied={copiedEmail} />
-
-              {showDraftEditor ? draftEditorBlock : (
-                <div className="space-y-2">
-                  <DraftPreview pe={projectExpert} />
-                  <button
-                    onClick={openDraftEditor}
-                    className="text-[10px] uppercase tracking-widest text-muted hover:text-navy transition-colors"
-                  >
-                    Edit draft
-                  </button>
-                  <button
-                    onClick={() => patch({ status: 'contacted', contactedAt: Date.now() })}
-                    disabled={saving}
-                    className="text-[10px] uppercase tracking-widest bg-navy text-cream px-3 py-1.5 hover:bg-navy/90 disabled:opacity-40 transition-colors"
-                    style={{ letterSpacing: '0.1em' }}
-                  >
-                    {saving ? '…' : 'Mark Sent →'}
-                  </button>
-                </div>
-              )}
-
-              {/* Interview prep — generate vetting questions to use on the call */}
-              {interviewPrepBlock}
-            </>
-          )}
-
-          {/* ─────────────────────────────────────────────────────────────
-              Step 4 — Awaiting Reply
-              ───────────────────────────────────────────────────────────── */}
-          {step === 4 && (
-            <>
-              <p className="text-[9px] uppercase tracking-widest text-muted font-medium" style={{ letterSpacing: '0.18em' }}>
-                Step 4 — Awaiting Reply
-              </p>
-              {projectExpert.contactedAt && (
-                <p className="text-[11px] text-muted">📤 Sent {formatDate(projectExpert.contactedAt)}</p>
-              )}
-              <EmailRow pe={projectExpert} onCopy={copyEmail} copied={copiedEmail} />
+            </p>
+            {!showEmailLookup ? (
               <button
-                onClick={() => patch({ status: 'replied' })}
-                disabled={saving}
-                className="text-[10px] uppercase tracking-widest bg-navy text-cream px-3 py-1.5 hover:bg-navy/90 disabled:opacity-40 transition-colors"
+                onClick={() => setShowEmailLookup(true)}
+                className="text-[10px] uppercase tracking-widest bg-navy text-cream px-3 py-1.5 hover:bg-navy/90 transition-colors"
                 style={{ letterSpacing: '0.1em' }}
               >
-                {saving ? '…' : 'Mark Replied →'}
+                Find professional email
               </button>
+            ) : (
+              <div className="space-y-2">
+                <button
+                  onClick={() => setShowEmailLookup(false)}
+                  className="text-[10px] uppercase tracking-widest text-muted hover:text-navy transition-colors"
+                >
+                  Cancel ✕
+                </button>
+                <ContactSection
+                  expert={expert}
+                  query={query}
+                  projectId={projectId}
+                  expertId={expert.id}
+                  initialState="confirming"
+                  onContactUpdated={handleContactUpdated}
+                />
+              </div>
+            )}
+          </div>
+        )}
 
-              {/* Interview prep — available while waiting so analyst can prepare */}
-              {interviewPrepBlock}
-            </>
-          )}
-
-          {/* ─────────────────────────────────────────────────────────────
-              Step 5 — Request Availability
-              ───────────────────────────────────────────────────────────── */}
-          {step === 5 && (
-            <>
+        {/* ── Email + rate setup (pre-sequence) ── */}
+        {projectExpert.contactEmail && !inSequence && (
+          <div className="space-y-3">
+            {/* Email row */}
+            <div className="space-y-1">
               <p className="text-[9px] uppercase tracking-widest text-muted font-medium" style={{ letterSpacing: '0.18em' }}>
-                Step 5 — Request Availability
+                Contact
               </p>
+              <EmailRow pe={projectExpert} onCopy={copyEmail} copied={copiedEmail} />
+              <button
+                onClick={() => setShowRecheck(r => !r)}
+                className="text-[10px] uppercase tracking-widest text-muted hover:text-navy transition-colors"
+              >
+                {showRecheck ? 'Close ✕' : 'Re-check email ↻'}
+              </button>
+              {showRecheck && (
+                <ContactSection
+                  expert={expert}
+                  query={query}
+                  projectId={projectId}
+                  expertId={expert.id}
+                  initialState="confirming"
+                  onContactUpdated={handleContactUpdated}
+                />
+              )}
+            </div>
 
-              {/* ── Already submitted via availability form ── */}
-              {projectExpert.availabilitySubmitted ? (
-                <div className="space-y-3">
-                  <div className="bg-teal-50 border border-teal-200 px-3 py-2.5 space-y-2">
-                    <p className="text-[9px] uppercase tracking-widest text-teal-600 font-medium" style={{ letterSpacing: '0.14em' }}>
-                      Availability Received
-                    </p>
-                    {/* Calendly link */}
-                    {projectExpert.calendarProvider === 'calendly' &&
-                      projectExpert.availabilitySlots?.[0]?.startTime && (
-                      <div>
-                        <a
-                          href={projectExpert.availabilitySlots[0].startTime}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="text-[11px] text-sky-700 hover:underline underline-offset-2 break-all"
-                        >
-                          {projectExpert.availabilitySlots[0].startTime}
-                        </a>
-                        <span className="ml-1 text-[10px] text-muted">(Calendly)</span>
-                      </div>
-                    )}
-                    {/* Parsed manual slots */}
-                    {projectExpert.calendarProvider === 'manual' && (
-                      <div className="space-y-1">
-                        {(projectExpert.availabilitySlots ?? []).length > 0
-                          ? projectExpert.availabilitySlots!.map((slot, i) => (
-                            <p key={i} className="text-[11px] text-ink">
-                              {slot.dayOfWeek ? `${slot.dayOfWeek} ` : ''}
-                              {slot.date ? `${slot.date} ` : ''}
-                              {slot.startTime}–{slot.endTime} {slot.timezone}
-                            </p>
-                          ))
-                          : projectExpert.availabilityRaw && (
-                            <p className="text-[11px] text-ink italic leading-relaxed">
-                              {projectExpert.availabilityRaw}
-                            </p>
-                          )
-                        }
-                      </div>
-                    )}
-                  </div>
-
-                  {/* Confirm slot inputs */}
-                  <div className="space-y-2">
-                    <p className="text-[10px] text-muted">Confirm the agreed slot:</p>
+            {/* Expert rate */}
+            <div className="space-y-1.5">
+              <p className="text-[9px] uppercase tracking-widest text-muted font-medium" style={{ letterSpacing: '0.18em' }}>
+                Expert Rate
+              </p>
+              {rateEditing ? (
+                <div className="space-y-1">
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-[11px] text-muted">$</span>
                     <input
-                      type="text"
-                      value={slotDate}
-                      onChange={e => setSlotDate(e.target.value)}
-                      placeholder="e.g. Tue Jun 10, 2:00 pm"
-                      className="w-full px-2.5 py-1.5 text-[11px] border border-frame bg-cream focus:outline-none focus:border-navy text-ink placeholder:text-muted/60"
+                      type="number"
+                      min={1}
+                      max={9999}
+                      value={rateInput}
+                      onChange={e => setRateInput(e.target.value)}
+                      placeholder="e.g. 500"
+                      className="w-24 px-2 py-1 text-[11px] border border-frame bg-cream focus:outline-none focus:border-navy text-ink"
                     />
-                    <select
-                      value={slotTz}
-                      onChange={e => setSlotTz(e.target.value as Timezone)}
-                      className="text-[11px] border border-frame bg-cream text-ink px-2 py-1.5 focus:outline-none focus:border-navy"
-                    >
-                      {TIMEZONES.map(tz => <option key={tz} value={tz}>{tz}</option>)}
-                    </select>
-                  </div>
-                  <button
-                    onClick={() => {
-                      if (!slotDate.trim()) return;
-                      patch({ scheduledTime: `${slotDate.trim()} ${slotTz}`, status: 'scheduled' });
-                    }}
-                    disabled={saving || !slotDate.trim()}
-                    className="text-[10px] uppercase tracking-widest bg-navy text-cream px-3 py-1.5 hover:bg-navy/90 disabled:opacity-40 transition-colors"
-                    style={{ letterSpacing: '0.1em' }}
-                  >
-                    {saving ? '…' : 'Confirm Slot →'}
-                  </button>
-                </div>
-              ) : (
-                /* ── Not yet submitted ── */
-                <div className="space-y-3">
-                  <p className="text-[11px] text-muted">
-                    Expert replied. Send them a scheduling link to share their availability.
-                  </p>
-
-                  {/* Prior request timestamp */}
-                  {(projectExpert.availabilityRequestedAt || availSentAt) && (
-                    <p className="text-[10px] text-teal-600">
-                      ✓ Request sent {formatDate(availSentAt ?? projectExpert.availabilityRequestedAt!)} — waiting for response.
-                    </p>
-                  )}
-
-                  {availError && (
-                    <p className="text-[10px] text-red-600">{availError}</p>
-                  )}
-
-                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className="text-[11px] text-muted">/hr</span>
                     <button
-                      onClick={requestAvailability}
-                      disabled={availSending || saving}
-                      className="text-[10px] uppercase tracking-widest bg-navy text-cream px-3 py-1.5 hover:bg-navy/90 disabled:opacity-40 transition-colors"
+                      onClick={saveRate}
+                      disabled={rateSaving}
+                      className="text-[10px] uppercase tracking-widest bg-navy text-cream px-2.5 py-1 hover:bg-navy/90 disabled:opacity-40 transition-colors"
                       style={{ letterSpacing: '0.1em' }}
                     >
-                      {availSending
-                        ? 'Sending…'
-                        : (projectExpert.availabilityRequestedAt || availSentAt)
-                          ? 'Re-send Request'
-                          : 'Send Availability Request'
-                      }
-                    </button>
-                    <button
-                      onClick={() => setShowManualSlot(s => !s)}
-                      className="text-[10px] uppercase tracking-widest text-muted hover:text-navy border border-frame hover:border-navy px-2 py-1 transition-colors"
-                    >
-                      {showManualSlot ? 'Cancel' : 'Confirm Manually'}
+                      {rateSaving ? '…' : 'Save'}
                     </button>
                   </div>
-
-                  {/* Manual slot fallback */}
-                  {showManualSlot && (
-                    <div className="space-y-2 pt-1 border-t border-frame">
-                      <p className="text-[10px] text-muted">Enter the slot agreed via email or phone:</p>
-                      <input
-                        type="text"
-                        value={slotDate}
-                        onChange={e => setSlotDate(e.target.value)}
-                        placeholder="e.g. Tue Jun 10, 2:00 pm"
-                        className="w-full px-2.5 py-1.5 text-[11px] border border-frame bg-cream focus:outline-none focus:border-navy text-ink placeholder:text-muted/60"
-                        autoFocus
-                      />
-                      <select
-                        value={slotTz}
-                        onChange={e => setSlotTz(e.target.value as Timezone)}
-                        className="text-[11px] border border-frame bg-cream text-ink px-2 py-1.5 focus:outline-none focus:border-navy"
-                      >
-                        {TIMEZONES.map(tz => <option key={tz} value={tz}>{tz}</option>)}
-                      </select>
-                      <button
-                        onClick={() => {
-                          if (!slotDate.trim()) return;
-                          patch({ scheduledTime: `${slotDate.trim()} ${slotTz}`, status: 'scheduled' });
-                        }}
-                        disabled={saving || !slotDate.trim()}
-                        className="text-[10px] uppercase tracking-widest bg-navy text-cream px-3 py-1.5 hover:bg-navy/90 disabled:opacity-40 transition-colors"
-                        style={{ letterSpacing: '0.1em' }}
-                      >
-                        {saving ? '…' : 'Confirm Slot →'}
-                      </button>
-                    </div>
-                  )}
+                  {rateError && <p className="text-[10px] text-red-600">{rateError}</p>}
                 </div>
-              )}
-            </>
-          )}
-
-          {/* ─────────────────────────────────────────────────────────────
-              Step 6 — Scheduled
-              ───────────────────────────────────────────────────────────── */}
-          {step === 6 && (
-            <>
-              <p className="text-[9px] uppercase tracking-widest text-muted font-medium" style={{ letterSpacing: '0.18em' }}>
-                Step 6 — Scheduled
-              </p>
-              {projectExpert.scheduledTime && (
-                <div className="bg-green-50 border border-green-200 px-3 py-2.5">
-                  <p
-                    className="text-[9px] uppercase tracking-widest text-green-600 font-medium mb-1"
-                    style={{ letterSpacing: '0.14em' }}
+              ) : (
+                <div className="flex items-center gap-2">
+                  <span className="text-[12px] text-ink font-medium">${projectExpert.expertRate}/hr</span>
+                  <button
+                    onClick={() => setRateEditing(true)}
+                    className="text-[10px] text-muted hover:text-navy underline-offset-2 hover:underline transition-colors"
                   >
-                    Confirmed Slot
-                  </p>
-                  <p className="text-sm font-medium text-green-800">{projectExpert.scheduledTime}</p>
+                    Edit
+                  </button>
                 </div>
               )}
-              <div className="flex flex-col gap-2">
+            </div>
+
+            {/* Legacy draft flow (if they have a draft already, keep access) */}
+            {(projectExpert.outreachDraft || projectExpert.outreachSubject) && (
+              <div className="space-y-1">
+                <p className="text-[9px] uppercase tracking-widest text-muted font-medium" style={{ letterSpacing: '0.18em' }}>
+                  Manual Draft
+                </p>
+                {projectExpert.outreachSubject && (
+                  <p className="text-[11px] font-medium text-navy truncate">{projectExpert.outreachSubject}</p>
+                )}
                 <button
-                  onClick={() => createCalendarInviteStub(expert.name, projectExpert.scheduledTime ?? '')}
-                  className="text-[10px] uppercase tracking-widest border border-navy text-navy px-3 py-1.5 hover:bg-navy hover:text-cream transition-colors"
+                  onClick={() => setShowOutreach(true)}
+                  className="text-[10px] uppercase tracking-widest text-muted hover:text-navy transition-colors"
+                >
+                  View / Regenerate ↻
+                </button>
+              </div>
+            )}
+
+            {/* Send Email 1 button */}
+            <div className="space-y-1.5 pt-1 border-t border-frame">
+              <p className="text-[9px] uppercase tracking-widest text-muted font-medium" style={{ letterSpacing: '0.18em' }}>
+                Email Sequence
+              </p>
+              {sequenceError && <p className="text-[10px] text-red-600">{sequenceError}</p>}
+              <button
+                onClick={triggerEmail1}
+                disabled={sequenceSending || saving || !projectExpert.expertRate}
+                className="text-[10px] uppercase tracking-widest bg-navy text-cream px-3 py-1.5 hover:bg-navy/90 disabled:opacity-40 transition-colors"
+                style={{ letterSpacing: '0.1em' }}
+                title={!projectExpert.expertRate ? 'Set expert rate first' : undefined}
+              >
+                {sequenceSending ? 'Sending…' : 'Send Email 1 →'}
+              </button>
+              {!projectExpert.expertRate && (
+                <p className="text-[10px] text-muted/70 italic">Set a rate above before sending.</p>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* ── Sequence status display (in-sequence statuses) ── */}
+        {inSequence && (
+          <div className="space-y-3">
+
+            {/* Rate display (always visible in sequence) */}
+            {projectExpert.expertRate && (
+              <div className="flex items-center gap-2">
+                <span className="text-[9px] uppercase tracking-widest text-muted font-medium" style={{ letterSpacing: '0.18em' }}>Rate:</span>
+                <span className="text-[11px] text-ink font-medium">${projectExpert.expertRate}/hr</span>
+                {!isCompleted && (
+                  <button
+                    onClick={() => setRateEditing(r => !r)}
+                    className="text-[10px] text-muted hover:text-navy underline-offset-2 hover:underline transition-colors"
+                  >
+                    Edit
+                  </button>
+                )}
+              </div>
+            )}
+            {rateEditing && !isCompleted && (
+              <div className="space-y-1">
+                <div className="flex items-center gap-1.5">
+                  <span className="text-[11px] text-muted">$</span>
+                  <input
+                    type="number" min={1} max={9999}
+                    value={rateInput}
+                    onChange={e => setRateInput(e.target.value)}
+                    placeholder="e.g. 500"
+                    className="w-24 px-2 py-1 text-[11px] border border-frame bg-cream focus:outline-none focus:border-navy text-ink"
+                  />
+                  <span className="text-[11px] text-muted">/hr</span>
+                  <button onClick={saveRate} disabled={rateSaving}
+                    className="text-[10px] uppercase tracking-widest bg-navy text-cream px-2.5 py-1 hover:bg-navy/90 disabled:opacity-40 transition-colors"
+                  >
+                    {rateSaving ? '…' : 'Save'}
+                  </button>
+                </div>
+                {rateError && <p className="text-[10px] text-red-600">{rateError}</p>}
+              </div>
+            )}
+
+            {/* Contact email row */}
+            <EmailRow pe={projectExpert} onCopy={copyEmail} copied={copiedEmail} />
+
+            {/* ── Timeline ── */}
+            <div className="pt-2 border-t border-frame space-y-2">
+              <p className="text-[9px] uppercase tracking-widest text-muted font-medium" style={{ letterSpacing: '0.18em' }}>
+                Email Sequence Status
+              </p>
+
+              <div className="space-y-2">
+                {/* Email 1 */}
+                <TimelineEntry
+                  done={hasEmail1}
+                  active={!hasEmail1}
+                  label="Email 1 — Interest check"
+                  timestamp={projectExpert.email1SentAt}
+                />
+
+                {/* Reply */}
+                {hasEmail1 && (
+                  <TimelineEntry
+                    done={hasReply}
+                    active={hasEmail1 && !hasReply}
+                    label={hasReply
+                      ? `Reply detected — ${projectExpert.replyIntent === 'interested' ? 'Interested' :
+                          projectExpert.replyIntent === 'declined' ? 'Declined' :
+                          projectExpert.replyIntent === 'counter_rate' ? 'Counter rate' :
+                          projectExpert.replyIntent === 'conflict' ? 'Conflict flagged' : 'Unclear'}`
+                      : 'Awaiting reply…'}
+                    timestamp={projectExpert.replyDetectedAt}
+                  />
+                )}
+
+                {/* Email 2 */}
+                {(hasReply || hasEmail2) && status !== 'rejected_after_outreach' && (
+                  <TimelineEntry
+                    done={hasEmail2}
+                    active={hasReply && !hasEmail2}
+                    label="Email 2 — Conflict check + rate confirmation"
+                    timestamp={projectExpert.email2SentAt}
+                  />
+                )}
+
+                {/* Email 3 */}
+                {(hasEmail2 || hasEmail3) && (
+                  <TimelineEntry
+                    done={hasEmail3}
+                    active={hasEmail2 && !hasEmail3}
+                    label="Email 3 — Scheduling link"
+                    timestamp={projectExpert.email3SentAt}
+                  />
+                )}
+
+                {/* Scheduled */}
+                {(hasEmail3 || isScheduled) && (
+                  <TimelineEntry
+                    done={isScheduled}
+                    active={hasEmail3 && !isScheduled}
+                    label={isScheduled && projectExpert.scheduledTime
+                      ? `Scheduled — ${projectExpert.scheduledTime}`
+                      : 'Awaiting scheduling…'}
+                  />
+                )}
+
+                {/* Completed */}
+                {isScheduled && (
+                  <TimelineEntry
+                    done={isCompleted}
+                    active={isScheduled && !isCompleted}
+                    label="Completed"
+                  />
+                )}
+
+                {/* Declined */}
+                {status === 'rejected_after_outreach' && (
+                  <TimelineEntry
+                    done
+                    label="Declined — no further action"
+                  />
+                )}
+              </div>
+            </div>
+
+            {/* ── Rate negotiation panel ── */}
+            {status === 'rate_negotiation' && (
+              <div className="bg-amber-50 border border-amber-300 px-3 py-2.5 space-y-2">
+                <p className="text-[9px] uppercase tracking-widest text-amber-700 font-medium" style={{ letterSpacing: '0.14em' }}>
+                  Rate Negotiation
+                </p>
+                {projectExpert.counterRateProposed && (
+                  <p className="text-[11px] text-ink">
+                    Expert proposed: <strong>${projectExpert.counterRateProposed}/hr</strong>
+                  </p>
+                )}
+                <div className="flex items-center gap-2 flex-wrap">
+                  {/* Approve counter rate */}
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-[10px] text-muted">$</span>
+                    <input
+                      type="number" min={1} max={9999}
+                      value={approveRate || String(projectExpert.counterRateProposed ?? '')}
+                      onChange={e => setApproveRate(e.target.value)}
+                      placeholder="Approve rate"
+                      className="w-20 px-2 py-1 text-[11px] border border-frame bg-cream focus:outline-none focus:border-navy text-ink"
+                    />
+                    <span className="text-[10px] text-muted">/hr</span>
+                    <button
+                      onClick={approveCounterRate}
+                      disabled={approveSaving || saving}
+                      className="text-[10px] uppercase tracking-widest bg-navy text-cream px-2.5 py-1 hover:bg-navy/90 disabled:opacity-40 transition-colors"
+                    >
+                      {approveSaving ? '…' : 'Approve'}
+                    </button>
+                  </div>
+                  <button
+                    onClick={() => patch({ status: 'rejected_after_outreach' })}
+                    disabled={saving}
+                    className="text-[10px] uppercase tracking-widest text-red-600 border border-red-200 hover:bg-red-50 px-2.5 py-1 transition-colors disabled:opacity-40"
+                  >
+                    Pass
+                  </button>
+                </div>
+                {approveError && <p className="text-[10px] text-red-600">{approveError}</p>}
+              </div>
+            )}
+
+            {/* ── Conflict flag panel ── */}
+            {status === 'conflict_flagged' && (
+              <div className="bg-red-50 border border-red-300 px-3 py-2.5 space-y-2">
+                <p className="text-[9px] uppercase tracking-widest text-red-700 font-medium" style={{ letterSpacing: '0.14em' }}>
+                  Conflict Flagged
+                </p>
+                {projectExpert.conflictNote && (
+                  <p className="text-[11px] text-ink italic">{projectExpert.conflictNote}</p>
+                )}
+                <div className="flex items-center gap-2 flex-wrap">
+                  <button
+                    onClick={() => patch({ status: 'rejected_after_outreach' })}
+                    disabled={saving}
+                    className="text-[10px] uppercase tracking-widest text-red-700 border border-red-300 hover:bg-red-100 px-2.5 py-1 transition-colors disabled:opacity-40"
+                  >
+                    {saving ? '…' : 'Reject'}
+                  </button>
+                  <button
+                    onClick={() => patch({ status: 'replied', replyIntent: 'interested', conflictNote: undefined })}
+                    disabled={saving}
+                    className="text-[10px] uppercase tracking-widest text-muted border border-frame hover:border-navy hover:text-navy px-2.5 py-1 transition-colors disabled:opacity-40"
+                  >
+                    Override — Continue
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* ── Scheduling panel (email3 sent, not yet scheduled) ── */}
+            {status === 'scheduling_sent' && (
+              <div className="space-y-2 pt-2 border-t border-frame">
+                <p className="text-[10px] text-muted">Confirm slot manually if expert replies with a time:</p>
+                <input
+                  type="text"
+                  value={slotDate}
+                  onChange={e => setSlotDate(e.target.value)}
+                  placeholder="e.g. Tue Jun 10, 2:00 pm"
+                  className="w-full px-2.5 py-1.5 text-[11px] border border-frame bg-cream focus:outline-none focus:border-navy text-ink placeholder:text-muted/60"
+                />
+                <select
+                  value={slotTz}
+                  onChange={e => setSlotTz(e.target.value as Timezone)}
+                  className="text-[11px] border border-frame bg-cream text-ink px-2 py-1.5 focus:outline-none focus:border-navy"
+                >
+                  {TIMEZONES.map(tz => <option key={tz} value={tz}>{tz}</option>)}
+                </select>
+                <button
+                  onClick={() => {
+                    if (!slotDate.trim()) return;
+                    patch({ scheduledTime: `${slotDate.trim()} ${slotTz}`, status: 'scheduled' });
+                  }}
+                  disabled={saving || !slotDate.trim()}
+                  className="text-[10px] uppercase tracking-widest bg-navy text-cream px-3 py-1.5 hover:bg-navy/90 disabled:opacity-40 transition-colors"
                   style={{ letterSpacing: '0.1em' }}
                 >
-                  Create Calendar Invite
+                  {saving ? '…' : 'Confirm Slot →'}
                 </button>
-                {completeRateError && (
-                  <p className="text-[10px] text-red-600">{completeRateError}</p>
+              </div>
+            )}
+
+            {/* ── Scheduled panel ── */}
+            {status === 'scheduled' && (
+              <div className="space-y-3 pt-2 border-t border-frame">
+                {projectExpert.scheduledTime && (
+                  <div className="bg-green-50 border border-green-200 px-3 py-2.5">
+                    <p className="text-[9px] uppercase tracking-widest text-green-600 font-medium mb-1" style={{ letterSpacing: '0.14em' }}>
+                      Confirmed Slot
+                    </p>
+                    <p className="text-sm font-medium text-green-800">{projectExpert.scheduledTime}</p>
+                  </div>
                 )}
+                {completeRateError && <p className="text-[10px] text-red-600">{completeRateError}</p>}
                 <button
                   onClick={() => {
                     if (!projectExpert.expertRate) {
@@ -992,30 +817,28 @@ export default function OutreachCard({
                   Complete Engagement
                 </button>
               </div>
-            </>
-          )}
+            )}
 
-          {/* ─────────────────────────────────────────────────────────────
-              Step 7 — Completed
-              ───────────────────────────────────────────────────────────── */}
-          {step === 7 && (
-            <>
-              <p
-                className="text-[9px] uppercase tracking-widest font-medium text-teal-600"
-                style={{ letterSpacing: '0.18em' }}
-              >
-                ✓ Completed
-              </p>
-              {projectExpert.scheduledTime && (
-                <p className="text-[11px] text-muted">📅 {projectExpert.scheduledTime}</p>
-              )}
-              {projectExpert.contactedAt && (
-                <p className="text-[11px] text-muted">Contacted {formatDate(projectExpert.contactedAt)}</p>
-              )}
-            </>
-          )}
+            {/* ── Completed panel ── */}
+            {isCompleted && (
+              <div className="space-y-1 pt-2 border-t border-frame">
+                <p className="text-[9px] uppercase tracking-widest font-medium text-teal-600" style={{ letterSpacing: '0.18em' }}>
+                  ✓ Completed
+                </p>
+                {projectExpert.scheduledTime && (
+                  <p className="text-[11px] text-muted">{projectExpert.scheduledTime}</p>
+                )}
+                {projectExpert.expertPaidAt && (
+                  <p className="text-[11px] text-teal-600">Payout processed {formatDateShort(projectExpert.expertPaidAt)}</p>
+                )}
+                {projectExpert.expertOnboardingStatus === 'pending' && (
+                  <p className="text-[11px] text-amber-600">Awaiting expert payout setup</p>
+                )}
+              </div>
+            )}
 
-        </div>
+          </div>
+        )}
 
         {/* ── LinkedIn reference links ── */}
         {linkedInLinks.length > 0 && (
@@ -1044,7 +867,7 @@ export default function OutreachCard({
 
       </div>
 
-      {/* ── OutreachModal (step 2: generate/regenerate) ── */}
+      {/* ── OutreachModal (for legacy draft) ── */}
       {showOutreach && (
         <OutreachModal
           expert={expert}
@@ -1067,7 +890,6 @@ export default function OutreachCard({
             aria-modal="true"
             aria-label="Complete Engagement"
           >
-            {/* Modal header */}
             <div className="px-5 py-4 border-b border-frame flex items-center justify-between">
               <p className="text-[10px] uppercase tracking-widest text-navy font-medium" style={{ letterSpacing: '0.16em' }}>
                 Complete Engagement
@@ -1083,9 +905,7 @@ export default function OutreachCard({
               </button>
             </div>
 
-            {/* Modal body */}
             <div className="px-5 py-5 space-y-4">
-              {/* Call duration */}
               <div>
                 <label className="block text-[10px] uppercase tracking-widest text-muted font-medium mb-1.5" style={{ letterSpacing: '0.18em' }}>
                   Call Duration (minutes)
@@ -1102,7 +922,6 @@ export default function OutreachCard({
                 />
               </div>
 
-              {/* Expert rate (read-only) */}
               <div>
                 <p className="text-[10px] uppercase tracking-widest text-muted font-medium mb-1" style={{ letterSpacing: '0.18em' }}>
                   Expert Rate
@@ -1110,14 +929,13 @@ export default function OutreachCard({
                 <p className="text-[12px] text-ink">${projectExpert.expertRate}/hr</p>
               </div>
 
-              {/* Invoice amount (live computed) */}
               <div className="bg-navy/5 border border-navy/15 px-3 py-2.5">
                 <p className="text-[10px] uppercase tracking-widest text-navy/50 font-medium mb-0.5" style={{ letterSpacing: '0.16em' }}>
                   Invoice Amount
                 </p>
                 <p className="text-lg font-display font-semibold text-navy">
                   {(() => {
-                    const dur = parseInt(completeDuration, 10);
+                    const dur  = parseInt(completeDuration, 10);
                     const rate = projectExpert.expertRate;
                     if (!rate || !dur || isNaN(dur) || dur < 1) return '—';
                     return `$${Math.round((rate * dur) / 60).toLocaleString()}`;
@@ -1126,11 +944,8 @@ export default function OutreachCard({
                 <p className="text-[10px] text-muted/60 mt-0.5">rate × duration / 60</p>
               </div>
 
-              {completeError && (
-                <p className="text-[10px] text-red-600">{completeError}</p>
-              )}
+              {completeError && <p className="text-[10px] text-red-600">{completeError}</p>}
 
-              {/* Actions */}
               <div className="flex items-center gap-2 pt-1">
                 <button
                   onClick={submitComplete}
