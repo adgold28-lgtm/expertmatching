@@ -348,6 +348,8 @@ export interface Project {
   clientCalendarRefreshToken?:   string | null;  // encrypted
   clientCalendarEmail?:          string | null;
   clientCalendlyUrl?:            string;
+  // New brief fields (simplified two-field brief)
+  expertType?: string;              // "who do you want to talk to"
   // Outreach mode — 'review' (default) queues outreach for approval; 'auto' sends immediately
   outreachMode?: 'auto' | 'review';
   // Ownership
