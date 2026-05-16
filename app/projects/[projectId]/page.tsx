@@ -409,7 +409,7 @@ function BriefSection({
             value={expertType}
             onChange={e => setExpertType(e.target.value)}
             rows={5}
-            placeholder="e.g. Former VP of Operations at a regional 3PL or food distributor"
+            placeholder="e.g. Someone with 20+ years in the poultry industry, former VP or Director level at a major integrator like Tyson, Pilgrim's, or Koch Foods"
             className={fieldClass}
           />
         </div>
