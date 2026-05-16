@@ -828,6 +828,18 @@ export async function POST(request: NextRequest) {
       ? body.briefContext as BriefContext
       : {};
 
+    // Supplementary search fields — used to broaden queries and exclude already-found experts.
+    const supplementarySearch: boolean = body.supplementarySearch === true;
+    const excludeNames: string[] = Array.isArray(body.excludeNames)
+      ? (body.excludeNames as unknown[])
+          .filter((n): n is string => typeof n === 'string')
+          .map(n => n.trim())
+          .filter(Boolean)
+      : [];
+    const excludeNamesSet = excludeNames.length > 0
+      ? new Set(excludeNames.map(n => n.toLowerCase()))
+      : null;
+
     if (!query?.trim()) {
       return Response.json({ error: 'Query is required' }, { status: 400 });
     }
@@ -944,6 +956,26 @@ Return ONLY valid JSON, no markdown, no prose:
       }
       allQueryPairs  = buildSearchQueriesFromBrief(query, geography, seniority, briefContext, vci ?? undefined);
       queryGenMethod = 'programmatic';
+    }
+
+    // ── Supplementary search: append diversity-broadening queries ────────────
+    // Only when supplementarySearch=true — targets different profile types
+    // (startups, independents, academics) to surface experts the primary run missed.
+    if (supplementarySearch) {
+      const shortQ = query.trim().replace(/"/g, '').slice(0, 55);
+      allQueryPairs.push(
+        { category: 'Operator',  query: `"${shortQ}" startup OR "independent" OR "freelance" specialist` },
+        { category: 'Advisor',   query: `"${shortQ}" emerging OR alternative advisor OR consultant analyst` },
+        { category: 'Outsider',  query: `"${shortQ}" academic OR professor OR university OR nonprofit researcher` },
+      );
+      // Broaden VCI mustSearchTerms with diversity signals so programmatic
+      // query builder also picks them up if it runs again.
+      if (vci) {
+        vci.mustSearchTerms = [
+          ...vci.mustSearchTerms,
+          'alternative', 'emerging', 'startup', 'academic', 'independent consultant',
+        ];
+      }
     }
 
     // ── Step 2: Run all 12 queries in parallel (with optional comparison) ────
@@ -1370,8 +1402,14 @@ RELEVANCE SCORING GUIDANCE (0–100):
     });
 
     // 7d: Same-source clustering — suppress weak extras from the same article
-    const { kept: validatedExperts, suppressed: sameSourceSuppressedCount } =
+    const { kept: clusteredExperts, suppressed: sameSourceSuppressedCount } =
       applySameSourceClustering(conflictFiltered);
+
+    // 7e: Exclude already-found experts (supplementary search dedup)
+    // Case-insensitive match on name only — company may differ across sources.
+    const validatedExperts = excludeNamesSet
+      ? clusteredExperts.filter(e => !excludeNamesSet.has(((e.name as string) ?? '').toLowerCase().trim()))
+      : clusteredExperts;
 
     // ── Step 7e: Tier splitting ─────────────────────────────────────────────
     // Split validated experts into core and adjacent based on Claude's tier field.
