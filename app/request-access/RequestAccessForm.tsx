@@ -10,7 +10,6 @@ export default function RequestAccessForm() {
   const [name,    setName]    = useState('');
   const [firm,    setFirm]    = useState('');
   const [email,   setEmail]   = useState('');
-  const [useCase, setUseCase] = useState('');
   const [loading, setLoading] = useState(false);
   const [error,   setError]   = useState('');
   const [success, setSuccess] = useState(false);
@@ -26,7 +25,7 @@ export default function RequestAccessForm() {
       const res = await fetch('/api/request-access', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name: name.trim(), firm: firm.trim(), email: email.trim(), useCase: useCase.trim() }),
+        body: JSON.stringify({ name: name.trim(), firm: firm.trim(), email: email.trim() }),
       });
       const data = await res.json();
       if (!res.ok || !data.ok) {
@@ -84,10 +83,10 @@ export default function RequestAccessForm() {
                 className="font-display text-navy mb-3"
                 style={{ fontSize: 'clamp(1.6rem, 3.5vw, 2.2rem)', fontWeight: 500 }}
               >
-                Request Access
+                Find the expert you&apos;re looking for
               </h1>
               <p className="text-muted text-sm leading-relaxed" style={{ fontWeight: 300 }}>
-                Tell us a bit about your team and we'll follow up within one business day.
+                Tell us a bit about your team and we&apos;ll follow up within one business day.
               </p>
             </div>
 
@@ -153,26 +152,6 @@ export default function RequestAccessForm() {
                 />
               </div>
 
-              <div>
-                <label
-                  htmlFor="useCase"
-                  className="block text-[10px] uppercase tracking-widest text-muted font-medium mb-1.5"
-                  style={{ letterSpacing: '0.18em' }}
-                >
-                  What are you researching? <span className="text-red-400">*</span>
-                </label>
-                <textarea
-                  id="useCase"
-                  value={useCase}
-                  onChange={e => setUseCase(e.target.value)}
-                  required
-                  placeholder="e.g. Supply chain dynamics in industrial automation; competitive landscape for a potential portfolio company."
-                  rows={4}
-                  className="w-full px-3.5 py-2.5 text-sm text-ink border border-frame bg-cream resize-none focus:outline-none focus:border-navy transition-colors placeholder-[#9AABB8]"
-                  style={{ fontFamily: 'var(--font-libre-franklin)', fontWeight: 300 }}
-                />
-              </div>
-
               {error && (
                 <p className="text-xs text-red-600 border border-red-200 bg-red-50 px-3 py-2">
                   {error}
@@ -181,7 +160,7 @@ export default function RequestAccessForm() {
 
               <button
                 type="submit"
-                disabled={loading || !name.trim() || !firm.trim() || !email.trim() || !useCase.trim()}
+                disabled={loading || !name.trim() || !firm.trim() || !email.trim()}
                 className="w-full py-3 text-[11px] font-medium uppercase transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
                 style={{ background: NAVY, color: GOLD, letterSpacing: '0.14em' }}
               >

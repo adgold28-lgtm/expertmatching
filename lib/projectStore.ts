@@ -17,12 +17,14 @@ import { getUpstashClient, type UpstashRedis } from './upstashRedis';
 export interface CreateProjectInput {
   name: string;
   researchQuestion?: string;  // optional — filled later when user runs search
+  expertType?: string;        // "who to talk to" brief field
   industry: string;
   function: string;
   geography: string;
   seniority: string;
   experts?: Array<{ expert: Expert; status?: ExpertStatus }>;
   notes?: string;
+  outreachMode?: 'auto' | 'review';
 }
 
 export interface UpdateExpertInput {
@@ -78,6 +80,7 @@ export interface UpdateExpertInput {
   overlapCheckedAt?: number;
   calendarEventId?:  string;
   // Billing / Stripe
+  clientRate?:           number | null;
   expertRate?:           number | null;
   callDurationMin?:      number | null;
   invoiceAmount?:        number | null;
@@ -227,6 +230,7 @@ class InMemoryProjectStore implements ProjectStore {
       updatedAt:        now,
       experts:          makeProjectExperts(input.experts ?? []),
       notes:            input.notes,
+      outreachMode:     input.outreachMode ?? 'review',
       ownerEmail,
       collaborators:    [],
       firmDomain,
@@ -385,6 +389,7 @@ class UpstashProjectStore implements ProjectStore {
       updatedAt:        now,
       experts:          makeProjectExperts(input.experts ?? []),
       notes:            input.notes,
+      outreachMode:     input.outreachMode ?? 'review',
       ownerEmail,
       collaborators:    [],
       firmDomain,

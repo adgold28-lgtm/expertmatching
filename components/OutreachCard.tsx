@@ -6,6 +6,11 @@ import ContactSection from './ContactSection';
 import EmailStatusBadge from './EmailStatusBadge';
 import OutreachModal from './OutreachModal';
 import { isLinkedInProfileUrl } from '../lib/domainSuggestions';
+import { classifySeniority, TIER_PRICING } from '../lib/seniorityClassifier';
+
+const DEFAULT_MIN_RATE = 150;
+const DEFAULT_MAX_RATE = 500;
+const PLATFORM_CUT = 0.30; // 30% margin; expert receives 70%
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -173,11 +178,19 @@ export default function OutreachCard({
   const [showEmailLookup,     setShowEmailLookup]    = useState(false);
   const [showRecheck,         setShowRecheck]        = useState(false);
   const [copiedEmail,         setCopiedEmail]        = useState(false);
-  // Rate setting
-  const [rateInput,           setRateInput]          = useState(projectExpert.expertRate != null ? String(projectExpert.expertRate) : '');
-  const [rateEditing,         setRateEditing]        = useState(projectExpert.expertRate == null);
+  // Rate setting — rateInput is the CLIENT rate (what client pays)
+  const [rateInput,           setRateInput]          = useState(projectExpert.clientRate != null ? String(projectExpert.clientRate) : projectExpert.expertRate != null ? String(Math.round(projectExpert.expertRate / (1 - PLATFORM_CUT))) : '');
+  const [rateEditing,         setRateEditing]        = useState(projectExpert.clientRate == null && projectExpert.expertRate == null);
   const [rateSaving,          setRateSaving]         = useState(false);
   const [rateError,           setRateError]          = useState('');
+
+  // Seniority-based rate suggestion
+  const seniorityTier = classifySeniority(expert.title ?? '');
+  const tierPricing   = TIER_PRICING[seniorityTier];
+  const suggestedMin  = Math.max(DEFAULT_MIN_RATE, Math.round(tierPricing.expertRate / (1 - PLATFORM_CUT) * 0.85));
+  const suggestedMax  = Math.min(DEFAULT_MAX_RATE, Math.round(tierPricing.expertRate / (1 - PLATFORM_CUT) * 1.15));
+  const effectiveMin  = Math.min(suggestedMin, suggestedMax);
+  const effectiveMax  = Math.max(suggestedMin, suggestedMax);
   // Sequence trigger (email1 send button)
   const [sequenceSending,     setSequenceSending]    = useState(false);
   const [sequenceError,       setSequenceError]      = useState('');
@@ -256,12 +269,14 @@ export default function OutreachCard({
       setRateError('Rate must be between $1 and $9,999/hr');
       return;
     }
+    const clientRate = Math.round(parsed);
+    const expertRate = Math.round(clientRate * (1 - PLATFORM_CUT));
     setRateSaving(true);
     try {
       const res = await fetch(`/api/projects/${projectId}/experts/${expert.id}`, {
         method:  'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body:    JSON.stringify({ expertRate: Math.round(parsed) }),
+        body:    JSON.stringify({ clientRate, expertRate }),
       });
       const data = await res.json() as { project?: { experts: ProjectExpert[] } };
       if (!res.ok) { setRateError('Failed to save rate. Please try again.'); return; }
@@ -281,8 +296,8 @@ export default function OutreachCard({
       setSequenceError('No email address on file — find the email first.');
       return;
     }
-    if (!projectExpert.expertRate) {
-      setSequenceError('Set expert rate before sending.');
+    if (!projectExpert.clientRate && !projectExpert.expertRate) {
+      setSequenceError('Set client rate before sending.');
       return;
     }
     setSequenceSending(true);
@@ -348,9 +363,9 @@ export default function OutreachCard({
       setCompleteError('Call duration must be between 1 and 480 minutes.');
       return;
     }
-    const rate = projectExpert.expertRate;
-    if (!rate) { setCompleteError('Expert rate is required.'); return; }
-    const invoiceAmount = Math.round((rate * dur) / 60);
+    const expertRate = projectExpert.expertRate ?? (projectExpert.clientRate ? Math.round(projectExpert.clientRate * (1 - PLATFORM_CUT)) : null);
+    if (!expertRate) { setCompleteError('Set client rate before completing.'); return; }
+    const invoiceAmount = Math.round((expertRate * dur) / 60);
     setCompleteSubmitting(true);
     try {
       const res = await fetch(`/api/projects/${projectId}/experts/${expert.id}/complete`, {
@@ -477,11 +492,16 @@ export default function OutreachCard({
               )}
             </div>
 
-            {/* Expert rate */}
+            {/* Rate configuration */}
             <div className="space-y-1.5">
-              <p className="text-[9px] uppercase tracking-widest text-muted font-medium" style={{ letterSpacing: '0.18em' }}>
-                Expert Rate
-              </p>
+              <div className="flex items-center justify-between">
+                <p className="text-[9px] uppercase tracking-widest text-muted font-medium" style={{ letterSpacing: '0.18em' }}>
+                  Client Rate
+                </p>
+                <span className="text-[9px] text-muted/60">
+                  Suggested: ${effectiveMin}–${effectiveMax}/hr
+                </span>
+              </div>
               {rateEditing ? (
                 <div className="space-y-1">
                   <div className="flex items-center gap-1.5">
@@ -492,7 +512,7 @@ export default function OutreachCard({
                       max={9999}
                       value={rateInput}
                       onChange={e => setRateInput(e.target.value)}
-                      placeholder="e.g. 500"
+                      placeholder={`e.g. ${effectiveMin}`}
                       className="w-24 px-2 py-1 text-[11px] border border-frame bg-cream focus:outline-none focus:border-navy text-ink"
                     />
                     <span className="text-[11px] text-muted">/hr</span>
@@ -506,16 +526,27 @@ export default function OutreachCard({
                     </button>
                   </div>
                   {rateError && <p className="text-[10px] text-red-600">{rateError}</p>}
+                  {rateInput && !isNaN(parseFloat(rateInput)) && (
+                    <p className="text-[10px] text-muted/70">
+                      Expert receives ${Math.round(parseFloat(rateInput) * (1 - PLATFORM_CUT))}/hr · Platform keeps ${Math.round(parseFloat(rateInput) * PLATFORM_CUT)}/hr
+                    </p>
+                  )}
                 </div>
               ) : (
-                <div className="flex items-center gap-2">
-                  <span className="text-[12px] text-ink font-medium">${projectExpert.expertRate}/hr</span>
-                  <button
-                    onClick={() => setRateEditing(true)}
-                    className="text-[10px] text-muted hover:text-navy underline-offset-2 hover:underline transition-colors"
-                  >
-                    Edit
-                  </button>
+                <div className="space-y-0.5">
+                  <div className="flex items-center gap-2">
+                    <span className="text-[12px] text-ink font-medium">${projectExpert.clientRate ?? Math.round((projectExpert.expertRate ?? 0) / (1 - PLATFORM_CUT))}/hr</span>
+                    <span className="text-[9px] text-muted/60">billed to client</span>
+                    <button
+                      onClick={() => setRateEditing(true)}
+                      className="text-[10px] text-muted hover:text-navy underline-offset-2 hover:underline transition-colors"
+                    >
+                      Edit
+                    </button>
+                  </div>
+                  <p className="text-[10px] text-muted/60">
+                    Expert receives ${projectExpert.expertRate}/hr
+                  </p>
                 </div>
               )}
             </div>
@@ -546,14 +577,14 @@ export default function OutreachCard({
               {sequenceError && <p className="text-[10px] text-red-600">{sequenceError}</p>}
               <button
                 onClick={triggerEmail1}
-                disabled={sequenceSending || saving || !projectExpert.expertRate}
+                disabled={sequenceSending || saving || (!projectExpert.clientRate && !projectExpert.expertRate)}
                 className="text-[10px] uppercase tracking-widest bg-navy text-cream px-3 py-1.5 hover:bg-navy/90 disabled:opacity-40 transition-colors"
                 style={{ letterSpacing: '0.1em' }}
-                title={!projectExpert.expertRate ? 'Set expert rate first' : undefined}
+                title={!projectExpert.clientRate && !projectExpert.expertRate ? 'Set client rate first' : undefined}
               >
                 {sequenceSending ? 'Sending…' : 'Send Email 1 →'}
               </button>
-              {!projectExpert.expertRate && (
+              {!projectExpert.clientRate && !projectExpert.expertRate && (
                 <p className="text-[10px] text-muted/70 italic">Set a rate above before sending.</p>
               )}
             </div>

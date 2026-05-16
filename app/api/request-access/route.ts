@@ -9,7 +9,6 @@ interface AccessRequest {
   name:        string;
   firm:        string;
   email:       string;
-  useCase:     string;
   submittedAt: number;
 }
 
@@ -43,7 +42,7 @@ export async function POST(request: NextRequest) {
     return Response.json({ error: 'Invalid request body' }, { status: 400 });
   }
 
-  const { name, firm, email, useCase } = body as Record<string, unknown>;
+  const { name, firm, email } = body as Record<string, unknown>;
 
   if (typeof name !== 'string' || !name.trim()) {
     return Response.json({ error: 'Name is required' }, { status: 400 });
@@ -54,15 +53,11 @@ export async function POST(request: NextRequest) {
   if (typeof email !== 'string' || !email.trim() || !email.includes('@')) {
     return Response.json({ error: 'Valid email is required' }, { status: 400 });
   }
-  if (typeof useCase !== 'string' || !useCase.trim()) {
-    return Response.json({ error: 'Use case is required' }, { status: 400 });
-  }
 
   const record: AccessRequest = {
     name:        name.trim().slice(0, 200),
     firm:        firm.trim().slice(0, 200),
     email:       email.trim().toLowerCase().slice(0, 200),
-    useCase:     useCase.trim().slice(0, 2000),
     submittedAt: Date.now(),
   };
 
@@ -88,7 +83,6 @@ export async function POST(request: NextRequest) {
       }
       const signupUrl = `${process.env.NEXT_PUBLIC_APP_URL}/signup/${token}`;
       await sendInviteEmail(record.email, record.firm, signupUrl);
-      console.log('[request-access] auto-approved invite sent', { domain });
       return Response.json({ ok: true });
     } catch {
       // Fall through to manual review on any error
@@ -96,7 +90,7 @@ export async function POST(request: NextRequest) {
     }
   }
 
-  // Store as pending and notify admin
+  // Store as pending
   try {
     const redis = getUpstashClient();
     if (redis) {
@@ -119,25 +113,30 @@ export async function POST(request: NextRequest) {
     // Redis failure must not fail the request
   }
 
-  // Notify admin — non-blocking
+  // Notify admin — use ADMIN_NOTIFICATION_EMAIL env var; fall back to hardcoded address
+  const adminEmail = process.env.ADMIN_NOTIFICATION_EMAIL ?? 'ashergoldsteinbusiness@gmail.com';
+
   if (process.env.DISABLE_EMAILS !== 'true') {
     const resend = getResend();
     const from   = process.env.OUTREACH_FROM_EMAIL;
     if (resend && from) {
       resend.emails.send({
         from,
-        to:      'asher@expertmatch.fit',
+        to:      adminEmail,
         subject: `New access request: ${record.name} — ${record.firm}`,
         html: `<p><strong>Name:</strong> ${escapeHtml(record.name)}</p>
 <p><strong>Firm:</strong> ${escapeHtml(record.firm)}</p>
-<p><strong>Email:</strong> ${escapeHtml(record.email)}</p>
-<p><strong>Research focus:</strong></p>
-<p style="white-space:pre-wrap;">${escapeHtml(record.useCase)}</p>`,
-        text: `Name: ${record.name}\nFirm: ${record.firm}\nEmail: ${record.email}\n\nResearch focus:\n${record.useCase}`,
-      }).catch(() => {});
+<p><strong>Email:</strong> ${escapeHtml(record.email)}</p>`,
+        text: `Name: ${record.name}\nFirm: ${record.firm}\nEmail: ${record.email}`,
+      }).catch(err => {
+        console.error('[request-access] admin notification failed', {
+          error: err instanceof Error ? err.message : String(err),
+        });
+      });
+    } else {
+      console.warn('[request-access] notification skipped — RESEND_API_KEY or OUTREACH_FROM_EMAIL not set');
     }
   }
 
-  console.log('[request-access] submission received', { status: 'ok' });
   return Response.json({ ok: true });
 }

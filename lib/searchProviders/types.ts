@@ -1,7 +1,7 @@
 // Provider abstraction for expert candidate web search.
 // Add new providers here; route and cache layers are provider-agnostic.
 
-export type SearchProviderName = 'tavily' | 'scrapingbee';
+export type SearchProviderName = 'tavily' | 'scrapingbee' | 'exa';
 
 export interface ExpertSearchInput {
   query: string;

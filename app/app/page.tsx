@@ -27,10 +27,12 @@ export default function AppPage() {
   const [showWelcome,     setShowWelcome]     = useState(false);
 
   // New Project modal
-  const [showNewProjectModal, setShowNewProjectModal] = useState(false);
-  const [newProjectName,      setNewProjectName]      = useState('');
-  const [creating,            setCreating]            = useState(false);
-  const [createError,         setCreateError]         = useState('');
+  const [showNewProjectModal, setShowNewProjectModal]   = useState(false);
+  const [briefProblem,        setBriefProblem]          = useState('');
+  const [briefExpertType,     setBriefExpertType]       = useState('');
+  const [outreachMode,        setOutreachMode]          = useState<'auto' | 'review'>('review');
+  const [creating,            setCreating]              = useState(false);
+  const [createError,         setCreateError]           = useState('');
 
   useEffect(() => {
     if (typeof window !== 'undefined') {
@@ -65,21 +67,23 @@ export default function AppPage() {
   }
 
   function openNewProjectModal() {
-    setNewProjectName('');
+    setBriefProblem('');
+    setBriefExpertType('');
+    setOutreachMode('review');
     setCreateError('');
     setShowNewProjectModal(true);
   }
 
   function closeNewProjectModal() {
     setShowNewProjectModal(false);
-    setNewProjectName('');
+    setBriefProblem('');
+    setBriefExpertType('');
     setCreateError('');
   }
 
   async function handleCreateProject(e: React.FormEvent) {
     e.preventDefault();
-    const trimmed = newProjectName.trim();
-    if (!trimmed || creating) return;
+    if (creating) return;
     setCreating(true);
     setCreateError('');
     try {
@@ -87,12 +91,14 @@ export default function AppPage() {
         method:  'POST',
         headers: { 'Content-Type': 'application/json' },
         body:    JSON.stringify({
-          name:     trimmed,
-          industry: '',
-          function: '',
-          geography: '',
-          seniority: '',
-          experts:  [],
+          researchQuestion: briefProblem.trim() || undefined,
+          expertType:       briefExpertType.trim() || undefined,
+          industry:         '',
+          function:         '',
+          geography:        '',
+          seniority:        '',
+          outreachMode,
+          experts:          [],
         }),
       });
       const data = await res.json() as { project?: { id: string }; error?: string };
@@ -280,26 +286,90 @@ export default function AppPage() {
             </div>
 
             {/* Body */}
-            <form onSubmit={handleCreateProject} className="px-6 py-5 space-y-4">
+            <form onSubmit={handleCreateProject} className="px-6 py-5 space-y-5">
               <div>
                 <label
-                  htmlFor="new-project-name"
+                  htmlFor="brief-problem"
                   className="block text-[10px] uppercase tracking-widest text-muted font-medium mb-1.5"
                   style={{ letterSpacing: '0.18em' }}
                 >
-                  Project name <span className="text-red-400 ml-0.5">*</span>
+                  What&apos;s the business problem?
                 </label>
-                <input
-                  id="new-project-name"
-                  type="text"
-                  value={newProjectName}
-                  onChange={e => { setNewProjectName(e.target.value); setCreateError(''); }}
-                  placeholder='e.g. "Pharma cold chain diligence"'
-                  maxLength={200}
+                <textarea
+                  id="brief-problem"
+                  value={briefProblem}
+                  onChange={e => { setBriefProblem(e.target.value); setCreateError(''); }}
+                  placeholder="e.g. We're evaluating entry into cold chain logistics in the Southeast"
+                  rows={3}
+                  maxLength={2000}
+                  // eslint-disable-next-line jsx-a11y/no-autofocus
                   autoFocus
-                  className="w-full px-3 py-2.5 text-sm border border-frame bg-cream focus:outline-none focus:border-navy text-ink"
+                  className="w-full px-3 py-2.5 text-sm border border-frame bg-cream focus:outline-none focus:border-navy text-ink resize-none"
                   style={{ fontFamily: 'var(--font-libre-franklin)', fontWeight: 300 }}
                 />
+              </div>
+
+              <div>
+                <label
+                  htmlFor="brief-expert-type"
+                  className="block text-[10px] uppercase tracking-widest text-muted font-medium mb-1.5"
+                  style={{ letterSpacing: '0.18em' }}
+                >
+                  What type of person do you want to talk to?
+                </label>
+                <textarea
+                  id="brief-expert-type"
+                  value={briefExpertType}
+                  onChange={e => { setBriefExpertType(e.target.value); setCreateError(''); }}
+                  placeholder="e.g. Former VP of Operations at a regional 3PL or food distributor"
+                  rows={3}
+                  maxLength={2000}
+                  className="w-full px-3 py-2.5 text-sm border border-frame bg-cream focus:outline-none focus:border-navy text-ink resize-none"
+                  style={{ fontFamily: 'var(--font-libre-franklin)', fontWeight: 300 }}
+                />
+              </div>
+
+              {/* Outreach mode toggle */}
+              <div>
+                <p
+                  className="text-[10px] uppercase tracking-widest text-muted font-medium mb-2"
+                  style={{ letterSpacing: '0.18em' }}
+                >
+                  Outreach mode
+                </p>
+                <div className="flex border border-frame overflow-hidden">
+                  <button
+                    type="button"
+                    onClick={() => setOutreachMode('review')}
+                    className="flex-1 px-4 py-2.5 text-[11px] font-medium transition-colors text-left"
+                    style={{
+                      background:    outreachMode === 'review' ? '#0B1F3B' : 'transparent',
+                      color:         outreachMode === 'review' ? '#C6A75E' : '#6B7C8D',
+                      borderRight:   '1px solid #E2E8ED',
+                      letterSpacing: '0.04em',
+                    }}
+                  >
+                    <span className="block text-[10px] uppercase tracking-widest mb-0.5" style={{ letterSpacing: '0.14em' }}>
+                      Review first
+                    </span>
+                    I review and approve before anything sends
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setOutreachMode('auto')}
+                    className="flex-1 px-4 py-2.5 text-[11px] font-medium transition-colors text-left"
+                    style={{
+                      background:    outreachMode === 'auto' ? '#0B1F3B' : 'transparent',
+                      color:         outreachMode === 'auto' ? '#C6A75E' : '#6B7C8D',
+                      letterSpacing: '0.04em',
+                    }}
+                  >
+                    <span className="block text-[10px] uppercase tracking-widest mb-0.5" style={{ letterSpacing: '0.14em' }}>
+                      Auto-send
+                    </span>
+                    AI drafts and sends automatically
+                  </button>
+                </div>
               </div>
 
               {createError && (
@@ -317,7 +387,7 @@ export default function AppPage() {
                 </button>
                 <button
                   type="submit"
-                  disabled={!newProjectName.trim() || creating}
+                  disabled={creating}
                   className="text-[10px] uppercase tracking-widest px-5 py-2.5 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
                   style={{ background: '#0B1F3B', color: '#C6A75E', letterSpacing: '0.12em' }}
                 >
