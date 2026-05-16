@@ -45,6 +45,10 @@ export interface UserRecord {
   createdAt:             number;
   inviteTokenHash?:      string;    // SHA-256(token) — for revocation
   inviteTokenExpiresAt?: number;
+  onboardingComplete?:   boolean;   // false = must complete onboarding; absent/true = done
+  firstName?:            string;
+  lastName?:             string;
+  title?:                string;
 }
 
 export interface SeatRequest {
@@ -185,6 +189,10 @@ export async function getUser(email: string): Promise<UserRecord | null> {
       createdAt:             typeof record.createdAt === 'number' ? record.createdAt : 0,
       inviteTokenHash:       typeof record.inviteTokenHash === 'string' ? record.inviteTokenHash : undefined,
       inviteTokenExpiresAt:  typeof record.inviteTokenExpiresAt === 'number' ? record.inviteTokenExpiresAt : undefined,
+      onboardingComplete:    typeof record.onboardingComplete === 'boolean' ? record.onboardingComplete : undefined,
+      firstName:             typeof record.firstName === 'string' ? record.firstName : undefined,
+      lastName:              typeof record.lastName  === 'string' ? record.lastName  : undefined,
+      title:                 typeof record.title     === 'string' ? record.title     : undefined,
     };
   } catch {
     return null;
@@ -211,11 +219,20 @@ export async function upsertUser(
     createdAt:            fields.createdAt            ?? existing?.createdAt            ?? Date.now(),
     inviteTokenHash:      fields.inviteTokenHash      ?? existing?.inviteTokenHash,
     inviteTokenExpiresAt: fields.inviteTokenExpiresAt ?? existing?.inviteTokenExpiresAt,
+    // onboardingComplete can be explicitly false — use !== undefined guard to preserve it
+    onboardingComplete:   fields.onboardingComplete !== undefined ? fields.onboardingComplete : existing?.onboardingComplete,
+    firstName:            fields.firstName  ?? existing?.firstName,
+    lastName:             fields.lastName   ?? existing?.lastName,
+    title:                fields.title      ?? existing?.title,
   };
 
   // Remove undefined optional fields
-  if (record.inviteTokenHash === undefined) delete record.inviteTokenHash;
+  if (record.inviteTokenHash      === undefined) delete record.inviteTokenHash;
   if (record.inviteTokenExpiresAt === undefined) delete record.inviteTokenExpiresAt;
+  if (record.onboardingComplete   === undefined) delete record.onboardingComplete;
+  if (record.firstName            === undefined) delete record.firstName;
+  if (record.lastName             === undefined) delete record.lastName;
+  if (record.title                === undefined) delete record.title;
 
   await redis.set(`user:${normalizedEmail}`, JSON.stringify(record));
 

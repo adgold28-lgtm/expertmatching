@@ -21,10 +21,12 @@ export default async function NavBar({ activePath }: NavBarProps = {}) {
   const cookieStore = cookies();
   const token = cookieStore.get(COOKIE_NAME)?.value ?? '';
   let sessionEmail: string | null = null;
+  let sessionFirstName: string | null = null;
   if (token) {
     try {
       const payload = await getSessionPayload(token);
       sessionEmail = payload?.email ?? null;
+      sessionFirstName = payload?.firstName ?? null;
     } catch {
       sessionEmail = null;
     }
@@ -65,7 +67,7 @@ export default async function NavBar({ activePath }: NavBarProps = {}) {
                 className="text-[11px] hidden sm:block"
                 style={{ color: 'rgba(255,255,255,0.6)', letterSpacing: '0.05em' }}
               >
-                Welcome, {displayName(sessionEmail)}
+                Welcome, {sessionFirstName ?? displayName(sessionEmail)}
               </span>
               <SignOutButton />
             </div>

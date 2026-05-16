@@ -160,7 +160,7 @@ export async function POST(request: NextRequest): Promise<Response> {
   const role          = activatedUser?.role     ?? 'user';
   const resolvedName  = activatedUser?.firmName ?? firmName;
 
-  const sessionToken = await createSessionCookie(role, email, resolvedName);
+  const sessionToken = await createSessionCookie(role, email, resolvedName, { onboardingComplete: false });
 
   console.log('[auth/set-password] account activated', { domain: domain || '[redacted]' });
   return sessionResponse(sessionToken);

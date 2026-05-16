@@ -24,12 +24,23 @@ export default function AppPage() {
   const [projects,        setProjects]        = useState<ProjectSummary[]>([]);
   const [projectsLoading, setProjectsLoading] = useState(true);
   const [currentUser,     setCurrentUser]     = useState<CurrentUser | null>(null);
+  const [showWelcome,     setShowWelcome]     = useState(false);
 
   // New Project modal
   const [showNewProjectModal, setShowNewProjectModal] = useState(false);
   const [newProjectName,      setNewProjectName]      = useState('');
   const [creating,            setCreating]            = useState(false);
   const [createError,         setCreateError]         = useState('');
+
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      const params = new URLSearchParams(window.location.search);
+      if (params.get('welcome') === '1') {
+        setShowWelcome(true);
+        window.history.replaceState({}, '', '/app');
+      }
+    }
+  }, []);
 
   useEffect(() => {
     fetch('/api/projects')
@@ -101,6 +112,23 @@ export default function AppPage() {
 
   return (
     <div className="min-h-screen flex flex-col" style={{ background: '#F7F9FC' }}>
+
+      {/* ── Welcome banner (shown once after onboarding) ── */}
+      {showWelcome && (
+        <div
+          className="flex items-center justify-between px-6 py-3 text-[11px] font-medium"
+          style={{ background: '#C6A75E', color: '#0B1F3B', letterSpacing: '0.06em' }}
+        >
+          <span>You&apos;re all set. Create your first project to get started.</span>
+          <button
+            onClick={() => setShowWelcome(false)}
+            className="ml-4 opacity-60 hover:opacity-100 transition-opacity text-base leading-none"
+            aria-label="Dismiss"
+          >
+            ×
+          </button>
+        </div>
+      )}
 
       {/* ── Header ── */}
       <header className="bg-navy border-b-2 border-gold sticky top-0 z-40">

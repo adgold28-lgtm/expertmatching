@@ -40,7 +40,7 @@ export default function SetPasswordForm({
       const data = await res.json();
 
       if (res.ok) {
-        router.push('/app');
+        router.push('/onboarding');
         router.refresh();
         return;
       }

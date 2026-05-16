@@ -1,6 +1,8 @@
 import type { Metadata } from 'next';
 import Link from 'next/link';
+import { cookies } from 'next/headers';
 import NavBar from '../components/NavBar';
+import { getSessionPayload, COOKIE_NAME } from '../lib/auth';
 
 export const metadata: Metadata = {
   title: 'ExpertMatch — Expert Calls, Sourced and Billed in Hours.',
@@ -33,7 +35,16 @@ function Footer() {
   );
 }
 
-export default function LandingPage() {
+export default async function LandingPage() {
+  const cookieStore = cookies();
+  const token = cookieStore.get(COOKIE_NAME)?.value ?? '';
+  let isSignedIn = false;
+  if (token) {
+    try {
+      isSignedIn = !!(await getSessionPayload(token));
+    } catch { /* ignore */ }
+  }
+
   return (
     <div className="min-h-screen flex flex-col font-body" style={{ background: '#F7F9FC' }}>
       <NavBar />
@@ -64,13 +75,23 @@ export default function LandingPage() {
             We identify the right practitioners, handle outreach, and bill by the minute.
           </p>
           <div className="flex flex-col sm:flex-row gap-3 justify-center">
-            <Link
-              href="/request-access"
-              className="inline-block px-8 py-3.5 text-[11px] font-medium uppercase transition-colors"
-              style={{ background: GOLD, color: NAVY, letterSpacing: '0.14em' }}
-            >
-              Request Access
-            </Link>
+            {isSignedIn ? (
+              <Link
+                href="/app"
+                className="inline-block px-8 py-3.5 text-[11px] font-medium uppercase transition-colors"
+                style={{ background: GOLD, color: NAVY, letterSpacing: '0.14em' }}
+              >
+                Go to Your Projects
+              </Link>
+            ) : (
+              <Link
+                href="/request-access"
+                className="inline-block px-8 py-3.5 text-[11px] font-medium uppercase transition-colors"
+                style={{ background: GOLD, color: NAVY, letterSpacing: '0.14em' }}
+              >
+                Request Access
+              </Link>
+            )}
             <Link
               href="/pricing"
               className="inline-block px-8 py-3.5 text-[11px] uppercase transition-colors border"

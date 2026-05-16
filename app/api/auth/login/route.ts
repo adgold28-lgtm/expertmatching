@@ -55,7 +55,7 @@ export async function POST(request: NextRequest): Promise<Response> {
     } catch {
       // Non-fatal: still grant the session even if the upsert fails
     }
-    const token = await createSessionCookie('admin', email);
+    const token = await createSessionCookie('admin', email, undefined, { onboardingComplete: true });
     return sessionResponse(token);
   }
 
@@ -99,7 +99,11 @@ export async function POST(request: NextRequest): Promise<Response> {
   }
 
   // status === 'active' — grant session
-  const token = await createSessionCookie(user.role, user.email, user.firmName);
+  // onboardingComplete defaults to true for users pre-dating the onboarding feature
+  const token = await createSessionCookie(user.role, user.email, user.firmName, {
+    firstName:          user.firstName,
+    onboardingComplete: user.onboardingComplete ?? true,
+  });
   return sessionResponse(token);
 }
 

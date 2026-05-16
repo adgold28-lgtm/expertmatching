@@ -27,11 +27,13 @@ async function importHmacKey(usage: 'sign' | 'verify'): Promise<CryptoKey> {
 }
 
 export interface SessionPayload {
-  iat:      number;
-  exp:      number;
-  role:     'admin' | 'user';
-  email:    string;
-  firmName?: string;
+  iat:                 number;
+  exp:                 number;
+  role:                'admin' | 'user';
+  email:               string;
+  firmName?:           string;
+  firstName?:          string;           // set after onboarding step 3
+  onboardingComplete?: boolean;          // false = must complete onboarding; absent/true = done
 }
 
 // Returns a signed, base64url-encoded session token: <payload>.<sig>
@@ -39,6 +41,7 @@ export async function createSessionCookie(
   role: 'admin' | 'user',
   email: string,
   firmName?: string,
+  opts: { firstName?: string; onboardingComplete?: boolean } = {},
 ): Promise<string> {
   const key     = await importHmacKey('sign');
   const payload: SessionPayload = {
@@ -46,7 +49,9 @@ export async function createSessionCookie(
     exp: Date.now() + SESSION_TTL_MS,
     role,
     email,
-    ...(firmName ? { firmName } : {}),
+    ...(firmName                             ? { firmName }                                       : {}),
+    ...(opts.firstName                       ? { firstName: opts.firstName }                      : {}),
+    ...(opts.onboardingComplete !== undefined ? { onboardingComplete: opts.onboardingComplete }   : {}),
   };
   const b64    = Buffer.from(JSON.stringify(payload)).toString('base64url');
   const sigBuf = await globalThis.crypto.subtle.sign('HMAC', key, new TextEncoder().encode(b64));
@@ -114,11 +119,14 @@ export async function routeAuthGuard(request: NextRequest): Promise<Response | n
   return Response.json({ error: 'unauthorized' }, { status: 401 });
 }
 
-// Resolved session user — used by project store for access control.
+// Resolved session user — used by API routes for access control and profile data.
 export interface SessionUser {
-  role:       'admin' | 'user';
-  email:      string;
-  firmDomain: string; // '*' for admin, else email.split('@')[1]
+  role:                'admin' | 'user';
+  email:               string;
+  firmDomain:          string; // '*' for admin, else email.split('@')[1]
+  firmName?:           string;
+  firstName?:          string;
+  onboardingComplete?: boolean;
 }
 
 // Returns the current session user, or a default admin user when auth is disabled.
@@ -133,11 +141,16 @@ export async function getSessionUser(request: NextRequest): Promise<SessionUser>
     return { role: 'user', email: '', firmDomain: '' };
   }
   const role = payload.role ?? 'admin';
+  const base = {
+    firmName:           payload.firmName,
+    firstName:          payload.firstName,
+    onboardingComplete: payload.onboardingComplete,
+  };
   if (role === 'admin') {
-    return { role: 'admin', email: payload.email, firmDomain: '*' };
+    return { role: 'admin', email: payload.email, firmDomain: '*', ...base };
   }
   const firmDomain = payload.email.includes('@') ? payload.email.split('@')[1] : '';
-  return { role: 'user', email: payload.email, firmDomain };
+  return { role: 'user', email: payload.email, firmDomain, ...base };
 }
 
 // Admin-only guard — checks both auth validity and role === 'admin'.
