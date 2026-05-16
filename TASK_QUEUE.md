@@ -23,6 +23,10 @@ Last updated: May 2026
       headline changed to "Find the expert you're looking for"
 - [x] Exa AI integration: exa-js installed, ExaProvider added as primary search provider
       (SEARCH_PROVIDER=exa or auto-selected when EXA_API_KEY is set)
+- [x] Dashboard redesign: stats bar (Total Projects, Experts Sourced, Calls Completed),
+      project cards with status pill + progress bar + expert count icon + gold Open button,
+      empty state with centered prompt, #F7F7F5 background with white cards (Linear feel)
+- [x] Logo link fixed: EXPERTMATCH in /app header now links to / (marketing page)
 - [x] Brief page simplified: two optional textareas (business problem + expert type),
       outreach mode toggle (pill selector) on brief page, "Complete Brief" saves + navigates to Source
       Old fields (Key Questions, Hypotheses, Additional Context, Expertise Requirements, etc.) removed
