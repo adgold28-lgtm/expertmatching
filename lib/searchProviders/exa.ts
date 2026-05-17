@@ -13,10 +13,11 @@ import type { SearchProvider, ExpertSearchInput, SearchResult } from './types';
 let _client: Exa | null = null;
 
 function getClient(): Exa {
-  const key = process.env.EXA_API_KEY;
+  const raw = process.env.EXA_API_KEY;
   // Temporary diagnostic — remove after confirming key is present in production
-  console.log('[exa] EXA_API_KEY set:', Boolean(key));
-  if (!key) throw new Error('EXA_API_KEY not set');
+  console.log('[exa] EXA_API_KEY set:', Boolean(raw));
+  if (!raw) throw new Error('EXA_API_KEY not set');
+  const key = raw.trim();
   if (!_client) _client = new Exa(key);
   return _client;
 }
