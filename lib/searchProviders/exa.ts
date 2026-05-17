@@ -14,6 +14,8 @@ let _client: Exa | null = null;
 
 function getClient(): Exa {
   const key = process.env.EXA_API_KEY;
+  // Temporary diagnostic — remove after confirming key is present in production
+  console.log('[exa] EXA_API_KEY set:', Boolean(key));
   if (!key) throw new Error('EXA_API_KEY not set');
   if (!_client) _client = new Exa(key);
   return _client;
@@ -30,7 +32,7 @@ export const exaProvider: SearchProvider = {
     const exa = getClient();
     const n   = Math.min(maxResults, 25);
 
-    const result = await exa.searchAndContents(query, {
+    const searchOpts = {
       numResults:   n,
       type:         'neural',
       // 'company' category returns LinkedIn, professional bios, and org pages
@@ -38,6 +40,13 @@ export const exaProvider: SearchProvider = {
       category:     'company',
       text:         { maxCharacters: 400 },
       highlights:   { numSentences: 2, highlightsPerUrl: 1 },
+    } as const;
+
+    const result = await exa.searchAndContents(query, searchOpts).catch(err => {
+      const msg    = err instanceof Error ? err.message : String(err);
+      const status = (err as Record<string, unknown>).statusCode;
+      console.error('[exa] search failed:', JSON.stringify({ status, message: msg }));
+      throw new Error(`Exa search failed (${status ?? 'unknown status'}): ${msg}`);
     });
 
     return (result.results ?? []).map(r => {
