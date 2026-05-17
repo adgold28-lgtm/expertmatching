@@ -31,6 +31,7 @@ interface CategoryResults {
 interface BriefContext {
   industry?:               string;
   function?:               string;
+  expertType?:             string;  // "who do you want to talk to" — primary person anchor for Exa queries
   keyQuestions?:           string;
   initialHypotheses?:      string;
   additionalContext?:      string;
@@ -70,6 +71,7 @@ function buildQueryBriefBlock(bc: BriefContext): string {
   const parts: string[] = [];
   if (bc.industry?.trim())              parts.push(`Industry: ${bc.industry.trim()}`);
   if (bc.function?.trim())              parts.push(`Function / Knowledge need: ${bc.function.trim()}`);
+  if (bc.expertType?.trim())            parts.push(`Expert profile sought (who to find): ${bc.expertType.trim()}`);
   if (bc.keyQuestions?.trim())          parts.push(`Knowledge gaps to address:\n${bc.keyQuestions.trim()}`);
   if (bc.initialHypotheses?.trim())     parts.push(`Hypotheses to test (find experts who can confirm, challenge, or nuance these):\n${bc.initialHypotheses.trim()}`);
   if (bc.additionalContext?.trim())     parts.push(`Additional context (use to sharpen query terms):\n${bc.additionalContext.trim()}`);
@@ -584,6 +586,10 @@ async function callWithRetry<T>(fn: () => Promise<T>, maxRetries = 2): Promise<C
 // named companies / trade publications on-the-fly, but gains reliability and
 // eliminates a full Opus call. Quality is preserved by the extraction step.
 
+// Builds natural-language person-description queries optimised for Exa neural search.
+// Exa's neural engine finds semantically similar content — it does NOT support boolean
+// operators (OR/AND), site: filters, or quoted keyword phrases. Queries must read like
+// a LinkedIn bio description of the person you are trying to find.
 function buildSearchQueriesFromBrief(
   researchQuestion: string,
   geography: string | undefined,
@@ -591,152 +597,87 @@ function buildSearchQueriesFromBrief(
   bc: BriefContext,
   vci?: ValueChainInterpretation,
 ): Array<{ category: string; query: string }> {
-  // Strip leading question words and punctuation to isolate the subject
-  const stripped = researchQuestion
-    .replace(/^(how|what|why|where|when|who|which|is|are|does|can|will|tell\s+me\s+about|explain|describe)\s+/i, '')
-    .replace(/[?,!]/g, '')
-    .replace(/\s+/g, ' ')
-    .trim();
+  const expertTypeText  = bc.expertType?.trim() ?? '';
+  const domain          = researchQuestion.trim().slice(0, 120);
+  const industry        = bc.industry?.trim() ?? '';
+  const targetCo        = bc.targetCompanies?.trim().split(/[,\n;]/)[0]?.trim().slice(0, 60) ?? '';
+  const vciPool         = vci?.primaryExpertPools[0]?.slice(0, 60) ?? '';
 
-  // Use the first logical clause (up to a comma or coordinating conjunction)
-  const firstClause = stripped.split(/,|\s+and\s+|\s+or\s+/i)[0].trim();
-  // Trim to ≤70 chars at a word boundary
-  const mainPhrase = firstClause.length > 70
-    ? firstClause.slice(0, 70).replace(/\s\S+$/, '').trim()
-    : firstClause;
-
-  // Brief field terms
-  const industry    = bc.industry?.trim() ?? '';
-  const fn          = bc.function?.trim() ?? '';
-  const mustHave    = bc.mustHaveExpertise?.trim().slice(0, 40) ?? '';
-  const targetCo    = bc.targetCompanies?.trim() ?? '';
-  const kqSnippet   = bc.keyQuestions?.trim().slice(0, 40) ?? '';
-
-  // Composite domain term (e.g. "solar energy transmission operations")
-  const domain = [industry, fn].filter(Boolean).join(' ');
-
-  // Preferred search base: mainPhrase is most specific; fall back to domain
-  const base = mainPhrase || domain;
-
-  // Location modifier — appended to LinkedIn / geography-sensitive queries
-  const geoMod = (geography && geography !== 'any') ? ` "${geography}"` : '';
-
-  // Seniority modifier for LinkedIn queries
-  let seniorTerms = 'director OR manager OR engineer OR specialist';
+  // Seniority phrasing for natural-language descriptions
+  let seniorPhrase = 'director or VP level';
   if (seniority && seniority !== 'any') {
-    if (seniority.toLowerCase().includes('executive') || seniority.toLowerCase().includes('c-suite')) {
-      seniorTerms = 'CEO OR COO OR "VP" OR "SVP" OR President';
-    } else if (seniority.toLowerCase().includes('senior')) {
-      seniorTerms = '"senior director" OR "VP" OR "head of" OR principal';
-    }
+    if (/executive|c.suite/i.test(seniority))   seniorPhrase = 'C-suite executive, CEO, COO, or President';
+    else if (/senior/i.test(seniority))          seniorPhrase = 'senior director, VP, or head of department';
+    else if (/mid|manager/i.test(seniority))     seniorPhrase = 'manager or senior manager';
   }
 
-  // First target company (if provided) — used for a targeted company-specific query
-  const firstCo = targetCo
-    ? targetCo.split(/[,\n;]/)[0].trim().replace(/['"]/g, '').slice(0, 50)
-    : '';
+  const geoPhrase = (geography && geography !== 'any') ? `, based in ${geography}` : '';
 
-  // Short key term for LinkedIn site: queries (avoids overly long exact phrases)
-  const liTerms = base.split(/\s+/).slice(0, 5).join(' ');
+  // Primary subject phrase: prefer VCI pool > expertType subject > industry+domain
+  const subject = vciPool || industry || domain.split(/,/)[0].slice(0, 70);
 
   const pairs: Array<{ category: string; query: string }> = [];
 
-  // ── Operator (direct practitioners in the field) ──────────────────────────
-  pairs.push({ category: 'Operator', query:
-    `site:linkedin.com/in "${liTerms}" ${seniorTerms}${geoMod}`.trim() });
+  // ── Operator: direct practitioner ────────────────────────────────────────
+  // Anchor on expertType if provided — it is the most specific person description
+  const operatorBase = expertTypeText
+    ? expertTypeText.slice(0, 200)
+    : `${seniorPhrase} professional who has directly managed or operated in ${subject}`;
+  const operatorSuffix = domain && !expertTypeText ? `, with hands-on experience in: ${domain.slice(0, 80)}` : '';
+  pairs.push({ category: 'Operator', query: `${operatorBase}${operatorSuffix}${geoPhrase}`.trim() });
 
-  pairs.push({ category: 'Operator', query:
-    firstCo
-      ? `"${firstCo}" ${fn || industry || mainPhrase.slice(0, 40)} ${seniorTerms}`.trim()
-      : `"${mainPhrase.slice(0, 50)}" ${mustHave || fn || 'operations'} ${seniorTerms}`.trim() });
+  // ── Advisor: consultant or published expert ───────────────────────────────
+  const advisorBase = expertTypeText
+    ? `independent advisor or consultant with a background similar to: ${expertTypeText.slice(0, 150)}, now advising companies on ${subject}`
+    : `independent consultant or advisor who specialises in ${subject}, formerly a ${seniorPhrase} practitioner`;
+  pairs.push({ category: 'Advisor', query: `${advisorBase}${geoPhrase}`.trim() });
 
-  pairs.push({ category: 'Operator', query:
-    `"${mainPhrase.slice(0, 55)}" practitioner OR expert "case study" OR interview OR profile${geoMod}`.trim() });
+  // ── Outsider: researcher, regulator, or academic ─────────────────────────
+  const outsiderBase = `researcher, academic, or policy expert on ${subject}${domain ? ` and ${domain.slice(0, 60)}` : ''}, with institutional or government background`;
+  pairs.push({ category: 'Outsider', query: `${outsiderBase}${geoPhrase}`.trim() });
 
-  pairs.push({ category: 'Operator', query:
-    `${base.slice(0, 55)} ${mustHave ? `"${mustHave}"` : 'operations'} speaker conference OR summit OR webinar${geoMod}`.trim() });
+  // Optional: company-specific operator query when target companies are named
+  if (targetCo) {
+    pairs.push({ category: 'Operator', query:
+      `former or current ${seniorPhrase} at ${targetCo} with expertise in ${subject}${geoPhrase}`.trim() });
+  }
 
-  // ── Advisor (consultants, analysts, published experts) ───────────────────
-  pairs.push({ category: 'Advisor', query:
-    `site:linkedin.com/in "${liTerms}" consultant OR advisor OR analyst${geoMod}`.trim() });
-
-  pairs.push({ category: 'Advisor', query:
-    `"${mainPhrase.slice(0, 55)}" consultant OR advisor bio OR profile OR interview`.trim() });
-
-  pairs.push({ category: 'Advisor', query:
-    `${base.slice(0, 55)} keynote OR panelist OR speaker conference OR summit`.trim() });
-
-  pairs.push({ category: 'Advisor', query:
-    `${base.slice(0, 55)} ${kqSnippet ? `"${kqSnippet.slice(0, 30)}"` : 'expert'} whitepaper OR report OR author OR published`.trim() });
-
-  // ── Outsider (government, academic, enterprise observers) ─────────────────
-  pairs.push({ category: 'Outsider', query:
-    `site:linkedin.com/in "${liTerms}" researcher OR policy OR analyst${geoMod}`.trim() });
-
-  pairs.push({ category: 'Outsider', query:
-    `${base.slice(0, 55)} government agency regulator OR inspector OR official`.trim() });
-
-  pairs.push({ category: 'Outsider', query:
-    `${base.slice(0, 55)} university professor OR researcher OR academic`.trim() });
-
-  pairs.push({ category: 'Outsider', query:
-    `${base.slice(0, 55)} "think tank" OR policy analyst OR strategist`.trim() });
-
-  // When value chain interpretation is available, add supply-chain-targeted queries.
+  // When value chain interpretation narrows the expert pool, add a targeted query
   if (vci && vci.mustSearchTerms.length > 0) {
-    const scTerms = vci.mustSearchTerms.slice(0, 10);
-    const constraint = vci.keyTechnicalConstraints[0]?.slice(0, 35) ?? 'expert';
-    const primaryPool = vci.primaryExpertPools[0]?.slice(0, 45) ?? base;
-
-    // Up to 4 Operator queries targeting the supply chain
-    for (let i = 0; i < Math.min(4, scTerms.length); i++) {
+    const scTerm    = vci.mustSearchTerms[0]?.slice(0, 60) ?? '';
+    const scPool    = vci.primaryExpertPools[0]?.slice(0, 60) ?? subject;
+    if (scTerm) {
       pairs.push({ category: 'Operator', query:
-        `"${scTerms[i].slice(0, 50)}" ${constraint} expert OR engineer OR director profile OR interview` });
-    }
-    // 2 Advisor queries for supply-chain-specific coverage
-    pairs.push({ category: 'Advisor', query:
-      `${primaryPool} consultant OR advisor "former" OR "ex-" OR "previously" profile`.trim() });
-    if (scTerms.length >= 3) {
-      pairs.push({ category: 'Advisor', query:
-        `${scTerms[2].slice(0, 50)} consultant OR analyst published OR keynote OR whitepaper`.trim() });
+        `${seniorPhrase} with deep expertise in ${scTerm} within the ${scPool} industry${geoPhrase}`.trim() });
     }
 
     // For market_entry and general briefTypes, add practitioner-focused angles
     if (vci.briefType === 'market_entry' || vci.briefType === 'general') {
-      // Former operators who have done this
-      pairs.push({ category: 'Operator', query:
-        `"former" OR "ex-" ${primaryPool} "VP" OR "director" OR "founder" OR "president" site:linkedin.com/in${geoMod}`.trim() });
-      // Contract manufacturers
-      pairs.push({ category: 'Operator', query:
-        `${base.slice(0, 50)} "contract manufacturer" OR "contract manufacturing" OR "OEM" OR "toll manufacturer" executive`.trim() });
-      // PE/investment professionals in the sector
       pairs.push({ category: 'Advisor', query:
-        `${base.slice(0, 50)} "private equity" OR "portfolio" OR "venture" OR "invested in" OR "invested" investor partner`.trim() });
-      // Trade association executives
-      pairs.push({ category: 'Outsider', query:
-        `${base.slice(0, 50)} "trade association" OR "industry association" OR "trade group" executive OR director`.trim() });
-      // Import / distribution / logistics
+        `former executive turned advisor who has led market entry or expansion in ${scPool}${geoPhrase}`.trim() });
       pairs.push({ category: 'Operator', query:
-        `${base.slice(0, 50)} "import" OR "distribution" OR "supply chain" OR "logistics" director OR VP${geoMod}`.trim() });
+        `founder or president of a company in ${scPool}, with operational history in ${subject}${geoPhrase}`.trim() });
+      pairs.push({ category: 'Outsider', query:
+        `trade association or industry group executive with deep knowledge of ${subject}${geoPhrase}`.trim() });
+      pairs.push({ category: 'Operator', query:
+        `${seniorPhrase} with experience in import, distribution, or supply chain management within ${scPool}${geoPhrase}`.trim() });
     }
   }
 
   // ── queryDiversityCheck ────────────────────────────────────────────────────
-  // Verify at least 3 archetypes are covered. The 12 base queries always cover
-  // all three, but VCI-supplemental queries may skew Operator-heavy. This
-  // check is a safeguard for degenerate cases where base queries were trimmed.
+  // Safeguard: ensure all three archetypes are present (VCI queries may be Operator-heavy)
   const archetypesCovered = new Set(pairs.map(p => p.category));
   if (!archetypesCovered.has('Operator')) {
     pairs.push({ category: 'Operator', query:
-      `site:linkedin.com/in "${liTerms}" ${seniorTerms}${geoMod}`.trim() });
+      `${seniorPhrase} practitioner with direct operational experience in ${subject}${geoPhrase}`.trim() });
   }
   if (!archetypesCovered.has('Advisor')) {
     pairs.push({ category: 'Advisor', query:
-      `"${base.slice(0, 55)}" consultant OR advisor profile OR interview`.trim() });
+      `independent consultant or advisor specialising in ${subject}${geoPhrase}`.trim() });
   }
   if (!archetypesCovered.has('Outsider')) {
     pairs.push({ category: 'Outsider', query:
-      `${base.slice(0, 55)} government OR regulator OR academic OR researcher`.trim() });
+      `academic researcher or government policy expert on ${subject}${geoPhrase}`.trim() });
   }
 
   return pairs;
@@ -963,31 +904,37 @@ CRITICAL: Do NOT generate queries for generic "${vci.endMarket}" roles. Generate
 `
       : '';
 
-    const queryGenPrompt = `You are a research sourcing expert. Generate 12–15 highly targeted web search queries (4–5 per category) to find REAL, named professionals related to this question.
+    // Exa uses neural/semantic search — queries must be natural-language person descriptions,
+    // NOT boolean keyword strings. Do not use site:, OR, AND, or quoted keyword phrases.
+    const expertTypeBlock = briefContext.expertType?.trim()
+      ? `\nExpert profile sought (who the client wants to speak with): "${briefContext.expertType.trim()}"\nAnchor the Operator query closely on this description.\n`
+      : '';
+
+    const queryGenPrompt = `You are a research sourcing expert building queries for Exa neural semantic search.
+
+CRITICAL: Exa is NOT Google. It finds semantically similar content. Queries must be 1–2 sentence natural-language descriptions of a PERSON — not keyword strings. Do NOT use OR, AND, site:, quoted keyword phrases, or boolean operators of any kind.
 
 Business Question: "${query.trim()}"
 ${filters ? `Filters:\n${filters}` : ''}
+${expertTypeBlock}
 ${vciQueryBlock}
 ${queryBriefBlock ? `\nBRIEF CONTEXT:\n${queryBriefBlock}\n` : ''}
-Before writing queries, identify: (1) the specific sub-sector and any named research programs, funded initiatives, or government centers in this space; (2) 3–5 named companies, processors, or technology vendors active in this space; (3) relevant trade publications and industry websites; (4) major conferences and their speaker programs.
+Generate exactly ONE query per category. Each query should read like a LinkedIn bio description of the ideal expert — their role, industry, seniority level, and what they've done. Be specific: name real companies, sub-sectors, or technical disciplines where relevant.
 
-Generate 4–5 queries per category, using DIFFERENT source types within each. Queries must target NAMED PEOPLE, not just organizations.
-
-1. Operator (4–5): practitioners at named processors/operators — LinkedIn profiles by company name, named conference speaker bios, trade publication interview profiles, company press releases naming individuals.
-2. Advisor (4–5): technology vendors, consultants, published experts — named vendor expert/speaker pages, equipment manufacturer leadership bios, author bylines at trade publications, professional directory profiles.
-3. Outsider (4–5): government agency officials, funded research center principal investigators, academic authors — named USDA/agency grant recipients, university research center PI profiles, academic paper author bios, think-tank analyst profiles.
-
-Key rule: use specific named entities (company names, program acronyms, researcher surnames, conference names, publication site: operators) so that results surface individual people, not generic overviews.
+Categories:
+1. Operator: a practitioner who has directly run operations, led teams, or held a line role in this space (e.g. "former VP of operations at a mid-size cold chain logistics company serving Southeast US food manufacturers, with experience scaling frozen food distribution networks")
+2. Advisor: a consultant, independent advisor, or published expert who advises companies in this space (e.g. "independent supply chain consultant who previously held director-level roles at Sysco or US Foods, now advising food distributors on cold chain network design")
+3. Outsider: a researcher, regulator, academic, or policy expert who studies or oversees this space (e.g. "university professor or USDA researcher specialising in food safety and cold chain regulations for perishable goods distribution")
 
 Return ONLY valid JSON, no markdown, no prose:
-{"queries":{"Operator":["q1","q2","q3","q4","q5"],"Advisor":["q1","q2","q3","q4","q5"],"Outsider":["q1","q2","q3","q4","q5"]}}`;
+{"queries":{"Operator":"...","Advisor":"...","Outsider":"..."}}`;
 
     try {
       llmCallCount++;
       const { value: queryGenResponse, retries: queryRetries } = await callWithRetry(
         () => client.messages.create({
           model:      'claude-haiku-4-5',
-          max_tokens: 1000,
+          max_tokens: 600,
           messages:   [{ role: 'user', content: queryGenPrompt }],
         }),
         1, // 1 retry only — query gen is less critical than extraction
@@ -999,9 +946,16 @@ Return ONLY valid JSON, no markdown, no prose:
 
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const gq = extractJSON(queryBlock.text) as any;
-      const operatorQ: string[] = Array.isArray(gq?.queries?.Operator) ? gq.queries.Operator.slice(0, 5) : [];
-      const advisorQ:  string[] = Array.isArray(gq?.queries?.Advisor)  ? gq.queries.Advisor.slice(0, 5)  : [];
-      const outsiderQ: string[] = Array.isArray(gq?.queries?.Outsider) ? gq.queries.Outsider.slice(0, 5) : [];
+
+      // Support both string (new) and array (legacy) values per category
+      const pick = (v: unknown): string[] => {
+        if (typeof v === 'string' && v.trim()) return [v.trim()];
+        if (Array.isArray(v))                  return (v as unknown[]).filter((s): s is string => typeof s === 'string' && Boolean(s.trim())).slice(0, 1);
+        return [];
+      };
+      const operatorQ = pick(gq?.queries?.Operator);
+      const advisorQ  = pick(gq?.queries?.Advisor);
+      const outsiderQ = pick(gq?.queries?.Outsider);
 
       const llmPairs: Array<{ category: string; query: string }> = [
         ...operatorQ.map(q => ({ category: 'Operator', query: q })),
@@ -1009,8 +963,8 @@ Return ONLY valid JSON, no markdown, no prose:
         ...outsiderQ.map(q => ({ category: 'Outsider', query: q })),
       ];
 
-      // Require at least 6 usable queries (2 per category minimum)
-      if (llmPairs.length < 6) throw new Error(`query_gen_insufficient:${llmPairs.length}`);
+      // Require at least one query per category
+      if (llmPairs.length < 3) throw new Error(`query_gen_insufficient:${llmPairs.length}`);
 
       allQueryPairs  = llmPairs;
       queryGenMethod = 'llm';
@@ -1030,11 +984,12 @@ Return ONLY valid JSON, no markdown, no prose:
     // Only when supplementarySearch=true — targets different profile types
     // (startups, independents, academics) to surface experts the primary run missed.
     if (supplementarySearch) {
-      const shortQ = query.trim().replace(/"/g, '').slice(0, 55);
+      const domainSnippet = query.trim().slice(0, 80);
+      const etSnippet     = briefContext.expertType?.trim().slice(0, 100) ?? domainSnippet;
       allQueryPairs.push(
-        { category: 'Operator',  query: `"${shortQ}" startup OR "independent" OR "freelance" specialist` },
-        { category: 'Advisor',   query: `"${shortQ}" emerging OR alternative advisor OR consultant analyst` },
-        { category: 'Outsider',  query: `"${shortQ}" academic OR professor OR university OR nonprofit researcher` },
+        { category: 'Operator',  query: `independent freelance specialist or startup founder with hands-on experience in ${etSnippet}` },
+        { category: 'Advisor',   query: `emerging or non-traditional advisor who has worked on ${domainSnippet}, from an academic, nonprofit, or independent consulting background` },
+        { category: 'Outsider',  query: `university professor or nonprofit researcher with published work on ${domainSnippet}` },
       );
       // Broaden VCI mustSearchTerms with diversity signals so programmatic
       // query builder also picks them up if it runs again.

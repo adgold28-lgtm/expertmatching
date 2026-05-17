@@ -32,13 +32,14 @@ export const exaProvider: SearchProvider = {
     const n   = Math.min(maxResults, 25);
 
     async function attempt(): Promise<SearchResult[]> {
+      // Temporary diagnostic — remove after confirming queries and result counts
+      console.log('[exa] query:', query);
       // Inline call so TypeScript infers the conditional return type with highlights
       const raw = await exa.searchAndContents(query, {
         numResults:   n,
         type:         'neural',
-        // 'company' category returns LinkedIn, professional bios, and org pages
-        // which is exactly the source type needed for expert identification
-        category:     'company',
+        // 'people' category targets LinkedIn profiles, bios, and person-centric pages
+        category:     'people',
         text:         { maxCharacters: 400 },
         highlights:   { numSentences: 2, highlightsPerUrl: 1 },
       }).catch(err => {
@@ -49,6 +50,8 @@ export const exaProvider: SearchProvider = {
         throw wrapped;
       });
 
+      // Temporary diagnostic — remove after confirming queries and result counts
+      console.log('[exa] raw results:', raw.results?.length ?? 0);
       return (raw.results ?? []).map(r => {
         const snippet = r.highlights?.[0] ?? r.text?.slice(0, 300) ?? '';
         const source  = r.url ? (() => {
