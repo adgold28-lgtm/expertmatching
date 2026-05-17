@@ -285,7 +285,6 @@ function BriefSection({
 }) {
   const [businessProblem, setBusinessProblem] = useState(project.researchQuestion ?? '');
   const [expertType,      setExpertType]      = useState(project.expertType ?? '');
-  const [outreachMode,    setOutreachMode]    = useState<'review' | 'auto'>(project.outreachMode ?? 'review');
   const [saving,          setSaving]          = useState(false);
   const [sourcing,        setSourcing]        = useState(false);
   const [sourceError,     setSourceError]     = useState('');
@@ -299,7 +298,6 @@ function BriefSection({
         body:    JSON.stringify({
           researchQuestion: businessProblem || undefined,
           expertType:       expertType      || undefined,
-          outreachMode,
         }),
       });
       if (res.ok) {
@@ -323,7 +321,6 @@ function BriefSection({
         body:    JSON.stringify({
           researchQuestion: businessProblem || undefined,
           expertType:       expertType      || undefined,
-          outreachMode,
         }),
       });
 
@@ -414,32 +411,6 @@ function BriefSection({
           />
         </div>
 
-        {/* ── Outreach mode ── */}
-        <div>
-          <label className={labelClass}>Outreach mode</label>
-          <div className="flex border border-frame">
-            <button
-              type="button"
-              onClick={() => setOutreachMode('review')}
-              className="flex-1 text-[10px] uppercase tracking-widest px-4 py-2.5 transition-colors text-left sm:text-center"
-              style={outreachMode === 'review'
-                ? { background: '#0B1F3B', color: '#C6A75E', letterSpacing: '0.1em' }
-                : { background: 'transparent', color: '#9ca3af', letterSpacing: '0.1em' }}
-            >
-              I&apos;ll review before anything sends
-            </button>
-            <button
-              type="button"
-              onClick={() => setOutreachMode('auto')}
-              className="flex-1 text-[10px] uppercase tracking-widest px-4 py-2.5 transition-colors border-l border-frame text-left sm:text-center"
-              style={outreachMode === 'auto'
-                ? { background: '#0B1F3B', color: '#C6A75E', letterSpacing: '0.1em' }
-                : { background: 'transparent', color: '#9ca3af', letterSpacing: '0.1em' }}
-            >
-              AI drafts and sends automatically
-            </button>
-          </div>
-        </div>
       </div>
 
       {/* ── Complete Brief / Source Experts ── */}
@@ -857,6 +828,75 @@ function EmptyStep({ message, action }: { message: string; action?: React.ReactN
     <div className="py-16 text-center max-w-md mx-auto">
       <p className="text-sm text-muted">{message}</p>
       {action && <div className="mt-4">{action}</div>}
+    </div>
+  );
+}
+
+// ─── Outreach mode selector ───────────────────────────────────────────────────
+
+function OutreachModeSelector({
+  projectId,
+  currentMode,
+  onSave,
+}: {
+  projectId: string;
+  currentMode: 'review' | 'auto';
+  onSave: (updates: Partial<Project>) => void;
+}) {
+  const [mode,   setMode]   = useState<'review' | 'auto'>(currentMode);
+  const [saving, setSaving] = useState(false);
+
+  async function handleSelect(next: 'review' | 'auto') {
+    if (next === mode) return;
+    setMode(next);
+    setSaving(true);
+    try {
+      const res = await fetch(`/api/projects/${projectId}`, {
+        method:  'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({ outreachMode: next }),
+      });
+      if (res.ok) {
+        const d = await res.json() as { project?: Project };
+        if (d.project) onSave(d.project);
+      }
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  const NAVY = '#0B1F3B';
+  const GOLD = '#C6A75E';
+
+  return (
+    <div className="max-w-sm">
+      <p className="text-[9px] uppercase tracking-widest text-muted mb-2 font-medium" style={{ letterSpacing: '0.16em' }}>
+        Outreach mode
+      </p>
+      <div className="flex border border-frame" style={{ opacity: saving ? 0.6 : 1, transition: 'opacity 0.15s' }}>
+        <button
+          type="button"
+          onClick={() => handleSelect('review')}
+          disabled={saving}
+          className="flex-1 text-[10px] uppercase tracking-widest px-4 py-2.5 transition-colors text-left sm:text-center"
+          style={mode === 'review'
+            ? { background: NAVY, color: GOLD, letterSpacing: '0.1em' }
+            : { background: 'transparent', color: '#9ca3af', letterSpacing: '0.1em' }}
+        >
+          Review before sending
+        </button>
+        <button
+          type="button"
+          onClick={() => handleSelect('auto')}
+          disabled={saving}
+          className="flex-1 text-[10px] uppercase tracking-widest px-4 py-2.5 transition-colors border-l border-frame text-left sm:text-center"
+          style={mode === 'auto'
+            ? { background: NAVY, color: GOLD, letterSpacing: '0.1em' }
+            : { background: 'transparent', color: '#9ca3af', letterSpacing: '0.1em' }}
+        >
+          Auto-send drafts
+        </button>
+      </div>
     </div>
   );
 }
@@ -1412,6 +1452,10 @@ function ProjectPageInner() {
               draft and send outreach, track replies, send an availability request, and confirm the vetting call slot.
               Record call outcomes in Screen.
             </p>
+
+            {/* ── Outreach mode ── */}
+            <OutreachModeSelector projectId={projectId} currentMode={project.outreachMode ?? 'review'} onSave={handleBriefSave} />
+
             {outreachExperts.length === 0 ? (
               <EmptyStep
                 message="No experts in outreach yet."

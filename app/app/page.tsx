@@ -41,9 +41,7 @@ export default function AppPage() {
   const [showWelcome,     setShowWelcome]     = useState(false);
 
   const [showNewProjectModal, setShowNewProjectModal] = useState(false);
-  const [briefProblem,        setBriefProblem]        = useState('');
-  const [briefExpertType,     setBriefExpertType]     = useState('');
-  const [outreachMode,        setOutreachMode]        = useState<'auto' | 'review'>('review');
+  const [projectName,         setProjectName]         = useState('');
   const [creating,            setCreating]            = useState(false);
   const [createError,         setCreateError]         = useState('');
 
@@ -80,17 +78,14 @@ export default function AppPage() {
   }
 
   function openNewProjectModal() {
-    setBriefProblem('');
-    setBriefExpertType('');
-    setOutreachMode('review');
+    setProjectName('');
     setCreateError('');
     setShowNewProjectModal(true);
   }
 
   function closeNewProjectModal() {
     setShowNewProjectModal(false);
-    setBriefProblem('');
-    setBriefExpertType('');
+    setProjectName('');
     setCreateError('');
   }
 
@@ -103,16 +98,7 @@ export default function AppPage() {
       const res = await fetch('/api/projects', {
         method:  'POST',
         headers: { 'Content-Type': 'application/json' },
-        body:    JSON.stringify({
-          researchQuestion: briefProblem.trim() || undefined,
-          expertType:       briefExpertType.trim() || undefined,
-          industry:         '',
-          function:         '',
-          geography:        '',
-          seniority:        '',
-          outreachMode,
-          experts:          [],
-        }),
+        body:    JSON.stringify({ name: projectName.trim() || undefined }),
       });
       const data = await res.json() as { project?: { id: string }; error?: string };
       if (!res.ok || !data.project) {
@@ -405,87 +391,24 @@ export default function AppPage() {
             <form onSubmit={handleCreateProject} className="px-6 py-5 space-y-5">
               <div>
                 <label
-                  htmlFor="brief-problem"
+                  htmlFor="project-name"
                   className="block text-[10px] uppercase tracking-widest text-muted font-medium mb-1.5"
                   style={{ letterSpacing: '0.18em' }}
                 >
-                  What&apos;s the business problem?
+                  Project name
                 </label>
-                <textarea
-                  id="brief-problem"
-                  value={briefProblem}
-                  onChange={e => { setBriefProblem(e.target.value); setCreateError(''); }}
-                  placeholder="e.g. We're evaluating entry into cold chain logistics in the Southeast"
-                  rows={3}
-                  maxLength={2000}
+                <input
+                  id="project-name"
+                  type="text"
+                  value={projectName}
+                  onChange={e => { setProjectName(e.target.value); setCreateError(''); }}
+                  placeholder="e.g. Cold Chain Logistics — Southeast Entry"
+                  maxLength={200}
                   // eslint-disable-next-line jsx-a11y/no-autofocus
                   autoFocus
-                  className="w-full px-3 py-2.5 text-sm border border-frame bg-cream focus:outline-none focus:border-navy text-ink resize-none"
+                  className="w-full px-3 py-2.5 text-sm border border-frame bg-cream focus:outline-none focus:border-navy text-ink"
                   style={{ fontFamily: 'var(--font-libre-franklin)', fontWeight: 300 }}
                 />
-              </div>
-
-              <div>
-                <label
-                  htmlFor="brief-expert-type"
-                  className="block text-[10px] uppercase tracking-widest text-muted font-medium mb-1.5"
-                  style={{ letterSpacing: '0.18em' }}
-                >
-                  What type of person do you want to talk to?
-                </label>
-                <textarea
-                  id="brief-expert-type"
-                  value={briefExpertType}
-                  onChange={e => { setBriefExpertType(e.target.value); setCreateError(''); }}
-                  placeholder="e.g. Former VP of Operations at a regional 3PL or food distributor"
-                  rows={3}
-                  maxLength={2000}
-                  className="w-full px-3 py-2.5 text-sm border border-frame bg-cream focus:outline-none focus:border-navy text-ink resize-none"
-                  style={{ fontFamily: 'var(--font-libre-franklin)', fontWeight: 300 }}
-                />
-              </div>
-
-              {/* Outreach mode toggle */}
-              <div>
-                <p
-                  className="text-[10px] uppercase tracking-widest text-muted font-medium mb-2"
-                  style={{ letterSpacing: '0.18em' }}
-                >
-                  Outreach mode
-                </p>
-                <div className="flex border border-frame overflow-hidden">
-                  <button
-                    type="button"
-                    onClick={() => setOutreachMode('review')}
-                    className="flex-1 px-4 py-2.5 text-[11px] font-medium transition-colors text-left"
-                    style={{
-                      background:  outreachMode === 'review' ? '#0B1F3B' : 'transparent',
-                      color:       outreachMode === 'review' ? '#C6A75E' : '#6B7C8D',
-                      borderRight: '1px solid #E2E8ED',
-                      letterSpacing: '0.04em',
-                    }}
-                  >
-                    <span className="block text-[10px] uppercase tracking-widest mb-0.5" style={{ letterSpacing: '0.14em' }}>
-                      Review first
-                    </span>
-                    I review and approve before anything sends
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setOutreachMode('auto')}
-                    className="flex-1 px-4 py-2.5 text-[11px] font-medium transition-colors text-left"
-                    style={{
-                      background:    outreachMode === 'auto' ? '#0B1F3B' : 'transparent',
-                      color:         outreachMode === 'auto' ? '#C6A75E' : '#6B7C8D',
-                      letterSpacing: '0.04em',
-                    }}
-                  >
-                    <span className="block text-[10px] uppercase tracking-widest mb-0.5" style={{ letterSpacing: '0.14em' }}>
-                      Auto-send
-                    </span>
-                    AI drafts and sends automatically
-                  </button>
-                </div>
               </div>
 
               {createError && (
