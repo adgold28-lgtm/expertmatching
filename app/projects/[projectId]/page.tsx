@@ -494,6 +494,40 @@ function briefContextDepth(project: Project): number {
   return [project.researchQuestion, project.expertType].filter(v => v?.trim()).length;
 }
 
+const SOURCING_MESSAGES = [
+  'Scanning 1B+ professional profiles...',
+  'Cross-referencing industry experience...',
+  "Surfacing the people who've actually done this...",
+  'Filtering out the LinkedIn influencers...',
+  'Ranking by relevance, not just keywords...',
+  'Almost there — quality over speed...',
+  'Checking seniority and recency...',
+  'Building your shortlist...',
+];
+
+function RotatingLoadingMessage() {
+  const [index,   setIndex]   = useState(0);
+  const [visible, setVisible] = useState(true);
+
+  useEffect(() => {
+    const interval = setInterval(() => {
+      setVisible(false);
+      const timer = setTimeout(() => {
+        setIndex(i => (i + 1) % SOURCING_MESSAGES.length);
+        setVisible(true);
+      }, 400);
+      return () => clearTimeout(timer);
+    }, 4000);
+    return () => clearInterval(interval);
+  }, []);
+
+  return (
+    <span style={{ transition: 'opacity 0.4s ease', opacity: visible ? 1 : 0 }}>
+      {SOURCING_MESSAGES[index]}
+    </span>
+  );
+}
+
 function SourcePanel({
   project,
   existingExpertIds,
@@ -666,9 +700,9 @@ function SourcePanel({
 
       {/* Loading */}
       {stage === 'loading' && (
-        <div className="px-5 py-10 flex items-center gap-3 text-sm text-muted">
+        <div className="px-5 py-10 flex flex-col items-center gap-4 text-sm text-muted">
           <span className="inline-block w-4 h-4 border border-navy border-t-transparent rounded-full animate-spin shrink-0" />
-          Sourcing experts against the full brief…
+          <RotatingLoadingMessage />
         </div>
       )}
 

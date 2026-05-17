@@ -802,12 +802,21 @@ async function runSearchQuery(query: string): Promise<SearchResult[]> {
   return results;
 }
 
-// Provider comparison — dev only, only when SEARCH_COMPARE_PROVIDERS=true.
-// Runs the alternate provider for each query in parallel with the primary.
-// Primary results are used for the response; comparison is logged only.
+// Runs searches sequentially (not in parallel) with a small inter-request delay
+// to avoid hitting Exa's 10 req/s rate limit.
+// Caps at one query per category (max 3 total) so we never exceed 3 Exa calls
+// per sourcing run. Includes dev-only provider comparison when enabled.
 async function runWithOptionalComparison(
   queryPairs: Array<{ category: string; query: string }>,
 ): Promise<CategoryResults[]> {
+  // Pick the first query for each of the 3 categories — max 3 Exa calls total
+  const seen: Set<string> = new Set();
+  const cappedPairs = queryPairs.filter(({ category }) => {
+    if (seen.has(category)) return false;
+    seen.add(category);
+    return true;
+  });
+
   const primary       = getSearchProvider();
   const shouldCompare =
     process.env.SEARCH_COMPARE_PROVIDERS === 'true' &&
@@ -819,32 +828,39 @@ async function runWithOptionalComparison(
     console.log('[generate-experts] compare: alt provider not configured, skipping');
   }
 
-  return Promise.all(
-    queryPairs.map(async ({ category, query: q }) => {
-      const comparisonPromise = canCompare
-        ? altProvider.search({ query: q, maxResults: MAX_RESULTS_PER_QUERY }).catch(() => null)
-        : null;
+  const output: CategoryResults[] = [];
 
-      const results = await runSearchQuery(q);
+  for (let i = 0; i < cappedPairs.length; i++) {
+    const { category, query: q } = cappedPairs[i];
 
-      if (comparisonPromise) {
-        const altResults = await comparisonPromise;
-        if (altResults !== null) {
-          console.log('[generate-experts] compare', JSON.stringify({
-            primary:          primary.name,
-            alt:              altProvider.name,
-            query:            q.slice(0, 70),
-            primary_count:    results.length,
-            alt_count:        altResults.length,
-            primary_linkedin: results.filter(r => r.url.includes('linkedin.com')).length,
-            alt_linkedin:     altResults.filter(r => r.url.includes('linkedin.com')).length,
-          }));
-        }
+    // 150 ms gap between calls keeps well under Exa's 10 req/s limit
+    if (i > 0) await new Promise(r => setTimeout(r, 150));
+
+    const comparisonPromise = canCompare
+      ? altProvider.search({ query: q, maxResults: MAX_RESULTS_PER_QUERY }).catch(() => null)
+      : null;
+
+    const results = await runSearchQuery(q);
+
+    if (comparisonPromise) {
+      const altResults = await comparisonPromise;
+      if (altResults !== null) {
+        console.log('[generate-experts] compare', JSON.stringify({
+          primary:          primary.name,
+          alt:              altProvider.name,
+          query:            q.slice(0, 70),
+          primary_count:    results.length,
+          alt_count:        altResults.length,
+          primary_linkedin: results.filter(r => r.url.includes('linkedin.com')).length,
+          alt_linkedin:     altResults.filter(r => r.url.includes('linkedin.com')).length,
+        }));
       }
+    }
 
-      return { category, query: q, results };
-    }),
-  );
+    output.push({ category, query: q, results });
+  }
+
+  return output;
 }
 
 // ─── Route handler ────────────────────────────────────────────────────────────
