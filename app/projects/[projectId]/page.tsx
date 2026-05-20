@@ -29,7 +29,7 @@ const STEPS: Array<{ id: WorkflowStep; label: string }> = [
 ];
 
 const OUTREACH_STATUSES: ExpertStatus[] = [
-  'contact_found', 'outreach_drafted', 'contacted', 'replied', 'scheduled', 'completed',
+  'shortlisted', 'contact_found', 'outreach_drafted', 'contacted', 'replied', 'scheduled', 'completed',
 ];
 
 // ─── Step summary & next action ───────────────────────────────────────────────
@@ -77,13 +77,9 @@ function getNextAction(project: Project): NextAction | null {
   if (active.length === 0) {
     return { id: 'source_experts', step: 'source', message: 'No experts discovered yet. Source candidates to fill the pipeline.', cta: 'Go to Source' };
   }
-  const shortlisted = active.filter(e => e.status === 'shortlisted');
-  const inOutreach  = active.filter(e => OUTREACH_STATUSES.includes(e.status));
-  if (shortlisted.length === 0 && inOutreach.length === 0) {
-    return { id: 'source_experts', step: 'source', message: 'Shortlist candidates from the discovery pool, then move to Outreach.', cta: 'Go to Source' };
-  }
-  if (shortlisted.length > 0 && inOutreach.length === 0) {
-    return { id: 'start_outreach', step: 'outreach', message: `${shortlisted.length} shortlisted expert${shortlisted.length !== 1 ? 's' : ''} ready for outreach.`, cta: 'Start outreach' };
+  const inOutreach = active.filter(e => OUTREACH_STATUSES.includes(e.status));
+  if (inOutreach.length === 0) {
+    return { id: 'source_experts', step: 'source', message: 'Shortlist candidates from the discovery pool — they appear in Outreach immediately.', cta: 'Go to Source' };
   }
   // Experts who've had their vetting call and need a screening outcome recorded
   const callDone   = active.filter(e => e.status === 'scheduled' || e.status === 'completed' || e.status === 'replied');
@@ -1396,12 +1392,10 @@ function ProjectPageInner() {
               <div className="max-w-xl">
                 <p className="text-sm text-muted leading-relaxed" style={{ fontWeight: 300 }}>
                   <strong className="font-medium text-navy">Who might have the knowledge we need?</strong>{' '}
-                  Run brief-informed sourcing to populate the discovery pool. Shortlist the strongest fits inline —
-                  shortlisted experts move to Outreach.
-                  Use <strong className="font-medium text-navy">Review Candidates</strong> to score and compare against the brief.
+                  Run brief-informed sourcing to populate the discovery pool. Shortlist the strongest candidates —
+                  they appear in the Outreach tab immediately.
                 </p>
               </div>
-              <ToolLink href={`/rank-experts?projectId=${projectId}`}>Review Candidates ↗</ToolLink>
             </div>
 
             {/* Inline sourcing panel */}

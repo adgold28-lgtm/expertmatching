@@ -160,9 +160,6 @@ export default function ScreenExpertPage() {
             </span>
           </div>
           <div className="flex items-center gap-4 text-[10px] uppercase tracking-widest">
-            <Link href="/rank-experts" className="text-gold/60 hover:text-gold transition-colors hidden sm:block" style={{ letterSpacing: '0.16em' }}>
-              Shortlist Builder
-            </Link>
             <Link href="/projects" className="text-gold/60 hover:text-gold transition-colors hidden sm:block" style={{ letterSpacing: '0.16em' }}>
               ← Projects
             </Link>

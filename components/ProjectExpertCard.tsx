@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import type { ProjectExpert, ExpertStatus, RejectionReason } from '../types';
 import { classifySeniority, TIER_PRICING } from '../lib/seniorityClassifier';
 import ExpertCard from './ExpertCard';
@@ -86,6 +86,14 @@ export default function ProjectExpertCard({ projectExpert, projectId, query, onU
   const [noteText,         setNoteText]         = useState('');
   const [rejNoteText,      setRejNoteText]      = useState(rejectionNotes ?? '');
   const [rejNoteSaving,    setRejNoteSaving]    = useState(false);
+  const [showOutreachConfirm, setShowOutreachConfirm] = useState(false);
+  const outreachConfirmTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (outreachConfirmTimer.current) clearTimeout(outreachConfirmTimer.current);
+    };
+  }, []);
 
   async function patchExpert(patch: Record<string, unknown>) {
     setSaving(true);
@@ -126,6 +134,12 @@ export default function ProjectExpertCard({ projectExpert, projectId, query, onU
       ...(next === 'rejected' ? { rejectedAt: now } : { rejectionReason: undefined, rejectionNotes: undefined }),
       ...(next === 'contacted' && !projectExpert.contactedAt ? { contactedAt: now } : {}),
     });
+    // Show "Added to Outreach" confirmation for 3 seconds
+    if (next === 'shortlisted') {
+      if (outreachConfirmTimer.current) clearTimeout(outreachConfirmTimer.current);
+      setShowOutreachConfirm(true);
+      outreachConfirmTimer.current = setTimeout(() => setShowOutreachConfirm(false), 3000);
+    }
   }
 
   async function saveRejectionNote() {
@@ -202,18 +216,25 @@ export default function ProjectExpertCard({ projectExpert, projectId, query, onU
             </button>
           </div>
         ) : status === 'shortlisted' ? (
-          <div className="flex items-center gap-2">
-            <span className="flex-1 text-center text-[11px] uppercase tracking-widest border-2 border-amber-400 text-amber-700 bg-amber-50 py-2 font-medium">
-              ★ Shortlisted
-            </span>
-            <button
-              onClick={() => handleStatusChange('discovered')}
-              disabled={saving}
-              className="text-[10px] uppercase tracking-widest text-muted hover:text-navy border border-frame px-2.5 py-2 transition-colors disabled:opacity-40"
-              title="Move back to discovered"
-            >
-              Undo
-            </button>
+          <div className="space-y-1.5">
+            <div className="flex items-center gap-2">
+              <span className="flex-1 text-center text-[11px] uppercase tracking-widest border-2 border-amber-400 text-amber-700 bg-amber-50 py-2 font-medium">
+                ★ Shortlisted
+              </span>
+              <button
+                onClick={() => handleStatusChange('discovered')}
+                disabled={saving}
+                className="text-[10px] uppercase tracking-widest text-muted hover:text-navy border border-frame px-2.5 py-2 transition-colors disabled:opacity-40"
+                title="Move back to discovered"
+              >
+                Undo
+              </button>
+            </div>
+            {showOutreachConfirm && (
+              <p className="text-[10px] text-amber-700 text-center" style={{ transition: 'opacity 0.3s', opacity: showOutreachConfirm ? 1 : 0 }}>
+                → Added to Outreach
+              </p>
+            )}
           </div>
         ) : (
           /* rejected */
