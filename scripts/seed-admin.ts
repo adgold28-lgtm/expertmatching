@@ -16,13 +16,12 @@
 import * as dotenv from 'dotenv';
 import * as path from 'path';
 import * as readline from 'readline';
-import bcrypt from 'bcryptjs';
+import { hashPassword } from '../lib/authPassword';
 import { getUpstashClient } from '../lib/upstashRedis';
 
 dotenv.config({ path: path.join(process.cwd(), '.env.local') });
 
-const ADMIN_EMAIL   = 'ashergoldsteinbusiness@gmail.com';
-const BCRYPT_ROUNDS = 12;
+const ADMIN_EMAIL = 'ashergoldsteinbusiness@gmail.com';
 
 function prompt(question: string, muted = false): Promise<string> {
   return new Promise(resolve => {
@@ -98,7 +97,7 @@ async function main(): Promise<void> {
   }
 
   console.log('\nHashing password…');
-  const passwordHash = bcrypt.hashSync(password, BCRYPT_ROUNDS);
+  const passwordHash = hashPassword(password);
 
   await redis.set(`user:${ADMIN_EMAIL}`, JSON.stringify({
     email:              ADMIN_EMAIL,
