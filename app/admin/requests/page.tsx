@@ -650,12 +650,21 @@ export default function AdminRequestsPage() {
           >
             EXPERTMATCH
           </Link>
-          <span
-            className="text-[10px] uppercase tracking-widest text-gold/70"
-            style={{ letterSpacing: '0.18em' }}
-          >
-            Admin
-          </span>
+          <nav className="flex items-center gap-6">
+            <span
+              className="text-[10px] uppercase tracking-widest text-gold/80"
+              style={{ letterSpacing: '0.18em' }}
+            >
+              Firms
+            </span>
+            <Link
+              href="/admin/users"
+              className="text-[10px] uppercase tracking-widest text-gold/50 hover:text-gold/80 transition-colors"
+              style={{ letterSpacing: '0.18em' }}
+            >
+              Users
+            </Link>
+          </nav>
         </div>
       </header>
 

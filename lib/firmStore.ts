@@ -263,6 +263,38 @@ export async function countActiveUsersForFirm(domain: string): Promise<number> {
   return users.filter(u => u.status === 'active').length;
 }
 
+// List every user record in the system (admin-only use).
+// Uses KEYS user:* — acceptable for small admin datasets; never call from hot paths.
+export async function listAllUsers(): Promise<UserRecord[]> {
+  const redis = getUpstashClient();
+  if (!redis) return [];
+
+  const keys = await redis.keys('user:*');
+  if (keys.length === 0) return [];
+
+  const users = await Promise.all(
+    keys.map(k => getUser(k.slice('user:'.length))),
+  );
+  return users.filter((u): u is UserRecord => u !== null);
+}
+
+// Hard-delete a user record and remove them from all index sets.
+export async function deleteUser(email: string): Promise<void> {
+  const redis = getUpstashClient();
+  if (!redis) return;
+
+  const normalizedEmail = email.toLowerCase().trim();
+
+  // Read first so we know which firm-users set to clean up.
+  const user = await getUser(normalizedEmail);
+
+  await redis.del(`user:${normalizedEmail}`);
+
+  if (user?.firmDomain) {
+    await redis.srem(`firm-users:${user.firmDomain}`, normalizedEmail);
+  }
+}
+
 // ─── Concurrent seat claim protection ──────────────────────────────────────────
 
 // Returns 'ok' on success, 'concurrent_signup' if another claim is in flight.

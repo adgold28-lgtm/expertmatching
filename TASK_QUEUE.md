@@ -12,6 +12,9 @@ Last updated: May 2026
 - [x] Onboarding flow: /onboarding stepper (calendar → billing → profile),
       middleware gates incomplete users, session refreshed with onboardingComplete:true
       NOTE: calendar (OAuth) and billing (Stripe) steps are stubs — see TODOs in route files
+- [x] User management: Redis-backed user store, admin UI at /admin/users,
+      POST/DELETE /api/admin/users, scripts/createUser.ts for CLI bootstrapping (May 2026)
+      NOTE: seed-admin.ts uses bcrypt — users created with it must be migrated via createUser.ts
 
 ## NEXT (makes the product real)
 - [ ] Expert sourcing pipeline improvements
