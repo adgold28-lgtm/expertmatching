@@ -1,5 +1,5 @@
 import { NextRequest } from 'next/server';
-import { timingSafeEqual } from 'crypto';
+import { routeAuthGuard } from '../../../lib/auth';
 import {
   createCacheStore,
   makeCacheKey,
@@ -208,14 +208,22 @@ async function performLookup(
       estimatedCredits: provider.estimateCreditsPerLookup({ firstName, lastName, domain }),
       providerOrderHash,
     });
+    // Temporary diagnostic — remove after confirming provider behavior in production
+    console.log('[enrich-contact] attempting provider', provider.name, { domain });
 
     let results: ProviderEmailResult[];
     try {
       results = await provider.findProfessionalEmail({ firstName, lastName, domain });
     } catch (err) {
-      // Partial timeout: at least one earlier provider completed successfully (returned
-      // no displayable result). Cache a short not_found so the next request doesn't
-      // re-trigger a slow waterfall immediately, but allow retrying sooner than normal.
+      const errCode = (err as { code?: string }).code;
+
+      // Budget exhaustion and upstream rate-limits are global — always propagate.
+      if (errCode === 'not_enough_credits' || errCode === 'provider_rate_limited') {
+        throw err;
+      }
+
+      // Partial timeout: a prior provider already ran (no result). Cache a short
+      // not_found so the next request doesn't immediately re-trigger a slow waterfall.
       if (err instanceof Error && err.name === 'AbortError' && providersCompleted > 0) {
         const ttlMs     = 20 * 60 * 1000; // 20 minutes
         const notFound: ContactEnrichment = {
@@ -230,12 +238,31 @@ async function performLookup(
         await cacheStore.set(cacheKey, notFound, ttlMs);
         throw Object.assign(err, { code: 'provider_timeout', timedOutProvider: provider.name });
       }
-      throw err;
+
+      // All other errors (auth failure, provider down, first-provider timeout):
+      // log and fall through to the next provider.
+      console.warn(
+        `[enrich-contact] provider "${provider.name}" error, trying next:`,
+        err instanceof Error ? err.message : String(err),
+      );
+      auditLog({
+        timestamp: new Date().toISOString(),
+        action: 'error', keyHash, ipHash,
+        estimatedCredits: 0, resultStatus: `provider_error`,
+        provider: provider.name as ContactProviderName,
+        providerOrderHash,
+      });
+      continue;
     }
 
     providersCompleted++;
     const bestResult = pickBestResult(results);
     const counts     = resultCounts(results);
+    // Temporary diagnostic — remove after confirming production behavior
+    console.log('[enrich-contact] provider result', provider.name, {
+      total: counts.totalReturned, displayable: counts.displayableCount,
+      verified: counts.verifiedCount, found: !!bestResult,
+    });
 
     if (bestResult) {
       const bestEmail: EnrichedEmail = {
@@ -312,13 +339,21 @@ async function performLookup(
 // ─── Route handler ────────────────────────────────────────────────────────────
 
 export async function POST(request: NextRequest): Promise<Response> {
+  // Temporary diagnostics — remove after confirming production provider behavior
+  console.log('[enrich-contact] init', JSON.stringify({
+    enrichmentEnabled: process.env.CONTACT_ENRICHMENT_ENABLED,
+    providerOrder:     process.env.EMAIL_PROVIDER_ORDER ?? '(default: snov,hunter)',
+    hasSnovClientId:   !!process.env.SNOV_CLIENT_ID,
+    hasSnovClientSecret: !!process.env.SNOV_CLIENT_SECRET,
+    hasHunterKey:      !!process.env.HUNTER_API_KEY,
+  }));
+
   // 1. Kill switch
   if (process.env.CONTACT_ENRICHMENT_ENABLED !== 'true') {
     return Response.json({ error: 'contact_enrichment_unavailable' }, { status: 503 });
   }
 
-  // 2. Provider waterfall — at least one provider must be configured.
-  // buildProviderWaterfall() throws in production if a listed provider is missing its API key.
+  // 2. Provider waterfall — skip unconfigured providers; 503 only if none are usable.
   let providers: ContactProvider[];
   try {
     providers = buildProviderWaterfall();
@@ -327,8 +362,10 @@ export async function POST(request: NextRequest): Promise<Response> {
     return Response.json({ error: 'contact_enrichment_unavailable' }, { status: 503 });
   }
   if (providers.length === 0) {
+    console.error('[enrich-contact] No configured providers available');
     return Response.json({ error: 'contact_enrichment_unavailable' }, { status: 503 });
   }
+  console.log('[enrich-contact] providers ready:', providers.map(p => p.name));
   // Compute early so providerOrderHash is available for all audit events in this handler.
   const providerSignature = providers.map(p => p.name).join('+');
   const providerOrderHash = pseudonymize(providerSignature);
@@ -347,37 +384,9 @@ export async function POST(request: NextRequest): Promise<Response> {
     }
   }
 
-  // 5. Admin token gate — constant-time comparison prevents timing attacks.
-  // Replace with proper session/JWT auth before public launch.
-  //
-  // If CONTACT_ENRICHMENT_ADMIN_TOKEN is set: the incoming x-enrichment-token header
-  // must match exactly. Missing or wrong → 401.
-  // If it is NOT set in production: fail closed with 503 (no unauthenticated production path).
-  // In development without the env var: skip this check (allows local testing).
-  const adminToken = process.env.CONTACT_ENRICHMENT_ADMIN_TOKEN;
-  if (!adminToken) {
-    if (process.env.NODE_ENV === 'production') {
-      console.error('[enrich-contact] FATAL: CONTACT_ENRICHMENT_ADMIN_TOKEN not set in production');
-      return Response.json({ error: 'service_unavailable' }, { status: 503 });
-    }
-    // dev — no token required
-  } else {
-    const providedToken = request.headers.get('x-enrichment-token') ?? '';
-    const adminBuf    = Buffer.from(adminToken,    'utf8');
-    const providedBuf = Buffer.from(providedToken, 'utf8');
-    const lengthMatch = adminBuf.length === providedBuf.length;
-    // Always run timingSafeEqual even on length mismatch (use adminBuf twice) to avoid
-    // leaking the expected token length via early-return timing.
-    const valueMatch  = timingSafeEqual(adminBuf, lengthMatch ? providedBuf : adminBuf);
-    if (!lengthMatch || !valueMatch) {
-      auditLog({
-        timestamp: new Date().toISOString(),
-        action: 'auth_failed', keyHash: 'n/a', ipHash: 'n/a', estimatedCredits: 0,
-        providerOrderHash,
-      });
-      return Response.json({ error: 'not_authorized' }, { status: 401 });
-    }
-  }
+  // 5. Session auth gate — uses the same session cookie as all other API routes.
+  const authError = await routeAuthGuard(request);
+  if (authError) return authError;
 
   // 6. Request hardening
   const contentType = request.headers.get('content-type') ?? '';

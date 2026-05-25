@@ -76,10 +76,14 @@ export default function ClientSchedulingSection({ projectId, project, onProjectU
         setSendErr(msg);
         return;
       }
-      // Optimistically reflect the sent state
+      // Optimistically reflect the sent state.
+      // Preserve the existing hash (resend) or set a truthy placeholder (first send)
+      // so that hasRequested is immediately true and the "Requested — awaiting
+      // response" state renders without waiting for a page reload.
       onProjectUpdate({
         ...project,
-        clientAvailabilitySubmitted: false,
+        clientAvailabilityTokenHash: project.clientAvailabilityTokenHash ?? 'pending',
+        clientAvailabilitySubmitted: false,   // reset — client hasn't responded yet
       });
       setSent(true);
     } catch {

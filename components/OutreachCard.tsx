@@ -188,6 +188,10 @@ export default function OutreachCard({
   // Scheduling fallback
   const [slotDate,            setSlotDate]           = useState('');
   const [slotTz,              setSlotTz]             = useState<Timezone>('ET');
+  // Resend scheduling link
+  const [availResending,      setAvailResending]     = useState(false);
+  const [availResendError,    setAvailResendError]   = useState('');
+  const [availResent,         setAvailResent]        = useState(false);
   // Completion modal
   const [showCompleteModal,   setShowCompleteModal]  = useState(false);
   const [completeDuration,    setCompleteDuration]   = useState('');
@@ -236,10 +240,15 @@ export default function OutreachCard({
   }
 
   function handleContactUpdated(updated: ProjectExpert) {
-    setShowEmailLookup(false);
-    setShowRecheck(false);
     onUpdate(updated);
     onContactUpdated?.(updated);
+    // Only close the lookup panel when a NEW contact email was actually persisted.
+    // Path resolution and not-found lookups both fire this callback — those must
+    // not collapse the panel so the user can retry or enter manually.
+    if (updated.contactEmail && updated.contactEmail !== projectExpert.contactEmail) {
+      setShowEmailLookup(false);
+      setShowRecheck(false);
+    }
   }
 
   function copyEmail() {
@@ -338,6 +347,32 @@ export default function OutreachCard({
       await patch({ expertRate: Math.round(parsed), status: 'replied', replyIntent: 'interested' });
     } finally {
       setApproveSaving(false);
+    }
+  }
+
+  async function resendSchedulingLink() {
+    setAvailResending(true);
+    setAvailResendError('');
+    setAvailResent(false);
+    try {
+      const res = await fetch(
+        `/api/projects/${projectId}/experts/${expert.id}/request-availability`,
+        { method: 'POST' },
+      );
+      const data = await res.json() as { ok?: boolean; error?: string };
+      if (!res.ok || !data.ok) {
+        setAvailResendError(
+          data.error === 'rate_limited'     ? 'Too many requests. Please wait an hour and try again.' :
+          data.error === 'no_contact_email' ? 'No contact email on file.' :
+          'Failed to send. Please try again.',
+        );
+        return;
+      }
+      setAvailResent(true);
+    } catch {
+      setAvailResendError('Network error. Please try again.');
+    } finally {
+      setAvailResending(false);
     }
   }
 
@@ -758,32 +793,48 @@ export default function OutreachCard({
             {/* ── Scheduling panel (email3 sent, not yet scheduled) ── */}
             {status === 'scheduling_sent' && (
               <div className="space-y-2 pt-2 border-t border-frame">
-                <p className="text-[10px] text-muted">Confirm slot manually if expert replies with a time:</p>
-                <input
-                  type="text"
-                  value={slotDate}
-                  onChange={e => setSlotDate(e.target.value)}
-                  placeholder="e.g. Tue Jun 10, 2:00 pm"
-                  className="w-full px-2.5 py-1.5 text-[11px] border border-frame bg-cream focus:outline-none focus:border-navy text-ink placeholder:text-muted/60"
-                />
-                <select
-                  value={slotTz}
-                  onChange={e => setSlotTz(e.target.value as Timezone)}
-                  className="text-[11px] border border-frame bg-cream text-ink px-2 py-1.5 focus:outline-none focus:border-navy"
-                >
-                  {TIMEZONES.map(tz => <option key={tz} value={tz}>{tz}</option>)}
-                </select>
-                <button
-                  onClick={() => {
-                    if (!slotDate.trim()) return;
-                    patch({ scheduledTime: `${slotDate.trim()} ${slotTz}`, status: 'scheduled' });
-                  }}
-                  disabled={saving || !slotDate.trim()}
-                  className="text-[10px] uppercase tracking-widest bg-navy text-cream px-3 py-1.5 hover:bg-navy/90 disabled:opacity-40 transition-colors"
-                  style={{ letterSpacing: '0.1em' }}
-                >
-                  {saving ? '…' : 'Confirm Slot →'}
-                </button>
+                {/* Resend scheduling link */}
+                <div className="space-y-1.5">
+                  {availResendError && <p className="text-[10px] text-red-600">{availResendError}</p>}
+                  {availResent && <p className="text-[10px] text-green-700">Scheduling link resent ✓</p>}
+                  <button
+                    onClick={resendSchedulingLink}
+                    disabled={availResending}
+                    className="text-[10px] uppercase tracking-widest text-muted border border-frame hover:border-navy hover:text-navy px-3 py-1.5 transition-colors disabled:opacity-40"
+                    style={{ letterSpacing: '0.12em' }}
+                  >
+                    {availResending ? 'Sending…' : 'Resend Scheduling Link ↻'}
+                  </button>
+                </div>
+                {/* Manual slot confirmation (for direct email replies) */}
+                <div className="pt-1.5 border-t border-frame/50 space-y-2">
+                  <p className="text-[10px] text-muted">Or confirm slot manually if expert replies with a time:</p>
+                  <input
+                    type="text"
+                    value={slotDate}
+                    onChange={e => setSlotDate(e.target.value)}
+                    placeholder="e.g. Tue Jun 10, 2:00 pm"
+                    className="w-full px-2.5 py-1.5 text-[11px] border border-frame bg-cream focus:outline-none focus:border-navy text-ink placeholder:text-muted/60"
+                  />
+                  <select
+                    value={slotTz}
+                    onChange={e => setSlotTz(e.target.value as Timezone)}
+                    className="text-[11px] border border-frame bg-cream text-ink px-2 py-1.5 focus:outline-none focus:border-navy"
+                  >
+                    {TIMEZONES.map(tz => <option key={tz} value={tz}>{tz}</option>)}
+                  </select>
+                  <button
+                    onClick={() => {
+                      if (!slotDate.trim()) return;
+                      patch({ scheduledTime: `${slotDate.trim()} ${slotTz}`, status: 'scheduled' });
+                    }}
+                    disabled={saving || !slotDate.trim()}
+                    className="text-[10px] uppercase tracking-widest bg-navy text-cream px-3 py-1.5 hover:bg-navy/90 disabled:opacity-40 transition-colors"
+                    style={{ letterSpacing: '0.1em' }}
+                  >
+                    {saving ? '…' : 'Confirm Slot →'}
+                  </button>
+                </div>
               </div>
             )}
 

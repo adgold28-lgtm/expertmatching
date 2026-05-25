@@ -44,13 +44,11 @@ export function buildProviderWaterfall(): ContactProvider[] {
     const provider = PROVIDER_MAP[name];
     if (provider.isConfigured()) {
       waterfall.push(provider);
-    } else if (process.env.NODE_ENV === 'production') {
-      throw new Error(
-        `Contact provider "${name}" is listed in EMAIL_PROVIDER_ORDER but its API key is not configured. ` +
-        `Set the required key or remove "${name}" from EMAIL_PROVIDER_ORDER.`,
-      );
     } else {
-      console.warn(`[contactProviders] Skipping unconfigured provider: ${name}`);
+      // Skip unconfigured providers in all environments — the route handles an
+      // empty waterfall by returning 503. This allows partial configuration
+      // (e.g. Snov only, no Hunter key) without crashing the whole request.
+      console.warn(`[contactProviders] Skipping unconfigured provider "${name}" — API key not set`);
     }
   }
 

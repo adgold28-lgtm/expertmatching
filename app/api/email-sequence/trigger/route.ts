@@ -131,7 +131,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
       const replyToken = pe.outreachToken ?? token;
       // Generate scheduling link
       const { token: schedToken } = generateAvailabilityToken(projectId, expertId);
-      const baseUrl = process.env.NEXT_PUBLIC_BASE_URL ?? 'https://expertmatch.fit';
+      const baseUrl = process.env.NEXT_PUBLIC_APP_URL ?? 'http://localhost:3000';
       const schedulingUrl = `${baseUrl}/availability/${schedToken}`;
 
       const firmName = project.name; // project name serves as firm name context

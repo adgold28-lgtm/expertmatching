@@ -233,7 +233,7 @@ export function suggestDomainsForExpert(expert: Expert): SuggestedDomain[] {
           domain,
           label:      entry.label,
           confidence: 'medium',
-          reason:     `Known company alias: ${entry.label}`,
+          reason:     `Matched to ${entry.label}`,
           sourceType: 'known_alias',
         });
       }

@@ -328,6 +328,30 @@ export default function ContactSection({
     await handleFindEmail(true);
   }
 
+  // Save a manually-entered email directly to the project expert (no API credit spent)
+  async function handleSaveManualEmail(email: string) {
+    if (!projectId || !expertId) return;
+    try {
+      const patchRes = await fetch(`/api/projects/${projectId}/experts/${expertId}`, {
+        method:  'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({
+          contactEmail:            email,
+          emailVerificationStatus: 'risky' as const, // manually entered — unverified
+          emailCheckedAt:          Date.now(),
+          emailProvider:           'manual',
+        }),
+      });
+      const patchData = await patchRes.json() as { project?: { experts: ProjectExpert[] } };
+      if (patchRes.ok && patchData.project) {
+        const updatedPE = patchData.project.experts.find(pe => pe.expert.id === expertId);
+        if (updatedPE) onContactUpdated?.(updatedPE);
+      }
+    } catch {
+      // silent — user sees no feedback but email input remains open
+    }
+  }
+
   // ─── Render ────────────────────────────────────────────────────────────────
 
   if (!isOpen) {
@@ -355,7 +379,7 @@ export default function ContactSection({
         {/* ── Section 1: Suggested contact paths ─────────────────────────── */}
         <div className="space-y-2.5">
           <p className="text-[10px] uppercase tracking-widest text-muted font-medium">
-            Suggested contact paths
+            Company domain
           </p>
 
           {/* Local domain chips — always shown, zero API calls */}
@@ -507,7 +531,15 @@ export default function ContactSection({
           </p>
 
           {emailState === 'unavailable' && (
-            <p className="text-xs text-muted">Contact enrichment not available.</p>
+            <div className="space-y-1.5">
+              <p className="text-xs text-muted">Email search is not available right now.</p>
+              <button
+                onClick={() => setEmailState('idle')}
+                className="text-[10px] uppercase tracking-widest text-muted hover:text-navy transition-colors"
+              >
+                ← Back
+              </button>
+            </div>
           )}
 
           {emailState === 'idle' && (
@@ -577,6 +609,7 @@ export default function ContactSection({
               domain={enrichment.domain_used}
               lookedUpAt={enrichment.looked_up_at}
               suggestions={allSuggestions}
+              canSaveManual={!!(projectId && expertId)}
               onRetry={() => {
                 setDomain('');
                 setActiveSuggestion(null);
@@ -589,6 +622,7 @@ export default function ContactSection({
                 setDomainError('');
                 setEmailState('confirming');
               }}
+              onManualEmail={handleSaveManualEmail}
             />
           )}
 
@@ -728,7 +762,7 @@ function ConfirmingForm({
         )}
         {visibleSuggestions.length > 0 && (
           <div className="mt-1.5">
-            <p className="text-[10px] text-muted mb-1">Other options:</p>
+            <p className="text-[10px] text-muted mb-1">Alternate domains:</p>
             <div className="flex flex-wrap gap-1">
               {visibleSuggestions.map(s => (
                 <button
@@ -819,50 +853,101 @@ function FoundResult({
 }
 
 function NotFoundResult({
-  domain, lookedUpAt, suggestions, onRetry, onTryDomain,
+  domain, lookedUpAt, suggestions, canSaveManual, onRetry, onTryDomain, onManualEmail,
 }: {
-  domain:      string;
-  lookedUpAt:  number;
-  suggestions: SuggestedDomain[];
-  onRetry:     () => void;
-  onTryDomain: (domain: string, suggestion?: SuggestedDomain) => void;
+  domain:          string;
+  lookedUpAt:      number;
+  suggestions:     SuggestedDomain[];
+  canSaveManual:   boolean;
+  onRetry:         () => void;
+  onTryDomain:     (domain: string, suggestion?: SuggestedDomain) => void;
+  onManualEmail?:  (email: string) => void;
 }) {
+  const [showManual,   setShowManual]   = useState(false);
+  const [manualInput,  setManualInput]  = useState('');
+  const [manualSaving, setManualSaving] = useState(false);
+
   const alternatives = suggestions.filter(s => s.domain !== domain);
+
+  async function saveManual() {
+    const email = manualInput.trim();
+    if (!email || !email.includes('@') || !onManualEmail) return;
+    setManualSaving(true);
+    try { await onManualEmail(email); }
+    finally { setManualSaving(false); }
+  }
 
   return (
     <div className="space-y-2">
       <p className="text-xs text-muted">
-        No professional email found for{' '}
+        No email found for{' '}
         <span className="font-medium text-navy">{domain}</span>.
-        {alternatives.length > 0 ? ' Try a different domain.' : ''}
       </p>
 
       {alternatives.length > 0 && (
-        <div className="flex flex-wrap gap-1">
-          {alternatives.map(s => (
-            <button
-              key={s.domain}
-              type="button"
-              onClick={() => onTryDomain(s.domain, s)}
-              title={s.reason}
-              className={`inline-flex items-center gap-1 px-2 py-0.5 text-[10px] border ${chipClass(s.confidence)}`}
-            >
-              {s.confidence === 'high' && (
-                <span className="w-1.5 h-1.5 rounded-full bg-status-success shrink-0" />
-              )}
-              {s.domain}
-            </button>
-          ))}
+        <div className="space-y-1">
+          <p className="text-[10px] text-muted">Try a different domain:</p>
+          <div className="flex flex-wrap gap-1">
+            {alternatives.map(s => (
+              <button
+                key={s.domain}
+                type="button"
+                onClick={() => onTryDomain(s.domain, s)}
+                title={s.reason}
+                className={`inline-flex items-center gap-1 px-2 py-0.5 text-[10px] border ${chipClass(s.confidence)}`}
+              >
+                {s.confidence === 'high' && (
+                  <span className="w-1.5 h-1.5 rounded-full bg-status-success shrink-0" />
+                )}
+                {s.domain}
+              </button>
+            ))}
+          </div>
         </div>
       )}
 
-      <p className="text-[10px] text-muted">Checked: {formatDate(lookedUpAt)}</p>
-      <button
-        onClick={onRetry}
-        className="text-[10px] uppercase tracking-widest text-muted hover:text-navy transition-colors"
-      >
-        Try a different domain
-      </button>
+      <p className="text-[10px] text-muted/60">Checked: {formatDate(lookedUpAt)}</p>
+
+      <div className="flex items-center gap-3 flex-wrap pt-0.5">
+        <button
+          onClick={onRetry}
+          className="text-[10px] uppercase tracking-widest text-muted hover:text-navy transition-colors"
+        >
+          Try another domain
+        </button>
+        {canSaveManual && (
+          <button
+            onClick={() => setShowManual(v => !v)}
+            className="text-[10px] uppercase tracking-widest text-muted hover:text-navy transition-colors"
+          >
+            {showManual ? 'Cancel' : 'Enter manually'}
+          </button>
+        )}
+      </div>
+
+      {showManual && (
+        <div className="flex items-center gap-2 pt-0.5">
+          <input
+            type="email"
+            value={manualInput}
+            onChange={e => setManualInput(e.target.value)}
+            onKeyDown={e => { if (e.key === 'Enter') saveManual(); }}
+            placeholder="name@company.com"
+            autoFocus
+            className="flex-1 px-2.5 py-1.5 text-xs border border-frame bg-cream focus:outline-none focus:border-navy text-navy placeholder:text-muted/50"
+            maxLength={254}
+            autoComplete="off"
+          />
+          <button
+            onClick={saveManual}
+            disabled={manualSaving || !manualInput.trim().includes('@')}
+            className="text-[10px] uppercase tracking-widest bg-navy text-cream px-2.5 py-1.5 hover:bg-navy/90 disabled:opacity-40 transition-colors"
+            style={{ letterSpacing: '0.1em' }}
+          >
+            {manualSaving ? '…' : 'Save'}
+          </button>
+        </div>
+      )}
     </div>
   );
 }

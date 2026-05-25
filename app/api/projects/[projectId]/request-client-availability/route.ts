@@ -17,7 +17,10 @@ import { createRateLimiterStore }          from '../../../../../lib/rateLimiter'
 
 const ID_RE        = /^[a-f0-9]{24}$/;
 const EMAIL_RE     = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-const NAME_RE      = /^[A-Za-z\s'\-]{1,80}$/;
+// Allows letters, digits, spaces, and punctuation common in real names and firm names
+// (periods in initials, ampersands, commas, hyphens, apostrophes, parentheses).
+// Blocks control characters, angle brackets, quotes, and semicolons.
+const NAME_RE      = /^[A-Za-z0-9\s'\-.,&+()]{1,80}$/;
 
 // ─── Rate limiting ────────────────────────────────────────────────────────────
 // 3 sends per project per hour
@@ -84,22 +87,29 @@ export async function POST(
   const project = await getProject(projectId);
   if (!project) return NextResponse.json({ error: 'not_found' }, { status: 404 });
 
-  // ── 6. Generate token ─────────────────────────────────────────────────────
-  const { token, tokenHash, expiry } = generateClientAvailabilityToken(projectId);
+  // ── 6. Generate token + persist ──────────────────────────────────────────
+  // Both steps are wrapped together: if either throws (missing secret, DB error)
+  // we return a clean 500 instead of leaking an HTML error page to the client.
+  let tokenResult: { token: string; tokenHash: string; expiry: number };
+  try {
+    tokenResult = generateClientAvailabilityToken(projectId);
+    await updateProjectFields(projectId, {
+      clientEmail,
+      clientName,
+      clientAvailabilityToken:       null,   // never store raw token
+      clientAvailabilityTokenHash:   tokenResult.tokenHash,
+      clientAvailabilityTokenExpiry: tokenResult.expiry,
+      clientAvailabilitySubmitted:   false,   // reset on re-send
+    });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : 'unknown';
+    console.error('[request-client-availability] token/persist failed:', msg.slice(0, 120));
+    return NextResponse.json({ error: 'internal_error' }, { status: 500 });
+  }
 
-  // ── 7. Persist — store hash, not raw token ────────────────────────────────
-  await updateProjectFields(projectId, {
-    clientEmail,
-    clientName,
-    clientAvailabilityToken:      null,   // never store raw token
-    clientAvailabilityTokenHash:  tokenHash,
-    clientAvailabilityTokenExpiry: expiry,
-    clientAvailabilitySubmitted:  false,  // reset on re-send
-  });
-
-  // ── 8. Build link + send email ────────────────────────────────────────────
+  // ── 7. Build link + send email ────────────────────────────────────────────
   const appUrl = process.env.NEXT_PUBLIC_APP_URL ?? 'http://localhost:3000';
-  const link   = `${appUrl}/availability/${encodeURIComponent(token)}`;
+  const link   = `${appUrl}/availability/${encodeURIComponent(tokenResult.token)}`;
 
   try {
     await sendAvailabilityRequest({
@@ -114,11 +124,11 @@ export async function POST(
     return NextResponse.json({ error: 'email_send_failed' }, { status: 502 });
   }
 
-  // ── 9. Audit log (no PII, no token) ──────────────────────────────────────
+  // ── 8. Audit log (no PII, no token) ──────────────────────────────────────
   console.log('[request-client-availability] sent', {
     projectHash: pseudonymize(projectId),
-    expiresAt:   expiry,
+    expiresAt:   tokenResult.expiry,
   });
 
-  return NextResponse.json({ ok: true, expiresAt: expiry });
+  return NextResponse.json({ ok: true, expiresAt: tokenResult.expiry });
 }
