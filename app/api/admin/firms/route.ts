@@ -8,7 +8,6 @@ import {
   SEAT_LIMITS,
   type FirmPlan,
 } from '../../../../lib/firmStore';
-import { approveDomain, removeDomain } from '../../../../lib/domainWhitelist';
 
 const VALID_PLANS = new Set<FirmPlan>(['starter', 'growth', 'enterprise']);
 
@@ -66,8 +65,6 @@ export async function POST(request: NextRequest): Promise<Response> {
 
   try {
     await upsertFirm(domain, { name, plan: plan as FirmPlan, status: 'active' });
-    // Backward compat: keep the old approved-domains set in sync
-    await approveDomain(domain);
     console.log('[admin/firms] upserted', { plan });
     return Response.json({ ok: true });
   } catch {
@@ -96,8 +93,6 @@ export async function DELETE(request: NextRequest): Promise<Response> {
 
   try {
     await deleteFirm(domain);
-    // Backward compat: remove from old approved-domains set too
-    await removeDomain(domain);
     console.log('[admin/firms] deleted', { domain: '[redacted]' });
     return Response.json({ ok: true });
   } catch {

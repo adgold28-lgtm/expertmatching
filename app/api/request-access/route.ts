@@ -1,7 +1,7 @@
 import { NextRequest } from 'next/server';
 import { Resend } from 'resend';
 import { getUpstashClient } from '../../../lib/upstashRedis';
-import { isApprovedDomain } from '../../../lib/domainWhitelist';
+import { isApprovedDomain } from '../../../lib/firmStore';
 import { generateSignupToken } from '../../../lib/signupToken';
 import { sendInviteEmail } from '../../../lib/sendAvailabilityRequest';
 
@@ -84,9 +84,10 @@ export async function POST(request: NextRequest) {
       const redis = getUpstashClient();
       if (redis) {
         const ttlSeconds = Math.floor((expiry - Date.now()) / 1000);
-        await redis.set(`signup-token:${hash}`, record.email, { ex: ttlSeconds });
+        // Use invite-token: prefix — consumed by /api/auth/set-password
+        await redis.set(`invite-token:${hash}`, record.email, { ex: ttlSeconds });
       }
-      const signupUrl = `${process.env.NEXT_PUBLIC_APP_URL}/signup/${token}`;
+      const signupUrl = `${process.env.NEXT_PUBLIC_APP_URL}/auth/set-password?token=${encodeURIComponent(token)}`;
       await sendInviteEmail(record.email, record.firm, signupUrl);
       console.log('[request-access] auto-approved invite sent', { domain });
       return Response.json({ ok: true });

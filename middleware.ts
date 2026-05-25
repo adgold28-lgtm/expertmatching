@@ -18,8 +18,7 @@ const PUBLIC_PREFIXES = [
   '/api/availability/',      // public POST endpoint for availability submissions
   '/api/webhooks/',          // Stripe and other provider webhooks — verified by payload signature
   '/payment/',               // public payment success/cancel pages
-  '/signup/',                // invite-only account creation pages (now redirect to /auth/set-password)
-  '/api/signup/',            // public signup POST endpoint (token-gated)
+  '/signup/',                // legacy invite links redirect to /auth/set-password — kept for backward compat
   '/api/inbound-email',      // Resend inbound email webhook — verified by payload signature
   '/api/email-sequence/',    // QStash-triggered email sequence — verified by QStash signature
   '/expert-onboarding/',     // expert Stripe Connect onboarding pages
