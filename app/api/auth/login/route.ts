@@ -1,9 +1,20 @@
+import { createHmac } from 'crypto';
 import { NextRequest } from 'next/server';
 import { verifyAdminPassword, verifyPassword } from '../../../../lib/authPassword';
 import { createSessionCookie, COOKIE_NAME, SESSION_TTL_MS } from '../../../../lib/auth';
 import { getUser, upsertUser } from '../../../../lib/firmStore';
+import { getUpstashClient } from '../../../../lib/upstashRedis';
 
-const MAX_BODY = 2048; // bytes — covers email + password with JSON overhead
+const MAX_BODY         = 2048; // bytes — covers email + password with JSON overhead
+const LOGIN_RATE_LIMIT = 10;              // max attempts before 429
+const LOGIN_WINDOW_MS  = 15 * 60 * 1000; // 15-minute sliding window
+
+// Hash the IP before using it as a Redis key — no PII in key names.
+// Same HMAC pattern used by lib/rateLimiter.ts.
+function loginRlKey(ip: string): string {
+  const secret = process.env.LOG_HASH_SECRET ?? 'dev-insecure-fallback';
+  return `login-rl:${createHmac('sha256', secret).update(ip).digest('hex').slice(0, 16)}`;
+}
 
 export async function POST(request: NextRequest): Promise<Response> {
   // Content-Type guard
@@ -42,6 +53,33 @@ export async function POST(request: NextRequest): Promise<Response> {
 
   const password = b.password.slice(0, 200);
   const email    = typeof b.email === 'string' ? b.email.trim().toLowerCase().slice(0, 200) : '';
+
+  // ── Rate limiting ──────────────────────────────────────────────────────────
+  // 10 attempts per 15-minute window per IP.
+  // Fails open — if Redis is unavailable, the check is skipped rather than
+  // blocking a legitimate login. Key is HMAC-hashed so no raw IP is stored.
+  {
+    const ip = request.headers.get('x-forwarded-for')?.split(',')[0]?.trim()
+            ?? request.headers.get('x-real-ip')
+            ?? 'unknown';
+    const redis = getUpstashClient();
+    if (redis) {
+      try {
+        const { count, ttlMs } = await redis.incrWithWindow(loginRlKey(ip), LOGIN_WINDOW_MS);
+        if (count > LOGIN_RATE_LIMIT) {
+          return Response.json(
+            { error: 'rate_limited', message: 'Too many login attempts. Please try again later.' },
+            {
+              status:  429,
+              headers: { 'Retry-After': String(Math.ceil(ttlMs / 1000)) },
+            },
+          );
+        }
+      } catch {
+        // Redis unavailable — fail open so legitimate logins are never blocked
+      }
+    }
+  }
 
   // ── Emergency admin override ───────────────────────────────────────────────
   // This ADMIN_EMAIL + ADMIN_PASSWORD_HASH bypass is an emergency bootstrap
