@@ -47,19 +47,46 @@ export async function middleware(request: NextRequest): Promise<NextResponse> {
   //
   // Fails open: if Supabase env vars are missing or the network is down,
   // updateSession() returns { user: null } and we fall through to HMAC auth.
-  const { response: supabaseResponse, user: supabaseUser } =
+  const { response: supabaseResponse, user: supabaseUser, redisUser: supabaseRedisUser } =
     await updateSession(request);
   // -------------------------------------------------------------------------
 
   // In development, auth is optional — let everything through.
   if (!isAuthEnabled()) return supabaseResponse;
 
-  // If the request carries a valid Supabase session, honour it.
-  // The supabaseResponse already carries any refreshed Set-Cookie headers.
-  // Note: onboarding gating for Supabase users will be added in Stage 3 when
-  // role and onboardingComplete are stored in Supabase.  Until then, Supabase
-  // sessions are treated as fully authenticated (login migration gates entry).
+  // If the request carries a valid Supabase session, apply full gating.
+  // redisUser carries role / status / onboardingComplete from Redis so we
+  // don't need a separate lookup here.
   if (supabaseUser) {
+    // If we couldn't read the Redis record (Redis down, user deleted), send
+    // to login — we can't determine authorization without the metadata.
+    if (!supabaseRedisUser) {
+      const loginUrl = new URL('/login', request.url);
+      loginUrl.searchParams.set('next', pathname);
+      return NextResponse.redirect(loginUrl);
+    }
+
+    // Disabled accounts are kicked to login.
+    if (supabaseRedisUser.status === 'disabled') {
+      return NextResponse.redirect(new URL('/login', request.url));
+    }
+
+    // Onboarding gate — mirrors the HMAC path exactly.
+    if (supabaseRedisUser.onboardingComplete === false) {
+      const onboardingAllowed =
+        pathname.startsWith('/onboarding') ||
+        pathname.startsWith('/api/onboarding') ||
+        pathname === '/api/auth/logout';
+      if (!onboardingAllowed) {
+        if (pathname.startsWith('/api/')) {
+          return NextResponse.json({ error: 'onboarding_incomplete' }, { status: 403 });
+        }
+        return NextResponse.redirect(new URL('/onboarding', request.url));
+      }
+      return supabaseResponse;
+    }
+
+    // Fully authenticated — bounce off marketing/login, pass through elsewhere.
     if (APP_REDIRECT_PATHS.has(pathname)) {
       return NextResponse.redirect(new URL('/app', request.url));
     }
