@@ -1,61 +1,63 @@
 // lib/supabase/middleware.ts
 //
-// Scaffold for a future Supabase session-refresh middleware helper.
+// Supabase session-refresh helper for middleware.ts.
+// Wired into middleware.ts as Stage 2 of the auth migration.
 //
-// !! NOT WIRED INTO middleware.ts YET !!
-//
-// When Stage 2 migration begins, import updateSession from here and call it
-// at the top of the main middleware function, BEFORE the existing HMAC
-// session checks.  At that point the Supabase session cookie will be kept
-// fresh on every request and the migration to Supabase Auth can proceed.
-//
-// Requires both NextRequest and NextResponse to be passed in so that
-// Set-Cookie headers produced by token refresh are forwarded to the browser.
+// Does NOT replace HMAC session logic — both auth systems run simultaneously.
+// Current users (pre-migration) will always get user: null; the HMAC path
+// handles all access control for them.  When login is migrated (Stage 3+),
+// users with a Supabase session will be surfaced via the returned `user`.
 
 import { type NextRequest, NextResponse } from 'next/server';
 import { createServerClient } from '@supabase/ssr';
+import type { User } from '@supabase/supabase-js';
 
-function getRequiredEnv(name: string): string {
-  const value = process.env[name];
-  if (!value) {
-    throw new Error(
-      `[supabase/middleware] Missing required environment variable: ${name}.`,
-    );
-  }
-  return value;
+export interface UpdateSessionResult {
+  /** Pass-through response (possibly carrying refreshed Supabase cookie headers). */
+  response: NextResponse;
+  /**
+   * The authenticated Supabase user, or null if no valid Supabase session
+   * exists.  Null for ALL current users until login is migrated (Stage 3+).
+   */
+  user: User | null;
 }
 
 /**
- * Refreshes the Supabase session and forwards any updated cookies onto the
- * response.  Returns the (potentially mutated) response so the caller can
- * pass it along the middleware chain.
+ * Refreshes the Supabase session cookie and returns the updated response
+ * together with the current Supabase user (null if none).
  *
- * Usage (future Stage 2):
- *
- *   import { updateSession } from '../lib/supabase/middleware';
- *
- *   export async function middleware(request: NextRequest) {
- *     const response = await updateSession(request);
- *     // … existing HMAC checks against response …
- *     return response;
- *   }
+ * Design:
+ * - Fails open on every error: missing env vars, network errors, invalid URL.
+ *   If Supabase is unreachable, the HMAC path handles auth normally.
+ * - Uses getUser() (not getSession()) to validate the JWT server-side.
+ * - For users without a Supabase session (all current users), getUser() reads
+ *   only the cookie store — no network call, negligible latency.
+ * - For users with a valid but near-expiry Supabase session, a token-refresh
+ *   network call is made and the updated cookie is written to the response.
  */
-export async function updateSession(request: NextRequest): Promise<NextResponse> {
-  // Start with a pass-through response so Set-Cookie headers can be appended.
-  let response = NextResponse.next({ request });
+export async function updateSession(request: NextRequest): Promise<UpdateSessionResult> {
+  // Fail open: if env vars are absent, skip Supabase entirely.
+  const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const key = process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY;
+  if (!url || !key) {
+    return { response: NextResponse.next({ request }), user: null };
+  }
 
-  const supabase = createServerClient(
-    getRequiredEnv('NEXT_PUBLIC_SUPABASE_URL'),
-    getRequiredEnv('NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY'),
-    {
+  // Start with a plain pass-through response.  The setAll handler below may
+  // replace this with a new response carrying updated Set-Cookie headers.
+  let response = NextResponse.next({ request });
+  let user: User | null = null;
+
+  try {
+    const supabase = createServerClient(url, key, {
       cookies: {
         getAll() {
           return request.cookies.getAll();
         },
         setAll(cookiesToSet) {
-          // Write updated cookies onto both the request (so downstream
-          // server code sees them) and the response (so the browser stores
-          // them).
+          // Write updated cookies onto the request first so downstream server
+          // code in the same request lifecycle sees the fresh values, then
+          // rebuild the response so the browser receives the Set-Cookie headers.
           cookiesToSet.forEach(({ name, value }) =>
             request.cookies.set(name, value),
           );
@@ -65,12 +67,18 @@ export async function updateSession(request: NextRequest): Promise<NextResponse>
           );
         },
       },
-    },
-  );
+    });
 
-  // Trigger a session refresh if the token is stale.  getUser() is preferred
-  // over getSession() here — getSession() does not validate the JWT.
-  await supabase.auth.getUser();
+    // getUser() validates the JWT with the Supabase Auth server.
+    // Preferred over getSession() which only reads the local cookie without
+    // server-side validation.
+    const { data } = await supabase.auth.getUser();
+    user = data.user;
+  } catch {
+    // Network error, malformed URL, Supabase outage, etc.
+    // Fail open — the HMAC path remains the authoritative auth source.
+    user = null;
+  }
 
-  return response;
+  return { response, user };
 }
