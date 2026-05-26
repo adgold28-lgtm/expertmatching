@@ -1,0 +1,86 @@
+# CodeRabbit configuration for ExpertMatch
+# Docs: https://docs.coderabbit.ai/guides/configure-coderabbit
+
+language: "en-US"
+
+reviews:
+  profile: "chill"
+  request_changes_workflow: false
+  high_level_summary: true
+  poem: false
+  review_status: true
+  collapse_walkthrough: false
+  auto_review:
+    enabled: true
+    ignore_title_keywords:
+      - "WIP"
+      - "draft"
+      - "DO NOT MERGE"
+    drafts: false
+
+  path_filters:
+    - "!**/*.lock"
+    - "!**/node_modules/**"
+    - "!**/.next/**"
+    - "!**/tsconfig.tsbuildinfo"
+
+  path_instructions:
+    - path: "app/api/**"
+      instructions: |
+        Review all API routes for:
+        - Auth guard: every non-public route must call routeAuthGuard() from lib/auth.ts
+        - Input validation at route boundaries (body size, type checks, allowlists)
+        - No internal error messages returned to clients (only generic error strings)
+        - Rate limiting on public endpoints that trigger LLM or email calls
+        - No secrets or tokens logged to stdout
+        - Correct HTTP status codes (401 for auth failure, 400 for bad input, 429 for rate limit)
+
+    - path: "app/api/webhooks/**"
+      instructions: |
+        Webhook routes must:
+        - Verify signature before any DB write or business logic
+        - Use timingSafeEqual or equivalent for HMAC comparison
+        - Return 400 on invalid signature, never 200
+        - Guard against missing secret env vars (fail closed, not open)
+
+    - path: "lib/auth.ts"
+      instructions: |
+        Auth module is critical. Check:
+        - HMAC session cookie uses SESSION_SECRET from env
+        - No master password backdoor
+        - bcrypt comparison with correct cost factor
+        - Session payload does not include sensitive fields beyond necessary claims
+
+    - path: "lib/**"
+      instructions: |
+        Library utilities — check for:
+        - No console.log with PII (emails, names, tokens)
+        - Proper TypeScript types (no `any` unless truly unavoidable)
+        - Error handling that fails closed on missing env vars
+        - Encryption uses random IV per call (AES-GCM pattern)
+
+    - path: "components/**"
+      instructions: |
+        React components — check for:
+        - No XSS via dangerouslySetInnerHTML without sanitization
+        - Accessible markup (aria labels, keyboard navigation)
+        - Mobile responsive (Tailwind responsive classes used)
+        - Loading and error states present for async operations
+        - No hardcoded secrets or API keys
+
+    - path: "middleware.ts"
+      instructions: |
+        Middleware handles auth routing — verify:
+        - All protected routes are covered
+        - No route that should be protected is accidentally left public
+        - Redirect logic sends unauthenticated users to /login, not an error
+
+    - path: "scripts/**"
+      instructions: |
+        Scripts are admin/dev tools — check:
+        - No plaintext secret output
+        - Dangerous operations (wipe, seed) have guards to prevent accidental prod runs
+        - Scripts use env vars, not hardcoded values
+
+chat:
+  auto_reply: true
