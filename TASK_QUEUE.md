@@ -1,6 +1,9 @@
 # ExpertMatch Task Queue
 Last updated: May 2026
 
+## INFRASTRUCTURE
+- [x] GitHub-Claude integration: @claude trigger verified working via issue #8 (May 2026)
+
 ## NOW (blocking or broken)
 - [x] Auth overhaul: firm-based seats, invite-only flow, remove master password
       — firmStore.ts, set-password flow, admin panel rebuilt (May 2026)
