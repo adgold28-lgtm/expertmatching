@@ -840,10 +840,8 @@ export async function POST(request: NextRequest) {
 
   try {
     try { getSearchProvider(); } catch (err) {
-      return Response.json(
-        { error: err instanceof Error ? err.message : 'No search provider configured' },
-        { status: 503 },
-      );
+      console.error('[generate-experts] search provider error:', err instanceof Error ? err.message.slice(0, 120) : String(err));
+      return Response.json({ error: 'no_search_provider' }, { status: 503 });
     }
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -1621,8 +1619,7 @@ RELEVANCE SCORING GUIDANCE (0–100):
         { status: 503 },
       );
     }
-    // Safe error log: message only, no prompt content, no keys
-    console.error('[generate-experts] unhandled error', err instanceof Error ? err.message : String(err));
-    return Response.json({ error: err instanceof Error ? err.message : 'Unknown error' }, { status: 500 });
+    console.error('[generate-experts] unhandled error', err instanceof Error ? err.message.slice(0, 120) : String(err));
+    return Response.json({ error: 'generation_failed' }, { status: 500 });
   }
 }

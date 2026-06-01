@@ -34,7 +34,8 @@ export async function GET(request: NextRequest): Promise<Response> {
 
     return Response.json({ domains: enriched });
   } catch {
-    return Response.json({ error: 'Failed to load domains' }, { status: 500 });
+    console.error('[admin/domains] failed to list domains');
+    return Response.json({ error: 'failed_to_load_domains' }, { status: 500 });
   }
 }
 
@@ -46,13 +47,13 @@ export async function POST(request: NextRequest): Promise<Response> {
 
   let body: unknown;
   try { body = await request.json(); } catch {
-    return Response.json({ error: 'Invalid JSON' }, { status: 400 });
+    return Response.json({ error: 'invalid_json' }, { status: 400 });
   }
 
   const b = body as Record<string, unknown>;
   const domain = typeof b.domain === 'string' ? b.domain.trim().toLowerCase() : '';
   if (!domain || domain.length < 3 || !domain.includes('.')) {
-    return Response.json({ error: 'Valid domain required (e.g. blackstone.com)' }, { status: 400 });
+    return Response.json({ error: 'invalid_domain' }, { status: 400 });
   }
 
   await approveDomain(domain);
@@ -72,14 +73,14 @@ export async function DELETE(request: NextRequest): Promise<Response> {
 
   let body: unknown;
   try { body = await request.json(); } catch {
-    return Response.json({ error: 'Invalid JSON' }, { status: 400 });
+    return Response.json({ error: 'invalid_json' }, { status: 400 });
   }
 
   const domain = typeof (body as Record<string, unknown>).domain === 'string'
     ? ((body as Record<string, unknown>).domain as string).trim().toLowerCase()
     : '';
 
-  if (!domain) return Response.json({ error: 'domain required' }, { status: 400 });
+  if (!domain) return Response.json({ error: 'domain_required' }, { status: 400 });
 
   await removeDomain(domain);
   return Response.json({ ok: true });

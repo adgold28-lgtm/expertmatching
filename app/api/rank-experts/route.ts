@@ -305,8 +305,7 @@ Confidence criteria:
 
     return NextResponse.json({ results });
   } catch (err) {
-    const message = err instanceof Error ? err.message : 'Unknown error';
-    console.error('[rank-experts]', message);
-    return NextResponse.json({ error: message }, { status: 500 });
+    console.error('[rank-experts]', err instanceof Error ? err.message.slice(0, 120) : String(err));
+    return NextResponse.json({ error: 'ranking_failed' }, { status: 500 });
   }
 }
