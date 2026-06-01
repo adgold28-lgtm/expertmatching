@@ -106,6 +106,7 @@ export interface UpdateExpertInput {
   replyIntent?:          'interested' | 'declined' | 'counter_rate' | 'conflict' | 'unclear';
   counterRateProposed?:  number;
   conflictNote?:         string;
+  suppressedAt?:         number;
   // Stripe Connect
   stripeConnectAccountId?:  string;
   stripeTransferId?:        string;

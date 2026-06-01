@@ -228,11 +228,12 @@ function parseEmailResponse(text: string): { subject: string; body: string } {
 // ─── Send via Resend ──────────────────────────────────────────────────────────
 
 export async function sendSequenceEmail(
-  to:         string,
-  subject:    string,
-  body:       string,
-  replyToken: string,
-  fromName:   string,
+  to:              string,
+  subject:         string,
+  body:            string,
+  replyToken:      string,
+  fromName:        string,
+  unsubscribeUrl?: string,
 ): Promise<void> {
   if (process.env.DISABLE_EMAILS === 'true') {
     console.log('[emailSequence] suppressed (DISABLE_EMAILS=true)');
@@ -243,12 +244,16 @@ export async function sendSequenceEmail(
   const replyTo = `reply+${replyToken}@${getReplyToDomain()}`;
   const resend  = getResend();
 
+  const textBody = unsubscribeUrl
+    ? `${body}\n\n---\nTo stop receiving these messages: ${unsubscribeUrl}`
+    : body;
+
   const { error } = await resend.emails.send({
     from,
     to,
     replyTo,
     subject,
-    text: body,
+    text: textBody,
   });
 
   if (error) {

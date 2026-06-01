@@ -23,6 +23,8 @@ import {
 import { generateAvailabilityToken } from '../../../../lib/availabilityToken';
 import { generateOutreachToken } from '../../../../lib/outreachToken';
 import { getUpstashClient } from '../../../../lib/upstashRedis';
+import { isEmailSuppressed } from '../../../../lib/suppressionList';
+import { generateUnsubscribeToken } from '../../../../lib/unsubscribeToken';
 
 function getReceiver(): Receiver {
   const currentKey = process.env.QSTASH_CURRENT_SIGNING_KEY;
@@ -89,8 +91,28 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
 
   const rate = pe.expertRate ?? 500;
   const query = project.researchQuestion;
+  const baseUrl = process.env.NEXT_PUBLIC_APP_URL ?? 'http://localhost:3000';
 
-  // ── 5. Execute step ───────────────────────────────────────────────────────
+  // ── 5. Check suppression before sending ──────────────────────────────────
+  try {
+    const suppressed = await isEmailSuppressed(expertEmail);
+    if (suppressed) {
+      console.log('[email-sequence/trigger] email suppressed — aborting sequence', { expertId });
+      await updateExpertStatus(projectId, expertId, {
+        status:       'suppressed',
+        suppressedAt: Date.now(),
+      });
+      return NextResponse.json({ ok: true, suppressed: true });
+    }
+  } catch (err) {
+    // Non-fatal: log and continue. Better to send than to silently drop on Redis error.
+    console.warn('[email-sequence/trigger] suppression check failed, continuing:', err instanceof Error ? err.message.slice(0, 80) : 'unknown');
+  }
+
+  // ── 6. Execute step ───────────────────────────────────────────────────────
+  const unsubToken      = generateUnsubscribeToken(expertEmail);
+  const unsubscribeUrl  = `${baseUrl}/api/unsubscribe?token=${unsubToken}`;
+
   try {
     if (step === 'email1') {
       // Generate a fresh outreach token if not provided (direct trigger from UI)
@@ -101,7 +123,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
       }
 
       const { subject, body: emailBody } = await generateEmail1(pe.expert, query, rate);
-      await sendSequenceEmail(expertEmail, subject, emailBody, activeToken, 'email1');
+      await sendSequenceEmail(expertEmail, subject, emailBody, activeToken, 'email1', unsubscribeUrl);
 
       // Store reply-token index in Redis for inbound-email lookup
       const redis = getUpstashClient();
@@ -120,7 +142,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
       // Use the stored outreach token (set during email1)
       const replyToken = pe.outreachToken ?? token;
       const { subject, body: emailBody } = await generateEmail2(pe.expert, query, rate);
-      await sendSequenceEmail(expertEmail, subject, emailBody, replyToken, 'email2');
+      await sendSequenceEmail(expertEmail, subject, emailBody, replyToken, 'email2', unsubscribeUrl);
       await updateExpertStatus(projectId, expertId, {
         status:       'email2_sent',
         outreachStep: 'email2',
@@ -131,13 +153,12 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
       const replyToken = pe.outreachToken ?? token;
       // Generate scheduling link
       const { token: schedToken } = generateAvailabilityToken(projectId, expertId);
-      const baseUrl = process.env.NEXT_PUBLIC_APP_URL ?? 'http://localhost:3000';
       const schedulingUrl = `${baseUrl}/availability/${schedToken}`;
 
       const firmName = project.name; // project name serves as firm name context
 
       const { subject, body: emailBody } = await generateEmail3(pe.expert, firmName, schedulingUrl);
-      await sendSequenceEmail(expertEmail, subject, emailBody, replyToken, 'email3');
+      await sendSequenceEmail(expertEmail, subject, emailBody, replyToken, 'email3', unsubscribeUrl);
       await updateExpertStatus(projectId, expertId, {
         status:       'scheduling_sent',
         outreachStep: 'email3',
