@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { routeAuthGuard } from '../../../lib/auth';
+import { routeAuthGuard, getSessionUser } from '../../../lib/auth';
 import { openai } from '../../../lib/openai';
+import { checkAiRateLimit, aiRateLimitResponse, AI_ENDPOINTS } from '../../../lib/aiRateLimiter';
 
 // Repair literal newlines/tabs inside JSON string values before parsing
 function repairJsonStrings(str: string): string {
@@ -20,13 +21,38 @@ function repairJsonStrings(str: string): string {
   return result;
 }
 
+const MAX_BODY = 16384; // 16 KB
+
 export async function POST(req: NextRequest) {
   // Route-level auth guard (defense in depth — supplements middleware).
   const authErr = await routeAuthGuard(req);
   if (authErr) return authErr;
 
+  // Body size guard.
+  const cl = req.headers.get('content-length');
+  if (cl && parseInt(cl, 10) > MAX_BODY) {
+    return NextResponse.json({ error: 'request_too_large' }, { status: 413 });
+  }
+  let rawBody: string;
+  try { rawBody = await req.text(); } catch {
+    return NextResponse.json({ error: 'invalid_request' }, { status: 400 });
+  }
+  if (rawBody.length > MAX_BODY) {
+    return NextResponse.json({ error: 'request_too_large' }, { status: 413 });
+  }
+
+  // Per-user hourly limit + global daily budget guard.
+  const user    = await getSessionUser(req);
+  const userKey = user.email || req.headers.get('x-forwarded-for') || 'unknown';
+  const rlResult = await checkAiRateLimit(AI_ENDPOINTS.screenExpert, userKey);
+  if (!rlResult.allowed) return aiRateLimitResponse(rlResult);
+
   try {
-    const body = await req.json();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    let body: any;
+    try { body = JSON.parse(rawBody); } catch {
+      return NextResponse.json({ error: 'invalid_json' }, { status: 400 });
+    }
     const {
       project_brief,
       industry,
