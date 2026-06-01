@@ -3,6 +3,7 @@
 import { useState, useEffect, useRef } from 'react';
 import type { Stripe, StripeElements, StripeCardElement } from '@stripe/stripe-js';
 import { useRouter } from 'next/navigation';
+import Link from 'next/link';
 
 const GOLD = '#C6A75E';
 const NAVY = '#0B1F3B';
@@ -256,6 +257,20 @@ function BillingStep({ onComplete }: { onComplete: () => void }) {
           {adding ? 'Adding…' : 'Add Payment Method'}
         </button>
       )}
+
+      <p className="mt-4 text-[11px] text-center" style={{ color: '#8A9BAD' }}>
+        By adding a payment method you agree to our{' '}
+        <Link
+          href="/billing-terms"
+          target="_blank"
+          rel="noopener noreferrer"
+          className="underline underline-offset-2 hover:opacity-70 transition-opacity"
+          style={{ color: '#5A6B7A' }}
+        >
+          billing terms
+        </Link>
+        .
+      </p>
     </div>
   );
 }
