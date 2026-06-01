@@ -1,6 +1,21 @@
 import { NextRequest } from 'next/server';
 import { routeAuthGuard } from '../../../lib/auth';
 import { openai } from '../../../lib/openai';
+import {
+  createRateLimiterStore,
+  checkAiRouteRateLimit,
+  type RateLimiterStore,
+  type AiRouteLimits,
+} from '../../../lib/rateLimiter';
+
+let _rl: RateLimiterStore | null = null;
+function getRl(): RateLimiterStore { return (_rl ??= createRateLimiterStore()); }
+
+const RL_LIMITS: AiRouteLimits = {
+  maxPerWindow: 20,                // 20 requests per 10-minute window (burst)
+  windowMs:     10 * 60 * 1000,
+  maxPerDay:    50,                // 50 requests per 24 hours (budget)
+};
 
 const MAX_BODY = 8192; // bytes
 
@@ -14,6 +29,21 @@ export async function POST(request: NextRequest) {
   // Route-level auth guard (defense in depth — supplements middleware).
   const authErr = await routeAuthGuard(request);
   if (authErr) return authErr;
+
+  // Rate limiting — applied after auth so only authenticated users consume quota.
+  let rl: RateLimiterStore;
+  try { rl = getRl(); } catch {
+    return Response.json({ error: 'service_unavailable' }, { status: 503 });
+  }
+  const ip = request.headers.get('x-forwarded-for')?.split(',')[0]?.trim() ?? 'unknown';
+  const rlResult = await checkAiRouteRateLimit(rl, 'gen-outreach', ip, RL_LIMITS);
+  if (!rlResult.allowed) {
+    const retryAfterSec = Math.ceil((rlResult.retryAfterMs ?? 60_000) / 1000);
+    return Response.json(
+      { error: 'rate_limited', retryAfterSec },
+      { status: 429, headers: { 'Retry-After': String(retryAfterSec) } },
+    );
+  }
 
   // Content-Type guard
   if (!request.headers.get('content-type')?.includes('application/json')) {

@@ -129,3 +129,38 @@ export async function incrementProviderDailyCount(
 ): Promise<void> {
   await store.increment(`rl:provider:${provider}:24h`, TWENTY_FOUR_H);
 }
+
+// ─── Generic per-route, per-IP limiter ────────────────────────────────────────
+// Designed for AI/LLM routes (generate-experts, rank-experts, etc.) where each
+// request consumes meaningful AI API credits.
+//
+// Two-tier: a short-window throttle (prevents bursts) + a daily cap (budget control).
+// Both keys are namespaced per-route so each endpoint has independent limits.
+// Follows the same HMAC key pattern as the enrich-contact limiter (no PII in Redis).
+
+export interface AiRouteLimits {
+  maxPerWindow: number;  // max requests in the short window (burst protection)
+  windowMs:     number;  // length of the short window in ms
+  maxPerDay:    number;  // max requests per 24 hours (budget protection)
+}
+
+export async function checkAiRouteRateLimit(
+  store:    RateLimiterStore,
+  routeKey: string,        // short, stable identifier for the route, e.g. 'gen-experts'
+  ip:       string,
+  limits:   AiRouteLimits,
+): Promise<{ allowed: boolean; retryAfterMs?: number }> {
+  const { count: c1, ttlMs: t1 } = await store.increment(
+    rlKey(`rl:ai:${routeKey}:win`, ip),
+    limits.windowMs,
+  );
+  if (c1 > limits.maxPerWindow) return { allowed: false, retryAfterMs: t1 };
+
+  const { count: c2, ttlMs: t2 } = await store.increment(
+    rlKey(`rl:ai:${routeKey}:day`, ip),
+    TWENTY_FOUR_H,
+  );
+  if (c2 > limits.maxPerDay) return { allowed: false, retryAfterMs: t2 };
+
+  return { allowed: true };
+}
