@@ -9,8 +9,8 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 import { createHmac }                from 'crypto';
-import { routeAuthGuard }            from '../../../../../lib/auth';
-import { getProject, updateProjectFields } from '../../../../../lib/projectStore';
+import { routeAuthGuard, getSessionUser } from '../../../../../lib/auth';
+import { getProjectForUser, updateProjectFields } from '../../../../../lib/projectStore';
 import { generateClientAvailabilityToken } from '../../../../../lib/availabilityToken';
 import { sendAvailabilityRequest }         from '../../../../../lib/sendAvailabilityRequest';
 import { createRateLimiterStore }          from '../../../../../lib/rateLimiter';
@@ -83,8 +83,9 @@ export async function POST(
     );
   }
 
-  // ── 5. Load project ───────────────────────────────────────────────────────
-  const project = await getProject(projectId);
+  // ── 5. Load project (ownership-checked) ─────────────────────────────────
+  const { email, role } = await getSessionUser(request);
+  const project = await getProjectForUser(projectId, email, role);
   if (!project) return NextResponse.json({ error: 'not_found' }, { status: 404 });
 
   // ── 6. Generate token + persist ──────────────────────────────────────────
