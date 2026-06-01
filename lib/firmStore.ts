@@ -49,6 +49,8 @@ export interface UserRecord {
   firstName?:            string;
   lastName?:             string;
   title?:                string;
+  stripeCustomerId?:     string | null;
+  billingComplete?:      boolean;
 }
 
 export interface SeatRequest {

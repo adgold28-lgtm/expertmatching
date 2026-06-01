@@ -1,6 +1,7 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
+import type { Stripe, StripeElements, StripeCardElement } from '@stripe/stripe-js';
 import { useRouter } from 'next/navigation';
 
 const GOLD = '#C6A75E';
@@ -94,36 +95,106 @@ function CalendarStep({ onComplete }: { onComplete: () => void }) {
 // ─── Step 2: Billing ───────────────────────────────────────────────────────────
 
 function BillingStep({ onComplete }: { onComplete: () => void }) {
-  const [adding, setAdding] = useState(false);
-  const [added,  setAdded]  = useState(false);
-  const [error,  setError]  = useState<string | null>(null);
+  const [initialising, setInitialising] = useState(true);
+  const [adding,       setAdding]       = useState(false);
+  const [added,        setAdded]        = useState(false);
+  const [error,        setError]        = useState<string | null>(null);
 
-  // TODO(stripe-integration): Replace stub with real Stripe Elements.
-  // Requirements:
-  //   - STRIPE_SECRET_KEY (server), NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY (client)
-  //   - Install @stripe/react-stripe-js and @stripe/stripe-js
-  // Real flow:
-  //   1. POST /api/onboarding/billing/setup-intent → returns clientSecret
-  //   2. Render <CardElement> via Stripe Elements
-  //   3. stripe.confirmCardSetup(clientSecret) → stores payment method on customer
-  //   4. Mark step complete
+  const clientSecretRef  = useRef<string | null>(null);
+  const cardRef          = useRef<HTMLDivElement>(null);
+  const stripeRef        = useRef<Stripe | null>(null);
+  const elementsRef      = useRef<StripeElements | null>(null);
+  const cardElRef        = useRef<StripeCardElement | null>(null);
+
+  // Fetch SetupIntent on mount and mount Stripe CardElement
+  useEffect(() => {
+    let mounted = true;
+    let cardEl: StripeCardElement | null = null;
+
+    async function init() {
+      try {
+        const res  = await fetch('/api/onboarding/billing', {
+          method:  'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body:    JSON.stringify({}),
+        });
+        const data = await res.json() as { clientSecret?: string; publishableKey?: string };
+        if (!res.ok || !data.clientSecret || !data.publishableKey) {
+          if (mounted) setError('Could not initialize payment setup. Please try again.');
+          return;
+        }
+
+        clientSecretRef.current = data.clientSecret;
+
+        const { loadStripe } = await import('@stripe/stripe-js');
+        const stripeInstance  = await loadStripe(data.publishableKey);
+        if (!stripeInstance || !mounted || !cardRef.current) return;
+
+        stripeRef.current   = stripeInstance;
+        const elements      = stripeInstance.elements();
+        elementsRef.current = elements;
+
+        cardEl = elements.create('card', {
+          style: {
+            base: {
+              color:       '#0B1F3B',
+              fontFamily:  'inherit',
+              fontSize:    '14px',
+              '::placeholder': { color: '#8A9BAD' },
+            },
+          },
+        });
+        cardEl.mount(cardRef.current);
+        cardElRef.current = cardEl;
+      } catch {
+        if (mounted) setError('Connection error. Please try again.');
+      } finally {
+        if (mounted) setInitialising(false);
+      }
+    }
+
+    init();
+
+    return () => {
+      mounted = false;
+      cardEl?.destroy();
+    };
+  }, []);
+
   async function handleAddBilling() {
+    const stripe       = stripeRef.current;
+    const cardElement  = cardElRef.current;
+    const clientSecret = clientSecretRef.current;
+    if (!stripe || !cardElement || !clientSecret) return;
+
     setAdding(true);
     setError(null);
+
+    const { setupIntent, error: stripeError } = await stripe.confirmCardSetup(clientSecret, {
+      payment_method: { card: cardElement },
+    });
+
+    if (stripeError) {
+      setError(stripeError.message ?? 'Card setup failed. Please try again.');
+      setAdding(false);
+      return;
+    }
+
+    // Confirm server-side that SetupIntent succeeded and mark billingComplete
     try {
-      const res  = await fetch('/api/onboarding/billing', {
+      const res  = await fetch('/api/onboarding/billing/confirm', {
         method:  'POST',
         headers: { 'Content-Type': 'application/json' },
-        body:    JSON.stringify({}),
+        body:    JSON.stringify({ setupIntentId: setupIntent?.id }),
       });
       const data = await res.json() as { ok?: boolean };
       if (res.ok && data.ok) {
         setAdded(true);
       } else {
-        setError('Could not add payment method. Please try again.');
+        setError('Payment method saved but confirmation failed. Please contact support.');
       }
     } catch {
-      setError('Connection error. Please try again.');
+      setError('Connection error confirming payment method. Please try again.');
     } finally {
       setAdding(false);
     }
@@ -144,30 +215,24 @@ function BillingStep({ onComplete }: { onComplete: () => void }) {
           <span className="text-sm font-medium text-navy">Payment method added</span>
         </div>
       ) : (
-        <div className="space-y-3 mb-6">
-          {/* TODO(stripe-integration): Replace placeholder inputs with <CardElement /> from @stripe/react-stripe-js */}
-          <div>
-            <label className="block text-[10px] uppercase tracking-widest text-muted mb-1.5" style={{ letterSpacing: '0.14em' }}>
-              Card Number
-            </label>
-            <div className="border border-frame bg-cream px-3 py-2.5 text-sm" style={{ color: '#C0C8D2' }}>
-              •••• •••• •••• ••••
+        <div className="mb-6">
+          {initialising ? (
+            <div className="border border-frame bg-cream px-3 py-4 text-sm text-center" style={{ color: '#8A9BAD' }}>
+              Loading payment form…
             </div>
-          </div>
-          <div className="grid grid-cols-2 gap-3">
+          ) : (
             <div>
-              <label className="block text-[10px] uppercase tracking-widest text-muted mb-1.5" style={{ letterSpacing: '0.14em' }}>
-                Expiry
+              <label className="block text-[10px] uppercase tracking-widest mb-1.5" style={{ color: '#5A6B7A', letterSpacing: '0.14em' }}>
+                Card Details
               </label>
-              <div className="border border-frame bg-cream px-3 py-2.5 text-sm" style={{ color: '#C0C8D2' }}>MM / YY</div>
+              {/* Stripe CardElement mounts here */}
+              <div
+                ref={cardRef}
+                className="border border-frame bg-cream px-3 py-3"
+                style={{ minHeight: '2.5rem' }}
+              />
             </div>
-            <div>
-              <label className="block text-[10px] uppercase tracking-widest text-muted mb-1.5" style={{ letterSpacing: '0.14em' }}>
-                CVC
-              </label>
-              <div className="border border-frame bg-cream px-3 py-2.5 text-sm" style={{ color: '#C0C8D2' }}>•••</div>
-            </div>
-          </div>
+          )}
         </div>
       )}
 
@@ -184,7 +249,7 @@ function BillingStep({ onComplete }: { onComplete: () => void }) {
       ) : (
         <button
           onClick={handleAddBilling}
-          disabled={adding}
+          disabled={adding || initialising}
           className="w-full py-3 text-[11px] uppercase font-medium transition-colors disabled:opacity-50"
           style={{ background: NAVY, color: '#FFFFFF', letterSpacing: '0.14em' }}
         >
