@@ -23,6 +23,10 @@ import {
 import { generateAvailabilityToken } from '../../../../lib/availabilityToken';
 import { generateOutreachToken } from '../../../../lib/outreachToken';
 import { getUpstashClient } from '../../../../lib/upstashRedis';
+import {
+  isOnSuppressionList,
+  incrementAndCheckDailyLimit,
+} from '../../../../lib/outreachCompliance';
 
 function getReceiver(): Receiver {
   const currentKey = process.env.QSTASH_CURRENT_SIGNING_KEY;
@@ -93,6 +97,22 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
   // ── 5. Execute step ───────────────────────────────────────────────────────
   try {
     if (step === 'email1') {
+      // Compliance: skip suppressed experts (opted out previously)
+      const suppressed = await isOnSuppressionList(expertEmail);
+      if (suppressed) {
+        console.log('[email-sequence/trigger] expert on suppression list — skipping', { projectId });
+        await updateExpertStatus(projectId, expertId, { status: 'rejected_after_outreach' });
+        return NextResponse.json({ ok: true, skipped: 'suppressed' });
+      }
+
+      // Compliance: enforce per-project daily outreach cap
+      const { allowed } = await incrementAndCheckDailyLimit(projectId);
+      if (!allowed) {
+        console.warn('[email-sequence/trigger] daily outreach cap reached', { projectId });
+        // 429 causes QStash to retry automatically tomorrow
+        return NextResponse.json({ error: 'daily_limit_reached' }, { status: 429 });
+      }
+
       // Generate a fresh outreach token if not provided (direct trigger from UI)
       let activeToken = token;
       if (!activeToken) {

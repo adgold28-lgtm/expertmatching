@@ -19,6 +19,7 @@ import { parseReply } from '../../../lib/replyDetection';
 import { scheduleNextEmail } from '../../../lib/emailSequence';
 import { createRateLimiterStore } from '../../../lib/rateLimiter';
 import { getUpstashClient } from '../../../lib/upstashRedis';
+import { addToSuppressionList, containsOptOutSignal } from '../../../lib/outreachCompliance';
 
 // ─── Rate limiter ─────────────────────────────────────────────────────────────
 
@@ -179,10 +180,23 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     return NextResponse.json({ ok: true });
   }
 
-  // ── 9. Parse reply intent ─────────────────────────────────────────────────
+  // ── 9. Compliance: fast opt-out keyword check (before LLM) ──────────────
+  // Catches explicit STOP / unsubscribe signals without LLM latency.
+  if (containsOptOutSignal(emailText) && pe.contactEmail) {
+    await addToSuppressionList(pe.contactEmail);
+    await updateExpertStatus(resolvedProjectId, resolvedExpertId, {
+      status:          'rejected_after_outreach',
+      replyDetectedAt: Date.now(),
+      replyIntent:     'declined',
+    });
+    console.log('[inbound-email] opt-out signal detected — suppressed');
+    return NextResponse.json({ ok: true });
+  }
+
+  // ── 10. Parse reply intent ────────────────────────────────────────────────
   const parsed = await parseReply(emailText);
 
-  // ── 10. Update status based on intent ────────────────────────────────────
+  // ── 11. Update status based on intent ────────────────────────────────────
   const now = Date.now();
 
   try {
@@ -201,6 +215,10 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
       });
 
     } else if (parsed.intent === 'declined') {
+      // Add to suppression list so this expert is never contacted again
+      if (pe.contactEmail) {
+        await addToSuppressionList(pe.contactEmail).catch(() => {});
+      }
       await updateExpertStatus(resolvedProjectId, resolvedExpertId, {
         status:          'rejected_after_outreach',
         replyDetectedAt: now,

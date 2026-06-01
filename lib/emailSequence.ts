@@ -226,6 +226,9 @@ function parseEmailResponse(text: string): { subject: string; body: string } {
 
 // ─── Send via Resend ──────────────────────────────────────────────────────────
 
+// CAN-SPAM / GDPR compliance: append opt-out instruction to initial contact only.
+const OPT_OUT_FOOTER = '\n\nTo stop receiving messages from us, reply STOP.';
+
 export async function sendSequenceEmail(
   to:         string,
   subject:    string,
@@ -242,12 +245,15 @@ export async function sendSequenceEmail(
   const replyTo = `reply+${replyToken}@expertmatch.fit`;
   const resend  = getResend();
 
+  // Footer only on the first cold touch — not on follow-ups in an existing thread
+  const textBody = fromName === 'email1' ? body + OPT_OUT_FOOTER : body;
+
   const { error } = await resend.emails.send({
     from,
     to,
     replyTo,
     subject,
-    text: body,
+    text: textBody,
   });
 
   if (error) {
