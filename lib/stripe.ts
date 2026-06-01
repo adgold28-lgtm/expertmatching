@@ -21,4 +21,5 @@ export const stripe = {
   get accounts()      { return getStripe().accounts; },
   get accountLinks()  { return getStripe().accountLinks; },
   get transfers()     { return getStripe().transfers; },
+  get setupIntents()  { return getStripe().setupIntents; },
 };
