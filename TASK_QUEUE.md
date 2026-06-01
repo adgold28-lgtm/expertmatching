@@ -16,6 +16,13 @@ Last updated: May 2026
       POST/DELETE /api/admin/users, scripts/createUser.ts for CLI bootstrapping (May 2026)
       NOTE: seed-admin.ts uses bcrypt — users created with it must be migrated via createUser.ts
 
+## CLARIFICATION NEEDED (vague or incomplete briefs)
+- [ ] Issue #20 — Unspecified task (title: "1"): no category, priority, or files listed.
+      Goal per expanded brief: clarify and structure a rough Notion task into a full brief.
+      Work types: Product / Engineering / UX / Strategy (TBD).
+      Needs: plain-English goal, acceptance criteria, non-goals, and risk identification
+      before any implementation can proceed. Re-open with full brief before acting.
+
 ## NEXT (makes the product real)
 - [ ] Expert sourcing pipeline improvements
 - [ ] Outreach generation with tone controls (formal → casual slider)
