@@ -25,7 +25,7 @@ export async function GET(request: NextRequest): Promise<Response> {
     return Response.json({ requests });
   } catch {
     console.error('[admin/seat-requests] failed to list');
-    return Response.json({ error: 'Failed to load seat requests' }, { status: 500 });
+    return Response.json({ error: 'failed_to_load_seat_requests' }, { status: 500 });
   }
 }
 
@@ -48,7 +48,7 @@ export async function POST(request: NextRequest): Promise<Response> {
   }
 
   if (action !== 'approve' && action !== 'reject') {
-    return Response.json({ error: 'action must be "approve" or "reject"' }, { status: 400 });
+    return Response.json({ error: 'invalid_action' }, { status: 400 });
   }
 
   if (action === 'reject') {
@@ -56,7 +56,8 @@ export async function POST(request: NextRequest): Promise<Response> {
       await removeSeatRequest(email);
       return Response.json({ ok: true });
     } catch {
-      return Response.json({ error: 'Failed to reject request' }, { status: 500 });
+      console.error('[admin/seat-requests] failed to reject request');
+      return Response.json({ error: 'failed_to_reject_request' }, { status: 500 });
     }
   }
 

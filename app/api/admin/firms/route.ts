@@ -35,7 +35,7 @@ export async function GET(request: NextRequest): Promise<Response> {
     return Response.json({ firms: enriched });
   } catch {
     console.error('[admin/firms] failed to list firms');
-    return Response.json({ error: 'Failed to load firms' }, { status: 500 });
+    return Response.json({ error: 'failed_to_load_firms' }, { status: 500 });
   }
 }
 
@@ -55,7 +55,7 @@ export async function POST(request: NextRequest): Promise<Response> {
   const plan   = typeof b.plan   === 'string' ? b.plan                        : 'starter';
 
   if (!domain || domain.length < 3 || !domain.includes('.')) {
-    return Response.json({ error: 'Valid domain required (e.g. blackstone.com)' }, { status: 400 });
+    return Response.json({ error: 'invalid_domain' }, { status: 400 });
   }
   if (!name) {
     return Response.json({ error: 'firm_name_required', message: 'Firm name is required.' }, { status: 400 });
@@ -72,7 +72,7 @@ export async function POST(request: NextRequest): Promise<Response> {
     return Response.json({ ok: true });
   } catch {
     console.error('[admin/firms] failed to upsert firm', { domain: '[redacted]' });
-    return Response.json({ error: 'Failed to save firm' }, { status: 500 });
+    return Response.json({ error: 'failed_to_save_firm' }, { status: 500 });
   }
 }
 
@@ -102,6 +102,6 @@ export async function DELETE(request: NextRequest): Promise<Response> {
     return Response.json({ ok: true });
   } catch {
     console.error('[admin/firms] failed to delete firm', { domain: '[redacted]' });
-    return Response.json({ error: 'Failed to delete firm' }, { status: 500 });
+    return Response.json({ error: 'failed_to_delete_firm' }, { status: 500 });
   }
 }

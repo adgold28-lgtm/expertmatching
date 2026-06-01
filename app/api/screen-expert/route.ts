@@ -132,10 +132,7 @@ Return ONLY valid JSON. No markdown. No explanation. All string values on a sing
       candidate: { name: candidate_name, role: candidate_role, company: candidate_company },
     });
   } catch (err) {
-    console.error('[screen-expert]', err);
-    return NextResponse.json(
-      { error: err instanceof Error ? err.message : 'Screening failed. Please try again.' },
-      { status: 500 }
-    );
+    console.error('[screen-expert]', err instanceof Error ? err.message.slice(0, 120) : String(err));
+    return NextResponse.json({ error: 'screening_failed' }, { status: 500 });
   }
 }

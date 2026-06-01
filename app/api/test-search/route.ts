@@ -17,7 +17,8 @@ export async function GET(request: NextRequest) {
   try {
     providerName = getSearchProvider().name;
   } catch (err) {
-    return Response.json({ error: err instanceof Error ? err.message : 'No search provider configured' });
+    console.error('[test-search] provider error:', err instanceof Error ? err.message.slice(0, 120) : String(err));
+    return Response.json({ error: 'no_search_provider' }, { status: 503 });
   }
 
   const query = request.nextUrl.searchParams.get('q') || 'solar interconnection manager Texas site:linkedin.com/in';
@@ -26,6 +27,7 @@ export async function GET(request: NextRequest) {
     const results = await searchWithFallback({ query, maxResults: 3 });
     return Response.json({ status: 200, provider: providerName, query, resultCount: results.length, results });
   } catch (err) {
-    return Response.json({ error: String(err) });
+    console.error('[test-search] search failed:', err instanceof Error ? err.message.slice(0, 120) : String(err));
+    return Response.json({ error: 'search_failed' }, { status: 500 });
   }
 }
