@@ -1,8 +1,10 @@
 // Startup environment variable validation.
 // Called once from instrumentation.ts (Node.js runtime only).
 //
-// In production: throws if any required variable is missing.
+// In production: throws if any required variable is missing or malformed.
 // In non-production: logs a warning for each missing variable.
+
+import { parseSenderIdentity } from './senderIdentity';
 
 const REQUIRED_VARS = [
   'AVAILABILITY_TOKEN_SECRET',
@@ -52,5 +54,20 @@ export function validateEnv(): void {
     throw new Error(
       `[validateEnv] Missing required environment variables in production: ${missing.join(', ')}`,
     );
+  }
+
+  // Validate sender identity format — requires "Display Name <email@domain.com>"
+  const fromEmail = process.env.OUTREACH_FROM_EMAIL;
+  if (fromEmail) {
+    try {
+      parseSenderIdentity(fromEmail);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (isProd) {
+        throw new Error(`[validateEnv] ${msg}`);
+      } else {
+        console.warn(`[validateEnv] WARNING: ${msg}`);
+      }
+    }
   }
 }

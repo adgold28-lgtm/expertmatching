@@ -15,6 +15,7 @@
 import { Resend } from 'resend';
 import type { Expert } from '../types';
 import { openai } from './openai';
+import { getReplyToDomain } from './senderIdentity';
 
 export type EmailStep = 'email1' | 'email2' | 'email3';
 
@@ -239,7 +240,7 @@ export async function sendSequenceEmail(
   }
 
   const from    = getFromAddress();
-  const replyTo = `reply+${replyToken}@expertmatch.fit`;
+  const replyTo = `reply+${replyToken}@${getReplyToDomain()}`;
   const resend  = getResend();
 
   const { error } = await resend.emails.send({
