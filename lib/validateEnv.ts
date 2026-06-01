@@ -25,6 +25,7 @@ const REQUIRED_VARS = [
   'LOG_HASH_SECRET',
   'NEXT_PUBLIC_APP_URL',
   'OPENAI_API_KEY',
+  'ANTHROPIC_API_KEY',
   // Phase 4 — email sequence + inbound
   'QSTASH_TOKEN',
   'QSTASH_CURRENT_SIGNING_KEY',
@@ -32,8 +33,6 @@ const REQUIRED_VARS = [
   'RESEND_WEBHOOK_SECRET',
   // Phase 6 — Stripe Connect
   'STRIPE_CONNECT_CLIENT_ID',
-  // Anthropic API (expert generation)
-  'ANTRHOPICKEYREAL',
 ] as const;
 
 export function validateEnv(): void {

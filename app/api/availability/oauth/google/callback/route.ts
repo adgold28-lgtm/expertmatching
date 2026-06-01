@@ -140,8 +140,9 @@ export async function GET(request: NextRequest) {
   const error = searchParams.get('error');
 
   if (error) {
-    // User denied access or other Google error
-    console.log('[google-callback] OAuth error from Google:', error);
+    const KNOWN_ERRORS = ['access_denied', 'invalid_request', 'invalid_scope', 'server_error', 'temporarily_unavailable'];
+    const safeError = KNOWN_ERRORS.includes(String(error)) ? String(error) : 'unknown_error';
+    console.log('[google-callback] OAuth error from Google:', safeError);
     return errorRedirect('access_denied');
   }
 
