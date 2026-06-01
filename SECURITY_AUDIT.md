@@ -130,6 +130,53 @@
 
 ---
 
+## Automated Security Scan (June 2026)
+
+**Date:** 2026-06-01  
+**Method:** Static grep analysis via `scripts/security-scan.sh` (`npm run security`)  
+**Scope:** All TypeScript/TSX source in `app/`, `lib/`, `components/`
+
+### Scan Setup
+
+Added `scripts/security-scan.sh` — a reusable bash script that checks:
+1. **npm audit** — HIGH/CRITICAL dependency CVEs
+2. **tsc --noEmit** — TypeScript compilation errors
+3. **Hardcoded secrets** — API key patterns (`sk_live_`, `whsec_`, AWS `AKIA*`, etc.)
+4. **Insecure fallbacks** — `dev-insecure-fallback` and similar strings
+5. **XSS sinks** — `dangerouslySetInnerHTML`, `eval()`, `.innerHTML =`
+6. **console.log in API routes** — potential PII leakage
+7. **TypeScript `any` usage** — weakens type-safety guarantees
+8. **Undocumented env vars** — `process.env.*` references absent from `validateEnv.ts`
+
+Run with: `npm run security`
+
+### June 2026 Findings
+
+#### NEW — Anthropic API key missing from startup validation [FIXED]
+
+**Files:** `lib/validateEnv.ts`, `.env.example`  
+**Finding:** `process.env.ANTRHOPICKEYREAL` is used in `app/api/generate-experts/route.ts:19` to initialize the Anthropic SDK client. This variable was absent from `validateEnv.ts`'s `REQUIRED_VARS` list and undocumented in `.env.example`. A misconfigured deployment would silently fail all expert-generation calls at runtime instead of refusing to start.  
+**Fix:** Added `ANTRHOPICKEYREAL` to `REQUIRED_VARS` in `lib/validateEnv.ts` and documented it in `.env.example`.  
+**Note:** The variable name `ANTRHOPICKEYREAL` is intentional (legacy naming in this codebase). Do not rename without updating `generate-experts/route.ts:19` and `demo-readiness/route.ts:48` simultaneously.
+
+#### KNOWN — `dev-insecure-fallback` in multiple lib files [FALSE POSITIVE]
+
+**Files:** `lib/rateLimiter.ts`, `lib/contactPathResolver.ts`, `lib/searchCache.ts`, `lib/stripeConnect.ts`, `app/api/resolve-contact-paths/route.ts`, `app/api/expert-onboarding/[token]/route.ts`  
+**Detail:** These files use `process.env.LOG_HASH_SECRET ?? 'dev-insecure-fallback'` for HMAC pseudonymization in non-production mode. `lib/contactCache.ts` (the canonical implementation) throws in production when `LOG_HASH_SECRET` is absent. `LOG_HASH_SECRET` is validated at startup by `validateEnv.ts`, so production deployments cannot reach the fallback.  
+**Status:** No action required — fallback is unreachable in production.
+
+#### KNOWN — TypeScript `any` in generate-experts route [DEFERRED]
+
+**File:** `app/api/generate-experts/route.ts` (lines 179, 471, 948, 1357, 1502, 1509, 1517, 1559)  
+**Detail:** Multiple `any` usages when normalizing and scoring LLM-returned JSON. Typing dynamic AI output fully requires zod schemas or similar. Low security risk; the data is internal scoring only.  
+**Recommended fix:** Introduce a `zod` schema for the expert candidate shape and parse with `z.safeParse()`. Deferred — medium complexity, no near-term attack surface.
+
+#### KNOWN — `next@14.2.x` HIGH-severity CVEs [DEFERRED — unchanged from May 2026]
+
+See M-1 in "Remaining Findings" section above. Status unchanged.
+
+---
+
 ## Items Verified Clean
 
 - **Stripe webhook:** `constructEvent(rawBody, sig, secret)` called before any DB writes. Returns 400 on bad signature. ✓
