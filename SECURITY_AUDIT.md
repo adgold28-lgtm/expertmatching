@@ -1,7 +1,28 @@
 # Security Audit — ExpertMatch
-**Date:** 2026-05-13  
+**Date (latest):** 2026-06-01  
 **Scope:** Next.js 14 App Router — all public routes, webhooks, auth, env var handling, dependency chain  
-**Status:** CRITICAL and HIGH fixes applied. MEDIUM and LOW documented below for future action.
+**Status:** All CRITICAL, HIGH, and newly-found MEDIUM/LOW findings applied. See below.
+
+---
+
+## Applied Fixes (2026-06-01 Audit)
+
+### NEW-1: Non-standard Anthropic API key env var [FIXED]
+**Files:** `app/api/generate-experts/route.ts`, `app/api/demo-readiness/route.ts`, `lib/validateEnv.ts`, `.env.example`  
+**Issue:** The Anthropic SDK was initialized with `process.env.ANTRHOPICKEYREAL` — a typo of "ANTHROPIC" with a "REAL" suffix. This name was not documented in `.env.example`, not validated in `validateEnv.ts`, and would silently pass `undefined` to the SDK if a deployer set the standard `ANTHROPIC_API_KEY`. The demo-readiness endpoint also referenced the wrong name.  
+**Fix:** Renamed to `process.env.ANTHROPIC_API_KEY` in both files. Added to `validateEnv.ts` required list. Added to `.env.example` with documentation.
+
+### NEW-2: Availability OAuth callback logged raw Google error string [FIXED]
+**File:** `app/api/availability/oauth/google/callback/route.ts`  
+**Issue:** `console.log('[google-callback] OAuth error from Google:', error)` logged the raw `error` query param from Google verbatim. The same pattern was already fixed for the admin route in the prior audit but this public-facing route was missed.  
+**Fix:** Applied the same allowlist approach — known values (`access_denied`, `invalid_request`, etc.) are logged as-is; unknown values are logged as `'unknown_error'`.
+
+### NEW-3: Exa provider leftover diagnostic console.logs [FIXED]
+**File:** `lib/searchProviders/exa.ts`  
+**Issue:** Two `console.log` calls marked "Temporary diagnostic — remove after confirming" logged the search query and result count. Search queries can contain expert names and company names derived from research briefs, which should not be written to server logs.  
+**Fix:** Removed both diagnostic logs.
+
+---
 
 ---
 

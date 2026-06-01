@@ -16,7 +16,7 @@ import {
 import type { SearchResult } from '../../../lib/searchProviders';
 import { getCachedSearchPage, setCachedSearchPage } from '../../../lib/searchCache';
 
-const client = new Anthropic({ apiKey: process.env.ANTRHOPICKEYREAL });
+const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 

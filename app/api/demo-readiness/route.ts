@@ -45,7 +45,7 @@ export async function GET(request: NextRequest) {
     {
       label: 'AI Provider',
       checks: [
-        check('ANTRHOPICKEYREAL'),
+        check('ANTHROPIC_API_KEY'),
       ],
     },
     {

@@ -25,6 +25,7 @@ const REQUIRED_VARS = [
   'LOG_HASH_SECRET',
   'NEXT_PUBLIC_APP_URL',
   'OPENAI_API_KEY',
+  'ANTHROPIC_API_KEY',
   // Phase 4 — email sequence + inbound
   'QSTASH_TOKEN',
   'QSTASH_CURRENT_SIGNING_KEY',
