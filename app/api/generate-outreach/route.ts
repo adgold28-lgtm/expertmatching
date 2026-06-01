@@ -1,5 +1,7 @@
 import { NextRequest } from 'next/server';
-import { routeAuthGuard } from '../../../lib/auth';
+import { routeAuthGuard, getSessionUser } from '../../../lib/auth';
+import { checkUsageCap, getUsageCapStore } from '../../../lib/usageCaps';
+import { logUsageCapExceeded } from '../../../lib/abuseLogger';
 import { openai } from '../../../lib/openai';
 
 const MAX_BODY = 8192; // bytes
@@ -14,6 +16,17 @@ export async function POST(request: NextRequest) {
   // Route-level auth guard (defense in depth — supplements middleware).
   const authErr = await routeAuthGuard(request);
   if (authErr) return authErr;
+
+  // Usage cap check — per-user and per-firm daily limits.
+  const sessionUser = await getSessionUser(request);
+  const capResult   = await checkUsageCap(getUsageCapStore(), 'generate_outreach', sessionUser.email, sessionUser.firmDomain);
+  if (!capResult.allowed) {
+    logUsageCapExceeded('generate_outreach', sessionUser.email, sessionUser.firmDomain, capResult.limitedBy!, capResult.retryAfterMs ?? 0);
+    return Response.json(
+      { error: 'usage_cap_exceeded', retryAfterMs: capResult.retryAfterMs },
+      { status: 429, headers: { 'Retry-After': String(Math.ceil((capResult.retryAfterMs ?? 0) / 1000)) } },
+    );
+  }
 
   // Content-Type guard
   if (!request.headers.get('content-type')?.includes('application/json')) {

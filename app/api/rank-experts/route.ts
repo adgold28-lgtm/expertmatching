@@ -1,6 +1,8 @@
 import { openai } from '../../../lib/openai';
 import { NextRequest, NextResponse } from 'next/server';
-import { routeAuthGuard } from '../../../lib/auth';
+import { routeAuthGuard, getSessionUser } from '../../../lib/auth';
+import { checkUsageCap, getUsageCapStore } from '../../../lib/usageCaps';
+import { logUsageCapExceeded } from '../../../lib/abuseLogger';
 import {
   RankableExpert,
   RankedExpertResult,
@@ -81,6 +83,17 @@ export async function POST(request: NextRequest) {
   // Route-level auth guard (defense in depth — supplements middleware).
   const authErr = await routeAuthGuard(request);
   if (authErr) return authErr;
+
+  // Usage cap check — per-user and per-firm daily limits.
+  const sessionUser = await getSessionUser(request);
+  const capResult   = await checkUsageCap(getUsageCapStore(), 'rank_experts', sessionUser.email, sessionUser.firmDomain);
+  if (!capResult.allowed) {
+    logUsageCapExceeded('rank_experts', sessionUser.email, sessionUser.firmDomain, capResult.limitedBy!, capResult.retryAfterMs ?? 0);
+    return NextResponse.json(
+      { error: 'usage_cap_exceeded', retryAfterMs: capResult.retryAfterMs },
+      { status: 429, headers: { 'Retry-After': String(Math.ceil((capResult.retryAfterMs ?? 0) / 1000)) } },
+    );
+  }
 
   try {
     const body = (await request.json()) as RankExpertsRequest;

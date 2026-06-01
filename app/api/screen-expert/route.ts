@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { routeAuthGuard } from '../../../lib/auth';
+import { routeAuthGuard, getSessionUser } from '../../../lib/auth';
 import { openai } from '../../../lib/openai';
+import { checkUsageCap, getUsageCapStore } from '../../../lib/usageCaps';
+import { logUsageCapExceeded } from '../../../lib/abuseLogger';
 
 // Repair literal newlines/tabs inside JSON string values before parsing
 function repairJsonStrings(str: string): string {
@@ -24,6 +26,17 @@ export async function POST(req: NextRequest) {
   // Route-level auth guard (defense in depth — supplements middleware).
   const authErr = await routeAuthGuard(req);
   if (authErr) return authErr;
+
+  // Usage cap check — per-user and per-firm daily limits.
+  const sessionUser = await getSessionUser(req);
+  const capResult   = await checkUsageCap(getUsageCapStore(), 'screen_expert', sessionUser.email, sessionUser.firmDomain);
+  if (!capResult.allowed) {
+    logUsageCapExceeded('screen_expert', sessionUser.email, sessionUser.firmDomain, capResult.limitedBy!, capResult.retryAfterMs ?? 0);
+    return NextResponse.json(
+      { error: 'usage_cap_exceeded', retryAfterMs: capResult.retryAfterMs },
+      { status: 429, headers: { 'Retry-After': String(Math.ceil((capResult.retryAfterMs ?? 0) / 1000)) } },
+    );
+  }
 
   try {
     const body = await req.json();

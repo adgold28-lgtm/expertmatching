@@ -2,6 +2,7 @@ import { NextRequest } from 'next/server';
 import { verifyAdminPassword, verifyPassword } from '../../../../lib/authPassword';
 import { createSessionCookie, COOKIE_NAME, SESSION_TTL_MS } from '../../../../lib/auth';
 import { getUser, upsertUser } from '../../../../lib/firmStore';
+import { logAuthFailure } from '../../../../lib/abuseLogger';
 
 const MAX_BODY = 2048; // bytes — covers email + password with JSON overhead
 
@@ -74,12 +75,14 @@ export async function POST(request: NextRequest): Promise<Response> {
 
   if (!user) {
     console.warn('[auth/login] user not found');
+    logAuthFailure(email, 'user_not_found');
     return Response.json({ error: 'invalid_credentials' }, { status: 401 });
   }
 
   // Password check
   if (!verifyPassword(password, user.passwordHash)) {
     console.warn('[auth/login] invalid password');
+    logAuthFailure(email, 'invalid_password');
     return Response.json({ error: 'invalid_credentials' }, { status: 401 });
   }
 
