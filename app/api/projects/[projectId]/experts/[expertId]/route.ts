@@ -1,7 +1,8 @@
 import { NextRequest } from 'next/server';
-import { updateExpertStatus, addExpertNote, removeExpertFromProject } from '../../../../../../lib/projectStore';
+import { updateExpertStatus, addExpertNote, removeExpertFromProject, getProjectForUser } from '../../../../../../lib/projectStore';
 import { guardMutatingRequest, guardReadRequest } from '../../../../../../lib/projectsGuard';
 import { sanitizeText, LIMITS } from '../../../../../../lib/projectValidation';
+import { getSessionUser } from '../../../../../../lib/auth';
 import type { ExpertStatus, RejectionReason, ValueChainPosition, ScreeningStatus, ContactStatus, SuggestedDomain, PublicContactEmail } from '../../../../../../types';
 
 const ID_RE        = /^[a-f0-9]{24}$/;
@@ -51,6 +52,10 @@ export async function PUT(
   }
 
   try {
+    const { email, role } = await getSessionUser(request);
+    const accessible = await getProjectForUser(params.projectId, email, role);
+    if (!accessible) return Response.json({ error: 'not_found' }, { status: 404 });
+
     // Dispatch to correct store method based on action
     if (typeof body.note === 'string') {
       const note = body.note.trim().slice(0, LIMITS.userNotes);
@@ -239,6 +244,10 @@ export async function DELETE(
     return Response.json({ error: 'invalid_expert_id' }, { status: 400 });
   }
   try {
+    const { email, role } = await getSessionUser(request);
+    const accessible = await getProjectForUser(params.projectId, email, role);
+    if (!accessible) return Response.json({ error: 'not_found' }, { status: 404 });
+
     const project = await removeExpertFromProject(params.projectId, params.expertId);
     return Response.json({ project });
   } catch (err) {
