@@ -27,6 +27,7 @@ function Footer() {
           <Link href="/pricing" className="text-[11px] text-cream/40 hover:text-cream/60 transition-colors" style={{ letterSpacing: '0.1em' }}>Pricing</Link>
           <Link href="/request-access" className="text-[11px] text-cream/40 hover:text-cream/60 transition-colors" style={{ letterSpacing: '0.1em' }}>Request Access</Link>
           <Link href="/disclosures" className="text-[11px] text-cream/40 hover:text-cream/60 transition-colors" style={{ letterSpacing: '0.1em' }}>Disclosures</Link>
+          <Link href="/privacy" className="text-[11px] text-cream/40 hover:text-cream/60 transition-colors" style={{ letterSpacing: '0.1em' }}>Privacy</Link>
         </div>
         <p className="text-[10px] text-cream/25" style={{ letterSpacing: '0.06em' }}>
           © {new Date().getFullYear()} ExpertMatch
