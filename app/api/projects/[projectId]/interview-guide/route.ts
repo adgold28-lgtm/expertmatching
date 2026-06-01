@@ -1,6 +1,6 @@
 import { NextRequest } from 'next/server';
-import { routeAuthGuard } from '../../../../../lib/auth';
-import { getProject } from '../../../../../lib/projectStore';
+import { routeAuthGuard, getSessionUser } from '../../../../../lib/auth';
+import { getProjectForUser } from '../../../../../lib/projectStore';
 import { openai } from '../../../../../lib/openai';
 
 const ID_RE = /^[a-f0-9]{24}$/;
@@ -21,7 +21,8 @@ export async function POST(
     const expertId = typeof body.expertId === 'string' ? body.expertId : null;
     if (!expertId) return Response.json({ error: 'expertId is required' }, { status: 400 });
 
-    const project = await getProject(params.projectId);
+    const { email, role } = await getSessionUser(request);
+    const project = await getProjectForUser(params.projectId, email, role);
     if (!project) return Response.json({ error: 'not_found' }, { status: 404 });
 
     const pe = project.experts.find(e => e.expert.id === expertId);
