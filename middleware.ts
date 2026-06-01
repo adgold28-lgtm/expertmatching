@@ -1,6 +1,22 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { isAuthEnabled, getSessionPayload, COOKIE_NAME } from './lib/auth';
 
+function clearSessionCookie(response: NextResponse): NextResponse {
+  const isProduction = process.env.NODE_ENV === 'production';
+  response.headers.set(
+    'Set-Cookie',
+    [
+      `${COOKIE_NAME}=`,
+      'HttpOnly',
+      'Max-Age=0',
+      'Path=/',
+      'SameSite=Lax',
+      ...(isProduction ? ['Secure'] : []),
+    ].join('; '),
+  );
+  return response;
+}
+
 // Paths that bypass auth entirely — keep this list minimal.
 const PUBLIC_PATHS = new Set([
   '/login',
@@ -70,12 +86,18 @@ export async function middleware(request: NextRequest): Promise<NextResponse> {
   if (payload) return NextResponse.next();
 
   if (pathname.startsWith('/api/')) {
-    return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
+    const res = NextResponse.json({ error: 'unauthorized' }, { status: 401 });
+    // Clear stale session cookie so the browser stops sending it.
+    if (cookieValue) clearSessionCookie(res);
+    return res;
   }
 
   const loginUrl = new URL('/login', request.url);
   loginUrl.searchParams.set('next', pathname);
-  return NextResponse.redirect(loginUrl);
+  const res = NextResponse.redirect(loginUrl);
+  // Clear stale session cookie so the browser stops sending it.
+  if (cookieValue) clearSessionCookie(res);
+  return res;
 }
 
 export const config = {
