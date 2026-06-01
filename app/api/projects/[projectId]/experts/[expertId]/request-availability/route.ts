@@ -6,8 +6,8 @@
 // Never logs: expert name, email, project name, token.
 
 import { NextRequest, NextResponse } from 'next/server';
-import { routeAuthGuard }            from '../../../../../../../lib/auth';
-import { getProject, updateExpertStatus } from '../../../../../../../lib/projectStore';
+import { routeAuthGuard, getSessionUser } from '../../../../../../../lib/auth';
+import { getProjectForUser, updateExpertStatus } from '../../../../../../../lib/projectStore';
 import { generateAvailabilityToken }  from '../../../../../../../lib/availabilityToken';
 import { sendAvailabilityRequest }    from '../../../../../../../lib/sendAvailabilityRequest';
 
@@ -59,7 +59,8 @@ export async function POST(
   }
 
   // ── 4. Load project + expert ──────────────────────────────────────────────
-  const project = await getProject(projectId);
+  const { email, role } = await getSessionUser(request);
+  const project = await getProjectForUser(projectId, email, role);
   if (!project) return NextResponse.json({ error: 'not_found' }, { status: 404 });
 
   const pe = project.experts.find(e => e.expert.id === expertId);

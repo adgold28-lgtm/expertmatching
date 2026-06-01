@@ -1,7 +1,8 @@
 import { NextRequest } from 'next/server';
-import { addExpertsToProject, getProject } from '../../../../../lib/projectStore';
+import { addExpertsToProject, getProjectForUser } from '../../../../../lib/projectStore';
 import { guardMutatingRequest } from '../../../../../lib/projectsGuard';
 import { validateProjectExpert, MAX_EXPERTS_PER_PROJECT } from '../../../../../lib/projectValidation';
+import { getSessionUser } from '../../../../../lib/auth';
 import type { ExpertStatus } from '../../../../../types';
 
 const ID_RE = /^[a-f0-9]{24}$/;
@@ -27,8 +28,9 @@ export async function POST(
   }
 
   try {
+    const { email, role } = await getSessionUser(request);
     // Check capacity before validating items
-    const existing = await getProject(params.projectId);
+    const existing = await getProjectForUser(params.projectId, email, role);
     if (!existing) return Response.json({ error: 'not_found' }, { status: 404 });
 
     const incoming = (body.experts as unknown[]).length;

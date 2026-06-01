@@ -5,6 +5,23 @@
 
 ---
 
+## Applied Fixes (CRITICAL / HIGH — June 2026)
+
+### CRITICAL-4: Six project API routes bypass per-project ownership checks [FIXED]
+**Files:**
+- `app/api/projects/[projectId]/experts/route.ts`
+- `app/api/projects/[projectId]/experts/[expertId]/route.ts`
+- `app/api/projects/[projectId]/experts/[expertId]/request-availability/route.ts`
+- `app/api/projects/[projectId]/vetting-questions/route.ts`
+- `app/api/projects/[projectId]/interview-guide/route.ts`
+- `app/api/projects/[projectId]/request-client-availability/route.ts`
+
+**Issue:** All six routes used `getProject()` (unrestricted) or performed no project lookup at all before mutating or reading project data. Any authenticated user could add/update/delete experts, trigger availability emails, generate interview guides, and access confidential project content belonging to projects they don't own.
+
+**Fix:** Replaced `getProject()` with `getProjectForUser(id, email, role)` in all six routes, using `getSessionUser()` to extract the caller's identity. For the expert `PUT`/`DELETE` handlers, added an explicit `getProjectForUser()` check before any store mutation. The fix is consistent with the ownership model already enforced by `GET /projects/[id]` and `DELETE /projects/[id]`.
+
+---
+
 ## Applied Fixes (CRITICAL / HIGH)
 
 ### CRITICAL-1: No security headers [FIXED]
