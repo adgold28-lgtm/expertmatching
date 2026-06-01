@@ -28,6 +28,8 @@ Last updated: May 2026
 - [ ] Zoom link auto-generation
 - [ ] Per-minute billing via Stripe
 - [ ] Compliance question handling
+- [ ] Email compliance: unsubscribe mechanism + postal address footer (see EMAIL_COMPLIANCE_REVIEW.md Priority 1 & 2)
+- [ ] GDPR legitimate interest documentation for expert cold outreach (EMAIL_COMPLIANCE_REVIEW.md Priority 3)
 - [ ] Expert compensation tracking
 - [ ] Project templates (PE firms, law firms, consulting)
 - [ ] Audit trail on expert scoring — show evidence per expert
