@@ -103,7 +103,7 @@ export interface UpdateExpertInput {
   email2SentAt?:         number;
   email3SentAt?:         number;
   replyDetectedAt?:      number;
-  replyIntent?:          'interested' | 'declined' | 'counter_rate' | 'conflict' | 'unclear';
+  replyIntent?:          'interested' | 'declined' | 'counter_rate' | 'conflict' | 'opt_out' | 'unclear';
   counterRateProposed?:  number;
   conflictNote?:         string;
   suppressedAt?:         number;

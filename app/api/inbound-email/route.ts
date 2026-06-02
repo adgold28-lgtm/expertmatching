@@ -19,6 +19,7 @@ import { parseReply } from '../../../lib/replyDetection';
 import { scheduleNextEmail } from '../../../lib/emailSequence';
 import { createRateLimiterStore } from '../../../lib/rateLimiter';
 import { getUpstashClient } from '../../../lib/upstashRedis';
+import { addToSuppressionList } from '../../../lib/suppressionList';
 
 // ─── Rate limiter ─────────────────────────────────────────────────────────────
 
@@ -186,7 +187,28 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
   const now = Date.now();
 
   try {
-    if (parsed.intent === 'interested') {
+    if (parsed.intent === 'opt_out') {
+      // Compliance: honor the opt-out by adding the address to the canonical
+      // suppression list (#16). The pre-send check in the sequence trigger then
+      // aborts any further outreach to this expert.
+      if (pe.contactEmail) {
+        try {
+          await addToSuppressionList(pe.contactEmail, 'unsubscribe');
+        } catch (err) {
+          console.error('[inbound-email] failed to suppress on opt-out:', err instanceof Error ? err.message.slice(0, 120) : 'unknown');
+        }
+      } else {
+        console.warn('[inbound-email] opt-out received but expert has no contact email');
+      }
+      await updateExpertStatus(resolvedProjectId, resolvedExpertId, {
+        status:          'suppressed',
+        replyDetectedAt: now,
+        replyIntent:     'opt_out',
+        suppressedAt:    now,
+      });
+      console.log('[inbound-email] opt-out honored — expert suppressed', { projectId: resolvedProjectId });
+
+    } else if (parsed.intent === 'interested') {
       await updateExpertStatus(resolvedProjectId, resolvedExpertId, {
         status:           'replied',
         replyDetectedAt:  now,
