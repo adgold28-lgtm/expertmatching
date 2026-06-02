@@ -22,6 +22,7 @@ const STATUS_LABEL: Record<ExpertStatus, string> = {
   rate_negotiation:         'Rate Negotiation',
   conflict_flagged:         'Conflict Flagged',
   rejected_after_outreach:  'Declined',
+  suppressed:               'Unsubscribed',
 };
 
 const STATUS_CLASS: Record<ExpertStatus, string> = {
@@ -39,6 +40,7 @@ const STATUS_CLASS: Record<ExpertStatus, string> = {
   rate_negotiation:         'text-amber-700 border-amber-400 bg-amber-50',
   conflict_flagged:         'text-red-700 border-red-300 bg-red-50',
   rejected_after_outreach:  'text-slate-500 border-slate-200 bg-slate-50',
+  suppressed:               'text-slate-500 border-slate-200 bg-slate-50',
 };
 
 const REJECTION_REASONS: Array<{ value: RejectionReason; label: string }> = [
