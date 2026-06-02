@@ -35,7 +35,7 @@ export async function GET(request: NextRequest): Promise<Response> {
       return Response.json({ users: users.map(sanitize) });
     } catch {
       console.error('[admin/users] failed to list all users');
-      return Response.json({ error: 'Failed to load users' }, { status: 500 });
+      return Response.json({ error: 'failed_to_load_users' }, { status: 500 });
     }
   }
 
@@ -48,7 +48,7 @@ export async function GET(request: NextRequest): Promise<Response> {
     return Response.json({ users: users.map(sanitize) });
   } catch {
     console.error('[admin/users] failed to list users for firm', { domain: '[redacted]' });
-    return Response.json({ error: 'Failed to load users' }, { status: 500 });
+    return Response.json({ error: 'failed_to_load_users' }, { status: 500 });
   }
 }
 
@@ -98,7 +98,7 @@ export async function POST(request: NextRequest): Promise<Response> {
     return Response.json({ ok: true });
   } catch {
     console.error('[admin/users] failed to create user');
-    return Response.json({ error: 'Failed to create user' }, { status: 500 });
+    return Response.json({ error: 'failed_to_create_user' }, { status: 500 });
   }
 }
 
@@ -134,7 +134,7 @@ export async function PATCH(request: NextRequest): Promise<Response> {
     return Response.json({ ok: true });
   } catch {
     console.error('[admin/users] failed to update status', { email: '[redacted]' });
-    return Response.json({ error: 'Failed to update user' }, { status: 500 });
+    return Response.json({ error: 'failed_to_update_user' }, { status: 500 });
   }
 }
 
@@ -172,6 +172,6 @@ export async function DELETE(request: NextRequest): Promise<Response> {
     return Response.json({ ok: true });
   } catch {
     console.error('[admin/users] failed to delete user', { email: '[redacted]' });
-    return Response.json({ error: 'Failed to delete user' }, { status: 500 });
+    return Response.json({ error: 'failed_to_delete_user' }, { status: 500 });
   }
 }

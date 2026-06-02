@@ -6,7 +6,8 @@ import Anthropic, {
   APIError,
 } from '@anthropic-ai/sdk';
 import { NextRequest } from 'next/server';
-import { routeAuthGuard } from '../../../lib/auth';
+import { routeAuthGuard, getSessionUser } from '../../../lib/auth';
+import { checkAiRateLimit, aiRateLimitResponse, AI_ENDPOINTS } from '../../../lib/aiRateLimiter';
 import {
   searchWithFallback,
   getSearchProvider,
@@ -16,7 +17,7 @@ import {
 import type { SearchResult } from '../../../lib/searchProviders';
 import { getCachedSearchPage, setCachedSearchPage } from '../../../lib/searchCache';
 
-const client = new Anthropic({ apiKey: process.env.ANTRHOPICKEYREAL });
+const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -806,10 +807,31 @@ async function runWithOptionalComparison(
 
 // ─── Route handler ────────────────────────────────────────────────────────────
 
+const MAX_BODY = 32768; // 32 KB — generous for complex briefs, hard cap on abuse
+
 export async function POST(request: NextRequest) {
   // Route-level auth guard (defense in depth — supplements middleware).
   const authErr = await routeAuthGuard(request);
   if (authErr) return authErr;
+
+  // Body size guard — reject oversized requests before touching expensive AI APIs.
+  const cl = request.headers.get('content-length');
+  if (cl && parseInt(cl, 10) > MAX_BODY) {
+    return Response.json({ error: 'request_too_large' }, { status: 413 });
+  }
+  let rawBody: string;
+  try { rawBody = await request.text(); } catch {
+    return Response.json({ error: 'invalid_request' }, { status: 400 });
+  }
+  if (rawBody.length > MAX_BODY) {
+    return Response.json({ error: 'request_too_large' }, { status: 413 });
+  }
+
+  // Per-user hourly limit + global daily budget guard.
+  const user    = await getSessionUser(request);
+  const userKey = user.email || request.headers.get('x-forwarded-for') || 'unknown';
+  const rlResult = await checkAiRateLimit(AI_ENDPOINTS.generateExperts, userKey);
+  if (!rlResult.allowed) return aiRateLimitResponse(rlResult);
 
   const startMs     = Date.now();
   let llmCallCount  = 0;
@@ -818,13 +840,15 @@ export async function POST(request: NextRequest) {
 
   try {
     try { getSearchProvider(); } catch (err) {
-      return Response.json(
-        { error: err instanceof Error ? err.message : 'No search provider configured' },
-        { status: 503 },
-      );
+      console.error('[generate-experts] search provider error:', err instanceof Error ? err.message.slice(0, 120) : String(err));
+      return Response.json({ error: 'no_search_provider' }, { status: 503 });
     }
 
-    const body = await request.json();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    let body: any;
+    try { body = JSON.parse(rawBody); } catch {
+      return Response.json({ error: 'invalid_json' }, { status: 400 });
+    }
     const { query, geography, seniority } = body;
     // SECURITY: briefContext fields are never logged — they may contain client-sensitive content.
     const briefContext: BriefContext = (body.briefContext && typeof body.briefContext === 'object')
@@ -1595,8 +1619,7 @@ RELEVANCE SCORING GUIDANCE (0–100):
         { status: 503 },
       );
     }
-    // Safe error log: message only, no prompt content, no keys
-    console.error('[generate-experts] unhandled error', err instanceof Error ? err.message : String(err));
-    return Response.json({ error: err instanceof Error ? err.message : 'Unknown error' }, { status: 500 });
+    console.error('[generate-experts] unhandled error', err instanceof Error ? err.message.slice(0, 120) : String(err));
+    return Response.json({ error: 'generation_failed' }, { status: 500 });
   }
 }

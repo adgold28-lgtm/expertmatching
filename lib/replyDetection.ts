@@ -6,7 +6,7 @@
 
 import { openai } from './openai';
 
-export type ReplyIntent = 'interested' | 'declined' | 'counter_rate' | 'conflict' | 'unclear';
+export type ReplyIntent = 'interested' | 'declined' | 'counter_rate' | 'conflict' | 'opt_out' | 'unclear';
 
 export interface ParsedReply {
   intent:        ReplyIntent;
@@ -21,10 +21,38 @@ function sanitizeForPrompt(value: string, max: number): string {
   return value.replace(/[\x00-\x1f\x7f]/g, ' ').slice(0, max).trim();
 }
 
+// ─── Opt-out detection (compliance) ────────────────────────────────────────────
+// Deterministic keyword match — runs BEFORE the LLM so an opt-out is always
+// honored regardless of model behavior, latency, or availability (CAN-SPAM /
+// TCPA "STOP" handling). Errs toward catching opt-outs: over-suppression is the
+// safe direction. The matched address is added to the #16 suppression list by
+// the caller (app/api/inbound-email/route.ts).
+const OPT_OUT_PATTERNS: RegExp[] = [
+  /^\s*(stop|unsubscribe|remove|cancel|end|quit)[.!]*\s*$/i, // whole reply is a single keyword (SMS-style)
+  /\bunsubscribe\b/i,
+  /\bopt[\s-]?out\b/i,
+  /\b(remove|take)\s+me\s+(off|from)\b/i,
+  /\bdo\s*n['’]?t\s+(contact|email|message)\b/i,
+  /\bdo\s+not\s+(contact|email|message)\b/i,
+  /\b(please\s+)?stop\s+(email|contact|messag|sending|reaching)/i,
+];
+
+export function detectOptOut(text: string): boolean {
+  const normalized = text.trim();
+  if (!normalized) return false;
+  return OPT_OUT_PATTERNS.some((re) => re.test(normalized));
+}
+
 // ─── Parse ────────────────────────────────────────────────────────────────────
 
 export async function parseReply(emailBody: string): Promise<ParsedReply> {
   const sanitized = sanitizeForPrompt(emailBody, 2000);
+
+  // Compliance short-circuit: honor opt-out requests deterministically,
+  // without (and before) any LLM call.
+  if (detectOptOut(sanitized)) {
+    return { intent: 'opt_out', rawText: sanitized };
+  }
 
   const systemPrompt = `You are classifying expert reply emails for a research firm.
 
@@ -88,6 +116,6 @@ Intent definitions:
 }
 
 function validateIntent(s: string): ReplyIntent {
-  const valid: ReplyIntent[] = ['interested', 'declined', 'counter_rate', 'conflict', 'unclear'];
+  const valid: ReplyIntent[] = ['interested', 'declined', 'counter_rate', 'conflict', 'opt_out', 'unclear'];
   return valid.includes(s as ReplyIntent) ? (s as ReplyIntent) : 'unclear';
 }

@@ -1,6 +1,7 @@
 import { NextRequest } from 'next/server';
-import { routeAuthGuard } from '../../../lib/auth';
+import { routeAuthGuard, getSessionUser } from '../../../lib/auth';
 import { openai } from '../../../lib/openai';
+import { checkAiRateLimit, aiRateLimitResponse, AI_ENDPOINTS } from '../../../lib/aiRateLimiter';
 
 const MAX_BODY = 8192; // bytes
 
@@ -14,6 +15,12 @@ export async function POST(request: NextRequest) {
   // Route-level auth guard (defense in depth — supplements middleware).
   const authErr = await routeAuthGuard(request);
   if (authErr) return authErr;
+
+  // Per-user hourly limit + global daily budget guard.
+  const user    = await getSessionUser(request);
+  const userKey = user.email || request.headers.get('x-forwarded-for') || 'unknown';
+  const rlResult = await checkAiRateLimit(AI_ENDPOINTS.generateOutreach, userKey);
+  if (!rlResult.allowed) return aiRateLimitResponse(rlResult);
 
   // Content-Type guard
   if (!request.headers.get('content-type')?.includes('application/json')) {

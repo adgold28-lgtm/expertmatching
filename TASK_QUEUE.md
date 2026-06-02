@@ -11,7 +11,8 @@ Last updated: May 2026
       NavBar uses it when present — falls back to email-derived name
 - [x] Onboarding flow: /onboarding stepper (calendar → billing → profile),
       middleware gates incomplete users, session refreshed with onboardingComplete:true
-      NOTE: calendar (OAuth) and billing (Stripe) steps are stubs — see TODOs in route files
+      NOTE: calendar (OAuth) step is a stub. Billing step implemented (Stripe SetupIntent +
+      CardElement via @stripe/stripe-js). Requires NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY env var.
 - [x] User management: Redis-backed user store, admin UI at /admin/users,
       POST/DELETE /api/admin/users, scripts/createUser.ts for CLI bootstrapping (May 2026)
       NOTE: seed-admin.ts uses bcrypt — users created with it must be migrated via createUser.ts
@@ -28,6 +29,8 @@ Last updated: May 2026
 - [ ] Zoom link auto-generation
 - [ ] Per-minute billing via Stripe
 - [ ] Compliance question handling
+- [ ] Email compliance: unsubscribe mechanism + postal address footer (see EMAIL_COMPLIANCE_REVIEW.md Priority 1 & 2)
+- [ ] GDPR legitimate interest documentation for expert cold outreach (EMAIL_COMPLIANCE_REVIEW.md Priority 3)
 - [ ] Expert compensation tracking
 - [ ] Project templates (PE firms, law firms, consulting)
 - [ ] Audit trail on expert scoring — show evidence per expert

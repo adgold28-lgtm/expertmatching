@@ -28,7 +28,8 @@ export async function GET(request: NextRequest): Promise<Response> {
     const list: AccessRequest[] = raw ? JSON.parse(raw) : [];
     return Response.json({ requests: list });
   } catch {
-    return Response.json({ error: 'Failed to load requests' }, { status: 500 });
+    console.error('[admin/requests] failed to load requests');
+    return Response.json({ error: 'failed_to_load_requests' }, { status: 500 });
   }
 }
 
@@ -38,11 +39,11 @@ export async function POST(request: NextRequest): Promise<Response> {
 
   let body: unknown;
   try { body = await request.json(); } catch {
-    return Response.json({ error: 'Invalid JSON' }, { status: 400 });
+    return Response.json({ error: 'invalid_json' }, { status: 400 });
   }
 
   if (typeof body !== 'object' || body === null) {
-    return Response.json({ error: 'Invalid request' }, { status: 400 });
+    return Response.json({ error: 'invalid_request' }, { status: 400 });
   }
 
   const b      = body as Record<string, unknown>;
@@ -50,11 +51,11 @@ export async function POST(request: NextRequest): Promise<Response> {
   const email  = typeof b.email === 'string' ? b.email.trim().toLowerCase() : '';
 
   if (!email || !email.includes('@')) {
-    return Response.json({ error: 'Valid email required' }, { status: 400 });
+    return Response.json({ error: 'valid_email_required' }, { status: 400 });
   }
 
   const redis = getUpstashClient();
-  if (!redis) return Response.json({ error: 'Storage unavailable' }, { status: 503 });
+  if (!redis) return Response.json({ error: 'storage_unavailable' }, { status: 503 });
 
   if (action === 'reject') {
     await removeFromList(redis, email);
@@ -119,7 +120,7 @@ export async function POST(request: NextRequest): Promise<Response> {
     return Response.json({ ok: true });
   }
 
-  return Response.json({ error: 'Invalid action' }, { status: 400 });
+  return Response.json({ error: 'invalid_action' }, { status: 400 });
 }
 
 async function removeFromList(

@@ -150,10 +150,11 @@ export type ExpertStatus =
   | 'rate_negotiation'
   | 'conflict_flagged'
   | 'rejected_after_outreach'
-  | 'scheduling_sent';
+  | 'scheduling_sent'
+  | 'suppressed';
 
 export type EmailStep = 'email1' | 'email2' | 'email3';
-export type ReplyIntent = 'interested' | 'declined' | 'counter_rate' | 'conflict' | 'unclear';
+export type ReplyIntent = 'interested' | 'declined' | 'counter_rate' | 'conflict' | 'opt_out' | 'unclear';
 
 export type RejectionReason =
   | 'too_generic'
@@ -278,9 +279,10 @@ export interface ProjectExpert {
   email2SentAt?:         number;
   email3SentAt?:         number;
   replyDetectedAt?:      number;
-  replyIntent?:          'interested' | 'declined' | 'counter_rate' | 'conflict' | 'unclear';
+  replyIntent?:          'interested' | 'declined' | 'counter_rate' | 'conflict' | 'opt_out' | 'unclear';
   counterRateProposed?:  number;
   conflictNote?:         string;
+  suppressedAt?:         number;  // unix ms; set when expert unsubscribes or is suppressed
   // Billing / Stripe
   clientRate?:           number | null;  // hourly rate billed to client (margin included)
   expertRate?:           number | null;  // hourly rate paid to expert (clientRate * 0.70)

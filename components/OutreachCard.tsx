@@ -663,7 +663,8 @@ export default function OutreachCard({
                       ? `Reply detected — ${projectExpert.replyIntent === 'interested' ? 'Interested' :
                           projectExpert.replyIntent === 'declined' ? 'Declined' :
                           projectExpert.replyIntent === 'counter_rate' ? 'Counter rate' :
-                          projectExpert.replyIntent === 'conflict' ? 'Conflict flagged' : 'Unclear'}`
+                          projectExpert.replyIntent === 'conflict' ? 'Conflict flagged' :
+                          projectExpert.replyIntent === 'opt_out' ? 'Opted out' : 'Unclear'}`
                       : 'Awaiting reply…'}
                     timestamp={projectExpert.replyDetectedAt}
                   />

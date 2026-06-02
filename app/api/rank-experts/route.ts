@@ -1,6 +1,7 @@
 import { openai } from '../../../lib/openai';
 import { NextRequest, NextResponse } from 'next/server';
-import { routeAuthGuard } from '../../../lib/auth';
+import { routeAuthGuard, getSessionUser } from '../../../lib/auth';
+import { checkAiRateLimit, aiRateLimitResponse, AI_ENDPOINTS } from '../../../lib/aiRateLimiter';
 import {
   RankableExpert,
   RankedExpertResult,
@@ -77,13 +78,37 @@ function repairJsonStrings(str: string): string {
 
 // ─── Route Handler ────────────────────────────────────────────────────────────
 
+const MAX_BODY = 65536; // 64 KB — covers up to ~20 experts with full profiles
+
 export async function POST(request: NextRequest) {
   // Route-level auth guard (defense in depth — supplements middleware).
   const authErr = await routeAuthGuard(request);
   if (authErr) return authErr;
 
+  // Body size guard.
+  const cl = request.headers.get('content-length');
+  if (cl && parseInt(cl, 10) > MAX_BODY) {
+    return NextResponse.json({ error: 'request_too_large' }, { status: 413 });
+  }
+  let rawBody: string;
+  try { rawBody = await request.text(); } catch {
+    return NextResponse.json({ error: 'invalid_request' }, { status: 400 });
+  }
+  if (rawBody.length > MAX_BODY) {
+    return NextResponse.json({ error: 'request_too_large' }, { status: 413 });
+  }
+
+  // Per-user hourly limit + global daily budget guard.
+  const user    = await getSessionUser(request);
+  const userKey = user.email || request.headers.get('x-forwarded-for') || 'unknown';
+  const rlResult = await checkAiRateLimit(AI_ENDPOINTS.rankExperts, userKey);
+  if (!rlResult.allowed) return aiRateLimitResponse(rlResult);
+
   try {
-    const body = (await request.json()) as RankExpertsRequest;
+    let body: RankExpertsRequest;
+    try { body = JSON.parse(rawBody) as RankExpertsRequest; } catch {
+      return NextResponse.json({ error: 'invalid_json' }, { status: 400 });
+    }
     const { brief, experts, weights } = body;
 
     if (!experts || experts.length === 0) {
@@ -280,8 +305,7 @@ Confidence criteria:
 
     return NextResponse.json({ results });
   } catch (err) {
-    const message = err instanceof Error ? err.message : 'Unknown error';
-    console.error('[rank-experts]', message);
-    return NextResponse.json({ error: message }, { status: 500 });
+    console.error('[rank-experts]', err instanceof Error ? err.message.slice(0, 120) : String(err));
+    return NextResponse.json({ error: 'ranking_failed' }, { status: 500 });
   }
 }

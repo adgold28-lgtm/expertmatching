@@ -19,7 +19,8 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
   const appUrl   = process.env.NEXT_PUBLIC_APP_URL ?? 'http://localhost:3000';
 
   if (!clientId) {
-    return NextResponse.json({ error: 'GOOGLE_CLIENT_ID not configured' }, { status: 500 });
+    console.error('[admin/google-calendar-auth] configuration error: GOOGLE_CLIENT_ID not set');
+    return NextResponse.json({ error: 'configuration_error' }, { status: 500 });
   }
 
   const state       = getOrCreateOauthState();
