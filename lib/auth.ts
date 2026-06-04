@@ -232,7 +232,10 @@ export async function getSessionUser(request: NextRequest): Promise<SessionUser>
     // Should not happen if a guard ran first; return a safe default.
     return { role: 'user', email: '', firmDomain: '' };
   }
-  const role = payload.role ?? 'admin';
+  // Security: default missing/legacy roles to 'user', never 'admin'. Legacy
+  // sessions minted before the role field must NOT be silently elevated to admin
+  // — a real admin re-authenticates to receive a role-stamped session.
+  const role = payload.role ?? 'user';
   const base = {
     firmName:           payload.firmName,
     firstName:          payload.firstName,
@@ -268,8 +271,9 @@ export async function routeAuthGuard(request: NextRequest): Promise<Response | n
  * Returns null if the request is from an authenticated admin, or a 401/403.
  *
  * For Supabase users: role is read from the Redis user record.
- * For HMAC users: role is read from the session payload (backward compat).
- * Legacy HMAC sessions with no role field are treated as admin.
+ * For HMAC users: role is read from the session payload.
+ * Fails closed: an explicit role === 'admin' is required; missing/legacy roles
+ * are denied (403), and unreadable Supabase metadata is denied (401).
  */
 export async function adminGuard(request: NextRequest): Promise<Response | null> {
   if (!isAuthEnabled()) return null;
@@ -283,7 +287,9 @@ export async function adminGuard(request: NextRequest): Promise<Response | null>
       if (redisUser.role !== 'admin') return Response.json({ error: 'forbidden' }, { status: 403 });
       return null;
     } catch {
-      // Redis unavailable — fall through to HMAC
+      // Fail closed: a verified Supabase user whose role we cannot read is
+      // denied admin access rather than falling through to the HMAC path.
+      return Response.json({ error: 'unauthorized' }, { status: 401 });
     }
   }
 
@@ -292,8 +298,9 @@ export async function adminGuard(request: NextRequest): Promise<Response | null>
   if (!cookie) return Response.json({ error: 'unauthorized' }, { status: 401 });
   const payload = await getSessionPayload(cookie);
   if (!payload) return Response.json({ error: 'unauthorized' }, { status: 401 });
-  // Treat missing role as admin (backward compat for pre-multi-user sessions)
-  if (payload.role && payload.role !== 'admin') {
+  // Require an explicit admin role. Missing/legacy roles are NOT treated as
+  // admin — they fail closed with 403.
+  if (payload.role !== 'admin') {
     return Response.json({ error: 'forbidden' }, { status: 403 });
   }
   return null;
