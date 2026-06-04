@@ -6,8 +6,8 @@
 // Amounts are safe to log.
 
 import { NextRequest, NextResponse } from 'next/server';
-import { routeAuthGuard } from '../../../../../../../lib/auth';
-import { getProject, updateExpertStatus } from '../../../../../../../lib/projectStore';
+import { routeAuthGuard, getSessionUser } from '../../../../../../../lib/auth';
+import { getProjectForUser, updateExpertStatus } from '../../../../../../../lib/projectStore';
 import { createAndSendInvoice } from '../../../../../../../lib/createAndSendInvoice';
 
 const ID_RE        = /^[a-f0-9]{24}$/;
@@ -53,8 +53,10 @@ export async function POST(
     return NextResponse.json({ error: 'invalid_invoiceAmount', message: 'invoiceAmount must be 1–50000' }, { status: 400 });
   }
 
-  // 3. Load project and find expert
-  const project = await getProject(params.projectId);
+  // 3. Load project (ownership / collaborator / admin scoped) and find expert.
+  //    404 on inaccessible/nonexistent so we do not leak project existence.
+  const { email, role } = await getSessionUser(request);
+  const project = await getProjectForUser(params.projectId, email, role);
   if (!project) {
     return NextResponse.json({ error: 'project_not_found' }, { status: 404 });
   }
