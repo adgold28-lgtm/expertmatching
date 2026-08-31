@@ -337,6 +337,9 @@ const PROMOTED_PROJECT_KEYS = new Set([
 // ProjectExpert fields promoted to real columns; everything else in `data`.
 const PROMOTED_EXPERT_KEYS = new Set(['status', 'contactEmail']);
 
+// Bounded retries for the optimistic-concurrency loop in mutateExpert.
+const EXPERT_WRITE_RETRIES = 3;
+
 function toMs(iso: string): number {
   const t = Date.parse(iso);
   return Number.isFinite(t) ? t : 0;
@@ -643,28 +646,45 @@ class SupabaseProjectStore implements ProjectStore {
     return this.assemble((await this.getRow(id)) ?? row);
   }
 
-  async updateExpertStatus(id: string, expertId: string, input: UpdateExpertInput): Promise<Project> {
+  // Read-merge-write on one project_experts row, with optimistic concurrency:
+  // the whole `data` blob is rewritten, so the UPDATE only applies if
+  // `updated_at` still matches what we read (the row's trigger bumps it on
+  // every write). On conflict, re-read and re-apply `mutate` on fresh state.
+  private async mutateExpert(
+    id: string,
+    expertId: string,
+    mutate: (current: ProjectExpert) => ProjectExpert,
+  ): Promise<Project> {
     const row = await this.getRow(id);
     if (!row) throw new Error(`Project not found: ${id}`);
 
-    const { data: expertRow } = await this.db
-      .from('project_experts')
-      .select('*')
-      .eq('project_id', id)
-      .eq('expert_id', expertId)
-      .maybeSingle();
-    if (!expertRow) throw new Error(`Expert not found: ${expertId}`);
+    for (let attempt = 0; attempt < EXPERT_WRITE_RETRIES; attempt++) {
+      const { data: expertRow } = await this.db
+        .from('project_experts')
+        .select('*')
+        .eq('project_id', id)
+        .eq('expert_id', expertId)
+        .maybeSingle();
+      if (!expertRow) throw new Error(`Expert not found: ${expertId}`);
 
-    const merged: ProjectExpert = { ...rowToExpert(expertRow), ...input, updatedAt: Date.now() };
-    const patch = expertToRow(id, merged);
-    const { error } = await this.db
-      .from('project_experts')
-      .update({ status: patch.status, contact_email: patch.contact_email, data: patch.data })
-      .eq('id', expertRow.id);
-    if (error) throw new Error('Failed to update expert');
+      const patch = expertToRow(id, mutate(rowToExpert(expertRow)));
+      const { data: updated, error } = await this.db
+        .from('project_experts')
+        .update({ status: patch.status, contact_email: patch.contact_email, data: patch.data })
+        .eq('id', expertRow.id)
+        .eq('updated_at', expertRow.updated_at)
+        .select('id');
+      if (error) throw new Error('Failed to update expert');
+      if (updated && updated.length > 0) {
+        await this.touch(id);
+        return this.assemble((await this.getRow(id)) ?? row);
+      }
+    }
+    throw new Error('expert_update_conflict');
+  }
 
-    await this.touch(id);
-    return this.assemble((await this.getRow(id)) ?? row);
+  async updateExpertStatus(id: string, expertId: string, input: UpdateExpertInput): Promise<Project> {
+    return this.mutateExpert(id, expertId, current => ({ ...current, ...input, updatedAt: Date.now() }));
   }
 
   async updateProjectFields(id: string, input: UpdateProjectInput): Promise<Project> {
@@ -685,20 +705,11 @@ class SupabaseProjectStore implements ProjectStore {
   }
 
   async addExpertNote(id: string, expertId: string, note: string): Promise<Project> {
-    const row = await this.getRow(id);
-    if (!row) throw new Error(`Project not found: ${id}`);
-    const { data: expertRow } = await this.db
-      .from('project_experts')
-      .select('*')
-      .eq('project_id', id)
-      .eq('expert_id', expertId)
-      .maybeSingle();
-    if (!expertRow) throw new Error(`Expert not found: ${expertId}`);
-
-    const current   = rowToExpert(expertRow);
-    const existing  = current.userNotes?.trim() ?? '';
-    const userNotes = existing ? `${existing}\n\n${note.trim()}` : note.trim();
-    return this.updateExpertStatus(id, expertId, { userNotes });
+    return this.mutateExpert(id, expertId, current => {
+      const existing  = current.userNotes?.trim() ?? '';
+      const userNotes = existing ? `${existing}\n\n${note.trim()}` : note.trim();
+      return { ...current, userNotes, updatedAt: Date.now() };
+    });
   }
 
   async removeExpertFromProject(id: string, expertId: string): Promise<Project> {
