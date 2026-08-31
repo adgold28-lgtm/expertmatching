@@ -1,8 +1,10 @@
-import { NextRequest } from 'next/server';
+import { NextRequest, NextResponse } from 'next/server';
+import { createServerClient } from '@supabase/ssr';
 import { verifySignupToken, hashToken } from '../../../../lib/signupToken';
 import { hashPassword } from '../../../../lib/authPassword';
 import { createSessionCookie, COOKIE_NAME, SESSION_TTL_MS } from '../../../../lib/auth';
 import { getUpstashClient } from '../../../../lib/upstashRedis';
+import { ensureSupabaseUser } from '../../../../lib/supabase/admin';
 import {
   getUser,
   upsertUser,
@@ -14,12 +16,78 @@ import {
 } from '../../../../lib/firmStore';
 
 const HOUR_MS    = 60 * 60 * 1000;
-const RATE_LIMIT = 5; // attempts per token per hour
+const RATE_LIMIT = 5;
+
+type SetCookieOption = {
+  domain?:      string;
+  expires?:     Date;
+  httpOnly?:    boolean;
+  maxAge?:      number;
+  partitioned?: boolean;
+  path?:        string;
+  priority?:    'low' | 'medium' | 'high';
+  sameSite?:    boolean | 'lax' | 'strict' | 'none';
+  secure?:      boolean;
+};
 
 function passwordError(password: string): string | null {
   if (password.length < 8) return 'Password must be at least 8 characters.';
   if (!/\d/.test(password)) return 'Password must contain at least one number.';
   return null;
+}
+
+// Attempts a Supabase signInWithPassword and captures any Set-Cookie entries.
+// Returns an empty array on failure so callers always get a usable value.
+async function trySupabaseSignIn(
+  request: NextRequest,
+  email: string,
+  password: string,
+): Promise<Array<{ name: string; value: string; options?: SetCookieOption }>> {
+  const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const key = process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY;
+  if (!url || !key) return [];
+
+  try {
+    const captured: Array<{ name: string; value: string; options?: SetCookieOption }> = [];
+    const supabase = createServerClient(url, key, {
+      cookies: {
+        getAll() { return request.cookies.getAll(); },
+        setAll(items) {
+          items.forEach(({ name, value, options }) =>
+            captured.push({ name, value, options: options as SetCookieOption }),
+          );
+        },
+      },
+    });
+    const { data, error } = await supabase.auth.signInWithPassword({ email, password });
+    if (error || !data.user) return [];
+    return captured;
+  } catch {
+    return [];
+  }
+}
+
+// Builds the final response with HMAC session cookie plus any Supabase cookies.
+function buildSessionResponse(
+  hmacToken: string,
+  supabaseCookies: Array<{ name: string; value: string; options?: SetCookieOption }>,
+): Response {
+  const isProduction = process.env.NODE_ENV === 'production';
+  const response = NextResponse.json({ ok: true });
+
+  response.cookies.set(COOKIE_NAME, hmacToken, {
+    httpOnly: true,
+    maxAge:   Math.floor(SESSION_TTL_MS / 1000),
+    path:     '/',
+    sameSite: 'lax',
+    secure:   isProduction,
+  });
+
+  for (const { name, value, options = {} } of supabaseCookies) {
+    response.cookies.set(name, value, options);
+  }
+
+  return response;
 }
 
 export async function POST(request: NextRequest): Promise<Response> {
@@ -50,7 +118,7 @@ export async function POST(request: NextRequest): Promise<Response> {
     return Response.json({ error: 'service_unavailable' }, { status: 503 });
   }
 
-  // ── 2. Rate limit: max 5 attempts per token per hour ─────────────────────
+  // ── 2. Rate limit ─────────────────────────────────────────────────────────
   const { count } = await redis.incrWithWindow(`invite-rl:${hash.slice(0, 16)}`, HOUR_MS);
   if (count > RATE_LIMIT) {
     return Response.json(
@@ -118,11 +186,10 @@ export async function POST(request: NextRequest): Promise<Response> {
         countActiveUsersForFirm(domain),
       ]);
 
-      const plan       = firm?.plan ?? 'starter';
-      const seatLimit  = SEAT_LIMITS[plan];
+      const plan      = firm?.plan ?? 'starter';
+      const seatLimit = SEAT_LIMITS[plan];
 
       if (activeCount >= seatLimit) {
-        // Record seat request and notify admin
         await recordSeatRequest(email, domain).catch(() => {});
         await sendSeatLimitNotification({
           attemptedEmail:  email,
@@ -143,7 +210,7 @@ export async function POST(request: NextRequest): Promise<Response> {
     } catch { /* non-fatal — let activation proceed */ }
   }
 
-  // ── 8. Activate user ──────────────────────────────────────────────────────
+  // ── 8. Activate user in Redis ─────────────────────────────────────────────
   try {
     await upsertUser(email, {
       passwordHash: hashPassword(password),
@@ -154,36 +221,35 @@ export async function POST(request: NextRequest): Promise<Response> {
     return Response.json({ error: 'internal_error' }, { status: 500 });
   }
 
-  // ── 9. Create session ─────────────────────────────────────────────────────
-  // Re-read so we have the freshest role/firmName
+  // Re-read for fresh role / firmName before building sessions.
   const activatedUser = await getUser(email).catch(() => null);
   const role          = activatedUser?.role     ?? 'user';
   const resolvedName  = activatedUser?.firmName ?? firmName;
 
-  const sessionToken = await createSessionCookie(role, email, resolvedName, { onboardingComplete: false });
-
-  console.log('[auth/set-password] account activated', { domain: domain || '[redacted]' });
-  return sessionResponse(sessionToken);
-}
-
-function sessionResponse(token: string): Response {
-  const isProduction = process.env.NODE_ENV === 'production';
-  const maxAge       = Math.floor(SESSION_TTL_MS / 1000);
-
-  const setCookie = [
-    `${COOKIE_NAME}=${token}`,
-    'HttpOnly',
-    `Max-Age=${maxAge}`,
-    'Path=/',
-    'SameSite=Lax',
-    ...(isProduction ? ['Secure'] : []),
-  ].join('; ');
-
-  return new Response(JSON.stringify({ ok: true }), {
-    status: 200,
-    headers: {
-      'Content-Type': 'application/json',
-      'Set-Cookie': setCookie,
-    },
+  // ── 9. Create Supabase account (best-effort) ──────────────────────────────
+  // Ensures the user can log in via Supabase Auth on their next sign-in.
+  // Non-fatal: if Supabase is unavailable, the HMAC session covers the user.
+  const supabaseMigrated = await ensureSupabaseUser(email, password, {
+    role,
+    firmName:           resolvedName,
+    firmDomain:         domain || undefined,
+    onboardingComplete: false, // new users always begin onboarding
   });
+
+  const supabaseCookies = supabaseMigrated
+    ? await trySupabaseSignIn(request, email, password)
+    : [];
+
+  // ── 10. Create HMAC session ───────────────────────────────────────────────
+  const hmacToken = await createSessionCookie(role, email, resolvedName, {
+    onboardingComplete: false,
+  });
+
+  console.log('[auth/set-password] account activated', {
+    domain:             domain || '[redacted]',
+    supabaseMigrated,
+    hasSupabaseCookies: supabaseCookies.length > 0,
+  });
+
+  return buildSessionResponse(hmacToken, supabaseCookies);
 }

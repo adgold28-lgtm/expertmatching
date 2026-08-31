@@ -1,8 +1,18 @@
-// Session cookie auth — uses Web Crypto API (globalThis.crypto.subtle).
-// Safe to import from Edge Runtime (middleware) and Node.js API routes.
-// Do NOT add Node.js-only imports (scryptSync, etc.) to this file.
+// Session and auth helpers.
+//
+// Pure HMAC functions (isAuthEnabled, COOKIE_NAME, SESSION_TTL_MS,
+// createSessionCookie, verifySessionCookie, getSessionPayload) use only the
+// Web Crypto API and are safe in Edge Runtime and middleware.
+//
+// Guard functions (routeAuthGuard, adminGuard, getSessionUser) check Supabase
+// first, then fall back to the HMAC cookie.  Both @supabase/ssr and firmStore
+// use fetch internally — they are Edge-compatible but are only called from
+// Route Handlers (not from middleware.ts, which uses lib/supabase/middleware.ts
+// for its session work).
 
 import type { NextRequest } from 'next/server';
+import { createServerClient } from '@supabase/ssr';
+import { getUpstashClient } from './upstashRedis';
 
 export const COOKIE_NAME    = 'expertmatch_session';
 export const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
@@ -110,16 +120,66 @@ export async function getSessionPayload(token: string): Promise<SessionPayload |
   }
 }
 
-// Route-level auth guard — supplements middleware (defense in depth).
-// Returns null if authenticated (or auth is disabled). Returns 401 if not.
-export async function routeAuthGuard(request: NextRequest): Promise<Response | null> {
-  if (!isAuthEnabled()) return null;
-  const cookie = request.cookies.get(COOKIE_NAME)?.value ?? '';
-  if (cookie && await verifySessionCookie(cookie)) return null;
-  return Response.json({ error: 'unauthorized' }, { status: 401 });
+// ─── Minimal Redis user reader ────────────────────────────────────────────────
+//
+// Reads only the fields needed for auth decisions, using upstashRedis directly.
+// Intentionally does NOT import firmStore — firmStore imports Resend, which
+// would pull @react-email/render into the middleware bundle and break the build.
+//
+interface RedisAuthUser {
+  role?:               string;
+  status?:             string;
+  firmName?:           string;
+  firmDomain?:         string;
+  firstName?:          string;
+  onboardingComplete?: boolean;
 }
 
-// Resolved session user — used by API routes for access control and profile data.
+async function readRedisUser(email: string): Promise<RedisAuthUser | null> {
+  try {
+    const redis = getUpstashClient();
+    if (!redis) return null;
+    const raw = await redis.get(`user:${email}`);
+    if (!raw) return null;
+    return JSON.parse(typeof raw === 'string' ? raw : JSON.stringify(raw)) as RedisAuthUser;
+  } catch {
+    return null;
+  }
+}
+
+// ─── Supabase session helper (shared by guard functions) ─────────────────────
+//
+// Creates a read-only Supabase server client from the request's cookies and
+// returns the authenticated user, or null.  Does not write any cookies —
+// session refreshes are handled by middleware.ts via updateSession().
+// Fails open: returns null on any error so HMAC fallback takes over.
+
+async function getSupabaseSessionUser(
+  request: NextRequest,
+): Promise<{ email: string; id: string } | null> {
+  const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const key = process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY;
+  if (!url || !key) return null;
+
+  try {
+    const supabase = createServerClient(url, key, {
+      cookies: {
+        getAll() { return request.cookies.getAll(); },
+        // setAll is intentionally omitted — we don't write cookies from Route
+        // Handlers here; middleware already handles session refresh.
+        setAll() {},
+      },
+    });
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user?.email) return null;
+    return { email: user.email, id: user.id };
+  } catch {
+    return null;
+  }
+}
+
+// ─── Public API ───────────────────────────────────────────────────────────────
+
 export interface SessionUser {
   role:                'admin' | 'user';
   email:               string;
@@ -129,18 +189,53 @@ export interface SessionUser {
   onboardingComplete?: boolean;
 }
 
-// Returns the current session user, or a default admin user when auth is disabled.
+/**
+ * Returns the current session user, or a default admin user when auth is
+ * disabled.  Checks Supabase first, falls back to HMAC cookie.
+ *
+ * Supabase path: looks up the Redis user record for role / firmName /
+ * onboardingComplete.  Redis remains the single source of truth for these
+ * fields during the migration period.
+ *
+ * HMAC fallback: reads the session cookie as before (backward-compatible for
+ * users who haven't yet logged in via Supabase Auth).
+ */
 export async function getSessionUser(request: NextRequest): Promise<SessionUser> {
   if (!isAuthEnabled()) {
     return { role: 'admin', email: 'admin', firmDomain: '*' };
   }
-  const cookie = request.cookies.get(COOKIE_NAME)?.value ?? '';
+
+  // 1. Try Supabase session
+  const supabaseSessionUser = await getSupabaseSessionUser(request);
+  if (supabaseSessionUser) {
+    const redisUser = await readRedisUser(supabaseSessionUser.email);
+    if (redisUser) {
+      const role: 'admin' | 'user' = redisUser.role === 'admin' ? 'admin' : 'user';
+      const firmDomain = role === 'admin'
+        ? '*'
+        : (redisUser.firmDomain || supabaseSessionUser.email.split('@')[1] || '');
+      return {
+        role,
+        email:               supabaseSessionUser.email,
+        firmDomain,
+        firmName:            redisUser.firmName,
+        firstName:           redisUser.firstName,
+        onboardingComplete:  redisUser.onboardingComplete,
+      };
+    }
+  }
+
+  // 2. Fall back to HMAC cookie
+  const cookie  = request.cookies.get(COOKIE_NAME)?.value ?? '';
   const payload = cookie ? await getSessionPayload(cookie) : null;
   if (!payload) {
-    // Should not happen if routeAuthGuard ran first; return a safe default.
+    // Should not happen if a guard ran first; return a safe default.
     return { role: 'user', email: '', firmDomain: '' };
   }
-  const role = payload.role ?? 'admin';
+  // Security: default missing/legacy roles to 'user', never 'admin'. Legacy
+  // sessions minted before the role field must NOT be silently elevated to admin
+  // — a real admin re-authenticates to receive a role-stamped session.
+  const role = payload.role ?? 'user';
   const base = {
     firmName:           payload.firmName,
     firstName:          payload.firstName,
@@ -153,16 +248,59 @@ export async function getSessionUser(request: NextRequest): Promise<SessionUser>
   return { role: 'user', email: payload.email, firmDomain, ...base };
 }
 
-// Admin-only guard — checks both auth validity and role === 'admin'.
-// Legacy sessions (no role field) are treated as admin for backward compatibility.
+/**
+ * Route-level auth guard — supplements middleware (defense in depth).
+ * Returns null if authenticated (Supabase or HMAC), or a 401 Response if not.
+ */
+export async function routeAuthGuard(request: NextRequest): Promise<Response | null> {
+  if (!isAuthEnabled()) return null;
+
+  // 1. Supabase session
+  const supabaseUser = await getSupabaseSessionUser(request);
+  if (supabaseUser) return null;
+
+  // 2. HMAC cookie fallback
+  const cookie = request.cookies.get(COOKIE_NAME)?.value ?? '';
+  if (cookie && await verifySessionCookie(cookie)) return null;
+
+  return Response.json({ error: 'unauthorized' }, { status: 401 });
+}
+
+/**
+ * Admin-only guard — checks both auth validity and role === 'admin'.
+ * Returns null if the request is from an authenticated admin, or a 401/403.
+ *
+ * For Supabase users: role is read from the Redis user record.
+ * For HMAC users: role is read from the session payload.
+ * Fails closed: an explicit role === 'admin' is required; missing/legacy roles
+ * are denied (403), and unreadable Supabase metadata is denied (401).
+ */
 export async function adminGuard(request: NextRequest): Promise<Response | null> {
   if (!isAuthEnabled()) return null;
+
+  // 1. Supabase session
+  const supabaseUser = await getSupabaseSessionUser(request);
+  if (supabaseUser) {
+    try {
+      const redisUser = await readRedisUser(supabaseUser.email);
+      if (!redisUser) return Response.json({ error: 'unauthorized' }, { status: 401 });
+      if (redisUser.role !== 'admin') return Response.json({ error: 'forbidden' }, { status: 403 });
+      return null;
+    } catch {
+      // Fail closed: a verified Supabase user whose role we cannot read is
+      // denied admin access rather than falling through to the HMAC path.
+      return Response.json({ error: 'unauthorized' }, { status: 401 });
+    }
+  }
+
+  // 2. HMAC cookie fallback
   const cookie = request.cookies.get(COOKIE_NAME)?.value ?? '';
   if (!cookie) return Response.json({ error: 'unauthorized' }, { status: 401 });
   const payload = await getSessionPayload(cookie);
   if (!payload) return Response.json({ error: 'unauthorized' }, { status: 401 });
-  // Treat missing role as admin (backward compat for pre-multi-user sessions)
-  if (payload.role && payload.role !== 'admin') {
+  // Require an explicit admin role. Missing/legacy roles are NOT treated as
+  // admin — they fail closed with 403.
+  if (payload.role !== 'admin') {
     return Response.json({ error: 'forbidden' }, { status: 403 });
   }
   return null;

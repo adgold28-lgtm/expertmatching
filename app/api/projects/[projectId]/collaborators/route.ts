@@ -3,7 +3,7 @@ import { getProjectForUser, addCollaborator, removeCollaborator } from '../../..
 import { guardMutatingRequest } from '../../../../../lib/projectsGuard';
 import { getSessionUser } from '../../../../../lib/auth';
 import { getUpstashClient } from '../../../../../lib/upstashRedis';
-import { isApprovedDomain } from '../../../../../lib/domainWhitelist';
+import { isApprovedDomain } from '../../../../../lib/firmStore';
 
 const ID_RE = /^[a-f0-9]{24}$/;
 
