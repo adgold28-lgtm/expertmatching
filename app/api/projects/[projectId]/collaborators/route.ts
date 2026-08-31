@@ -2,8 +2,7 @@ import { NextRequest } from 'next/server';
 import { getProjectForUser, addCollaborator, removeCollaborator } from '../../../../../lib/projectStore';
 import { guardMutatingRequest } from '../../../../../lib/projectsGuard';
 import { getSessionUser } from '../../../../../lib/auth';
-import { getUpstashClient } from '../../../../../lib/upstashRedis';
-import { isApprovedDomain } from '../../../../../lib/firmStore';
+import { getUser, isApprovedDomain } from '../../../../../lib/firmStore';
 
 const ID_RE = /^[a-f0-9]{24}$/;
 
@@ -13,12 +12,9 @@ function isValidEmail(email: string): boolean {
 
 // Check if email belongs to an existing user or an approved domain.
 async function isValidCollaborator(email: string): Promise<boolean> {
-  const redis = getUpstashClient();
-  if (redis) {
-    // Prefer checking for existing user account
-    const user = await redis.get(`user:${email}`).catch(() => null);
-    if (user) return true;
-  }
+  // Prefer an existing user account — collaborators must be able to log in.
+  const user = await getUser(email).catch(() => null);
+  if (user) return true;
   // Fall back to approved domain check
   const domain = email.split('@')[1];
   if (!domain) return false;

@@ -1,16 +1,20 @@
 // Project workspace storage.
-// Production: Upstash Redis — durable, no TTL (projects persist indefinitely).
-// Development: in-memory Map with clear warning (process-local only).
+// Production: Supabase Postgres — `projects` (promoted columns + brief jsonb),
+// `project_experts` (one row per expert), `project_members` (sharing).
+// Development fallback: in-memory Map with clear warning (process-local only).
 //
-// Key scheme — no client names or PII in Redis key names:
-//   project:{24-char hex id}  → full Project JSON
-//   projects:index            → JSON array of ProjectSummary (lightweight list view)
+// Access control mirrors the schema's RLS model: owner or explicit
+// collaborator only (admins see everything). This layer uses the service-role
+// client, so the email-based checks here are the enforcement for API routes;
+// RLS is defense in depth beneath it.
 //
 // NEVER log: project names, research questions, confidential notes, or expert names.
 
 import { randomBytes } from 'crypto';
 import type { Expert, Project, ProjectExpert, ProjectSummary, ExpertStatus, RejectionReason, ValueChainPosition, ScreeningStatus, SuggestedDomain, PublicContactEmail, AvailabilitySlot, OverlapSlot } from '../types';
-import { getUpstashClient, type UpstashRedis } from './upstashRedis';
+import { getServiceRoleClient } from './supabase/admin';
+import type { Database, ProjectRow, ProjectExpertRow } from './supabase/database.types';
+import type { SupabaseClient } from '@supabase/supabase-js';
 
 // ─── Input types ──────────────────────────────────────────────────────────────
 
@@ -165,15 +169,6 @@ function toSummary(p: Project): ProjectSummary {
     ownerEmail:       p.ownerEmail,
     collaborators:    p.collaborators,
   };
-}
-
-// Migration: backfill ownership fields missing from old records.
-function parseProject(raw: string): Project {
-  const p = JSON.parse(raw) as Project;
-  const ownerEmail   = p.ownerEmail   ?? 'admin';
-  const collaborators = p.collaborators ?? [];
-  const firmDomain   = p.firmDomain   ?? (ownerEmail === 'admin' ? '*' : (ownerEmail.split('@')[1] ?? 'admin'));
-  return { ...p, ownerEmail, collaborators, firmDomain };
 }
 
 function makeProjectExperts(experts: Array<{ expert: Expert; status?: ExpertStatus }>): ProjectExpert[] {
@@ -331,83 +326,188 @@ class InMemoryProjectStore implements ProjectStore {
   }
 }
 
-// ─── Upstash Redis (production) ───────────────────────────────────────────────
+// ─── Supabase Postgres (production) ──────────────────────────────────────────
 
-class UpstashProjectStore implements ProjectStore {
-  constructor(private readonly redis: UpstashRedis) {}
+// Project fields promoted to real columns; everything else lives in `brief`.
+const PROMOTED_PROJECT_KEYS = new Set([
+  'id', 'name', 'researchQuestion', 'createdAt', 'updatedAt',
+  'experts', 'ownerEmail', 'collaborators', 'firmDomain',
+]);
 
-  private async getIndex(): Promise<ProjectSummary[]> {
-    const raw = await this.redis.get('projects:index');
-    if (!raw) return [];
-    try { return JSON.parse(raw) as ProjectSummary[]; } catch { return []; }
+// ProjectExpert fields promoted to real columns; everything else in `data`.
+const PROMOTED_EXPERT_KEYS = new Set(['status', 'contactEmail']);
+
+function toMs(iso: string): number {
+  const t = Date.parse(iso);
+  return Number.isFinite(t) ? t : 0;
+}
+
+function projectToBrief(project: Project): Record<string, unknown> {
+  const brief: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(project)) {
+    if (!PROMOTED_PROJECT_KEYS.has(k) && v !== undefined) brief[k] = v;
+  }
+  return brief;
+}
+
+function expertToRow(projectId: string, pe: ProjectExpert): Database['public']['Tables']['project_experts']['Insert'] {
+  const data: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(pe)) {
+    if (!PROMOTED_EXPERT_KEYS.has(k) && v !== undefined) data[k] = v;
+  }
+  return {
+    project_id:    projectId,
+    expert_id:     pe.expert.id,
+    status:        pe.status,
+    contact_email: pe.contactEmail ?? null,
+    data:          data as Database['public']['Tables']['project_experts']['Insert']['data'],
+  };
+}
+
+function rowToExpert(row: ProjectExpertRow): ProjectExpert {
+  const data = (row.data ?? {}) as unknown as Omit<ProjectExpert, 'status' | 'contactEmail'>;
+  return {
+    ...data,
+    status: row.status as ExpertStatus,
+    ...(row.contact_email ? { contactEmail: row.contact_email } : {}),
+  };
+}
+
+interface ProjectContext {
+  ownerEmail:    string;
+  collaborators: string[];
+  firmDomain:    string;
+}
+
+function rowToProject(row: ProjectRow, experts: ProjectExpert[], ctx: ProjectContext): Project {
+  const brief = (row.brief ?? {}) as Partial<Project>;
+  return {
+    ...brief,
+    id:               row.id,
+    name:             row.name,
+    researchQuestion: row.research_question,
+    industry:         brief.industry  ?? '',
+    function:         brief.function  ?? '',
+    geography:        brief.geography ?? '',
+    seniority:        brief.seniority ?? '',
+    createdAt:        toMs(row.created_at),
+    updatedAt:        toMs(row.updated_at),
+    experts,
+    ownerEmail:       ctx.ownerEmail,
+    collaborators:    ctx.collaborators,
+    firmDomain:       ctx.firmDomain,
+  };
+}
+
+class SupabaseProjectStore implements ProjectStore {
+  constructor(private readonly db: SupabaseClient<Database>) {}
+
+  // ── lookup helpers ─────────────────────────────────────────────────────────
+
+  private async profileIdByEmail(email: string): Promise<string | null> {
+    const { data } = await this.db
+      .from('profiles')
+      .select('id')
+      .eq('email', email.toLowerCase().trim())
+      .maybeSingle();
+    return data?.id ?? null;
   }
 
-  private async setIndex(summaries: ProjectSummary[]): Promise<void> {
-    const sorted = [...summaries].sort((a, b) => b.updatedAt - a.updatedAt);
-    await this.redis.set('projects:index', JSON.stringify(sorted));
+  private async emailsByProfileIds(ids: string[]): Promise<Map<string, string>> {
+    if (ids.length === 0) return new Map();
+    const { data } = await this.db.from('profiles').select('id, email').in('id', ids);
+    return new Map((data ?? []).map(p => [p.id, p.email]));
   }
 
-  // Advisory lock around projects:index read-modify-write to reduce (not
-  // eliminate) the race window when multiple requests update the index
-  // concurrently. Lock expires in 5s; on failure, proceeds without lock.
-  private async withIndexLock<T>(op: () => Promise<T>): Promise<T> {
-    const lockKey = 'lock:projects:index';
-    const lockId  = randomBytes(8).toString('hex');
-    let acquired  = false;
-
-    for (let i = 0; i < 5; i++) {
-      const ok = await this.redis.set(lockKey, lockId, { ex: 5, nx: true });
-      if (ok === 'OK') { acquired = true; break; }
-      if (i < 4) await new Promise(r => setTimeout(r, 120 + i * 80));
-    }
-
-    if (!acquired) {
-      console.warn('[projectStore] index lock contention — proceeding without lock');
-    }
-
-    try {
-      return await op();
-    } finally {
-      if (acquired) {
-        await this.redis.releaseLockIfOwner(lockKey, lockId).catch(() => {});
-      }
-    }
+  /** Owner email, collaborator emails, and org domain for one project row. */
+  private async contextFor(row: ProjectRow): Promise<ProjectContext> {
+    const [{ data: members }, emailById, { data: org }] = await Promise.all([
+      this.db.from('project_members').select('profile_id').eq('project_id', row.id),
+      this.emailsByProfileIds([row.owner_id]),
+      this.db.from('organizations').select('domain').eq('id', row.organization_id).maybeSingle(),
+    ]);
+    const collaboratorIds = (members ?? []).map(m => m.profile_id).filter(id => id !== row.owner_id);
+    const collabEmailById = await this.emailsByProfileIds(collaboratorIds);
+    return {
+      ownerEmail:    emailById.get(row.owner_id) ?? '',
+      collaborators: collaboratorIds.map(id => collabEmailById.get(id)).filter((e): e is string => !!e),
+      firmDomain:    org?.domain ?? '',
+    };
   }
+
+  private async expertsFor(projectId: string): Promise<ProjectExpert[]> {
+    const { data } = await this.db
+      .from('project_experts')
+      .select('*')
+      .eq('project_id', projectId)
+      .order('created_at', { ascending: true });
+    return (data ?? []).map(rowToExpert);
+  }
+
+  private async assemble(row: ProjectRow): Promise<Project> {
+    const [experts, ctx] = await Promise.all([this.expertsFor(row.id), this.contextFor(row)]);
+    return rowToProject(row, experts, ctx);
+  }
+
+  private async getRow(id: string): Promise<ProjectRow | null> {
+    const { data } = await this.db.from('projects').select('*').eq('id', id).maybeSingle();
+    return data ?? null;
+  }
+
+  // ── ProjectStore implementation ────────────────────────────────────────────
 
   async createProject(input: CreateProjectInput, ownerEmail: string): Promise<Project> {
-    const now        = Date.now();
-    const firmDomain = ownerEmail === 'admin' ? '*' : (ownerEmail.split('@')[1] ?? 'admin');
-    const project: Project = {
-      id:               generateProjectId(),
-      name:             input.name,
-      researchQuestion: input.researchQuestion ?? '',
-      industry:         input.industry,
-      function:         input.function,
-      geography:        input.geography,
-      seniority:        input.seniority,
-      createdAt:        now,
-      updatedAt:        now,
-      experts:          makeProjectExperts(input.experts ?? []),
-      notes:            input.notes,
-      outreachMode:     input.outreachMode ?? 'review',
-      ownerEmail,
-      collaborators:    [],
-      firmDomain,
+    const ownerId = await this.profileIdByEmail(ownerEmail);
+    if (!ownerId) throw new Error('Project owner has no account');
+
+    const { data: membership } = await this.db
+      .from('organization_members')
+      .select('organization_id')
+      .eq('profile_id', ownerId)
+      .limit(1)
+      .maybeSingle();
+    if (!membership) throw new Error('Project owner has no organization');
+
+    const brief: Record<string, unknown> = {
+      industry:     input.industry,
+      function:     input.function,
+      geography:    input.geography,
+      seniority:    input.seniority,
+      outreachMode: input.outreachMode ?? 'review',
+      ...(input.expertType ? { expertType: input.expertType } : {}),
+      ...(input.notes      ? { notes:      input.notes }      : {}),
     };
-    await this.redis.set(`project:${project.id}`, JSON.stringify(project));
-    await this.withIndexLock(async () => {
-      const index = await this.getIndex();
-      index.push(toSummary(project));
-      await this.setIndex(index);
-    });
-    return project;
+
+    const id = generateProjectId();
+    const { data: row, error } = await this.db
+      .from('projects')
+      .insert({
+        id,
+        organization_id:   membership.organization_id,
+        owner_id:          ownerId,
+        name:              input.name,
+        research_question: input.researchQuestion ?? '',
+        brief:             brief as Database['public']['Tables']['projects']['Insert']['brief'],
+      })
+      .select()
+      .single();
+    if (error || !row) throw new Error('Failed to create project');
+
+    const experts = makeProjectExperts(input.experts ?? []);
+    if (experts.length > 0) {
+      const { error: expErr } = await this.db
+        .from('project_experts')
+        .insert(experts.map(pe => expertToRow(id, pe)));
+      if (expErr) throw new Error('Failed to add experts to new project');
+    }
+
+    return this.assemble(row);
   }
 
   async getProject(id: string): Promise<Project | null> {
     if (!ID_RE.test(id)) return null;
-    const raw = await this.redis.get(`project:${id}`);
-    if (!raw) return null;
-    try { return parseProject(raw); } catch { return null; }
+    const row = await this.getRow(id);
+    return row ? this.assemble(row) : null;
   }
 
   async getProjectForUser(id: string, email: string, role: 'admin' | 'user'): Promise<Project | null> {
@@ -416,77 +516,197 @@ class UpstashProjectStore implements ProjectStore {
     return canAccess(project, email, role) ? project : null;
   }
 
+  private async summarize(rows: ProjectRow[]): Promise<ProjectSummary[]> {
+    if (rows.length === 0) return [];
+    const ids = rows.map(r => r.id);
+
+    const [{ data: expertRows }, { data: memberRows }] = await Promise.all([
+      this.db.from('project_experts').select('project_id, status').in('project_id', ids),
+      this.db.from('project_members').select('project_id, profile_id').in('project_id', ids),
+    ]);
+
+    const profileIds = Array.from(new Set([
+      ...rows.map(r => r.owner_id),
+      ...(memberRows ?? []).map(m => m.profile_id),
+    ]));
+    const emailById = await this.emailsByProfileIds(profileIds);
+
+    const counts = new Map<string, { total: number; shortlisted: number }>();
+    for (const e of expertRows ?? []) {
+      const c = counts.get(e.project_id) ?? { total: 0, shortlisted: 0 };
+      c.total += 1;
+      if (e.status === 'shortlisted') c.shortlisted += 1;
+      counts.set(e.project_id, c);
+    }
+
+    const collabsByProject = new Map<string, string[]>();
+    for (const m of memberRows ?? []) {
+      const email = emailById.get(m.profile_id);
+      if (!email) continue;
+      const list = collabsByProject.get(m.project_id) ?? [];
+      list.push(email);
+      collabsByProject.set(m.project_id, list);
+    }
+
+    return rows
+      .map(r => {
+        const c = counts.get(r.id) ?? { total: 0, shortlisted: 0 };
+        const ownerEmail = emailById.get(r.owner_id) ?? '';
+        return {
+          id:               r.id,
+          name:             r.name,
+          researchQuestion: r.research_question,
+          expertCount:      c.total,
+          shortlistedCount: c.shortlisted,
+          createdAt:        toMs(r.created_at),
+          updatedAt:        toMs(r.updated_at),
+          ownerEmail,
+          collaborators:    (collabsByProject.get(r.id) ?? []).filter(e => e !== ownerEmail),
+        };
+      })
+      .sort((a, b) => b.updatedAt - a.updatedAt);
+  }
+
   async listProjects(): Promise<ProjectSummary[]> {
-    return this.getIndex();
+    const { data } = await this.db.from('projects').select('*');
+    return this.summarize(data ?? []);
   }
 
   async listProjectsForUser(email: string, role: 'admin' | 'user'): Promise<ProjectSummary[]> {
-    const all = await this.getIndex();
-    if (role === 'admin') return all;
-    return all.filter(s => canAccess(s, email, role));
+    if (role === 'admin') return this.listProjects();
+    const profileId = await this.profileIdByEmail(email);
+    if (!profileId) return [];
+
+    const [{ data: owned }, { data: memberships }] = await Promise.all([
+      this.db.from('projects').select('*').eq('owner_id', profileId),
+      this.db.from('project_members').select('project_id').eq('profile_id', profileId),
+    ]);
+    const memberIds = (memberships ?? []).map(m => m.project_id);
+    let shared: ProjectRow[] = [];
+    if (memberIds.length > 0) {
+      const { data } = await this.db.from('projects').select('*').in('id', memberIds);
+      shared = data ?? [];
+    }
+    const seen = new Set<string>();
+    const rows = [...(owned ?? []), ...shared].filter(r => {
+      if (seen.has(r.id)) return false;
+      seen.add(r.id);
+      return true;
+    });
+    return this.summarize(rows);
   }
 
+  // Updates project-level fields only (name, research question, brief).
+  // Experts and collaborators are managed by their dedicated methods.
   async updateProject(project: Project): Promise<Project> {
-    const updated = { ...project, updatedAt: Date.now() };
-    await this.redis.set(`project:${project.id}`, JSON.stringify(updated));
-    await this.withIndexLock(async () => {
-      const index    = await this.getIndex();
-      const newIndex = index.map(s => s.id === project.id ? toSummary(updated) : s);
-      await this.setIndex(newIndex);
-    });
-    return updated;
+    const { data: row, error } = await this.db
+      .from('projects')
+      .update({
+        name:              project.name,
+        research_question: project.researchQuestion,
+        brief:             projectToBrief(project) as Database['public']['Tables']['projects']['Update']['brief'],
+      })
+      .eq('id', project.id)
+      .select()
+      .single();
+    if (error || !row) throw new Error(`Project not found: ${project.id}`);
+    return this.assemble(row);
   }
 
   async deleteProject(id: string): Promise<{ success: boolean }> {
     if (!ID_RE.test(id)) return { success: false };
-    await this.redis.del(`project:${id}`);
-    await this.withIndexLock(async () => {
-      const index    = await this.getIndex();
-      const filtered = index.filter(s => s.id !== id);
-      await this.setIndex(filtered);
-    });
-    return { success: true };
+    // Cascades to project_experts and project_members via FK.
+    const { error } = await this.db.from('projects').delete().eq('id', id);
+    return { success: !error };
+  }
+
+  /** Touches projects.updated_at so list views sort correctly. */
+  private async touch(id: string): Promise<void> {
+    await this.db.from('projects').update({ updated_at: new Date().toISOString() }).eq('id', id);
   }
 
   async addExpertsToProject(id: string, experts: Array<{ expert: Expert; status?: ExpertStatus }>): Promise<Project> {
-    const project = await this.getProject(id);
-    if (!project) throw new Error(`Project not found: ${id}`);
-    const existingIds = new Set(project.experts.map(pe => pe.expert.id));
-    const newEntries  = makeProjectExperts(experts.filter(({ expert: e }) => !existingIds.has(e.id)));
-    return this.updateProject({ ...project, experts: [...project.experts, ...newEntries] });
+    const row = await this.getRow(id);
+    if (!row) throw new Error(`Project not found: ${id}`);
+    const entries = makeProjectExperts(experts);
+    if (entries.length > 0) {
+      // Ignore duplicates — an expert already in the project keeps its state.
+      const { error } = await this.db
+        .from('project_experts')
+        .upsert(entries.map(pe => expertToRow(id, pe)), {
+          onConflict:       'project_id,expert_id',
+          ignoreDuplicates: true,
+        });
+      if (error) throw new Error('Failed to add experts');
+      await this.touch(id);
+    }
+    return this.assemble((await this.getRow(id)) ?? row);
   }
 
   async updateExpertStatus(id: string, expertId: string, input: UpdateExpertInput): Promise<Project> {
-    const project = await this.getProject(id);
-    if (!project) throw new Error(`Project not found: ${id}`);
-    const experts = project.experts.map(pe =>
-      pe.expert.id !== expertId ? pe : { ...pe, ...input, updatedAt: Date.now() },
-    );
-    return this.updateProject({ ...project, experts });
+    const row = await this.getRow(id);
+    if (!row) throw new Error(`Project not found: ${id}`);
+
+    const { data: expertRow } = await this.db
+      .from('project_experts')
+      .select('*')
+      .eq('project_id', id)
+      .eq('expert_id', expertId)
+      .maybeSingle();
+    if (!expertRow) throw new Error(`Expert not found: ${expertId}`);
+
+    const merged: ProjectExpert = { ...rowToExpert(expertRow), ...input, updatedAt: Date.now() };
+    const patch = expertToRow(id, merged);
+    const { error } = await this.db
+      .from('project_experts')
+      .update({ status: patch.status, contact_email: patch.contact_email, data: patch.data })
+      .eq('id', expertRow.id);
+    if (error) throw new Error('Failed to update expert');
+
+    await this.touch(id);
+    return this.assemble((await this.getRow(id)) ?? row);
   }
 
   async updateProjectFields(id: string, input: UpdateProjectInput): Promise<Project> {
-    const project = await this.getProject(id);
-    if (!project) throw new Error(`Project not found: ${id}`);
-    return this.updateProject({ ...project, ...input });
+    const row = await this.getRow(id);
+    if (!row) throw new Error(`Project not found: ${id}`);
+    const brief = { ...(row.brief as Record<string, unknown> ?? {}) };
+    for (const [k, v] of Object.entries(input)) {
+      if (v !== undefined) brief[k] = v;
+    }
+    const { data: updated, error } = await this.db
+      .from('projects')
+      .update({ brief: brief as Database['public']['Tables']['projects']['Update']['brief'] })
+      .eq('id', id)
+      .select()
+      .single();
+    if (error || !updated) throw new Error(`Project not found: ${id}`);
+    return this.assemble(updated);
   }
 
   async addExpertNote(id: string, expertId: string, note: string): Promise<Project> {
-    const project = await this.getProject(id);
-    if (!project) throw new Error(`Project not found: ${id}`);
-    const experts = project.experts.map(pe => {
-      if (pe.expert.id !== expertId) return pe;
-      const existing  = pe.userNotes?.trim() ?? '';
-      const userNotes = existing ? `${existing}\n\n${note.trim()}` : note.trim();
-      return { ...pe, userNotes, updatedAt: Date.now() };
-    });
-    return this.updateProject({ ...project, experts });
+    const row = await this.getRow(id);
+    if (!row) throw new Error(`Project not found: ${id}`);
+    const { data: expertRow } = await this.db
+      .from('project_experts')
+      .select('*')
+      .eq('project_id', id)
+      .eq('expert_id', expertId)
+      .maybeSingle();
+    if (!expertRow) throw new Error(`Expert not found: ${expertId}`);
+
+    const current   = rowToExpert(expertRow);
+    const existing  = current.userNotes?.trim() ?? '';
+    const userNotes = existing ? `${existing}\n\n${note.trim()}` : note.trim();
+    return this.updateExpertStatus(id, expertId, { userNotes });
   }
 
   async removeExpertFromProject(id: string, expertId: string): Promise<Project> {
-    const project = await this.getProject(id);
-    if (!project) throw new Error(`Project not found: ${id}`);
-    return this.updateProject({ ...project, experts: project.experts.filter(pe => pe.expert.id !== expertId) });
+    const row = await this.getRow(id);
+    if (!row) throw new Error(`Project not found: ${id}`);
+    await this.db.from('project_experts').delete().eq('project_id', id).eq('expert_id', expertId);
+    await this.touch(id);
+    return this.assemble((await this.getRow(id)) ?? row);
   }
 
   async addCollaborator(id: string, ownerEmail: string, collaboratorEmail: string): Promise<Project> {
@@ -494,14 +714,32 @@ class UpstashProjectStore implements ProjectStore {
     if (!project) throw new Error(`Project not found: ${id}`);
     if (project.ownerEmail !== ownerEmail) throw new Error('Only the project owner can add collaborators');
     if (project.collaborators.includes(collaboratorEmail)) return project;
-    return this.updateProject({ ...project, collaborators: [...project.collaborators, collaboratorEmail] });
+
+    const profileId = await this.profileIdByEmail(collaboratorEmail);
+    if (!profileId) throw new Error('Collaborator has no account');
+
+    const { error } = await this.db
+      .from('project_members')
+      .upsert(
+        { project_id: id, profile_id: profileId, role: 'collaborator' },
+        { onConflict: 'project_id,profile_id', ignoreDuplicates: true },
+      );
+    if (error) throw new Error('Failed to add collaborator');
+    await this.touch(id);
+    return (await this.getProject(id)) ?? project;
   }
 
   async removeCollaborator(id: string, ownerEmail: string, collaboratorEmail: string): Promise<Project> {
     const project = await this.getProject(id);
     if (!project) throw new Error(`Project not found: ${id}`);
     if (project.ownerEmail !== ownerEmail) throw new Error('Only the project owner can remove collaborators');
-    return this.updateProject({ ...project, collaborators: project.collaborators.filter(e => e !== collaboratorEmail) });
+
+    const profileId = await this.profileIdByEmail(collaboratorEmail);
+    if (profileId) {
+      await this.db.from('project_members').delete().eq('project_id', id).eq('profile_id', profileId);
+      await this.touch(id);
+    }
+    return (await this.getProject(id)) ?? project;
   }
 }
 
@@ -511,13 +749,13 @@ let _store: ProjectStore | null = null;
 
 function getProjectStore(): ProjectStore {
   if (_store) return _store;
-  const redis = getUpstashClient();
-  if (redis) {
-    _store = new UpstashProjectStore(redis);
+  const db = getServiceRoleClient();
+  if (db) {
+    _store = new SupabaseProjectStore(db);
     return _store;
   }
   if (process.env.NODE_ENV === 'production') {
-    throw new Error('[projectStore] FATAL: production requires UPSTASH_REDIS_REST_URL and UPSTASH_REDIS_REST_TOKEN');
+    throw new Error('[projectStore] FATAL: production requires NEXT_PUBLIC_SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY');
   }
   console.warn('[projectStore] Using in-memory store — dev mode only, NOT production-safe.');
   _store = new InMemoryProjectStore();

@@ -3,7 +3,7 @@
 -- ExpertMatch — Supabase cutover foundation.
 --
 -- Postgres becomes the source of truth for all durable domain data:
--- organizations, profiles, membership, access requests, invites, projects,
+-- organizations, profiles, membership, access/seat requests, projects,
 -- and project experts. Redis is retained ONLY for rate limits, caches,
 -- locks, and short-lived tokens.
 --
@@ -17,7 +17,7 @@
 --   * project_experts      = the working set of experts inside a project.
 --                            Reachable ONLY through project ownership or an
 --                            explicit project_members row. NEVER org-wide.
---   * org_admin manages users/seats/invites for ITS org but gets NO automatic
+--   * org_admin manages users/seats for ITS org but gets NO automatic
 --     access to members' project contents.
 --   * platform admin operates exclusively through the service-role key in
 --     server-side admin routes. service_role BYPASSES RLS, so NO policy below
@@ -90,34 +90,23 @@ create table if not exists public.organization_members (
   unique (organization_id, profile_id)
 );
 
--- Top-of-funnel access requests. Submitted pre-auth (anonymous) via a server
--- route using the service-role key, and reviewed by platform admins. No
--- authenticated RLS policies => service-role only.
+-- Top-of-funnel access requests AND seat-limit requests (kind distinguishes
+-- them). Submitted pre-auth (anonymous) via a server route using the
+-- service-role key, and reviewed by platform admins. No authenticated RLS
+-- policies => service-role only.
 create table if not exists public.access_requests (
   id               uuid primary key default gen_random_uuid(),
+  kind             text not null default 'access' check (kind in ('access','seat')),
   email            text not null,
   requested_domain text,
   name             text,
   firm_name        text,
+  use_case         text,
   organization_id  uuid references public.organizations(id) on delete set null,
   status           text not null default 'requested' check (status in ('requested','approved','rejected')),
   reviewed_by      uuid references public.profiles(id) on delete set null,
   reviewed_at      timestamptz,
   created_at       timestamptz not null default now()
-);
-
--- Single-use invite tokens. We store only the token HASH, never the token.
-create table if not exists public.invites (
-  id              uuid primary key default gen_random_uuid(),
-  email           text not null,
-  organization_id uuid not null references public.organizations(id) on delete cascade,
-  role            text not null default 'org_member' check (role in ('org_admin','org_member')),
-  token_hash      text not null unique,
-  status          text not null default 'pending' check (status in ('pending','accepted','revoked','expired')),
-  invited_by      uuid references public.profiles(id) on delete set null,
-  expires_at      timestamptz not null,
-  accepted_at     timestamptz,
-  created_at      timestamptz not null default now()
 );
 
 -- ═════════════════════════════════════════════════════════════════════════
@@ -174,8 +163,6 @@ create table if not exists public.project_experts (
 -- ═════════════════════════════════════════════════════════════════════════
 create index if not exists idx_org_members_org       on public.organization_members(organization_id);
 create index if not exists idx_org_members_profile   on public.organization_members(profile_id);
-create index if not exists idx_invites_org           on public.invites(organization_id);
-create index if not exists idx_invites_email         on public.invites(email);
 create index if not exists idx_access_requests_email on public.access_requests(email);
 create index if not exists idx_projects_owner        on public.projects(owner_id);
 create index if not exists idx_projects_org          on public.projects(organization_id);
@@ -344,7 +331,6 @@ alter table public.organizations        enable row level security;
 alter table public.profiles             enable row level security;
 alter table public.organization_members enable row level security;
 alter table public.access_requests      enable row level security;
-alter table public.invites              enable row level security;
 alter table public.projects             enable row level security;
 alter table public.project_members      enable row level security;
 alter table public.project_experts      enable row level security;
@@ -400,28 +386,6 @@ create policy org_members_update on public.organization_members
 
 drop policy if exists org_members_delete on public.organization_members;
 create policy org_members_delete on public.organization_members
-  for delete to authenticated
-  using (public.is_org_admin(organization_id));
-
--- ── invites (org_admin manages invites for its org) ─────────────────────────
-drop policy if exists invites_select on public.invites;
-create policy invites_select on public.invites
-  for select to authenticated
-  using (public.is_org_admin(organization_id));
-
-drop policy if exists invites_insert on public.invites;
-create policy invites_insert on public.invites
-  for insert to authenticated
-  with check (public.is_org_admin(organization_id));
-
-drop policy if exists invites_update on public.invites;
-create policy invites_update on public.invites
-  for update to authenticated
-  using (public.is_org_admin(organization_id))
-  with check (public.is_org_admin(organization_id));
-
-drop policy if exists invites_delete on public.invites;
-create policy invites_delete on public.invites
   for delete to authenticated
   using (public.is_org_admin(organization_id));
 

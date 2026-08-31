@@ -1,124 +1,133 @@
 /**
  * scripts/seed-admin.ts
  *
- * One-time setup: creates the admin user in Upstash Redis.
+ * Bootstraps the platform: creates (or updates) the platform-admin account in
+ * Supabase Auth, marks it is_platform_admin, and ensures a home organization
+ * so the admin can create projects.
  *
  * Usage:
- *   npx tsx scripts/seed-admin.ts
+ *   npx tsx scripts/seed-admin.ts <email> [--org-domain <domain>] [--org-name <name>]
  *
- * Reads credentials from .env.local automatically.
+ * The password is read from the SEED_ADMIN_PASSWORD env var (never argv — argv
+ * leaks into shell history and process lists).
  *
  * Required env vars (in .env.local):
- *   UPSTASH_REDIS_REST_URL
- *   UPSTASH_REDIS_REST_TOKEN
+ *   NEXT_PUBLIC_SUPABASE_URL
+ *   SUPABASE_SERVICE_ROLE_KEY
+ *   SEED_ADMIN_PASSWORD
+ *
+ * Idempotent — safe to re-run; existing accounts get their password and
+ * metadata updated.
  */
 
 import * as dotenv from 'dotenv';
 import * as path from 'path';
-import * as readline from 'readline';
-import { hashPassword } from '../lib/authPassword';
-import { getUpstashClient } from '../lib/upstashRedis';
 
 dotenv.config({ path: path.join(process.cwd(), '.env.local') });
 
-const ADMIN_EMAIL = 'ashergoldsteinbusiness@gmail.com';
-
-function prompt(question: string, muted = false): Promise<string> {
-  return new Promise(resolve => {
-    const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
-    if (muted) {
-      // Write question manually so we can suppress echoed characters
-      process.stdout.write(question);
-      (process.stdin as NodeJS.ReadStream).setRawMode?.(true);
-      let input = '';
-      process.stdin.resume();
-      process.stdin.setEncoding('utf8');
-      function handler(char: string) {
-        if (char === '\n' || char === '\r' || char === '') {
-          (process.stdin as NodeJS.ReadStream).setRawMode?.(false);
-          process.stdin.pause();
-          process.stdin.removeListener('data', handler);
-          process.stdout.write('\n');
-          rl.close();
-          if (char === '') process.exit(0);
-          resolve(input);
-        } else if (char === '') {
-          if (input.length > 0) {
-            input = input.slice(0, -1);
-            process.stdout.write('\b \b');
-          }
-        } else {
-          input += char;
-          process.stdout.write('*');
-        }
-      }
-      process.stdin.on('data', handler);
-    } else {
-      rl.question(question, answer => { rl.close(); resolve(answer.trim()); });
-    }
-  });
-}
-
 async function main(): Promise<void> {
-  console.log('\nExpertMatch — Seed Admin User');
-  console.log('─'.repeat(40));
-  console.log(`Email      : ${ADMIN_EMAIL}`);
-  console.log(`First name : Asher`);
-  console.log(`Role       : admin\n`);
+  // Import after dotenv so env vars are populated.
+  const { getServiceRoleClient, ensureSupabaseUser, syncAppMetadata } = await import('../lib/supabase/admin');
 
-  const redis = getUpstashClient();
-  if (!redis) {
-    console.error('Error: Redis unavailable. Set UPSTASH_REDIS_REST_URL and UPSTASH_REDIS_REST_TOKEN in .env.local');
+  const args  = process.argv.slice(2);
+  const email = (args[0] ?? '').trim().toLowerCase();
+
+  const flag = (name: string): string | undefined => {
+    const i = args.indexOf(name);
+    return i >= 0 ? args[i + 1] : undefined;
+  };
+
+  if (!email || !email.includes('@')) {
+    console.error('\nUsage: npx tsx scripts/seed-admin.ts <email> [--org-domain <domain>] [--org-name <name>]\n');
     process.exit(1);
   }
 
-  // Check for existing record
-  const existing = await redis.get(`user:${ADMIN_EMAIL}`);
-  if (existing) {
-    const rec = (() => { try { return JSON.parse(existing as string) as Record<string, unknown>; } catch { return {}; } })();
-    console.warn(`Warning: a user record already exists for ${ADMIN_EMAIL} (status: ${rec.status ?? 'unknown'}).`);
-    const overwrite = await prompt('Overwrite? [y/N] ');
-    if (overwrite.toLowerCase() !== 'y') {
-      console.log('Aborted — existing record unchanged.');
-      process.exit(0);
+  const password = process.env.SEED_ADMIN_PASSWORD ?? '';
+  if (password.length < 12) {
+    console.error('\nError: set SEED_ADMIN_PASSWORD (min 12 chars) in the environment or .env.local.\n');
+    process.exit(1);
+  }
+
+  const db = getServiceRoleClient();
+  if (!db) {
+    console.error('\nError: NEXT_PUBLIC_SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY are required in .env.local.\n');
+    process.exit(1);
+  }
+
+  const orgDomain = (flag('--org-domain') ?? email.split('@')[1] ?? '').toLowerCase();
+  const orgName   = flag('--org-name') ?? 'ExpertMatch';
+
+  console.log('\nExpertMatch — Seed platform admin');
+  console.log('─'.repeat(50));
+
+  // ── 1. Auth account + password ─────────────────────────────────────────────
+  const authId = await ensureSupabaseUser(email, password);
+  if (!authId) {
+    console.error('\nError: failed to create/update the Supabase auth user.\n');
+    process.exit(1);
+  }
+  console.log('Auth account ready.');
+
+  // ── 2. Platform-admin flag on the profile ──────────────────────────────────
+  const { error: profileErr } = await db
+    .from('profiles')
+    .update({ is_platform_admin: true, onboarding_complete: true })
+    .eq('id', authId);
+  if (profileErr) {
+    console.error('\nError: failed to update profile:', profileErr.message, '\n');
+    process.exit(1);
+  }
+  console.log('Profile marked platform admin.');
+
+  // ── 3. Home organization + membership ──────────────────────────────────────
+  let { data: org } = await db.from('organizations').select('id').eq('domain', orgDomain).maybeSingle();
+  if (!org) {
+    const { data: created, error: orgErr } = await db
+      .from('organizations')
+      .insert({ domain: orgDomain, name: orgName, plan: 'enterprise', seat_limit: 2147483647 })
+      .select('id')
+      .single();
+    if (orgErr || !created) {
+      console.error('\nError: failed to create organization:', orgErr?.message ?? 'unknown', '\n');
+      process.exit(1);
     }
+    org = created;
+    console.log('Organization created.');
+  } else {
+    console.log('Organization already exists.');
   }
 
-  const password = await prompt('Enter password: ', true);
-  if (password.length < 8) {
-    console.error('Error: password must be at least 8 characters.');
+  const { error: memberErr } = await db
+    .from('organization_members')
+    .upsert(
+      { organization_id: org.id, profile_id: authId, role: 'org_admin', status: 'active' },
+      { onConflict: 'organization_id,profile_id' },
+    );
+  if (memberErr) {
+    console.error('\nError: failed to create membership:', memberErr.message, '\n');
+    process.exit(1);
+  }
+  console.log('Membership ensured.');
+
+  // ── 4. app_metadata mirror (role/status/firm/onboarding) ───────────────────
+  const synced = await syncAppMetadata(email, {
+    role:                'admin',
+    status:              'active',
+    firm_domain:         orgDomain,
+    firm_name:           orgName,
+    onboarding_complete: true,
+  });
+  if (!synced) {
+    console.error('\nError: failed to sync app_metadata.\n');
     process.exit(1);
   }
 
-  const confirm = await prompt('Confirm password: ', true);
-  if (password !== confirm) {
-    console.error('Error: passwords do not match.');
-    process.exit(1);
-  }
-
-  console.log('\nHashing password…');
-  const passwordHash = hashPassword(password);
-
-  await redis.set(`user:${ADMIN_EMAIL}`, JSON.stringify({
-    email:              ADMIN_EMAIL,
-    passwordHash,
-    firstName:          'Asher',
-    firmDomain:         '',
-    firmName:           'ExpertMatch',
-    role:               'admin',
-    status:             'active',
-    onboardingComplete: true,
-    createdAt:          Date.now(),
-  }));
-
-  console.log('\nAdmin account created successfully.');
-  console.log(`  Email  : ${ADMIN_EMAIL}`);
-  console.log(`  Role   : admin`);
-  console.log(`  Status : active`);
-  console.log('\nSign in at /login. You may remove ADMIN_PASSWORD_HASH from your environment.\n');
+  console.log('\nDone. Sign in at /login.');
+  console.log(`  Email : ${email}`);
+  console.log('  Role  : platform admin\n');
 }
 
 main().catch(err => {
-  console.error('\nSeed failed:', err instanceof Error ? err.message : err);
+  console.error('\nUnexpected error:', err instanceof Error ? err.message : err, '\n');
   process.exit(1);
 });

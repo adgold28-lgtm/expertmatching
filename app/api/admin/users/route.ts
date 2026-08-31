@@ -1,24 +1,16 @@
 import { NextRequest } from 'next/server';
 import { adminGuard, getSessionUser } from '../../../../lib/auth';
-import { hashPassword } from '../../../../lib/authPassword';
+import { ensureSupabaseUser } from '../../../../lib/supabase/admin';
 import {
   getUser,
   upsertUser,
   deleteUser,
   listUsersForFirm,
   listAllUsers,
-  type UserRecord,
   type UserStatus,
 } from '../../../../lib/firmStore';
 
 const VALID_STATUSES = new Set<UserStatus>(['active', 'disabled']);
-
-// Strip passwordHash before sending to client — never expose hashes.
-function sanitize(user: UserRecord): Omit<UserRecord, 'passwordHash'> {
-  const { passwordHash: _pw, ...rest } = user;
-  void _pw;
-  return rest;
-}
 
 // GET ?all=true          — list all users across every firm (admin panel)
 // GET ?domain=<domain>   — list users for a specific firm
@@ -32,7 +24,7 @@ export async function GET(request: NextRequest): Promise<Response> {
   if (all) {
     try {
       const users = await listAllUsers();
-      return Response.json({ users: users.map(sanitize) });
+      return Response.json({ users });
     } catch {
       console.error('[admin/users] failed to list all users');
       return Response.json({ error: 'Failed to load users' }, { status: 500 });
@@ -45,7 +37,7 @@ export async function GET(request: NextRequest): Promise<Response> {
 
   try {
     const users = await listUsersForFirm(domain);
-    return Response.json({ users: users.map(sanitize) });
+    return Response.json({ users });
   } catch {
     console.error('[admin/users] failed to list users for firm', { domain: '[redacted]' });
     return Response.json({ error: 'Failed to load users' }, { status: 500 });
@@ -86,9 +78,12 @@ export async function POST(request: NextRequest): Promise<Response> {
   }
 
   try {
-    const passwordHash = hashPassword(password);
+    // Credentials live in Supabase Auth; domain data + app_metadata via upsertUser.
+    const authId = await ensureSupabaseUser(email, password);
+    if (!authId) {
+      return Response.json({ error: 'Failed to create user' }, { status: 500 });
+    }
     await upsertUser(email, {
-      passwordHash,
       role:               role as 'admin' | 'user',
       firmName,
       firmDomain,

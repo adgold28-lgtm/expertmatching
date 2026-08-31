@@ -1,8 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createServerClient } from '@supabase/ssr';
 import { verifySignupToken, hashToken } from '../../../../lib/signupToken';
-import { hashPassword } from '../../../../lib/authPassword';
-import { createSessionCookie, COOKIE_NAME, SESSION_TTL_MS } from '../../../../lib/auth';
 import { getUpstashClient } from '../../../../lib/upstashRedis';
 import { ensureSupabaseUser } from '../../../../lib/supabase/admin';
 import {
@@ -36,7 +34,7 @@ function passwordError(password: string): string | null {
   return null;
 }
 
-// Attempts a Supabase signInWithPassword and captures any Set-Cookie entries.
+// Signs in via Supabase and captures the session Set-Cookie entries.
 // Returns an empty array on failure so callers always get a usable value.
 async function trySupabaseSignIn(
   request: NextRequest,
@@ -65,29 +63,6 @@ async function trySupabaseSignIn(
   } catch {
     return [];
   }
-}
-
-// Builds the final response with HMAC session cookie plus any Supabase cookies.
-function buildSessionResponse(
-  hmacToken: string,
-  supabaseCookies: Array<{ name: string; value: string; options?: SetCookieOption }>,
-): Response {
-  const isProduction = process.env.NODE_ENV === 'production';
-  const response = NextResponse.json({ ok: true });
-
-  response.cookies.set(COOKIE_NAME, hmacToken, {
-    httpOnly: true,
-    maxAge:   Math.floor(SESSION_TTL_MS / 1000),
-    path:     '/',
-    sameSite: 'lax',
-    secure:   isProduction,
-  });
-
-  for (const { name, value, options = {} } of supabaseCookies) {
-    response.cookies.set(name, value, options);
-  }
-
-  return response;
 }
 
 export async function POST(request: NextRequest): Promise<Response> {
@@ -210,46 +185,30 @@ export async function POST(request: NextRequest): Promise<Response> {
     } catch { /* non-fatal — let activation proceed */ }
   }
 
-  // ── 8. Activate user in Redis ─────────────────────────────────────────────
+  // ── 8. Set the Supabase password + activate the account ──────────────────
+  const authId = await ensureSupabaseUser(email, password);
+  if (!authId) {
+    console.error('[auth/set-password] failed to set password', { email: '[redacted]' });
+    return Response.json({ error: 'internal_error' }, { status: 500 });
+  }
+
   try {
     await upsertUser(email, {
-      passwordHash: hashPassword(password),
-      status:       'active',
+      status:             'active',
+      onboardingComplete: false, // new users always begin onboarding
+      ...(domain ? { firmDomain: domain } : {}),
     });
   } catch {
     console.error('[auth/set-password] failed to activate user', { email: '[redacted]' });
     return Response.json({ error: 'internal_error' }, { status: 500 });
   }
 
-  // Re-read for fresh role / firmName before building sessions.
-  const activatedUser = await getUser(email).catch(() => null);
-  const role          = activatedUser?.role     ?? 'user';
-  const resolvedName  = activatedUser?.firmName ?? firmName;
+  // ── 9. Sign in and return the session cookies ─────────────────────────────
+  const supabaseCookies = await trySupabaseSignIn(request, email, password);
 
-  // ── 9. Create Supabase account (best-effort) ──────────────────────────────
-  // Ensures the user can log in via Supabase Auth on their next sign-in.
-  // Non-fatal: if Supabase is unavailable, the HMAC session covers the user.
-  const supabaseMigrated = await ensureSupabaseUser(email, password, {
-    role,
-    firmName:           resolvedName,
-    firmDomain:         domain || undefined,
-    onboardingComplete: false, // new users always begin onboarding
-  });
-
-  const supabaseCookies = supabaseMigrated
-    ? await trySupabaseSignIn(request, email, password)
-    : [];
-
-  // ── 10. Create HMAC session ───────────────────────────────────────────────
-  const hmacToken = await createSessionCookie(role, email, resolvedName, {
-    onboardingComplete: false,
-  });
-
-  console.log('[auth/set-password] account activated', {
-    domain:             domain || '[redacted]',
-    supabaseMigrated,
-    hasSupabaseCookies: supabaseCookies.length > 0,
-  });
-
-  return buildSessionResponse(hmacToken, supabaseCookies);
+  const response = NextResponse.json({ ok: true });
+  for (const { name, value, options = {} } of supabaseCookies) {
+    response.cookies.set(name, value, options);
+  }
+  return response;
 }

@@ -8,7 +8,7 @@
 //
 // Access model reminder:
 //   org-scoped     -> organizations, profiles, organization_members,
-//                     access_requests, invites
+//                     access_requests
 //   project-scoped -> projects, project_members, project_experts
 // Project data is reachable only via project ownership or an explicit
 // project_members row — never org-wide.
@@ -129,10 +129,12 @@ export interface Database {
       access_requests: {
         Row: {
           id: string;
+          kind: 'access' | 'seat';
           email: string;
           requested_domain: string | null;
           name: string | null;
           firm_name: string | null;
+          use_case: string | null;
           organization_id: string | null;
           status: 'requested' | 'approved' | 'rejected';
           reviewed_by: string | null;
@@ -141,10 +143,12 @@ export interface Database {
         };
         Insert: {
           id?: string;
+          kind?: 'access' | 'seat';
           email: string;
           requested_domain?: string | null;
           name?: string | null;
           firm_name?: string | null;
+          use_case?: string | null;
           organization_id?: string | null;
           status?: 'requested' | 'approved' | 'rejected';
           reviewed_by?: string | null;
@@ -153,53 +157,16 @@ export interface Database {
         };
         Update: {
           id?: string;
+          kind?: 'access' | 'seat';
           email?: string;
           requested_domain?: string | null;
           name?: string | null;
           firm_name?: string | null;
+          use_case?: string | null;
           organization_id?: string | null;
           status?: 'requested' | 'approved' | 'rejected';
           reviewed_by?: string | null;
           reviewed_at?: string | null;
-          created_at?: string;
-        };
-        Relationships: [];
-      };
-      invites: {
-        Row: {
-          id: string;
-          email: string;
-          organization_id: string;
-          role: 'org_admin' | 'org_member';
-          token_hash: string;
-          status: 'pending' | 'accepted' | 'revoked' | 'expired';
-          invited_by: string | null;
-          expires_at: string;
-          accepted_at: string | null;
-          created_at: string;
-        };
-        Insert: {
-          id?: string;
-          email: string;
-          organization_id: string;
-          role?: 'org_admin' | 'org_member';
-          token_hash: string;
-          status?: 'pending' | 'accepted' | 'revoked' | 'expired';
-          invited_by?: string | null;
-          expires_at: string;
-          accepted_at?: string | null;
-          created_at?: string;
-        };
-        Update: {
-          id?: string;
-          email?: string;
-          organization_id?: string;
-          role?: 'org_admin' | 'org_member';
-          token_hash?: string;
-          status?: 'pending' | 'accepted' | 'revoked' | 'expired';
-          invited_by?: string | null;
-          expires_at?: string;
-          accepted_at?: string | null;
           created_at?: string;
         };
         Relationships: [];
@@ -316,7 +283,6 @@ export type OrganizationRow = Database['public']['Tables']['organizations']['Row
 export type ProfileRow = Database['public']['Tables']['profiles']['Row'];
 export type OrganizationMemberRow = Database['public']['Tables']['organization_members']['Row'];
 export type AccessRequestRow = Database['public']['Tables']['access_requests']['Row'];
-export type InviteRow = Database['public']['Tables']['invites']['Row'];
 export type ProjectRow = Database['public']['Tables']['projects']['Row'];
 export type ProjectMemberRow = Database['public']['Tables']['project_members']['Row'];
 export type ProjectExpertRow = Database['public']['Tables']['project_experts']['Row'];

@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { isAuthEnabled, getSessionPayload, COOKIE_NAME } from './lib/auth';
+import { isAuthEnabled } from './lib/auth';
 import { updateSession } from './lib/supabase/middleware';
 
 // Paths that bypass auth entirely — keep this list minimal.
@@ -38,41 +38,26 @@ export async function middleware(request: NextRequest): Promise<NextResponse> {
   // Skip Supabase refresh here too — these paths don't need session cookies.
   if (PUBLIC_PREFIXES.some(p => pathname.startsWith(p))) return NextResponse.next();
 
-  // --- Stage 2: Supabase session refresh -----------------------------------
-  // Runs on every non-public request.  For all current users (pre-migration),
-  // user is null and this is effectively a no-op — the HMAC path below handles
-  // all access control.  When login is migrated (Stage 3+), user will be
-  // non-null for accounts that have signed in via Supabase Auth, and the HMAC
-  // check will be skipped for them.
-  //
-  // Fails open: if Supabase env vars are missing or the network is down,
-  // updateSession() returns { user: null } and we fall through to HMAC auth.
-  const { response: supabaseResponse, user: supabaseUser, redisUser: supabaseRedisUser } =
-    await updateSession(request);
-  // -------------------------------------------------------------------------
+  // Refresh the Supabase session cookie and read the verified user.
+  // Authorization metadata rides in app_metadata (service-role-written only).
+  const { response, user } = await updateSession(request);
 
   // In development, auth is optional — let everything through.
-  if (!isAuthEnabled()) return supabaseResponse;
+  if (!isAuthEnabled()) return response;
 
-  // If the request carries a valid Supabase session, apply full gating.
-  // redisUser carries role / status / onboardingComplete from Redis so we
-  // don't need a separate lookup here.
-  if (supabaseUser) {
-    // If we couldn't read the Redis record (Redis down, user deleted), send
-    // to login — we can't determine authorization without the metadata.
-    if (!supabaseRedisUser) {
-      const loginUrl = new URL('/login', request.url);
-      loginUrl.searchParams.set('next', pathname);
-      return NextResponse.redirect(loginUrl);
-    }
+  if (user) {
+    const meta = user.app_metadata as {
+      status?:              string;
+      onboarding_complete?: boolean;
+    };
 
     // Disabled accounts are kicked to login.
-    if (supabaseRedisUser.status === 'disabled') {
+    if (meta.status === 'disabled') {
       return NextResponse.redirect(new URL('/login', request.url));
     }
 
-    // Onboarding gate — mirrors the HMAC path exactly.
-    if (supabaseRedisUser.onboardingComplete === false) {
+    // Onboarding gate — new users must finish onboarding before the app.
+    if (meta.onboarding_complete === false) {
       const onboardingAllowed =
         pathname.startsWith('/onboarding') ||
         pathname.startsWith('/api/onboarding') ||
@@ -83,45 +68,18 @@ export async function middleware(request: NextRequest): Promise<NextResponse> {
         }
         return NextResponse.redirect(new URL('/onboarding', request.url));
       }
-      return supabaseResponse;
+      return response;
     }
 
     // Fully authenticated — bounce off marketing/login, pass through elsewhere.
     if (APP_REDIRECT_PATHS.has(pathname)) {
       return NextResponse.redirect(new URL('/app', request.url));
     }
-    return supabaseResponse;
+    return response;
   }
 
-  // No Supabase session — fall through to existing HMAC cookie auth.
-  const cookieValue = request.cookies.get(COOKIE_NAME)?.value ?? '';
-  const payload     = cookieValue ? await getSessionPayload(cookieValue) : null;
-
-  // New users (onboardingComplete explicitly false) are gated to /onboarding.
-  // We check === false, not just falsy, so old sessions (no field) pass through.
-  if (payload && payload.onboardingComplete === false) {
-    const onboardingAllowed =
-      pathname.startsWith('/onboarding') ||
-      pathname.startsWith('/api/onboarding') ||
-      pathname === '/api/auth/logout';
-    if (!onboardingAllowed) {
-      if (pathname.startsWith('/api/')) {
-        return NextResponse.json({ error: 'onboarding_incomplete' }, { status: 403 });
-      }
-      return NextResponse.redirect(new URL('/onboarding', request.url));
-    }
-    return supabaseResponse;
-  }
-
-  // Authenticated users on the marketing site or login page go straight to the app.
-  if (payload && APP_REDIRECT_PATHS.has(pathname)) {
-    return NextResponse.redirect(new URL('/app', request.url));
-  }
-
-  // Public marketing and auth pages — unauthenticated users can view them.
-  if (PUBLIC_PATHS.has(pathname)) return supabaseResponse;
-
-  if (payload) return supabaseResponse;
+  // No session — public pages pass, everything else goes to login.
+  if (PUBLIC_PATHS.has(pathname)) return response;
 
   if (pathname.startsWith('/api/')) {
     return NextResponse.json({ error: 'unauthorized' }, { status: 401 });

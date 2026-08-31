@@ -1,12 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createServerClient } from '@supabase/ssr';
-import { COOKIE_NAME } from '../../../../lib/auth';
+import { LEGACY_COOKIE_NAME } from '../../../../lib/auth';
 
 export async function POST(request: NextRequest): Promise<Response> {
   const response = NextResponse.json({ ok: true });
 
-  // ── 1. Clear the HMAC session cookie ─────────────────────────────────────
-  response.cookies.set(COOKIE_NAME, '', {
+  // ── 1. Clear the legacy HMAC session cookie (no longer issued) ───────────
+  response.cookies.set(LEGACY_COOKIE_NAME, '', {
     httpOnly: true,
     maxAge:   0,
     path:     '/',
@@ -49,9 +49,9 @@ export async function POST(request: NextRequest): Promise<Response> {
   // refresh token and any chunked sb-*-auth-token.0/.1 parts — can survive.
   // A surviving refresh token is silently re-minted by the middleware session
   // refresh (updateSession → getUser) on the next request, trapping the user in
-  // a half-logged-out state (HMAC cleared, Supabase alive) where `/` keeps
-  // redirecting to `/app`. Clear every sb-* cookie here so logout always fully
-  // ends the session regardless of signOut()'s outcome.
+  // a half-logged-out state where `/` keeps redirecting to `/app`. Clear every
+  // sb-* cookie here so logout always fully ends the session regardless of
+  // signOut()'s outcome.
   for (const { name } of request.cookies.getAll()) {
     if (name.startsWith('sb-')) {
       response.cookies.set(name, '', {

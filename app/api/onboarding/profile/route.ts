@@ -1,5 +1,5 @@
 import { NextRequest } from 'next/server';
-import { routeAuthGuard, getSessionPayload, createSessionCookie, COOKIE_NAME, SESSION_TTL_MS } from '../../../../lib/auth';
+import { routeAuthGuard, getSessionUser } from '../../../../lib/auth';
 import { upsertUser } from '../../../../lib/firmStore';
 
 export async function POST(request: NextRequest): Promise<Response> {
@@ -19,13 +19,14 @@ export async function POST(request: NextRequest): Promise<Response> {
   if (!firstName) return Response.json({ error: 'validation_error', message: 'First name is required.' }, { status: 400 });
   if (!lastName)  return Response.json({ error: 'validation_error', message: 'Last name is required.' },  { status: 400 });
 
-  // Get full session payload — needed to re-issue cookie with updated fields
-  const cookieValue = request.cookies.get(COOKIE_NAME)?.value ?? '';
-  const payload     = cookieValue ? await getSessionPayload(cookieValue) : null;
-  if (!payload) return Response.json({ error: 'unauthorized' }, { status: 401 });
+  const sessionUser = await getSessionUser(request);
+  if (!sessionUser.email) return Response.json({ error: 'unauthorized' }, { status: 401 });
 
+  // Persists to profiles and syncs app_metadata (onboarding_complete,
+  // first_name), so middleware and NavBar reflect the completed state on the
+  // next request — no session cookie re-mint needed.
   try {
-    await upsertUser(payload.email, {
+    await upsertUser(sessionUser.email, {
       firstName,
       lastName,
       ...(title ? { title } : {}),
@@ -35,29 +36,5 @@ export async function POST(request: NextRequest): Promise<Response> {
     return Response.json({ error: 'internal_error' }, { status: 500 });
   }
 
-  // Issue a refreshed session cookie with onboardingComplete: true and firstName
-  // so middleware and NavBar reflect the completed state immediately.
-  const newToken = await createSessionCookie(payload.role, payload.email, payload.firmName, {
-    firstName,
-    onboardingComplete: true,
-  });
-
-  const isProduction = process.env.NODE_ENV === 'production';
-  const maxAge       = Math.floor(SESSION_TTL_MS / 1000);
-  const setCookie    = [
-    `${COOKIE_NAME}=${newToken}`,
-    'HttpOnly',
-    `Max-Age=${maxAge}`,
-    'Path=/',
-    'SameSite=Lax',
-    ...(isProduction ? ['Secure'] : []),
-  ].join('; ');
-
-  return new Response(JSON.stringify({ ok: true }), {
-    status: 200,
-    headers: {
-      'Content-Type': 'application/json',
-      'Set-Cookie':   setCookie,
-    },
-  });
+  return Response.json({ ok: true });
 }

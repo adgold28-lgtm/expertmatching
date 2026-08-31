@@ -96,15 +96,13 @@ export async function POST(request: NextRequest): Promise<Response> {
       return Response.json({ ok: true });
     }
 
-    // Upsert as pending
+    // Upsert as pending (auth account gets a random password; the invite
+    // set-password flow replaces it).
     await upsertUser(email, {
-      firmDomain:           domain,
-      firmName:             firm.name,
-      role:                 'user',
-      status:               'pending',
-      passwordHash:         existing?.passwordHash ?? '',
-      createdAt:            existing?.createdAt    ?? Date.now(),
-      inviteTokenExpiresAt: Date.now() + 24 * 60 * 60 * 1000,
+      firmDomain: domain,
+      firmName:   firm.name,
+      role:       'user',
+      status:     'pending',
     });
 
     // Generate + store invite token

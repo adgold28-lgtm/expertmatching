@@ -8,7 +8,6 @@ const REQUIRED_VARS = [
   'AVAILABILITY_TOKEN_SECRET',
   'SIGNUP_TOKEN_SECRET',
   'ENCRYPTION_KEY',
-  'SESSION_SECRET',
   'STRIPE_SECRET_KEY',
   'STRIPE_WEBHOOK_SECRET',
   'ZOOM_WEBHOOK_SECRET_TOKEN',
@@ -32,6 +31,10 @@ const REQUIRED_VARS = [
   'RESEND_WEBHOOK_SECRET',
   // Phase 6 — Stripe Connect
   'STRIPE_CONNECT_CLIENT_ID',
+  // Supabase — auth + source-of-truth Postgres
+  'NEXT_PUBLIC_SUPABASE_URL',
+  'NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY',
+  'SUPABASE_SERVICE_ROLE_KEY',
 ] as const;
 
 export function validateEnv(): void {

@@ -8,22 +8,27 @@
 // Required env vars (in addition to the public vars):
 //   SUPABASE_SERVICE_ROLE_KEY  — from Supabase dashboard → Settings → API
 //
-// Fails open: all exports return null / false when env vars are absent so
-// callers can degrade gracefully to Redis-only auth.
+// Postgres (via this client) is the source of truth for durable domain data.
+// The auth user's app_metadata carries a denormalized copy of the fields that
+// middleware and route guards need on every request (role, status, firm,
+// onboarding state) so no extra DB round-trip is required per request.
+// app_metadata is writable ONLY by the service role — unlike user_metadata,
+// which end users can rewrite via supabase.auth.updateUser() — so it is the
+// only safe home for authorization data.
 
+import { randomBytes } from 'crypto';
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 import type { Database } from './database.types';
 
 let _adminClient: SupabaseClient<Database> | null = null;
 
 /**
- * Returns a Supabase admin (service-role) client typed to the gated-access
- * schema, or null if the required env vars are absent. Singleton — one client
- * per process.
+ * Returns a Supabase admin (service-role) client typed to the app schema, or
+ * null if the required env vars are absent. Singleton — one client per process.
  *
  * The service-role key BYPASSES Row Level Security, so this client is the only
- * sanctioned way for server-side platform-admin routes to read/write across
- * organizations and projects. NEVER import it into a client component.
+ * sanctioned way for server-side routes to read/write across organizations and
+ * projects. NEVER import it into a client component.
  */
 export function getSupabaseAdminClient(): SupabaseClient<Database> | null {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
@@ -41,67 +46,119 @@ export function getSupabaseAdminClient(): SupabaseClient<Database> | null {
 }
 
 /**
- * Canonical, typed service-role client accessor for the new Supabase-backed
- * tables (organizations, profiles, projects, project data, ...). Alias of
- * getSupabaseAdminClient(); same singleton. Returns null when env vars are
- * absent so callers can degrade gracefully to Redis-only behavior.
+ * Canonical, typed service-role client accessor. Alias of
+ * getSupabaseAdminClient(); same singleton.
  */
 export const getServiceRoleClient = getSupabaseAdminClient;
 
 /**
- * Ensures a Supabase auth account exists for the given email with the given
- * plaintext password.  Creates the user if they don't exist in Supabase;
- * updates their password and metadata if they do.
+ * Authorization metadata mirrored onto the auth user's app_metadata.
+ * Snake_case keys — this is the wire format read by middleware and guards.
+ */
+export interface AppMetadata {
+  role?:                'admin' | 'user';
+  status?:              'pending' | 'active' | 'disabled';
+  firm_domain?:         string;
+  firm_name?:           string;
+  first_name?:          string;
+  onboarding_complete?: boolean;
+}
+
+/** Looks up the auth user id (== profiles.id) for an email, or null. */
+export async function getAuthUserIdByEmail(email: string): Promise<string | null> {
+  const admin = getSupabaseAdminClient();
+  if (!admin) return null;
+  const { data, error } = await admin
+    .from('profiles')
+    .select('id')
+    .eq('email', email.toLowerCase().trim())
+    .maybeSingle();
+  if (error || !data) return null;
+  return data.id;
+}
+
+/**
+ * Ensures a Supabase auth account exists for the given email, returning its
+ * id (== profiles.id) or null on failure.
  *
- * Marks email as pre-confirmed — no verification email is sent.
- * User metadata (role, firmName, etc.) is stored in the Supabase user record
- * for informational purposes; Redis remains the authoritative source.
- *
- * Returns true on success, false if the admin client is unavailable or if
- * the Supabase operation fails.  Callers must fall back to HMAC-only auth.
+ * - Creates the user (email pre-confirmed) if absent. New accounts without an
+ *   explicit password get an unguessable random one — the invite set-password
+ *   flow replaces it before first login.
+ * - If `password` is provided and the user already exists, their password is
+ *   updated (invite acceptance / admin reset).
+ * - `metadata`, when provided, is merged into app_metadata.
  */
 export async function ensureSupabaseUser(
   email: string,
-  password: string,
-  metadata: {
-    role:               'admin' | 'user';
-    firmName?:          string;
-    firmDomain?:        string;
-    onboardingComplete?: boolean;
-  },
-): Promise<boolean> {
+  password: string | null,
+  metadata?: AppMetadata,
+): Promise<string | null> {
   const admin = getSupabaseAdminClient();
-  if (!admin) return false;
+  if (!admin) return null;
+  const normalized = email.toLowerCase().trim();
 
   try {
-    // Attempt to create the user; fall through to update if they already exist.
-    const { error: createErr } = await admin.auth.admin.createUser({
-      email,
-      password,
-      email_confirm:  true,
-      user_metadata:  metadata,
-    });
+    const existingId = await getAuthUserIdByEmail(normalized);
 
-    if (!createErr) return true;
+    if (!existingId) {
+      const { data, error } = await admin.auth.admin.createUser({
+        email:         normalized,
+        password:      password ?? randomBytes(24).toString('base64url'),
+        email_confirm: true,
+        ...(metadata ? { app_metadata: { ...metadata } } : {}),
+      });
+      if (error || !data.user) return null;
+      return data.user.id;
+    }
 
-    // User likely already exists — find by email and update password + metadata.
-    // listUsers is acceptable here: this is an infrequent server-side operation
-    // and B2B firms have tens, not millions, of users.
-    const { data: listData, error: listErr } = await admin.auth.admin.listUsers({ perPage: 1000 });
-    if (listErr || !listData?.users) return false;
-
-    const existing = listData.users.find(
-      u => u.email?.toLowerCase() === email.toLowerCase(),
-    );
-    if (!existing) return false;
-
-    const { error: updateErr } = await admin.auth.admin.updateUserById(existing.id, {
-      password,
-      user_metadata: metadata,
-    });
-    return !updateErr;
+    if (password || metadata) {
+      const patch: { password?: string; app_metadata?: Record<string, unknown> } = {};
+      if (password) patch.password = password;
+      if (metadata) {
+        // Merge with the current app_metadata so partial updates don't drop keys.
+        const { data: current } = await admin.auth.admin.getUserById(existingId);
+        patch.app_metadata = { ...(current?.user?.app_metadata ?? {}), ...metadata };
+      }
+      const { error } = await admin.auth.admin.updateUserById(existingId, patch);
+      if (error) return null;
+    }
+    return existingId;
   } catch {
-    // Network error, wrong URL, etc. — fail open.
+    // Network error, wrong URL, etc.
+    return null;
+  }
+}
+
+/**
+ * Merges the given fields into the auth user's app_metadata. No-op (false) if
+ * the user does not exist or the admin client is unavailable.
+ */
+export async function syncAppMetadata(email: string, metadata: AppMetadata): Promise<boolean> {
+  const id = await getAuthUserIdByEmail(email);
+  if (!id) return false;
+  const admin = getSupabaseAdminClient();
+  if (!admin) return false;
+  try {
+    const { data: current } = await admin.auth.admin.getUserById(id);
+    const { error } = await admin.auth.admin.updateUserById(id, {
+      app_metadata: { ...(current?.user?.app_metadata ?? {}), ...metadata },
+    });
+    return !error;
+  } catch {
+    return false;
+  }
+}
+
+/** Permanently deletes the auth user (cascades to profiles and memberships). */
+export async function deleteSupabaseUser(email: string): Promise<boolean> {
+  const id = await getAuthUserIdByEmail(email);
+  if (!id) return false;
+  const admin = getSupabaseAdminClient();
+  if (!admin) return false;
+  try {
+    const { error } = await admin.auth.admin.deleteUser(id);
+    return !error;
+  } catch {
     return false;
   }
 }
