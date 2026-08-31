@@ -12,19 +12,25 @@
 // callers can degrade gracefully to Redis-only auth.
 
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
+import type { Database } from './database.types';
 
-let _adminClient: SupabaseClient | null = null;
+let _adminClient: SupabaseClient<Database> | null = null;
 
 /**
- * Returns a Supabase admin client, or null if the required env vars are absent.
- * Singleton — one client per process.
+ * Returns a Supabase admin (service-role) client typed to the gated-access
+ * schema, or null if the required env vars are absent. Singleton — one client
+ * per process.
+ *
+ * The service-role key BYPASSES Row Level Security, so this client is the only
+ * sanctioned way for server-side platform-admin routes to read/write across
+ * organizations and projects. NEVER import it into a client component.
  */
-export function getSupabaseAdminClient(): SupabaseClient | null {
+export function getSupabaseAdminClient(): SupabaseClient<Database> | null {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
   const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
   if (!url || !key) return null;
   if (!_adminClient) {
-    _adminClient = createClient(url, key, {
+    _adminClient = createClient<Database>(url, key, {
       auth: {
         autoRefreshToken: false,
         persistSession:   false,
@@ -33,6 +39,14 @@ export function getSupabaseAdminClient(): SupabaseClient | null {
   }
   return _adminClient;
 }
+
+/**
+ * Canonical, typed service-role client accessor for the new Supabase-backed
+ * tables (organizations, profiles, projects, project data, ...). Alias of
+ * getSupabaseAdminClient(); same singleton. Returns null when env vars are
+ * absent so callers can degrade gracefully to Redis-only behavior.
+ */
+export const getServiceRoleClient = getSupabaseAdminClient;
 
 /**
  * Ensures a Supabase auth account exists for the given email with the given

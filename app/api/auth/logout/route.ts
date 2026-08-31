@@ -38,9 +38,28 @@ export async function POST(request: NextRequest): Promise<Response> {
 
       await supabase.auth.signOut();
     } catch {
-      // Supabase unavailable — HMAC cookie is already cleared above, which is
-      // sufficient for the current session.  Supabase session cookies will
-      // expire on their own schedule.
+      // Supabase unreachable or signOut() failed — fall through to the
+      // deterministic clearing below so the session still ends.
+    }
+  }
+
+  // ── 3. Deterministically expire all Supabase auth cookies ────────────────
+  // signOut() above is best-effort. If it throws (network error, already-
+  // invalid token) or misses a chunk, the Supabase auth cookies — including the
+  // refresh token and any chunked sb-*-auth-token.0/.1 parts — can survive.
+  // A surviving refresh token is silently re-minted by the middleware session
+  // refresh (updateSession → getUser) on the next request, trapping the user in
+  // a half-logged-out state (HMAC cleared, Supabase alive) where `/` keeps
+  // redirecting to `/app`. Clear every sb-* cookie here so logout always fully
+  // ends the session regardless of signOut()'s outcome.
+  for (const { name } of request.cookies.getAll()) {
+    if (name.startsWith('sb-')) {
+      response.cookies.set(name, '', {
+        httpOnly: true,
+        maxAge:   0,
+        path:     '/',
+        sameSite: 'lax',
+      });
     }
   }
 
