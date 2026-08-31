@@ -28,9 +28,20 @@ const STEPS: Array<{ id: WorkflowStep; label: string }> = [
   { id: 'deliver',  label: 'Deliver'  },
 ];
 
+// Every status that belongs to the outreach cohort. Mid-pipeline reply states
+// (email2_sent → rejected_after_outreach) must be listed here or those experts
+// vanish from the Outreach grid. rejected_after_outreach stays visible — it is
+// an outcome of outreach, styled as declined.
 const OUTREACH_STATUSES: ExpertStatus[] = [
-  'shortlisted', 'contact_found', 'outreach_drafted', 'contacted', 'replied', 'scheduled', 'completed',
+  'shortlisted', 'contact_found', 'outreach_drafted', 'contacted', 'email2_sent',
+  'scheduling_sent', 'replied', 'rate_negotiation', 'conflict_flagged',
+  'scheduled', 'completed', 'rejected_after_outreach',
 ];
+
+// Experts whose vetting call is booked, done, or being arranged off a reply —
+// shared by the Screen cohort and the "record outcomes" next action so the two
+// cannot drift apart.
+const SCREEN_STATUSES: ExpertStatus[] = ['replied', 'scheduled', 'completed'];
 
 // ─── Step summary & next action ───────────────────────────────────────────────
 
@@ -82,7 +93,7 @@ function getNextAction(project: Project): NextAction | null {
     return { id: 'source_experts', step: 'source', message: 'Shortlist candidates from the discovery pool — they appear in Outreach immediately.', cta: 'Go to Source' };
   }
   // Experts who've had their vetting call and need a screening outcome recorded
-  const callDone   = active.filter(e => e.status === 'scheduled' || e.status === 'completed' || e.status === 'replied');
+  const callDone   = active.filter(e => SCREEN_STATUSES.includes(e.status));
   const postScreen = active.filter(e =>
     e.screeningStatus && e.screeningStatus !== 'not_screened' && e.screeningStatus !== 'vetting_questions_ready',
   );
@@ -1322,9 +1333,7 @@ function ProjectPageInner() {
   const sourceExperts     = project.experts.filter(e => e.status !== 'rejected');
   const outreachExperts   = project.experts.filter(e => OUTREACH_STATUSES.includes(e.status));
   // Screen shows experts who've had (or are about to have) their vetting call
-  const screenExperts     = project.experts.filter(
-    e => e.status === 'scheduled' || e.status === 'replied' || e.status === 'completed',
-  );
+  const screenExperts     = project.experts.filter(e => SCREEN_STATUSES.includes(e.status));
   const deliverExperts    = project.experts.filter(e => e.screeningStatus === 'client_ready' || e.recommendToClient === true);
   const hasExpertsSourced = sourceExperts.length > 0;
 

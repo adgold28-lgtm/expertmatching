@@ -6,39 +6,12 @@ import ContactSection from './ContactSection';
 import EmailStatusBadge from './EmailStatusBadge';
 import OutreachModal from './OutreachModal';
 import { isLinkedInProfileUrl } from '../lib/domainSuggestions';
+import { STATUS_META } from '../lib/expertPipeline';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
 const TIMEZONES = ['ET', 'CT', 'MT', 'PT', 'GMT'] as const;
 type Timezone = (typeof TIMEZONES)[number];
-
-const STATUS_PILL: Record<string, string> = {
-  contact_found:            'text-sky-600   border-sky-200   bg-sky-50',
-  outreach_drafted:         'text-sky-700   border-sky-300   bg-sky-50',
-  contacted:                'text-amber-700 border-amber-300 bg-amber-50',
-  email2_sent:              'text-amber-700 border-amber-300 bg-amber-50',
-  replied:                  'text-amber-700 border-amber-400 bg-amber-50',
-  scheduling_sent:          'text-teal-700  border-teal-300  bg-teal-50',
-  scheduled:                'text-green-700 border-green-200 bg-green-50',
-  completed:                'text-navy      border-navy/20   bg-navy/5',
-  rate_negotiation:         'text-amber-700 border-amber-400 bg-amber-50',
-  conflict_flagged:         'text-red-700   border-red-300   bg-red-50',
-  rejected_after_outreach:  'text-slate-500 border-slate-200 bg-slate-50',
-};
-
-const STATUS_LABEL: Record<string, string> = {
-  contact_found:            'Contact Found',
-  outreach_drafted:         'Draft Ready',
-  contacted:                'Email 1 Sent',
-  email2_sent:              'Email 2 Sent',
-  replied:                  'Replied',
-  scheduling_sent:          'Scheduling Sent',
-  scheduled:                'Scheduled',
-  completed:                'Completed',
-  rate_negotiation:         'Rate Negotiation',
-  conflict_flagged:         'Conflict Flagged',
-  rejected_after_outreach:  'Declined',
-};
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -200,7 +173,9 @@ export default function OutreachCard({
   const [completeRateError,   setCompleteRateError]  = useState('');
 
   const status          = projectExpert.status as ExpertStatus;
-  const statusPillClass = STATUS_PILL[status] ?? 'text-muted border-frame';
+  // Fallback guards against a status persisted before it existed in STATUS_META.
+  const statusMeta      = STATUS_META[status] ?? { label: status, classes: 'text-muted border-frame' };
+  const statusPillClass = statusMeta.classes;
 
   const linkedInLinks = (expert.source_links ?? []).filter(
     l => l.type === 'LinkedIn' && isLinkedInProfileUrl(l.url),
@@ -443,7 +418,7 @@ export default function OutreachCard({
             className={`shrink-0 text-[9px] uppercase tracking-widest border font-medium px-2 py-0.5 ${statusPillClass}`}
             style={{ letterSpacing: '0.12em' }}
           >
-            {STATUS_LABEL[status] ?? status}
+            {statusMeta.label}
           </span>
         </div>
       </div>
