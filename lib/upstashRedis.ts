@@ -36,7 +36,12 @@ export class UpstashRedis {
         const text = await res.text().catch(() => '');
         throw new Error(`Upstash HTTP ${res.status}: ${text.slice(0, 200)}`);
       }
-      const data = await res.json() as PipelineEntry[];
+      const data = await res.json() as PipelineEntry[] | { error: string };
+      // Account-level failures (e.g. Upstash rate limiting the whole database)
+      // return {"error": "..."} instead of a result array.
+      if (!Array.isArray(data)) {
+        throw new Error(`Upstash unavailable: ${('error' in data ? data.error : 'unexpected response').slice(0, 120)}`);
+      }
       for (const entry of data) {
         if (entry.error) throw new Error(`Upstash error: ${entry.error}`);
       }
