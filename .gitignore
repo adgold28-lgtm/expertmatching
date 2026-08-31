@@ -20,3 +20,6 @@ audit-export*.zip
 # Local audit exports
 audit-*/
 audit-*.zip
+
+# Supabase CLI cache
+supabase/.temp/
