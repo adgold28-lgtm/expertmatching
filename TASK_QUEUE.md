@@ -35,8 +35,15 @@ Last updated: 2026-08-31
 ## NEXT (makes the product real)
 - [ ] Expert sourcing pipeline improvements
 - [ ] Outreach generation with tone controls (formal → casual slider)
-- [ ] Reply tracking: per-expert status 
+- [x] Reply tracking: per-expert status
       (Outreach Sent → Replied Yes → Scheduled → Completed → Billed)
+      — DONE 2026-08-31. lib/expertPipeline.ts derives the stage from
+      status + replyIntent + paymentStatus (no schema change); PipelineBar
+      strip on the Outreach step shows live per-stage counts + click-to-filter;
+      OutreachCard shows a stage pill where it adds info (Replied Yes /
+      Needs Attention / Billed). Also fixed: expert PUT/POST allowlists
+      rejected 5 of 14 statuses (live 400s from OutreachCard), and the
+      Outreach tab dropped mid-pipeline experts from the grid.
 - [ ] Shareable shortlist link (expertmatch.fit/brief/xyz) viewable without login
 
 ## LATER (makes the product great)
