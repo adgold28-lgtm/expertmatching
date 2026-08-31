@@ -23,3 +23,6 @@ audit-*.zip
 
 # Supabase CLI cache
 supabase/.temp/
+
+# Agent skills cache (npx skills)
+.agents/
