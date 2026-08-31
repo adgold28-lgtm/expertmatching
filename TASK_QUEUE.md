@@ -7,6 +7,11 @@ Last updated: 2026-08-31
       (ashergoldsteinbusiness@gmail.com); scripts/smoke-cutover.ts passes 16/16
       (login, project CRUD, cross-user IDOR 404, direct-RLS zero rows, logout
       clears all sb-* cookies). Closes substance of issues #25/#30/#31.
+- [x] Optimistic concurrency on project_experts writes — DONE 2026-08-31.
+      updateExpertStatus/addExpertNote now guard the data-blob rewrite on the
+      previously-read updated_at and retry on conflict (mutateExpert helper in
+      lib/projectStore.ts); concurrent writers (inbound-email webhook vs UI
+      status clicks) no longer clobber each other's fields.
 - [ ] Supabase cutover — deploy: set SUPABASE_SERVICE_ROLE_KEY in the Vercel
       project **expertmatching** (Settings → Environment Variables; URL +
       publishable key may already exist — verify), merge supabase-cutover,
