@@ -9,10 +9,12 @@ import ProjectExpertCard from '../../../components/ProjectExpertCard';
 import { downloadProjectBriefPdf } from '../../../lib/exportBrief';
 import ScreeningCard from '../../../components/ScreeningCard';
 import OutreachCard from '../../../components/OutreachCard';
+import PipelineBar from '../../../components/PipelineBar';
 import ClientReadyCard from '../../../components/ClientReadyCard';
 import ExpertCard from '../../../components/ExpertCard';
 import ClientSchedulingSection from '../../../components/ClientSchedulingSection';
 import { useFocusTrap } from '../../../lib/useFocusTrap';
+import { pipelineStage, STAGE_META, type PipelineStage } from '../../../lib/expertPipeline';
 
 // ─── Workflow step config ─────────────────────────────────────────────────────
 
@@ -1263,6 +1265,8 @@ function ProjectPageInner() {
   const [currentUserEmail, setCurrentUserEmail] = useState<string>('');
   const [currentUserRole,  setCurrentUserRole]  = useState<'admin' | 'user'>('user');
   const [tierFilter,  setTierFilter]  = useState<SeniorityTier | 'all'>('all');
+  // Outreach pipeline strip — null means "All". Purely client-side.
+  const [stageFilter, setStageFilter] = useState<PipelineStage | null>(null);
 
   useEffect(() => {
     fetch(`/api/projects/${projectId}`)
@@ -1332,6 +1336,11 @@ function ProjectPageInner() {
   const nextAction        = getNextAction(project);
   const sourceExperts     = project.experts.filter(e => e.status !== 'rejected');
   const outreachExperts   = project.experts.filter(e => OUTREACH_STATUSES.includes(e.status));
+  // Pipeline-stage filter applied on top of the outreach cohort. Derived on every
+  // render from project.experts, so a card update moves both cards and counts.
+  const visibleOutreachExperts = stageFilter
+    ? outreachExperts.filter(pe => pipelineStage(pe) === stageFilter)
+    : outreachExperts;
   // Screen shows experts who've had (or are about to have) their vetting call
   const screenExperts     = project.experts.filter(e => SCREEN_STATUSES.includes(e.status));
   const deliverExperts    = project.experts.filter(e => e.screeningStatus === 'client_ready' || e.recommendToClient === true);
@@ -1593,19 +1602,43 @@ function ProjectPageInner() {
                 }
               />
             ) : (
-              <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-5">
-                {outreachExperts.map(pe => (
-                  <OutreachCard
-                    key={pe.expert.id}
-                    projectExpert={pe}
-                    projectId={projectId}
-                    query={project.researchQuestion}
-                    onUpdate={handleExpertUpdate}
-                    onContactUpdated={handleExpertUpdate}
-                    onViewProfile={() => setProfilePE(pe)}
+              <>
+                {/* ── Pipeline summary + stage filter ── */}
+                <PipelineBar
+                  experts={outreachExperts}
+                  activeStage={stageFilter}
+                  onStageChange={setStageFilter}
+                />
+
+                {/* Only a stage filter can empty this grid — the cohort itself is non-empty here. */}
+                {stageFilter && visibleOutreachExperts.length === 0 ? (
+                  <EmptyStep
+                    message={`No experts at the ${STAGE_META[stageFilter].label} stage right now.`}
+                    action={
+                      <button
+                        onClick={() => setStageFilter(null)}
+                        className="text-xs text-muted hover:text-navy underline"
+                      >
+                        Clear filter — show all {outreachExperts.length} experts
+                      </button>
+                    }
                   />
-                ))}
-              </div>
+                ) : (
+                  <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-5">
+                    {visibleOutreachExperts.map(pe => (
+                      <OutreachCard
+                        key={pe.expert.id}
+                        projectExpert={pe}
+                        projectId={projectId}
+                        query={project.researchQuestion}
+                        onUpdate={handleExpertUpdate}
+                        onContactUpdated={handleExpertUpdate}
+                        onViewProfile={() => setProfilePE(pe)}
+                      />
+                    ))}
+                  </div>
+                )}
+              </>
             )}
           </div>
         )}

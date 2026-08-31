@@ -6,12 +6,22 @@ import ContactSection from './ContactSection';
 import EmailStatusBadge from './EmailStatusBadge';
 import OutreachModal from './OutreachModal';
 import { isLinkedInProfileUrl } from '../lib/domainSuggestions';
-import { STATUS_META } from '../lib/expertPipeline';
+import { STATUS_META, STAGE_META, pipelineStage, type PipelineStage } from '../lib/expertPipeline';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
 const TIMEZONES = ['ET', 'CT', 'MT', 'PT', 'GMT'] as const;
 type Timezone = (typeof TIMEZONES)[number];
+
+// A second pill appears only when the stage says something the status pill
+// does not: 'Replied' alone hides the intent (interested vs needs a look), and
+// a completed engagement that is invoiced or paid is billed. For every other
+// stage — including rate_negotiation / conflict_flagged, whose status pills
+// already read as needing attention — it would duplicate, so it is suppressed.
+function badgeStage(stage: PipelineStage, status: string): boolean {
+  if (stage === 'replied_yes' || stage === 'billed') return true;
+  return stage === 'needs_attention' && status === 'replied';
+}
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -176,6 +186,9 @@ export default function OutreachCard({
   // Fallback guards against a status persisted before it existed in STATUS_META.
   const statusMeta      = STATUS_META[status] ?? { label: status, classes: 'text-muted border-frame' };
   const statusPillClass = statusMeta.classes;
+
+  const stage     = pipelineStage(projectExpert);
+  const stageMeta = badgeStage(stage, status) ? STAGE_META[stage] : null;
 
   const linkedInLinks = (expert.source_links ?? []).filter(
     l => l.type === 'LinkedIn' && isLinkedInProfileUrl(l.url),
@@ -414,12 +427,22 @@ export default function OutreachCard({
             )}
             <p className="text-[11px] text-muted truncate mt-0.5">{expert.title} · {expert.company}</p>
           </div>
-          <span
-            className={`shrink-0 text-[9px] uppercase tracking-widest border font-medium px-2 py-0.5 ${statusPillClass}`}
-            style={{ letterSpacing: '0.12em' }}
-          >
-            {statusMeta.label}
-          </span>
+          <div className="shrink-0 flex items-center justify-end gap-1.5 flex-wrap">
+            <span
+              className={`shrink-0 text-[9px] uppercase tracking-widest border font-medium px-2 py-0.5 ${statusPillClass}`}
+              style={{ letterSpacing: '0.12em' }}
+            >
+              {statusMeta.label}
+            </span>
+            {stageMeta && (
+              <span
+                className={`shrink-0 text-[9px] uppercase tracking-widest border font-medium px-2 py-0.5 ${stageMeta.classes}`}
+                style={{ letterSpacing: '0.12em' }}
+              >
+                {stageMeta.label}
+              </span>
+            )}
+          </div>
         </div>
       </div>
 
