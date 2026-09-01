@@ -1,36 +1,191 @@
-// TODO(calendar-integration): This is a stub. Replace with real OAuth flows.
+// POST /api/onboarding/calendar — link a Calendly or manual calendar.
 //
-// Google Calendar requirements:
-//   - GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, GOOGLE_REDIRECT_URI
-//   - Scopes: https://www.googleapis.com/auth/calendar.readonly
-//   - Redirect to Google OAuth → handle callback → store refresh_token on UserRecord
+// Session-authenticated (routeAuthGuard). Writes the caller's single row in
+// public.user_calendar_connections via lib/calendarConnections.ts.
 //
-// Outlook (Microsoft Graph) requirements:
-//   - OUTLOOK_CLIENT_ID, OUTLOOK_CLIENT_SECRET, OUTLOOK_REDIRECT_URI
-//   - Scopes: Calendars.Read, offline_access
-//   - Same OAuth callback pattern
+// Body (one of):
+//   { provider: 'calendly', calendlyUrl: 'https://calendly.com/...', timezone?: 'America/New_York' }
+//   { provider: 'manual',   slots: AvailabilitySlot[],               timezone?: 'America/New_York' }
 //
-// Suggested real implementation:
-//   POST → initiate OAuth: return { authUrl } and redirect client
-//   GET  → OAuth callback: exchange code for tokens, store, mark user calendarConnected: true
+// Google is NOT accepted here — it is a browser redirect, not a JSON POST:
+//   GET /api/onboarding/calendar/google[?tz=<IANA zone>]
+// A `provider: 'google'` body gets 400 use_oauth_redirect with the path to use.
+//
+// The Calendly URL is stored, not resolved: slots are fetched lazily at
+// scheduling time by getClientSlotsForUser(), so a slow Calendly API never
+// blocks onboarding. (The expert-facing submit route resolves eagerly because
+// it has no later chance to.)
+//
+// Responses:
+//   200 { ok: true, connected: true, provider }
+//   400 { error: 'invalid_json' | 'invalid_provider' | 'use_oauth_redirect'
+//                | 'invalid_calendly_url' | 'invalid_timezone' | 'no_slots' }
+//   401 { error: 'unauthorized' }   413 { error: 'request_too_large' }
+//   415 { error: 'content_type_required' }   500 { error: 'internal_error' }
+//
+// NEVER logs: email addresses, Calendly URLs, or slot times.
 
 import { NextRequest } from 'next/server';
-import { routeAuthGuard } from '../../../../lib/auth';
+import { routeAuthGuard, getSessionUser } from '../../../../lib/auth';
+import {
+  upsertCalendarConnection,
+  normalizeTimezone,
+} from '../../../../lib/calendarConnections';
+import type { AvailabilitySlot } from '../../../../types';
+
+const MAX_BODY         = 16_384;  // bytes — manual slots are the largest payload
+const MAX_URL_CHARS    = 300;
+const MAX_SLOTS        = 60;
+const MAX_SLOT_FIELD   = 40;      // chars per slot string field
+const GOOGLE_AUTH_PATH = '/api/onboarding/calendar/google';
+
+// ─── Validation helpers ───────────────────────────────────────────────────────
+
+/** Trims, strips control characters, and caps length. Non-strings → ''. */
+function cleanString(value: unknown, max: number): string {
+  if (typeof value !== 'string') return '';
+  return value.replace(/[\x00-\x1f\x7f]/g, ' ').trim().slice(0, max);
+}
+
+/** Mirrors the availability submit route's check: a real calendly.com link. */
+function isValidCalendlyUrl(url: string): boolean {
+  if (!url.startsWith('https://calendly.com/')) return false;
+  try {
+    const u = new URL(url);
+    return u.hostname === 'calendly.com' && u.pathname.length > 1;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Narrows and sanitizes user-supplied slots. Anything without both a start and
+ * an end time is dropped; the list is capped at MAX_SLOTS.
+ */
+function sanitizeSlots(value: unknown, fallbackTimezone: string): AvailabilitySlot[] {
+  if (!Array.isArray(value)) return [];
+
+  const slots: AvailabilitySlot[] = [];
+
+  for (const item of value) {
+    if (slots.length >= MAX_SLOTS) break;
+    if (item === null || typeof item !== 'object' || Array.isArray(item)) continue;
+
+    const rec       = item as Record<string, unknown>;
+    const startTime = cleanString(rec.startTime, MAX_SLOT_FIELD);
+    const endTime   = cleanString(rec.endTime,   MAX_SLOT_FIELD);
+    if (!startTime || !endTime) continue;
+
+    const dayOfWeek  = cleanString(rec.dayOfWeek, MAX_SLOT_FIELD);
+    const date       = cleanString(rec.date,      MAX_SLOT_FIELD);
+    const timezone   = cleanString(rec.timezone,  MAX_SLOT_FIELD) || fallbackTimezone;
+    const confidence = rec.confidence;
+
+    slots.push({
+      startTime,
+      endTime,
+      timezone,
+      ...(dayOfWeek ? { dayOfWeek } : {}),
+      ...(date      ? { date }      : {}),
+      ...(confidence === 'high' || confidence === 'medium' || confidence === 'low'
+        ? { confidence }
+        : { confidence: 'high' as const }),
+    });
+  }
+
+  return slots;
+}
+
+// ─── Handler ──────────────────────────────────────────────────────────────────
 
 export async function POST(request: NextRequest): Promise<Response> {
   const authError = await routeAuthGuard(request);
   if (authError) return authError;
 
-  let body: unknown;
-  try { body = await request.json(); } catch {
+  // ── Content-type + size guards ────────────────────────────────────────────
+  if (!request.headers.get('content-type')?.includes('application/json')) {
+    return Response.json({ error: 'content_type_required' }, { status: 415 });
+  }
+
+  const contentLength = request.headers.get('content-length');
+  if (contentLength && parseInt(contentLength, 10) > MAX_BODY) {
+    return Response.json({ error: 'request_too_large' }, { status: 413 });
+  }
+
+  let raw: string;
+  try { raw = await request.text(); } catch {
+    return Response.json({ error: 'read_error' }, { status: 400 });
+  }
+  if (Buffer.byteLength(raw, 'utf8') > MAX_BODY) {
+    return Response.json({ error: 'request_too_large' }, { status: 413 });
+  }
+
+  let body: Record<string, unknown>;
+  try { body = JSON.parse(raw) as Record<string, unknown>; } catch {
     return Response.json({ error: 'invalid_json' }, { status: 400 });
   }
 
-  const provider = (body as Record<string, unknown>).provider;
-  if (provider !== 'google' && provider !== 'outlook') {
+  // ── Provider ──────────────────────────────────────────────────────────────
+  const provider = body.provider;
+
+  if (provider === 'google') {
+    return Response.json(
+      { error: 'use_oauth_redirect', authPath: GOOGLE_AUTH_PATH },
+      { status: 400 },
+    );
+  }
+  if (provider !== 'calendly' && provider !== 'manual') {
     return Response.json({ error: 'invalid_provider' }, { status: 400 });
   }
 
-  // Stub: always succeeds. Real implementation stores OAuth tokens on UserRecord.
-  return Response.json({ ok: true, stubbed: true, provider });
+  // ── Timezone (optional) ───────────────────────────────────────────────────
+  let timezone: string | null = null;
+  if (body.timezone !== undefined && body.timezone !== null && body.timezone !== '') {
+    timezone = normalizeTimezone(body.timezone);
+    if (!timezone) return Response.json({ error: 'invalid_timezone' }, { status: 400 });
+  }
+
+  // ── Session ───────────────────────────────────────────────────────────────
+  const sessionUser = await getSessionUser(request);
+  if (!sessionUser.email) return Response.json({ error: 'unauthorized' }, { status: 401 });
+
+  // ── Build the connection ──────────────────────────────────────────────────
+  let saved: boolean;
+
+  try {
+    if (provider === 'calendly') {
+      const url = cleanString(body.calendlyUrl, MAX_URL_CHARS);
+      if (!isValidCalendlyUrl(url)) {
+        return Response.json({ error: 'invalid_calendly_url' }, { status: 400 });
+      }
+      saved = await upsertCalendarConnection(sessionUser.email, {
+        provider:    'calendly',
+        calendlyUrl: url,
+        timezone,
+      });
+    } else {
+      const slots = sanitizeSlots(body.slots, timezone ?? 'UTC');
+      if (slots.length === 0) {
+        return Response.json({ error: 'no_slots' }, { status: 400 });
+      }
+      saved = await upsertCalendarConnection(sessionUser.email, {
+        provider:    'manual',
+        manualSlots: slots,
+        timezone,
+      });
+    }
+  } catch (err) {
+    console.error('[api/onboarding/calendar] error:',
+      err instanceof Error ? err.message.slice(0, 120) : 'unknown');
+    return Response.json({ error: 'internal_error' }, { status: 500 });
+  }
+
+  if (!saved) {
+    console.error('[api/onboarding/calendar] failed to store connection');
+    return Response.json({ error: 'internal_error' }, { status: 500 });
+  }
+
+  console.log('[api/onboarding/calendar] calendar connected', { provider });
+
+  return Response.json({ ok: true, connected: true, provider });
 }

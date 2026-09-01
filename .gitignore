@@ -26,3 +26,6 @@ supabase/.temp/
 
 # Agent skills cache (npx skills)
 .agents/
+
+# TypeScript incremental build state
+tsconfig.tsbuildinfo

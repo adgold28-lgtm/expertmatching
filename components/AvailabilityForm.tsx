@@ -1,10 +1,16 @@
 'use client';
 
-// Expert-facing availability submission form.
-// Three options:
-//   1. Google Calendar — navigates to OAuth flow
+// Availability submission form, rendered for both expert and client tokens.
+// Options:
+//   1. Google Calendar — navigates to OAuth flow (EXPERT TOKENS ONLY)
 //   2. Calendly URL — paste a link, then "Use This Link"
 //   3. Manual — free-text textarea
+//
+// `expertId` is null for client tokens. The Google option is hidden in that
+// case: GET /api/availability/[token]/google-auth rejects client tokens, and
+// POST /api/availability/[token] accepts only calendly|manual on the client
+// path — so offering it produced a guaranteed error. App users link a calendar
+// during onboarding instead (GET /api/onboarding/calendar/google).
 //
 // `calendarProvider` prop shows a connected-state banner when the expert has
 // already linked a calendar (e.g. after returning from OAuth).
@@ -43,8 +49,12 @@ function isValidCalendlyUrl(url: string): boolean {
 
 export default function AvailabilityForm({
   token,
+  expertId,
   calendarProvider,
 }: Props) {
+  // Client tokens have no expert id — and no Google Calendar path.
+  const allowGoogle = expertId !== null;
+
   const [option,      setOption]      = useState<Option>('manual');
   const [calendlyUrl, setCalendlyUrl] = useState('');
   const [manualText,  setManualText]  = useState('');
@@ -161,7 +171,7 @@ export default function AvailabilityForm({
 
   // ── Form ───────────────────────────────────────────────────────────────────
 
-  const isGoogle   = option === 'google';
+  const isGoogle   = allowGoogle && option === 'google';
   const isCalendly = option === 'calendly';
   const isManual   = option === 'manual';
 
@@ -176,25 +186,27 @@ export default function AvailabilityForm({
         </p>
         <div className="flex flex-col gap-2">
 
-          {/* Google Calendar */}
-          <label className={`flex items-center gap-3 px-4 py-3 border cursor-pointer transition-colors ${
-            isGoogle
-              ? 'border-[#0d9488] bg-[#f0fdfa]'
-              : 'border-[#e2e8f0] bg-white hover:border-[#0f172a]'
-          }`}>
-            <input
-              type="radio"
-              name="avail-option"
-              value="google"
-              checked={isGoogle}
-              onChange={() => setOption('google')}
-              className="accent-[#0d9488]"
-            />
-            <div>
-              <span className="text-sm text-[#1e293b] font-medium">Google Calendar</span>
-              <span className="ml-2 text-[11px] text-[#64748b]">Connect and share free/busy</span>
-            </div>
-          </label>
+          {/* Google Calendar — expert tokens only */}
+          {allowGoogle && (
+            <label className={`flex items-center gap-3 px-4 py-3 border cursor-pointer transition-colors ${
+              isGoogle
+                ? 'border-[#0d9488] bg-[#f0fdfa]'
+                : 'border-[#e2e8f0] bg-white hover:border-[#0f172a]'
+            }`}>
+              <input
+                type="radio"
+                name="avail-option"
+                value="google"
+                checked={isGoogle}
+                onChange={() => setOption('google')}
+                className="accent-[#0d9488]"
+              />
+              <div>
+                <span className="text-sm text-[#1e293b] font-medium">Google Calendar</span>
+                <span className="ml-2 text-[11px] text-[#64748b]">Connect and share free/busy</span>
+              </div>
+            </label>
+          )}
 
           {/* Calendly */}
           <label className={`flex items-center gap-3 px-4 py-3 border cursor-pointer transition-colors ${
