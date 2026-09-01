@@ -1,24 +1,18 @@
 import { NextRequest } from 'next/server';
-import { getProjectForUser, addCollaborator, removeCollaborator } from '../../../../../lib/projectStore';
+import {
+  getProjectForUser,
+  addCollaborator,
+  removeCollaborator,
+  CollaboratorNotInOrganizationError,
+} from '../../../../../lib/projectStore';
 import { guardMutatingRequest } from '../../../../../lib/projectsGuard';
 import { getSessionUser } from '../../../../../lib/auth';
-import { getUser, isApprovedDomain } from '../../../../../lib/firmStore';
+import { getUser } from '../../../../../lib/firmStore';
 
 const ID_RE = /^[a-f0-9]{24}$/;
 
 function isValidEmail(email: string): boolean {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
-}
-
-// Check if email belongs to an existing user or an approved domain.
-async function isValidCollaborator(email: string): Promise<boolean> {
-  // Prefer an existing user account — collaborators must be able to log in.
-  const user = await getUser(email).catch(() => null);
-  if (user) return true;
-  // Fall back to approved domain check
-  const domain = email.split('@')[1];
-  if (!domain) return false;
-  return isApprovedDomain(domain).catch(() => false);
 }
 
 // POST /api/projects/[projectId]/collaborators
@@ -55,10 +49,23 @@ export async function POST(
       return Response.json({ error: 'owner_cannot_be_collaborator' }, { status: 400 });
     }
 
-    const valid = await isValidCollaborator(collaboratorEmail);
-    if (!valid) {
+    // Cross-organization sharing is closed: the collaborator must be an active
+    // ExpertMatch user in the project's organization. projectStore repeats this
+    // check against organization_members; this one gives a clean 422 early.
+    const collaborator = await getUser(collaboratorEmail).catch(() => null);
+    const projectOrg   = (project.firmDomain ?? '').toLowerCase();
+    const sameOrg =
+      !!collaborator &&
+      collaborator.status !== 'disabled' &&
+      (!projectOrg || projectOrg === '*' ||
+        (collaborator.firmDomain ?? '').toLowerCase() === projectOrg);
+
+    if (!sameOrg) {
       return Response.json(
-        { error: 'invalid_collaborator', message: 'That email does not belong to an existing user or approved firm.' },
+        {
+          error:   'collaborator_not_in_organization',
+          message: 'Collaborators must be active ExpertMatch users in your organization.',
+        },
         { status: 422 },
       );
     }
@@ -67,6 +74,9 @@ export async function POST(
     const updated = await addCollaborator(params.projectId, ownerEmail, collaboratorEmail);
     return Response.json({ project: updated });
   } catch (err) {
+    if (err instanceof CollaboratorNotInOrganizationError) {
+      return Response.json({ error: err.code, message: err.message }, { status: 422 });
+    }
     console.error('[collaborators] POST error:', err instanceof Error ? err.message : String(err));
     return Response.json({ error: 'failed_to_add_collaborator' }, { status: 500 });
   }

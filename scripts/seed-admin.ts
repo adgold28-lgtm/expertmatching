@@ -109,12 +109,15 @@ async function main(): Promise<void> {
   }
   console.log('Membership ensured.');
 
-  // ── 4. app_metadata mirror (role/status/firm/onboarding) ───────────────────
+  // ── 4. app_metadata mirror (role/status/firm/org/onboarding) ───────────────
+  // org_id + org_role are what orgAdminGuard reads for team management.
   const synced = await syncAppMetadata(email, {
     role:                'admin',
     status:              'active',
     firm_domain:         orgDomain,
     firm_name:           orgName,
+    org_id:              org.id,
+    org_role:            'org_admin',
     onboarding_complete: true,
   });
   if (!synced) {

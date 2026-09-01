@@ -2,6 +2,7 @@ import type { Metadata } from 'next';
 import Link from 'next/link';
 import NavBar from '../components/NavBar';
 import { createClient } from '../lib/supabase/server';
+import { SEAT_TIERS, formatUsdFromCents } from '../lib/pricing';
 
 export const metadata: Metadata = {
   title: 'ExpertMatch — Expert Calls, Sourced and Billed in Hours.',
@@ -226,95 +227,51 @@ export default async function LandingPage() {
 
       {/* ── Pricing teaser ── */}
       <section className="py-20 px-6 border-t border-frame bg-cream">
-        <div className="max-w-4xl mx-auto">
+        <div className="max-w-3xl mx-auto">
           <p
             className="text-[10px] uppercase font-medium mb-2 tracking-widest text-center"
             style={{ color: NAVY, letterSpacing: '0.22em' }}
           >
             Pricing
           </p>
-          <p className="text-center text-muted text-sm mb-10" style={{ fontWeight: 300 }}>
-            Flat monthly fee. Per-minute billing on calls. No contracts.
+          <p className="text-center text-muted text-sm mb-10 mx-auto" style={{ fontWeight: 300, maxWidth: '520px' }}>
+            Billed monthly per active seat; every seat is billed at the tier your team size
+            falls into. Add or remove seats any time, prorated. Calls are billed by the minute.
           </p>
-          <div className="grid sm:grid-cols-3 gap-5">
-            {[
-              {
-                name: 'Starter',
-                price: '$1,500',
-                period: '/month',
-                features: ['3 seats', '10 expert calls/mo', 'AI sourcing', 'Outreach automation', 'Call coordination and billing'],
-                featured: false,
-              },
-              {
-                name: 'Growth',
-                price: '$3,500',
-                period: '/month',
-                features: ['10 seats', '25 expert calls/mo', 'Everything in Starter', 'Priority sourcing queue', 'Dedicated onboarding'],
-                featured: true,
-              },
-              {
-                name: 'Enterprise',
-                price: 'Custom',
-                period: '',
-                features: ['Unlimited seats', 'Unlimited calls', 'Everything in Growth', 'Custom integrations', 'SLA and compliance'],
-                featured: false,
-              },
-            ].map(({ name, price, period, features, featured }) => (
-              <div
-                key={name}
-                className="flex flex-col p-6"
-                style={{
-                  background: featured ? NAVY : '#FFFFFF',
-                  border: featured ? `2px solid ${GOLD}` : '1px solid #DDE3EA',
-                }}
-              >
-                <p
-                  className="text-[10px] uppercase font-semibold mb-3"
-                  style={{ letterSpacing: '0.18em', color: featured ? GOLD : NAVY }}
-                >
-                  {name}
-                </p>
-                <div className="flex items-baseline gap-1 mb-5">
-                  <span
-                    className="font-display"
-                    style={{ fontSize: '1.8rem', fontWeight: 500, color: featured ? '#FFFFFF' : NAVY }}
+
+          <div className="border border-frame overflow-x-auto bg-white">
+            <table className="w-full text-sm border-collapse min-w-[360px]">
+              <thead>
+                <tr style={{ background: NAVY }}>
+                  <th className="text-left px-5 py-3 text-[10px] uppercase font-medium text-cream/50" style={{ letterSpacing: '0.14em' }}>
+                    Team Size
+                  </th>
+                  <th className="text-right px-5 py-3 text-[10px] uppercase font-medium" style={{ letterSpacing: '0.14em', color: GOLD }}>
+                    Per Seat / Month
+                  </th>
+                </tr>
+              </thead>
+              <tbody>
+                {SEAT_TIERS.map((tier, i) => (
+                  <tr
+                    key={tier.minSeats}
+                    style={{ background: i % 2 === 0 ? '#FFFFFF' : '#F7F9FC' }}
+                    className="border-b border-frame last:border-b-0"
                   >
-                    {price}
-                  </span>
-                  {period && (
-                    <span className="text-xs" style={{ color: featured ? 'rgba(255,255,255,0.5)' : '#8A9BAD' }}>
-                      {period}
-                    </span>
-                  )}
-                </div>
-                <ul className="space-y-2 flex-1 mb-6">
-                  {features.map(f => (
-                    <li key={f} className="flex items-start gap-2">
-                      <span style={{ color: GOLD, fontSize: '10px', marginTop: '3px' }}>✓</span>
-                      <span
-                        className="text-[12px]"
-                        style={{ color: featured ? 'rgba(255,255,255,0.7)' : '#5A6B7A', fontWeight: 300 }}
-                      >
-                        {f}
-                      </span>
-                    </li>
-                  ))}
-                </ul>
-                <Link
-                  href="/request-access"
-                  className="block text-center text-[10px] uppercase font-medium py-2.5 transition-colors"
-                  style={{
-                    letterSpacing: '0.14em',
-                    background: featured ? GOLD : 'transparent',
-                    color: NAVY,
-                    border: featured ? 'none' : `1px solid ${NAVY}40`,
-                  }}
-                >
-                  {name === 'Enterprise' ? 'Contact Us' : 'Request Access'}
-                </Link>
-              </div>
-            ))}
+                    <td className="px-5 py-3 text-[12px] font-semibold text-ink whitespace-nowrap">
+                      {tier.maxSeats === null
+                        ? `${tier.minSeats}+ seats`
+                        : `${tier.minSeats}–${tier.maxSeats} seats`}
+                    </td>
+                    <td className="px-5 py-3 text-right text-[13px] font-semibold whitespace-nowrap" style={{ color: GOLD }}>
+                      {formatUsdFromCents(tier.unitPriceCents)}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           </div>
+
           <p className="text-center mt-6">
             <Link
               href="/pricing"

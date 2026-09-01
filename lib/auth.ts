@@ -149,3 +149,56 @@ export async function adminGuard(request: NextRequest): Promise<Response | null>
   }
   return null;
 }
+
+/**
+ * Organization-admin guard — for the Team management API.
+ *
+ * Allows the request through when the caller is an active user who is either a
+ * platform admin (role 'admin') or an org admin (org_role 'org_admin' with an
+ * org_id). Everyone else gets 401 (no session) or 403.
+ *
+ * Reads only app_metadata, which the service role keeps in step with
+ * organization_members (firmStore.syncUserMetadata) — @supabase/ssr's getUser()
+ * revalidates against the auth server, so the claims are never stale by more
+ * than the write that produced them. Deliberately does NOT import firmStore:
+ * this module is pulled into the Edge middleware bundle.
+ *
+ * Returns the resolved SessionUser so callers need not re-read the session.
+ */
+export async function orgAdminGuard(
+  request: NextRequest,
+): Promise<{ user: SessionUser } | { error: Response }> {
+  if (!isAuthEnabled()) {
+    return { user: { role: 'admin', email: 'admin', firmDomain: '*' } };
+  }
+
+  const authUser = await getSupabaseSessionUser(request);
+  if (!authUser) {
+    return { error: Response.json({ error: 'unauthorized' }, { status: 401 }) };
+  }
+
+  const meta = (authUser.app_metadata ?? {}) as AuthAppMetadata;
+  if (meta.status === 'disabled' || meta.status === 'pending') {
+    return {
+      error: Response.json(
+        { error: 'forbidden', message: 'Your account is not active.' },
+        { status: 403 },
+      ),
+    };
+  }
+
+  const user            = sessionUserFromAuthUser(authUser);
+  const isPlatformAdmin = user.role === 'admin';
+  const isOrgAdmin      = user.orgRole === 'org_admin' && !!user.orgId;
+
+  if (!isPlatformAdmin && !isOrgAdmin) {
+    return {
+      error: Response.json(
+        { error: 'forbidden', message: 'Only organization admins can manage the team.' },
+        { status: 403 },
+      ),
+    };
+  }
+
+  return { user };
+}

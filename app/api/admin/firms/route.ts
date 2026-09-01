@@ -1,17 +1,19 @@
 import { NextRequest } from 'next/server';
 import { adminGuard } from '../../../../lib/auth';
+import { seatUnitPriceCents, monthlySeatTotalCents } from '../../../../lib/pricing';
+import { syncOrgSeatQuantity } from '../../../../lib/orgBilling';
 import {
   listFirms,
   upsertFirm,
   deleteFirm,
-  countActiveUsersForFirm,
-  SEAT_LIMITS,
+  listUsersForFirm,
+  getFirm,
   type FirmPlan,
 } from '../../../../lib/firmStore';
 
 const VALID_PLANS = new Set<FirmPlan>(['starter', 'growth', 'enterprise']);
 
-// GET — list all firms with seat usage
+// GET — every organization with its seat usage and monthly seat spend.
 export async function GET(request: NextRequest): Promise<Response> {
   const err = await adminGuard(request);
   if (err) return err;
@@ -21,24 +23,30 @@ export async function GET(request: NextRequest): Promise<Response> {
 
     const enriched = await Promise.all(
       firms.map(async (firm) => {
-        const seatUsed  = await countActiveUsersForFirm(firm.domain);
-        const seatLimit = SEAT_LIMITS[firm.plan];
+        const members     = await listUsersForFirm(firm.domain);
+        const seatUsed    = members.filter(m => m.status === 'active').length;
+        const seatPending = members.filter(m => m.status === 'pending').length;
         return {
           ...firm,
           seatUsed,
-          seatLimit: seatLimit === Infinity ? null : seatLimit,
+          seatPending,
+          seatLimit:             firm.seatLimit,   // null = unlimited
+          seatUnitPriceCents:    seatUnitPriceCents(seatUsed),
+          monthlySeatTotalCents: monthlySeatTotalCents(seatUsed),
         };
       }),
     );
 
     return Response.json({ firms: enriched });
   } catch {
-    console.error('[admin/firms] failed to list firms');
-    return Response.json({ error: 'Failed to load firms' }, { status: 500 });
+    console.error('[admin/firms] failed to list organizations');
+    return Response.json({ error: 'Failed to load organizations' }, { status: 500 });
   }
 }
 
-// POST { domain, name, plan } — create or update a firm
+// POST { domain, name, plan?, seatLimit? } — create or update an organization.
+// seatLimit is an OPTIONAL platform-admin cap: null clears it (unlimited).
+// Omitting the key entirely leaves any existing cap unchanged.
 export async function POST(request: NextRequest): Promise<Response> {
   const err = await adminGuard(request);
   if (err) return err;
@@ -48,32 +56,71 @@ export async function POST(request: NextRequest): Promise<Response> {
     return Response.json({ error: 'invalid_json' }, { status: 400 });
   }
 
-  const b      = body as Record<string, unknown>;
+  const b      = (body ?? {}) as Record<string, unknown>;
   const domain = typeof b.domain === 'string' ? b.domain.trim().toLowerCase() : '';
   const name   = typeof b.name   === 'string' ? b.name.trim()                 : '';
   const plan   = typeof b.plan   === 'string' ? b.plan                        : 'starter';
 
   if (!domain || domain.length < 3 || !domain.includes('.')) {
-    return Response.json({ error: 'Valid domain required (e.g. blackstone.com)' }, { status: 400 });
+    return Response.json(
+      { error: 'invalid_domain', message: 'Valid domain required (e.g. blackstone.com)' },
+      { status: 400 },
+    );
   }
   if (!name) {
-    return Response.json({ error: 'firm_name_required', message: 'Firm name is required.' }, { status: 400 });
+    return Response.json(
+      { error: 'organization_name_required', message: 'Organization name is required.' },
+      { status: 400 },
+    );
   }
   if (!VALID_PLANS.has(plan as FirmPlan)) {
     return Response.json({ error: 'invalid_plan' }, { status: 400 });
   }
 
+  // Distinguish "not provided" (leave as-is) from null / '' (clear the cap).
+  let seatLimit: number | null | undefined;
+  if ('seatLimit' in b) {
+    const raw = b.seatLimit;
+    if (raw === null || raw === '' || raw === undefined) {
+      seatLimit = null;
+    } else {
+      const parsed = typeof raw === 'number' ? raw : Number(raw);
+      if (!Number.isFinite(parsed) || parsed < 1) {
+        return Response.json(
+          {
+            error:   'invalid_seat_limit',
+            message: 'Seat cap must be a whole number of at least 1, or empty for unlimited.',
+          },
+          { status: 400 },
+        );
+      }
+      seatLimit = Math.floor(parsed);
+    }
+  }
+
   try {
-    await upsertFirm(domain, { name, plan: plan as FirmPlan, status: 'active' });
-    console.log('[admin/firms] upserted', { plan });
+    await upsertFirm(domain, {
+      name,
+      plan:   plan as FirmPlan,
+      status: 'active',
+      ...(seatLimit !== undefined ? { seatLimit } : {}),
+    });
+
+    // Seat pricing follows the active-seat count, but a cap change is a good
+    // moment to re-assert the billable quantity.
+    const firm = await getFirm(domain).catch(() => null);
+    if (firm) {
+      try { await syncOrgSeatQuantity(firm.id); } catch { /* best effort */ }
+    }
+
     return Response.json({ ok: true });
   } catch {
-    console.error('[admin/firms] failed to upsert firm', { domain: '[redacted]' });
-    return Response.json({ error: 'Failed to save firm' }, { status: 500 });
+    console.error('[admin/firms] failed to upsert organization');
+    return Response.json({ error: 'Failed to save organization' }, { status: 500 });
   }
 }
 
-// DELETE { domain } — remove a firm
+// DELETE { domain } — remove an organization
 export async function DELETE(request: NextRequest): Promise<Response> {
   const err = await adminGuard(request);
   if (err) return err;
@@ -93,10 +140,9 @@ export async function DELETE(request: NextRequest): Promise<Response> {
 
   try {
     await deleteFirm(domain);
-    console.log('[admin/firms] deleted', { domain: '[redacted]' });
     return Response.json({ ok: true });
   } catch {
-    console.error('[admin/firms] failed to delete firm', { domain: '[redacted]' });
-    return Response.json({ error: 'Failed to delete firm' }, { status: 500 });
+    console.error('[admin/firms] failed to delete organization');
+    return Response.json({ error: 'Failed to delete organization' }, { status: 500 });
   }
 }
