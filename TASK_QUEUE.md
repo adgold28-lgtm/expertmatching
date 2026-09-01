@@ -27,7 +27,15 @@ Last updated: 2026-08-31
       NavBar uses it when present — falls back to email-derived name
 - [x] Onboarding flow: /onboarding stepper (calendar → billing → profile),
       middleware gates incomplete users, session refreshed with onboardingComplete:true
-      NOTE: calendar (OAuth) and billing (Stripe) steps are stubs — see TODOs in route files
+      NOTE: calendar + billing steps made REAL on 2026-09-01 (branch
+      supabase-cutover): per-user Google OAuth/Calendly/manual calendar
+      connections (user_calendar_connections table, encrypted tokens), Stripe
+      SetupIntent at onboarding + off-session auto-charge on call completion,
+      stepper resumes from server state, profile step server-enforces
+      calendar+billing prerequisites. Prereqs before go-live: apply migration
+      20260901000000 in Supabase Studio; set NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY
+      (.env.local + Vercel); register the two
+      /api/onboarding/calendar/google/callback redirect URIs in Google console.
 - [x] User management: Redis-backed user store, admin UI at /admin/users,
       POST/DELETE /api/admin/users, scripts/createUser.ts for CLI bootstrapping (May 2026)
       NOTE: seed-admin.ts uses bcrypt — users created with it must be migrated via createUser.ts
