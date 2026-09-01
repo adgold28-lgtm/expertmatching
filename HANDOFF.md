@@ -1,204 +1,187 @@
 # ExpertMatch — Session Handoff
 
-**Written:** 2026-08-31 · **Branch:** `supabase-cutover` · **Status:** cutover complete and verified locally, not yet deployed
+**Written:** 2026-09-01 · **Branch:** `claude/multi-account-rls-billing-imi3la`
+(contains everything from `supabase-cutover` / PR #36 plus `main`) ·
+**Status:** built, type-checked, RLS proven locally; **not deployed** — the
+deploy checklist below is a human task.
 
-Read this together with `CLAUDE.md` (operating rules) and `TASK_QUEUE.md` (priorities).
-
----
-
-## What happened this session
-
-The stalled May–June Supabase migration was finished. Postgres is now the source
-of truth for durable domain data, Supabase Auth is the only session mechanism,
-and the dual-auth (HMAC cookie + scrypt) complexity is deleted.
-
-Three things were fixed or built along the way that are **not** migration work:
-expert-sourcing quality, a re-source bug, and brief document upload.
-
-### The migration
-
-The June draft migration (`20260608120000_gated_access_foundation.sql`) was
-evaluated and **replaced**, not applied. It had eight defects — the significant
-ones being nine tables modeling data the app does not have, no home for the data
-it does have (the `Project` blob with its ~40-field `ProjectExpert` records), a
-`search_results` integrity hole allowing cross-project inserts, a
-`profiles_update_self` policy letting users rewrite their own email, and a
-backfill that would have left every user unable to create anything (profiles but
-no `organization_members` rows, while `projects_insert` requires org membership).
-
-The replacement is `supabase/migrations/20260831000000_supabase_cutover_foundation.sql`
-— 8 tables, all with writers, RLS from day one:
-
-`organizations`, `profiles`, `organization_members`, `access_requests`,
-`invites`, `projects`, `project_members`, `project_experts`
-
-Decisions worth not re-litigating:
-
-- **`projects.id` is `text`, 24-hex** (`encode(gen_random_bytes(12),'hex')`), not
-  uuid — preserves the existing ID format so `ID_RE` and every route, outreach
-  token, and availability token keep working unchanged.
-- **`projects.brief` and `project_experts.data` are `jsonb`.** These are
-  document-shaped aggregates read whole. Columns are promoted only for what gets
-  filtered or sorted (`name`, `research_question`, `status`, timestamps,
-  `owner_id`, `organization_id`). `types.ts` remains the source of truth for the
-  blob shape. A 40-column table with 35 nullable columns would be worse.
-- **Redis was narrowed, not deleted.** It keeps rate limits (`rl:*`,
-  `login-rl:*`, `invite-rl:*`), caches (`cache:*`, `search:*`, `cpath:*`,
-  `hedge:*`, `scrypt:*`), locks, and short-lived tokens (`invite-token:*`,
-  `reply-token:*`). That is the correct end state, not a partial migration.
-- **One acknowledged exception:** `expert-connect:{email}` (Stripe Connect
-  account IDs, `lib/stripeConnect.ts`) is durable data still in Redis. Stripe
-  Connect is backlog; it moves when that feature is built rather than adding a
-  table with no writer.
-
-The store swap used the existing seam — `lib/projectStore.ts` already had a
-`ProjectStore` interface behind a factory, so a third implementation changed the
-backend with **zero route changes**. `lib/firmStore.ts` got the same treatment
-behind its existing exported function names.
-
-**Deleted:** `lib/authPassword.ts`, `scripts/migrate-users-to-supabase.ts`,
-`scripts/createUser.ts`, `scripts/hash-admin-password.ts`, and the
-`ADMIN_EMAIL` + `ADMIN_PASSWORD_HASH` master-password login path (banned by
-`CLAUDE.md`).
-
-### Verification that was actually run
-
-`scripts/smoke-cutover.ts` — **16/16 passing** against localhost. Covers admin
-login, wrong-password rejection, session read, project create/re-read/list
-durability, cross-user IDOR (API returns 404, list excludes it, and a direct
-`anon`-key query with the intruder's JWT returns zero rows — proving RLS holds
-independently of app-level checks), logout cookie sweep, and dead-session check.
-
-Re-run any time with `npx tsx scripts/smoke-cutover.ts` (needs the dev server up).
-It provisions and deletes its own throwaway user.
-
-### The three non-migration fixes
-
-1. **Sourcing quality.** `SEARCH_PROVIDER` was `scrapingbee` in `.env.local`
-   while the better Exa integration sat unused with its key set — switched to
-   `exa`. Separately, the value-chain-inference LLM call was capped at
-   `max_tokens: 1800` while its required JSON needs more, so it truncated
-   mid-object every time and sourcing silently ran in degraded mode
-   (`vciAvailable:false`). Raised to 4000. Together these explain the "3 experts,
-   none above 70, all from similar articles" complaint.
-2. **Re-source bug.** `handleSourceExperts` saved the brief server-side but never
-   synced the PUT response into parent React state, so `project.researchQuestion`
-   stayed empty for the session and Re-source failed with "Query is required".
-   Now calls `onSave`.
-3. **Brief document upload (new feature).** `app/api/parse-brief/route.ts` +
-   UI on the Brief step. Accepts PDF/TXT/MD (5 MB cap), extracts nine brief
-   fields with Claude (native PDF reading — no new dependencies), fills the two
-   visible fields, and persists the full set through the existing sanitizing PUT.
-   Auth-gated, never logs document contents. Tested end-to-end with a synthetic
-   PE brief; extraction was clean.
+Read this together with `CLAUDE.md` (operating rules) and `TASK_QUEUE.md`
+(priorities). The previous handoff (Supabase cutover, 2026-08-31) is summarised
+at the end; its decisions still stand.
 
 ---
 
-## Immediate next steps
+## What this session delivered
 
-### 1. Vercel environment variables — blocks everything else
+### 1. Cross-account isolation — hardened and proven
 
-In [Vercel → expertmatching → Settings → Environment Variables](https://vercel.com/adgold28-lgtms-projects/expertmatching/settings/environment-variables),
-Production scope. Values match `.env.local`:
+`supabase/migrations/20260902000000_org_billing_and_rls_hardening.sql`
+(section 3) closes four holes found by reading the foundation policies:
 
-| Variable | Action |
+| Hole | Fix |
 | --- | --- |
-| `SUPABASE_SERVICE_ROLE_KEY` | **Add** — almost certainly missing |
-| `NEXT_PUBLIC_SUPABASE_URL` | Verify = `https://twiijjhulgpxaiavdgpo.supabase.co` |
-| `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` | Verify = the `sb_publishable_...` value |
-| `SEARCH_PROVIDER` | Set to `exa` so prod gets the sourcing fix |
+| A project owner could share a project with a user in **another organization** (project_members had no org check) | `project_members_insert/update` require the invitee to be an active member of the project's org **and** `trg_project_members_same_org` enforces it for the service role too (which is how the app writes) |
+| `profiles.onboarding_complete` was user-writable | added to `prevent_profile_privileged_changes()` (service-role only) |
+| An owner could rewrite `owner_id` / `organization_id` on their project (WITH CHECK used the pre-update snapshot) | `projects_update` WITH CHECK compares the new values directly |
+| An org_admin could enrol a platform admin's profile into their org | `org_members_insert/update` refuse platform-admin profiles |
 
-The Vercel CLI token on this machine is expired, so this is a dashboard task for
-the user, not something an agent can do.
+**Proof:** `scripts/rls-verify.sh` builds a throwaway PostgreSQL 16 database
+with a Supabase shim (`auth.uid()`, `auth.role()`, roles, grants), applies all
+three migrations twice (idempotency), and runs `scripts/rls/verify.sql`:
 
-### 2. Merge `supabase-cutover` → `main`
+```
+RLS VERIFY: 135 passed, 0 failed
+```
 
-Do **step 1 first** — production will error on a missing service-role key.
+Actors: anon, org A (admin, member, disabled member), org B, a platform admin
+holding an ordinary JWT, and service_role. Every table is probed for select,
+insert, update and delete across organization boundaries. The suite runs inside
+one transaction ending in ROLLBACK and only touches fixture ids, so it is safe
+against production: `DATABASE_URL=postgres://... scripts/rls-verify.sh`.
+Details and the route audit table: `scripts/rls/README.md`.
 
-The moment this deploys, production auth is Supabase-only. The login is
-`ashergoldsteinbusiness@gmail.com` with the password in `SEED_ADMIN_PASSWORD`
-(in `.env.local`). Any previously working credential stops working.
+App-layer checks were also tightened: collaborators must be in the project's
+organization (422), `/api/demo-readiness` and `/api/test-search` are
+platform-admin only, `/api/request-access` is rate limited per IP and email.
 
-Note: local `main` is 15 commits behind `origin/main` (PR #35 was merged remotely
-on 2026-08-31). Run `git checkout main && git pull` before merging locally, or
-just open a PR and merge on GitHub.
+The statement this supports: **with the three migrations applied, an
+authenticated user can read or write only their own profile, their own
+organization's membership rows (org admins), and projects they own or were
+explicitly added to by a colleague in the same organization. Nothing crosses an
+organization boundary, and platform admins have no data access outside the
+service-role key.**
 
-### 3. Production smoke test
+### 2. Per-seat organization billing
 
-After deploy, run the equivalent of `scripts/smoke-cutover.ts` against
-`expertmatch.fit`. Change `BASE` and use a throwaway account for the destructive
-checks. Confirm login, project persistence, IDOR, and logout on the real domain.
+- `lib/pricing.ts` — single source of truth. **Volume tiers** (every seat is
+  billed at the tier the org's active-seat count falls in):
 
-### 4. Cleanup, once prod is confirmed healthy
+  | Active seats | Per seat / month |
+  | --- | --- |
+  | 1–9 | $100 |
+  | 10–24 | $90 |
+  | 25–49 | $85 |
+  | 50–99 | $75 |
+  | 100–149 | $70 |
+  | 150+ | $60 |
 
-- **Upstash is account-rate-limited.** Caching and login rate limiting are
-  silently off (they fail open — the app works, just without them). Check the
-  [Upstash console](https://console.upstash.com); likely a free-tier cap. Since
-  Redis now only handles caches and rate limits, the free tier may be sufficient
-  once legacy data is cleared.
-- **Legacy Redis keys are dead weight.** `user:*`, `firm:*`, `firms:index`,
-  `firm-users:*`, `project:*`, `projects:index`, `access-request:*`,
-  `seat-request:*` are no longer read by anything. Safe to wipe after prod runs
-  clean for a while. Nothing has been deleted yet.
-- **Untracked files:** `.agents/` and `skills-lock.json` appeared from
-  `npx skills add supabase/agent-skills`. Decide whether to commit
-  `skills-lock.json` (pins skill versions) and gitignore `.agents/`.
+  Expert calls: `EXPERT_SHARE = 0.70`, `PLATFORM_SHARE = 0.30`
+  (`splitCallAmountCents`, used by `lib/expertPayout.ts`).
+  `scripts/test-pricing.ts` — 180 checks, run with `npx tsx scripts/test-pricing.ts`.
+- `lib/orgBilling.ts` — the **organization is the paying entity**. One Stripe
+  customer per org, one tiered Price (`lookup_key = expertmatch_seat_monthly_v1`,
+  `tiers_mode: 'volume'`), one subscription per org whose quantity equals its
+  active seats. `syncOrgSeatQuantity(orgId)` runs after every membership
+  insert / status change / delete (firmStore, team API, admin routes,
+  set-password) and never throws. Zero seats → `cancel_at_period_end`; a
+  returning seat resumes it. State: `public.organization_billing`
+  (service-role only).
+- Onboarding billing step is **firm-level**: the first user saves the firm's
+  card (SetupIntent on the org customer, ownership-verified on confirm);
+  colleagues see "Billing is set up for <Firm>" and continue. Calendar remains
+  mandatory for everyone. Call charges (`lib/chargeSavedCard.ts`) go to the
+  firm's card, falling back to the legacy per-user card for pre-org accounts.
+- Webhook now mirrors `customer.subscription.updated/deleted` and
+  `invoice.payment_failed` onto `organization_billing.subscription_status`.
+
+Interpretation choices worth knowing: the tiers were read as *volume* (all
+seats at the current tier's rate), not graduated; 100–149 seats is $70 and
+150+ is $60. "Stripe Connect" for clients was implemented as the saved-card
+SetupIntent flow (clients pay; Connect Express remains the expert payout side,
+unchanged).
+
+### 3. Account creation
+
+`lib/accountProvisioning.ts#provisionAccountInvite` is now the **only** way an
+account is created and requires first name, last name, email and organization
+(domain, plus a name when the org is new). Every caller uses it: admin invite,
+admin "Create Account" (the admin-sets-password path is gone), access-request
+approval, seat-request approval, auto-approval of known domains, and the new
+org-admin team invite. The invite email greets the person by name and the
+set-password page shows it. Members must use their organization's email domain
+unless a platform admin overrides it.
+
+- `organizations.seat_limit` is now an **optional platform-admin cap**
+  (default unlimited; existing rows backfilled). `SEAT_LIMITS` by plan is gone.
+- Org admins (`organization_members.role = 'org_admin'`, first member of a new
+  org) manage seats at **`/settings/team`** via `/api/org/members`
+  (invite, disable/enable, promote, remove pending) — guarded by
+  `orgAdminGuard`, which reads `org_id`/`org_role` from app_metadata.
+  `/api/org/membership` self-heals missing claims for pre-existing accounts.
+- Admin pages (`/admin/users`, `/admin/requests`) show names, seat usage,
+  per-seat price and monthly total, and let admins set a cap.
+- `/pricing` and the landing page now describe the per-seat model.
 
 ---
 
-## Gotchas — these cost time this session
+## Deploy checklist (in this order)
 
-- **Never run `npm run build` while the dev server is running.** Both write to
-  `.next/` and the collision corrupts the dev server's chunks, producing an
-  unstyled page and stale route errors. Symptom: `Cannot find module './8948.js'`.
-  Fix: stop the server, `rm -rf .next`, restart. Use `npx tsc --noEmit` to
-  type-check while the server runs.
-- **Never log in and out as the user's own account in a test.** Supabase's
-  `signOut()` revokes *all* sessions for that user, including their browser
-  session. Provision a throwaway user via the service-role key instead — that is
-  what `smoke-cutover.ts` does.
-- **Verify `.env.local` after any manual edit.** Hand-editing mangled it twice
-  this session (the Supabase URL was overwritten with the publishable key, and
-  the publishable key line held an `sb_secret_` value — a real leak risk, since
-  `NEXT_PUBLIC_*` is shipped to the browser). Check with
-  `grep -oE '^[A-Z_]+' .env.local` and confirm no `NEXT_PUBLIC_*` var holds an
-  `sb_secret_` value.
-- **The Supabase CLI never got linked.** No `config.toml`, no DB connection
-  string (the user does not have the DB password). The migration was applied by
-  pasting the SQL into the Supabase Studio SQL editor. Future migrations either
-  go the same route or need `supabase link` set up first. The service-role key in
-  `.env.local` is enough for data operations via `@supabase/supabase-js`, just
-  not for DDL.
-- **`ANTRHOPICKEYREAL`** is the (misspelled) Anthropic API key env var. Not a
-  typo to fix casually — it is referenced in several routes.
+1. **Supabase Studio → SQL editor:** paste and run
+   `supabase/migrations/20260901000000_onboarding_billing_calendar.sql`
+   (not yet applied per the previous handoff), then
+   `supabase/migrations/20260902000000_org_billing_and_rls_hardening.sql`.
+   Both are idempotent; re-running is safe.
+2. **Prove isolation on production** (read-only, rolls back):
+   `DATABASE_URL='postgres://postgres:<db-password>@db.twiijjhulgpxaiavdgpo.supabase.co:5432/postgres' scripts/rls-verify.sh`
+   — needs the database password (Supabase → Settings → Database).
+3. **Vercel → expertmatching → Environment Variables (Production):**
+   `SUPABASE_SERVICE_ROLE_KEY` (add), `NEXT_PUBLIC_SUPABASE_URL` +
+   `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` (verify), `SEARCH_PROVIDER=exa`,
+   `NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY` (add — billing step returns 503 without it).
+4. **Stripe → Webhooks:** add `customer.subscription.updated`,
+   `customer.subscription.deleted`, `invoice.payment_failed` to the existing
+   endpoint (keep the four payment events).
+5. **Google Cloud Console:** register
+   `https://expertmatch.fit/api/onboarding/calendar/google/callback` on the
+   OAuth client (alongside the availability callback).
+6. Merge this branch (it supersedes PR #36), deploy, then re-seed the admin so
+   its metadata carries `org_id`/`org_role`:
+   `npx tsx scripts/seed-admin.ts <admin-email> --org-name ExpertMatch`.
+7. Run `SMOKE_BASE_URL=https://expertmatch.fit SMOKE_ADMIN_EMAIL=<throwaway-admin> npx tsx scripts/smoke-cutover.ts`
+   (it signs the admin in and out — use a throwaway admin, not your browser account).
+8. In Stripe **test mode**, walk one org through onboarding and confirm: customer
+   created, Price `expertmatch_seat_monthly_v1` created, subscription quantity 1;
+   invite a second seat and accept it → quantity 2; disable it → quantity 1.
 
----
+## Unverified (no credentials on the build machine)
+
+- Nothing touched Stripe, Supabase, Upstash or Resend end-to-end. All Stripe
+  calls were written against the SDK types (`stripe@22`, API
+  `2026-04-22.dahlia`); the pure pricing maths and the RLS policies are the
+  parts that were executed for real.
+- The new UI (`/settings/team`, admin "Create Account", pricing page) was
+  built and type-checked but not rendered in a browser.
+- `quantity: 0` on a tiered subscription item was avoided deliberately
+  (cancel-at-period-end instead) because the SDK types do not guarantee it.
+
+## Gotchas (carried forward, still true)
+
+- Never run `npm run build` while the dev server is running (both write
+  `.next/`). Use `npx tsc --noEmit` while the server runs.
+- Never sign in/out as your own account in a test — Supabase `signOut()`
+  revokes all sessions for that user.
+- The Supabase CLI is not linked; migrations are pasted into Studio. Now that
+  `scripts/rls-verify.sh` wants a direct connection, getting the DB password
+  into a local `.env.local` as `DATABASE_URL` is worth doing.
+- `ANTRHOPICKEYREAL` is the (misspelled) Anthropic key var — referenced in
+  several routes, do not rename casually.
+- Deleting a user who owns projects fails on purpose (`projects.owner_id` is
+  ON DELETE RESTRICT); see TASK_QUEUE for the transfer-projects follow-up.
 
 ## Reference
 
-- **Supabase project ref:** `twiijjhulgpxaiavdgpo` ·
-  [dashboard](https://supabase.com/dashboard/project/twiijjhulgpxaiavdgpo)
-- **Vercel project:** `expertmatching` (serves `expertmatch.fit`). **Never** touch
-  the stale `expertmatch` Vercel project.
-- **Platform admin:** `ashergoldsteinbusiness@gmail.com`, org "ExpertMatch"
-- **Seed a new admin:** `npx tsx scripts/seed-admin.ts <email> --org-name <name>`
-  (reads `SEED_ADMIN_PASSWORD` from `.env.local`)
-- **Full plan and migration evaluation:**
-  `~/.claude/plans/ok-can-u-evaluate-nifty-lagoon.md`
+- Supabase project ref `twiijjhulgpxaiavdgpo`; Vercel project `expertmatching`
+  (serves `expertmatch.fit`) — never the stale `expertmatch` project.
+- Platform admin: `ashergoldsteinbusiness@gmail.com`, org "ExpertMatch".
+- Verification commands: `scripts/rls-verify.sh`, `npx tsx scripts/test-pricing.ts`,
+  `npx tsx scripts/smoke-cutover.ts`, `npx tsc --noEmit`, `npm run build`.
 
-## After the deploy — where the product value is
+## Previous session (2026-08-31) in one paragraph
 
-`TASK_QUEUE.md` "NEXT" is untouched and is the real roadmap:
-
-1. **Reply tracking** — per-expert status (Outreach Sent → Replied Yes →
-   Scheduled → Completed → Billed). Highest value on the board.
-2. Outreach generation with tone controls
-3. Shareable shortlist link viewable without login
-4. Expert sourcing pipeline improvements
-
-Also open: the two onboarding stubs (calendar OAuth and Stripe billing are
-placeholders — see TODOs in the route files), PR #34 (security/compliance/billing
-integration, open since June), and ~26 open issues, mostly the numbered security
-audit list. Issues #25, #30, and #31 (ownership checks, logout/session
-expiration, IDOR) are substantively closed by this session's work and its smoke
-test — worth closing them out with a link to `scripts/smoke-cutover.ts`.
+Finished the Supabase cutover: Postgres is the source of truth (8 tables, RLS
+from day one, `projects.id` stays 24-hex text, `brief`/`data` are jsonb), Supabase
+Auth is the only session mechanism (HMAC cookie, scrypt, master password
+deleted), Redis narrowed to rate limits / caches / short-lived tokens, real
+onboarding calendar (Google OAuth, Calendly, manual) and billing (SetupIntent),
+reply-tracking pipeline strip, brief document upload, and sourcing fixes
+(`SEARCH_PROVIDER=exa`, value-chain-inference `max_tokens` 4000).

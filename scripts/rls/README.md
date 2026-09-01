@@ -142,14 +142,7 @@ verified webhook signature. The IDOR fixes from PR #35 are intact.
    branch the database refuses the write regardless
    (`trg_project_members_same_org`), so until that route change lands a cross-org
    invite surfaces as a 500 `failed_to_add_collaborator` instead of succeeding.
-2. **`/api/request-access` is unauthenticated and unthrottled** —
-   `app/api/request-access/route.ts:35`. It writes an `access_requests` row and
-   sends mail on every call, and when the email's domain is already approved it
-   *auto-issues a signup token and invite email* (lines 82-97) with no admin in
-   the loop — which sits close to the "open registration without admin invite"
-   line in `CLAUDE.md`. Proposed fix: reuse `lib/rateLimiter` keyed on hashed IP
-   + hashed email (the `invite-rl:*` prefix already exists), and have the
-   auto-approval branch require an explicit per-organization opt-in flag.
+2. **`/api/request-access`** — FIXED at integration: per-IP (5/h) and per-email (3/h) rate limits via Redis, keys HMAC-pseudonymised; auto-approval still requires the requester's full name and an existing approved organization.
 3. **`/api/demo-readiness`** — FIXED at integration: now `adminGuard` (404 to
    non-admins), the never-compared `DEMO_READINESS_TOKEN` check and the IP log
    line are gone.

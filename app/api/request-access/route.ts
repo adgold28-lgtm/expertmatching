@@ -1,6 +1,8 @@
 import { NextRequest } from 'next/server';
 import { Resend } from 'resend';
+import { createHmac } from 'crypto';
 import { getServiceRoleClient } from '../../../lib/supabase/admin';
+import { getUpstashClient } from '../../../lib/upstashRedis';
 import { isApprovedDomain } from '../../../lib/firmStore';
 import { provisionAccountInvite, splitFullName } from '../../../lib/accountProvisioning';
 
@@ -19,6 +21,34 @@ function escapeHtml(s: string): string {
     .replace(/>/g,  '&gt;')
     .replace(/"/g,  '&quot;')
     .replace(/'/g,  '&#39;');
+}
+
+// Public, unauthenticated endpoint: cap submissions per IP and per email so it
+// cannot be used to spray invites (auto-approved domains) or flood the inbox.
+const RATE_LIMIT_PER_IP    = 5;
+const RATE_LIMIT_PER_EMAIL = 3;
+const RATE_WINDOW_MS       = 60 * 60 * 1000; // 1 hour
+
+/** HMAC-pseudonymised key — no IPs or emails in Redis key names. */
+function rlKey(kind: 'ip' | 'email', value: string): string {
+  const secret = process.env.LOG_HASH_SECRET ?? 'dev-insecure-fallback';
+  const hash   = createHmac('sha256', secret).update(value).digest('hex').slice(0, 24);
+  return `access-rl:${kind}:${hash}`;
+}
+
+/** True when the caller is over the limit. Fails open if Redis is unavailable. */
+async function isRateLimited(ip: string, email: string): Promise<boolean> {
+  const redis = getUpstashClient();
+  if (!redis) return false;
+  try {
+    const [byIp, byEmail] = await Promise.all([
+      redis.incrWithWindow(rlKey('ip', ip), RATE_WINDOW_MS),
+      redis.incrWithWindow(rlKey('email', email), RATE_WINDOW_MS),
+    ]);
+    return byIp.count > RATE_LIMIT_PER_IP || byEmail.count > RATE_LIMIT_PER_EMAIL;
+  } catch {
+    return false;
+  }
 }
 
 let _resend: Resend | null = null;
@@ -66,6 +96,16 @@ export async function POST(request: NextRequest) {
   };
 
   const domain = record.email.split('@')[1] ?? '';
+
+  const ip = request.headers.get('x-forwarded-for')?.split(',')[0]?.trim()
+          ?? request.headers.get('x-real-ip')
+          ?? 'unknown';
+  if (await isRateLimited(ip, record.email)) {
+    return Response.json(
+      { error: 'Too many requests. Please try again later.' },
+      { status: 429, headers: { 'Retry-After': String(RATE_WINDOW_MS / 1000) } },
+    );
+  }
 
   // Check if domain is already approved — if so, send invite immediately
   let autoApproved = false;
