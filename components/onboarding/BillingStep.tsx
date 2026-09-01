@@ -1,12 +1,18 @@
 'use client';
 
-// Step 2 of /onboarding — save a card. Required: the stepper will not advance
-// until POST /api/onboarding/billing/confirm returns ok, which is what flips
-// profiles.billing_complete.
+// Step 2 of /onboarding — put the FIRM's card on file. Required: the stepper
+// will not advance until POST /api/onboarding/billing/confirm returns ok, which
+// is what flips organization_billing.billing_complete.
+//
+// The organization is the paying entity, so the first person from a firm to
+// reach this step saves the card and everyone after them sees the
+// "already set up" state and continues without entering anything. That state
+// comes from the server (POST /api/onboarding/billing → { alreadyComplete }),
+// never from client state — a colleague may have saved the card seconds ago.
 //
 // Stripe is driven through @stripe/stripe-js only (@stripe/react-stripe-js is
 // not a dependency of this project), so Elements is mounted imperatively:
-//   POST /api/onboarding/billing → { clientSecret, publishableKey }
+//   POST /api/onboarding/billing → { clientSecret, publishableKey, … }
 //   loadStripe → elements() → create('card') → mount(ref)
 //   confirmCardSetup → POST /confirm { setupIntentId }
 //
@@ -15,36 +21,68 @@
 // async init finishes, which would leave the card element unmounted forever.
 //
 // 503 billing_unavailable (NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY unset) is its own
-// state, not an error toast: nothing the end user does can fix it.
+// state, not an error toast: nothing the end user does can fix it. So is 409
+// no_organization — the account is not attached to a firm yet.
 
 import { useState, useEffect, useRef } from 'react';
 import type { Stripe, StripeCardElement } from '@stripe/stripe-js';
+import { formatUsdFromCents } from '../../lib/pricing';
 import {
   GOLD, NAVY, MUTED, FAINT,
   MICRO_LS, LABEL_CLASS, BUTTON_CLASS, NOTE_CLASS,
 } from './shared';
 
-type InitState = 'loading' | 'ready' | 'unavailable' | 'failed';
+type InitState = 'loading' | 'ready' | 'unavailable' | 'no_organization' | 'failed';
 
 interface BillingStepProps {
   complete:   boolean;
-  onComplete: () => void;
+  /** Firm name from /api/auth/me, so the resumed state can name the firm. */
+  orgName?:   string;
+  /** 'saved' — this user entered the card; 'already_set_up' — a colleague had. */
+  onComplete: (context: 'saved' | 'already_set_up') => void;
   onContinue: () => void;
 }
 
-export default function BillingStep({ complete, onComplete, onContinue }: BillingStepProps) {
+/** Shape of POST /api/onboarding/billing. */
+interface BillingInitResponse {
+  clientSecret?:       string;
+  publishableKey?:     string;
+  alreadyComplete?:    boolean;
+  orgName?:            string;
+  activeSeats?:        number;
+  seatUnitPriceCents?: number;
+  error?:              string;
+}
+
+interface SeatInfo {
+  orgName:            string;
+  activeSeats:        number;
+  seatUnitPriceCents: number;
+}
+
+export default function BillingStep({ complete, orgName, onComplete, onContinue }: BillingStepProps) {
   const [initState, setInitState] = useState<InitState>(complete ? 'ready' : 'loading');
   const [saving,    setSaving]    = useState(false);
   const [error,     setError]     = useState<string | null>(null);
+  // True when this firm's card was already on file when the step loaded — the
+  // user saves nothing and simply continues.
+  const [firmAlreadySetUp, setFirmAlreadySetUp] = useState(false);
+  // True when THIS user just entered the card, so the confirmation can say so.
+  const [savedByYou,       setSavedByYou]       = useState(false);
+  const [seatInfo,         setSeatInfo]         = useState<SeatInfo | null>(null);
   // Set when Stripe confirmed the card but our own confirm call did not land —
   // the card IS saved, so the retry must not re-run confirmCardSetup.
   const [pendingConfirmId, setPendingConfirmId] = useState<string | null>(null);
   const [attempt,          setAttempt]          = useState(0);
 
-  const cardMountRef   = useRef<HTMLDivElement>(null);
-  const stripeRef      = useRef<Stripe | null>(null);
-  const cardElRef      = useRef<StripeCardElement | null>(null);
+  const cardMountRef    = useRef<HTMLDivElement>(null);
+  const stripeRef       = useRef<Stripe | null>(null);
+  const cardElRef       = useRef<StripeCardElement | null>(null);
   const clientSecretRef = useRef<string | null>(null);
+  // onComplete identity is not stable across renders; a ref keeps the init
+  // effect from re-running (and re-creating SetupIntents) because of it.
+  const onCompleteRef = useRef(onComplete);
+  useEffect(() => { onCompleteRef.current = onComplete; }, [onComplete]);
 
   // ── Create the SetupIntent and mount the card element ──────────────────────
   useEffect(() => {
@@ -63,16 +101,35 @@ export default function BillingStep({ complete, onComplete, onContinue }: Billin
           headers: { 'Content-Type': 'application/json' },
           body:    JSON.stringify({}),
         });
-        const data = await res.json().catch(() => ({})) as {
-          clientSecret?: string;
-          publishableKey?: string;
-          error?: string;
-        };
+        const data = await res.json().catch(() => ({})) as BillingInitResponse;
 
         if (res.status === 503 || data.error === 'billing_unavailable') {
           if (active) setInitState('unavailable');
           return;
         }
+        if (res.status === 409 || data.error === 'no_organization') {
+          if (active) setInitState('no_organization');
+          return;
+        }
+
+        if (active && data.orgName) {
+          setSeatInfo({
+            orgName:            data.orgName,
+            activeSeats:        data.activeSeats ?? 0,
+            seatUnitPriceCents: data.seatUnitPriceCents ?? 0,
+          });
+        }
+
+        // ── A colleague already saved the firm's card ─────────────────────
+        if (data.alreadyComplete) {
+          if (!active) return;
+          setFirmAlreadySetUp(true);
+          setInitState('ready');
+          // Mark the step done immediately so the stepper unlocks step 3.
+          onCompleteRef.current('already_set_up');
+          return;
+        }
+
         if (!res.ok || !data.clientSecret || !data.publishableKey) {
           if (active) {
             setInitState('failed');
@@ -137,9 +194,10 @@ export default function BillingStep({ complete, onComplete, onContinue }: Billin
       const data = await res.json().catch(() => ({})) as { ok?: boolean };
       if (res.ok && data.ok) {
         setPendingConfirmId(null);
+        setSavedByYou(true);
         // The card element is torn down by the effect cleanup when `complete`
         // flips — destroying it here too would double-destroy and throw.
-        onComplete();
+        onCompleteRef.current('saved');
       } else {
         setPendingConfirmId(setupIntentId);
         setError('Your card was saved with Stripe, but we could not finish activating it. Retry below — you will not be charged twice.');
@@ -189,25 +247,51 @@ export default function BillingStep({ complete, onComplete, onContinue }: Billin
     setSaving(false);
   }
 
+  // ── Derived copy ───────────────────────────────────────────────────────────
+
+  const firmLabel = seatInfo?.orgName || orgName || 'your firm';
+  const seatLine =
+    seatInfo && seatInfo.activeSeats > 0 && seatInfo.seatUnitPriceCents > 0
+      ? `Your firm currently has ${seatInfo.activeSeats} ${seatInfo.activeSeats === 1 ? 'seat' : 'seats'} at ` +
+        `${formatUsdFromCents(seatInfo.seatUnitPriceCents)}/seat/month — the rate drops as your team grows.`
+      : null;
+
+  // `complete` (resumed from the server) and `firmAlreadySetUp` (discovered on
+  // this load) render the same "nothing to do" state.
+  const showSetUpState = complete || firmAlreadySetUp;
+
   // ── Render ─────────────────────────────────────────────────────────────────
 
   return (
     <div>
       <h2 className="font-display mb-2" style={{ color: NAVY, fontSize: '1.25rem', fontWeight: 500 }}>
-        Add a Payment Method
+        {showSetUpState ? 'Billing' : 'Add Your Firm’s Payment Method'}
       </h2>
-      <p className="mb-6 leading-relaxed" style={{ color: MUTED, fontSize: '14px', fontWeight: 300 }}>
-        Expert calls are billed by the minute. We only charge after each completed consultation.
-        No call, no charge. This step is required.
+      <p className="mb-2 leading-relaxed" style={{ color: MUTED, fontSize: '14px', fontWeight: 300 }}>
+        One card covers your whole firm: expert calls billed by the minute — no call, no charge —
+        and the monthly per-seat subscription for your team’s accounts. This step is required.
       </p>
+      {seatLine && (
+        <p className="mb-6 leading-relaxed" style={{ color: FAINT, fontSize: '12px' }}>
+          {seatLine}
+        </p>
+      )}
+      {!seatLine && <div className="mb-6" />}
 
-      {complete ? (
+      {showSetUpState ? (
         <div
           className={`${NOTE_CLASS} mb-6`}
           style={{ borderColor: GOLD, background: 'rgba(198,167,94,0.06)' }}
         >
           <span aria-hidden="true" style={{ color: GOLD }}>✓</span>
-          <p className="font-medium text-navy">Payment method saved</p>
+          <div>
+            <p className="font-medium text-navy">
+              {savedByYou ? 'Payment method saved' : `Billing is set up for ${firmLabel}`}
+            </p>
+            <p className="mt-1 text-xs leading-relaxed" style={{ color: MUTED }}>
+              Calls and seats are billed to your firm’s card on file. You do not need to enter one.
+            </p>
+          </div>
         </div>
       ) : initState === 'unavailable' ? (
         <div
@@ -221,6 +305,20 @@ export default function BillingStep({ complete, onComplete, onContinue }: Billin
               This deployment has no Stripe publishable key, so card details cannot be collected.
               An administrator needs to set <span className="font-mono text-[11px]">NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY</span>{' '}
               and redeploy. Onboarding cannot be completed until then.
+            </p>
+          </div>
+        </div>
+      ) : initState === 'no_organization' ? (
+        <div
+          className={`${NOTE_CLASS} mb-6`}
+          style={{ borderColor: '#B45309', background: 'rgba(180,83,9,0.05)' }}
+        >
+          <span aria-hidden="true" style={{ color: '#B45309' }}>!</span>
+          <div>
+            <p className="font-medium" style={{ color: '#B45309' }}>Your account is not linked to a firm yet</p>
+            <p className="mt-1 text-xs leading-relaxed" style={{ color: MUTED }}>
+              Billing is charged to the firm, so we cannot set it up until your account is attached to one.
+              Contact your ExpertMatch representative — this is fixed on our side, not yours.
             </p>
           </div>
         </div>
@@ -248,7 +346,7 @@ export default function BillingStep({ complete, onComplete, onContinue }: Billin
 
       {error && <p role="alert" className="text-xs text-red-600 mb-4 leading-relaxed">{error}</p>}
 
-      {complete ? (
+      {showSetUpState ? (
         <button
           type="button"
           onClick={onContinue}
@@ -257,7 +355,7 @@ export default function BillingStep({ complete, onComplete, onContinue }: Billin
         >
           Continue
         </button>
-      ) : initState === 'unavailable' ? null : pendingConfirmId ? (
+      ) : initState === 'unavailable' || initState === 'no_organization' ? null : pendingConfirmId ? (
         <button
           type="button"
           onClick={() => void handleRetryConfirm()}
@@ -288,9 +386,9 @@ export default function BillingStep({ complete, onComplete, onContinue }: Billin
         </button>
       )}
 
-      {!complete && initState !== 'unavailable' && (
+      {!showSetUpState && initState !== 'unavailable' && initState !== 'no_organization' && (
         <p className="mt-4 text-[11px] text-center leading-relaxed" style={{ color: FAINT }}>
-          Your card is stored by Stripe and charged only after a completed call.
+          Your card is stored by Stripe. Calls are charged only after they happen; seats are billed monthly.
         </p>
       )}
     </div>

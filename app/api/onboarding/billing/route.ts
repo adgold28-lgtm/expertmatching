@@ -1,15 +1,21 @@
 // POST /api/onboarding/billing — protected by routeAuthGuard()
 //
-// Step 1 of the billing onboarding flow: ensure the caller has a Stripe
-// customer, then open a SetupIntent so the browser can collect and save a card
-// with Stripe Elements. No money moves here — the saved card is charged
-// off-session when a call completes (lib/chargeSavedCard.ts).
+// Step 1 of the billing onboarding flow, at the ORGANIZATION level: the firm is
+// the paying entity, so the FIRST person from a firm to reach this step saves
+// the card that covers everyone. Everyone after them is told billing is already
+// set up and continues without entering a card.
 //
 // Flow:
-//   1. POST here                     → { clientSecret, publishableKey }
+//   1. POST here → { alreadyComplete: true, orgName, … }        (card on file)
+//                  { clientSecret, publishableKey, orgName, … } (needs a card)
 //   2. Client confirms the SetupIntent with Stripe.js
 //   3. POST /api/onboarding/billing/confirm { setupIntentId }
-//                                    → marks the user billingComplete
+//                  → marks the ORGANIZATION billing-complete and starts /
+//                    resizes the per-seat subscription
+//
+// The card pays for two things, which is why the response carries the seat
+// count and the current per-seat price: per-minute expert call charges, and the
+// monthly per-seat subscription priced by the volume tiers in lib/pricing.ts.
 //
 // Required env vars:
 //   STRIPE_SECRET_KEY                    — server-side Stripe key
@@ -24,8 +30,15 @@
 
 import { NextRequest } from 'next/server';
 import { routeAuthGuard, getSessionUser } from '../../../../lib/auth';
-import { getUser, upsertUser } from '../../../../lib/firmStore';
 import { stripe } from '../../../../lib/stripe';
+import { seatUnitPriceCents } from '../../../../lib/pricing';
+import {
+  getOrganizationIdForUser,
+  getOrgBillingStatus,
+  getOrganizationName,
+  countActiveSeats,
+  ensureOrgStripeCustomer,
+} from '../../../../lib/orgBilling';
 
 export async function POST(request: NextRequest): Promise<Response> {
   const authError = await routeAuthGuard(request);
@@ -43,34 +56,43 @@ export async function POST(request: NextRequest): Promise<Response> {
     return Response.json({ error: 'unauthorized' }, { status: 401 });
   }
 
-  const record = await getUser(sessionUser.email);
-  if (!record) {
-    return Response.json({ error: 'user_not_found' }, { status: 404 });
+  // The org is the payer — without one there is nothing to bill.
+  const organizationId = sessionUser.orgId ?? (await getOrganizationIdForUser(sessionUser.email));
+  if (!organizationId) {
+    return Response.json({ error: 'no_organization' }, { status: 409 });
   }
 
   try {
-    // ─── Stripe customer (create once, reuse forever) ──────────────────────
-    let customerId = record.stripeCustomerId ?? null;
+    const [status, orgNameFromDb, activeSeats] = await Promise.all([
+      getOrgBillingStatus(organizationId),
+      getOrganizationName(organizationId),
+      countActiveSeats(organizationId),
+    ]);
 
-    if (!customerId) {
-      const displayName =
-        [record.firstName, record.lastName].filter(Boolean).join(' ') || record.firmName;
+    const orgName = orgNameFromDb || sessionUser.firmName || 'your firm';
+    const seatSummary = {
+      orgName,
+      activeSeats,
+      seatUnitPriceCents: seatUnitPriceCents(activeSeats),
+    };
 
-      const customer = await stripe.customers.create({
-        email:    record.email,
-        ...(displayName ? { name: displayName } : {}),
-        metadata: { firmDomain: record.firmDomain },
-      });
-      customerId = customer.id;
-
-      // Persist immediately so a failure below never strands the customer.
-      await upsertUser(record.email, { stripeCustomerId: customerId });
+    // ─── Someone at this firm already saved the card ───────────────────────
+    if (status.billingComplete) {
+      return Response.json({ alreadyComplete: true, ...seatSummary });
     }
+
+    // ─── Org Stripe customer (create once, reuse forever) ──────────────────
+    const customerId = await ensureOrgStripeCustomer(organizationId, {
+      email:   sessionUser.email,
+      orgName,
+    });
 
     // ─── SetupIntent (card capture, no charge) ─────────────────────────────
     const setupIntent = await stripe.setupIntents.create({
       customer:             customerId,
+      usage:                'off_session',
       payment_method_types: ['card'],
+      metadata:             { organizationId },
     });
 
     if (!setupIntent.client_secret) {
@@ -81,6 +103,7 @@ export async function POST(request: NextRequest): Promise<Response> {
     return Response.json({
       clientSecret: setupIntent.client_secret,
       publishableKey,
+      ...seatSummary,
     });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);

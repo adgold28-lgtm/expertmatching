@@ -25,4 +25,9 @@ export const stripe = {
   get setupIntents()   { return getStripe().setupIntents; },
   get paymentIntents() { return getStripe().paymentIntents; },
   get paymentMethods() { return getStripe().paymentMethods; },
+  // Per-seat subscription billing (lib/orgBilling.ts): one tiered Price found
+  // by lookup key, one subscription per organization, quantity = active seats.
+  get subscriptions()     { return getStripe().subscriptions; },
+  get subscriptionItems() { return getStripe().subscriptionItems; },
+  get invoices()          { return getStripe().invoices; },
 };
