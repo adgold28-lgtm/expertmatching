@@ -30,6 +30,10 @@ export interface SessionUser {
   firmName?:           string;
   firstName?:          string;
   onboardingComplete?: boolean;
+  // True once the onboarding SetupIntent flow saved a default card. Mirrored
+  // onto app_metadata by firmStore.syncUserMetadata, so the onboarding stepper
+  // can resume on the right step without a DB read.
+  billingComplete?:    boolean;
 }
 
 /** Shape of the app_metadata written by lib/supabase/admin.ts. */
@@ -40,6 +44,7 @@ interface AuthAppMetadata {
   firm_name?:           string;
   first_name?:          string;
   onboarding_complete?: boolean;
+  billing_complete?:    boolean;
 }
 
 /**
@@ -83,6 +88,9 @@ export function sessionUserFromAuthUser(user: User): SessionUser {
     ...(meta.first_name ? { firstName: meta.first_name } : {}),
     ...(meta.onboarding_complete !== undefined
       ? { onboardingComplete: meta.onboarding_complete }
+      : {}),
+    ...(meta.billing_complete !== undefined
+      ? { billingComplete: meta.billing_complete }
       : {}),
   };
 }
