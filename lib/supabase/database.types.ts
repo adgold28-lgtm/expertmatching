@@ -3,6 +3,7 @@
 // Hand-authored types for the Supabase schema created in
 //   supabase/migrations/20260831000000_supabase_cutover_foundation.sql
 //   supabase/migrations/20260901000000_onboarding_billing_calendar.sql
+//   supabase/migrations/20260902000000_org_billing_and_rls_hardening.sql
 //
 // Keep this file in sync with those migrations. (Once the Supabase CLI is
 // wired up you can regenerate with: `supabase gen types typescript --linked`.)
@@ -11,7 +12,8 @@
 //   org-scoped     -> organizations, profiles, organization_members,
 //                     access_requests
 //   project-scoped -> projects, project_members, project_experts
-//   service-role   -> access_requests, user_calendar_connections
+//   service-role   -> access_requests, user_calendar_connections,
+//                     organization_billing
 // Project data is reachable only via project ownership or an explicit
 // project_members row — never org-wide.
 
@@ -319,6 +321,51 @@ export interface Database {
         };
         Relationships: [];
       };
+      // Service-role only (RLS enabled, no authenticated policies).
+      // The ORGANIZATION is the paying entity: its Stripe customer, the
+      // per-seat subscription, and whether a default card is on file.
+      organization_billing: {
+        Row: {
+          organization_id: string;
+          stripe_customer_id: string | null;
+          stripe_subscription_id: string | null;
+          stripe_subscription_item_id: string | null;
+          billing_complete: boolean;
+          subscription_status: string | null;
+          seat_quantity_synced: number;
+          billing_email: string | null;
+          set_up_by: string | null;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: {
+          organization_id: string;
+          stripe_customer_id?: string | null;
+          stripe_subscription_id?: string | null;
+          stripe_subscription_item_id?: string | null;
+          billing_complete?: boolean;
+          subscription_status?: string | null;
+          seat_quantity_synced?: number;
+          billing_email?: string | null;
+          set_up_by?: string | null;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: {
+          organization_id?: string;
+          stripe_customer_id?: string | null;
+          stripe_subscription_id?: string | null;
+          stripe_subscription_item_id?: string | null;
+          billing_complete?: boolean;
+          subscription_status?: string | null;
+          seat_quantity_synced?: number;
+          billing_email?: string | null;
+          set_up_by?: string | null;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Relationships: [];
+      };
     };
     Views: Record<string, never>;
     Functions: {
@@ -342,3 +389,4 @@ export type ProjectRow = Database['public']['Tables']['projects']['Row'];
 export type ProjectMemberRow = Database['public']['Tables']['project_members']['Row'];
 export type ProjectExpertRow = Database['public']['Tables']['project_experts']['Row'];
 export type UserCalendarConnectionRow = Database['public']['Tables']['user_calendar_connections']['Row'];
+export type OrganizationBillingRow = Database['public']['Tables']['organization_billing']['Row'];

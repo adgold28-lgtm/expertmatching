@@ -28,6 +28,9 @@ export interface SessionUser {
   email:               string;
   firmDomain:          string; // '*' for platform admin, else the org domain
   firmName?:           string;
+  // Organization membership (from app_metadata; written only by the service role).
+  orgId?:              string;
+  orgRole?:            'org_admin' | 'org_member';
   firstName?:          string;
   onboardingComplete?: boolean;
   // True once the onboarding SetupIntent flow saved a default card. Mirrored
@@ -42,6 +45,8 @@ interface AuthAppMetadata {
   status?:              string;
   firm_domain?:         string;
   firm_name?:           string;
+  org_id?:              string;
+  org_role?:            string;
   first_name?:          string;
   onboarding_complete?: boolean;
   billing_complete?:    boolean;
@@ -85,6 +90,10 @@ export function sessionUserFromAuthUser(user: User): SessionUser {
     email,
     firmDomain,
     ...(meta.firm_name  ? { firmName:  meta.firm_name }  : {}),
+    ...(meta.org_id     ? { orgId:     meta.org_id }     : {}),
+    ...(meta.org_role === 'org_admin' || meta.org_role === 'org_member'
+      ? { orgRole: meta.org_role }
+      : {}),
     ...(meta.first_name ? { firstName: meta.first_name } : {}),
     ...(meta.onboarding_complete !== undefined
       ? { onboardingComplete: meta.onboarding_complete }
