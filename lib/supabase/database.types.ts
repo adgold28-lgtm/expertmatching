@@ -374,6 +374,16 @@ export interface Database {
       admin_shares_org_with: { Args: { p_target: string }; Returns: boolean };
       is_project_owner: { Args: { p_project: string }; Returns: boolean };
       has_project_access: { Args: { p_project: string }; Returns: boolean };
+      // Added by 20260902000000 section 3 (RLS hardening).
+      is_active_member_of_project_org: {
+        Args: { p_project: string; p_profile: string };
+        Returns: boolean;
+      };
+      may_be_project_member: {
+        Args: { p_project: string; p_profile: string };
+        Returns: boolean;
+      };
+      is_platform_admin_profile: { Args: { p_profile: string }; Returns: boolean };
     };
     Enums: Record<string, never>;
     CompositeTypes: Record<string, never>;
