@@ -1,6 +1,6 @@
 import { NextRequest } from 'next/server';
 import { getSearchProvider, searchWithFallback } from '../../../lib/searchProviders';
-import { routeAuthGuard } from '../../../lib/auth';
+import { adminGuard } from '../../../lib/auth';
 
 export async function GET(request: NextRequest) {
   // Debug-only endpoint — not available in production.
@@ -8,8 +8,8 @@ export async function GET(request: NextRequest) {
     return Response.json({ error: 'not_found' }, { status: 404 });
   }
 
-  // Route-level auth guard (defense in depth — supplements middleware).
-  const authErr = await routeAuthGuard(request);
+  // Platform-admin only — each call spends search-provider credits.
+  const authErr = await adminGuard(request);
   if (authErr) return authErr;
 
   // Verify at least one provider is configured

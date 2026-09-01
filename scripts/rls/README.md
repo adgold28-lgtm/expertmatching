@@ -122,7 +122,7 @@ path except `_next/*`.
 | `app/api/onboarding/**`, `app/api/auth/me` | all | `routeAuthGuard` + `getSessionUser`, all writes scoped to the caller | OK |
 | `app/api/auth/set-password` | POST | signed invite token, consumed from Redis | OK |
 | `app/api/request-access/route.ts` | POST | **none — public by design** | **Finding 2** |
-| `app/api/demo-readiness/route.ts` | GET | session (middleware) only; 404 in production *unless* `DEMO_READINESS_TOKEN` is set — and the token is never actually checked | **Finding 3** |
+| `app/api/demo-readiness/route.ts` | GET | `adminGuard` (platform admin only; 404 otherwise) | fixed at integration (was Finding 3) |
 | `app/api/test-search/route.ts` | GET | `routeAuthGuard` only | **Finding 4** |
 
 No route in this repo loads a project with `getProject` while reachable by an
@@ -150,15 +150,11 @@ verified webhook signature. The IDOR fixes from PR #35 are intact.
    line in `CLAUDE.md`. Proposed fix: reuse `lib/rateLimiter` keyed on hashed IP
    + hashed email (the `invite-rl:*` prefix already exists), and have the
    auto-approval branch require an explicit per-organization opt-in flag.
-3. **`/api/demo-readiness` leaks the env-var checklist to any signed-in user** —
-   `app/api/demo-readiness/route.ts:27-42`. The production guard is "is
-   `DEMO_READINESS_TOKEN` set", and the token is never compared against anything,
-   so setting it *opens* the endpoint rather than protecting it. It also logs the
-   client IP. Proposed fix: replace the check with `await adminGuard(request)`
-   and drop the IP from the log line.
-4. **`/api/test-search` burns search-provider credits for any signed-in user** —
-   `app/api/test-search/route.ts:5`. It is a debug endpoint behind
-   `routeAuthGuard` only. Proposed fix: `adminGuard`, or delete the route.
+3. **`/api/demo-readiness`** — FIXED at integration: now `adminGuard` (404 to
+   non-admins), the never-compared `DEMO_READINESS_TOKEN` check and the IP log
+   line are gone.
+4. **`/api/test-search`** — FIXED at integration: now `adminGuard` (still 404 in
+   production).
 
 Findings 2-4 are unauthenticated-surface / cost issues rather than cross-account
 data leaks; none of them can read another organization's data.
