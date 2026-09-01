@@ -30,6 +30,7 @@ interface CurrentUser {
   email:      string;
   role:       'admin' | 'user';
   firmDomain: string;
+  orgRole?:   'org_admin' | 'org_member';
 }
 
 export default function AppPage() {
@@ -38,6 +39,7 @@ export default function AppPage() {
   const [projects,        setProjects]        = useState<ProjectSummary[]>([]);
   const [projectsLoading, setProjectsLoading] = useState(true);
   const [currentUser,     setCurrentUser]     = useState<CurrentUser | null>(null);
+  const [canManageTeam,   setCanManageTeam]   = useState(false);
   const [showWelcome,     setShowWelcome]     = useState(false);
 
   const [showNewProjectModal, setShowNewProjectModal] = useState(false);
@@ -64,10 +66,31 @@ export default function AppPage() {
       })
       .catch(() => setProjectsLoading(false));
 
+    // /api/auth/me carries orgRole; read it defensively and confirm with the
+    // membership endpoint (which is authoritative for legacy sessions).
     fetch('/api/auth/me')
       .then(r => r.json())
-      .then((d: { email?: string; role?: 'admin' | 'user'; firmDomain?: string }) => {
-        if (d.email) setCurrentUser({ email: d.email, role: d.role ?? 'user', firmDomain: d.firmDomain ?? '' });
+      .then((d: {
+        email?:      string;
+        role?:       'admin' | 'user';
+        firmDomain?: string;
+        orgRole?:    'org_admin' | 'org_member';
+      }) => {
+        if (!d.email) return;
+        setCurrentUser({
+          email:      d.email,
+          role:       d.role ?? 'user',
+          firmDomain: d.firmDomain ?? '',
+          orgRole:    d.orgRole,
+        });
+        if (d.role === 'admin' || d.orgRole === 'org_admin') setCanManageTeam(true);
+      })
+      .catch(() => {});
+
+    fetch('/api/org/membership')
+      .then(r => (r.ok ? r.json() : null))
+      .then((d: { canManageTeam?: boolean } | null) => {
+        if (d?.canManageTeam) setCanManageTeam(true);
       })
       .catch(() => {});
   }, []);
@@ -138,34 +161,17 @@ export default function AppPage() {
         </div>
       )}
 
-      {/* ── Welcome banner (shown once after onboarding) ── */}
-      {showWelcome && (
-        <div
-          className="flex items-center justify-between px-6 py-3 text-[11px] font-medium"
-          style={{ background: '#C6A75E', color: '#0B1F3B', letterSpacing: '0.06em' }}
-        >
-          <span>You&apos;re all set. Create your first project to get started.</span>
-          <button
-            onClick={() => setShowWelcome(false)}
-            className="ml-4 opacity-60 hover:opacity-100 transition-opacity text-base leading-none"
-            aria-label="Dismiss"
-          >
-            ×
-          </button>
-        </div>
-      )}
-
       {/* ── Header ── */}
       <header className="bg-navy border-b-2 border-gold sticky top-0 z-40">
-        <div className="max-w-6xl mx-auto px-6 sm:px-10 py-4 flex items-center justify-between">
+        <div className="max-w-6xl mx-auto px-6 sm:px-10 py-4 flex items-center justify-between gap-3">
           <Link
             href="/"
-            className="font-display text-cream font-semibold"
+            className="font-display text-cream font-semibold shrink-0"
             style={{ letterSpacing: '0.15em', fontSize: '13px' }}
           >
             EXPERTMATCH
           </Link>
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-2 sm:gap-3 flex-wrap justify-end">
             <button
               onClick={openNewProjectModal}
               className="text-[10px] uppercase font-medium px-4 py-2 transition-colors"
@@ -173,6 +179,15 @@ export default function AppPage() {
             >
               New Project
             </button>
+            {canManageTeam && (
+              <Link
+                href="/settings/team"
+                className="text-[10px] uppercase font-medium px-4 py-2 transition-colors border hover:text-gold"
+                style={{ color: 'rgba(198,167,94,0.6)', borderColor: 'rgba(198,167,94,0.25)', letterSpacing: '0.14em' }}
+              >
+                Team
+              </Link>
+            )}
             <button
               onClick={handleSignOut}
               className="text-[10px] uppercase font-medium px-4 py-2 transition-colors border"

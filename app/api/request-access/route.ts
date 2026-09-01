@@ -1,10 +1,8 @@
 import { NextRequest } from 'next/server';
 import { Resend } from 'resend';
-import { getUpstashClient } from '../../../lib/upstashRedis';
 import { getServiceRoleClient } from '../../../lib/supabase/admin';
 import { isApprovedDomain } from '../../../lib/firmStore';
-import { generateSignupToken } from '../../../lib/signupToken';
-import { sendInviteEmail } from '../../../lib/sendAvailabilityRequest';
+import { provisionAccountInvite, splitFullName } from '../../../lib/accountProvisioning';
 
 interface AccessRequest {
   name:        string;
@@ -79,22 +77,25 @@ export async function POST(request: NextRequest) {
     }
   }
 
-  if (autoApproved && process.env.NEXT_PUBLIC_APP_URL) {
-    try {
-      const { token, hash, expiry } = generateSignupToken(record.email, record.firm);
-      const redis = getUpstashClient();
-      if (redis) {
-        const ttlSeconds = Math.floor((expiry - Date.now()) / 1000);
-        // Use invite-token: prefix — consumed by /api/auth/set-password
-        await redis.set(`invite-token:${hash}`, record.email, { ex: ttlSeconds });
-      }
-      const signupUrl = `${process.env.NEXT_PUBLIC_APP_URL}/auth/set-password?token=${encodeURIComponent(token)}`;
-      await sendInviteEmail(record.email, record.firm, signupUrl);
-      return Response.json({ ok: true });
-    } catch {
-      // Fall through to manual review on any error
-      autoApproved = false;
+  // Known organization → provision the invite immediately. Account creation
+  // always runs through provisionAccountInvite, so the requester's name and
+  // organization are mandatory here too.
+  if (autoApproved) {
+    const { firstName, lastName } = splitFullName(record.name);
+
+    if (firstName && lastName) {
+      const result = await provisionAccountInvite({
+        firstName,
+        lastName,
+        email:        record.email,
+        organization: { domain, name: record.firm },
+      });
+      if (result.ok) return Response.json({ ok: true });
     }
+
+    // Anything we cannot auto-provision (single-word name, existing account,
+    // seat cap, storage) falls through to manual review below. The response is
+    // identical either way, so the form never reveals whether an account exists.
   }
 
   // Store as pending (service-role write — access_requests has no

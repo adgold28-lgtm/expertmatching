@@ -1,5 +1,6 @@
 import { verifySignupToken, hashToken } from '../../../lib/signupToken';
 import { getUpstashClient } from '../../../lib/upstashRedis';
+import { getUser } from '../../../lib/firmStore';
 import SetPasswordForm from './SetPasswordForm';
 
 function ErrorPage({ title, body }: { title: string; body: string }) {
@@ -67,5 +68,15 @@ export default async function SetPasswordPage({
     );
   }
 
-  return <SetPasswordForm token={rawToken} email={email} firmName={firmName} />;
+  // First name is stored at invite time — greet the invitee by it.
+  const invitee = await getUser(email).catch(() => null);
+
+  return (
+    <SetPasswordForm
+      token={rawToken}
+      email={email}
+      firmName={invitee?.firmName || firmName}
+      firstName={invitee?.firstName ?? ''}
+    />
+  );
 }

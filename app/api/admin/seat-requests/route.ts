@@ -1,18 +1,11 @@
 import { NextRequest } from 'next/server';
-import { adminGuard } from '../../../../lib/auth';
-import { getUpstashClient } from '../../../../lib/upstashRedis';
-import { generateSignupToken } from '../../../../lib/signupToken';
-import { sendInviteEmail } from '../../../../lib/sendAvailabilityRequest';
+import { adminGuard, getSessionUser } from '../../../../lib/auth';
+import { provisionAccountInvite, splitFullName, sanitizeName } from '../../../../lib/accountProvisioning';
 import {
   listSeatRequests,
+  getSeatRequest,
   removeSeatRequest,
-  getFirm,
   getUser,
-  upsertUser,
-  countActiveUsersForFirm,
-  SEAT_LIMITS,
-  tryClaimSeat,
-  releaseSeatClaim,
 } from '../../../../lib/firmStore';
 
 // GET — list pending seat requests
@@ -29,7 +22,11 @@ export async function GET(request: NextRequest): Promise<Response> {
   }
 }
 
-// POST { email, action: 'approve' | 'reject' }
+// POST { email, action: 'approve' | 'reject', firstName?, lastName? }
+//
+// Approval re-runs the same provisioning path as any other invite, so the seat
+// cap is re-checked there: a still-capped organization is refused with a clear
+// message rather than silently over-provisioned.
 export async function POST(request: NextRequest): Promise<Response> {
   const err = await adminGuard(request);
   if (err) return err;
@@ -46,9 +43,11 @@ export async function POST(request: NextRequest): Promise<Response> {
   if (!email || !email.includes('@')) {
     return Response.json({ error: 'valid_email_required' }, { status: 400 });
   }
-
   if (action !== 'approve' && action !== 'reject') {
-    return Response.json({ error: 'action must be "approve" or "reject"' }, { status: 400 });
+    return Response.json(
+      { error: 'invalid_action', message: 'action must be "approve" or "reject"' },
+      { status: 400 },
+    );
   }
 
   if (action === 'reject') {
@@ -60,78 +59,52 @@ export async function POST(request: NextRequest): Promise<Response> {
     }
   }
 
-  // action === 'approve' — run invite logic
-  const domain = email.split('@')[1]?.toLowerCase() ?? '';
-  if (!domain) {
-    return Response.json({ error: 'invalid_email' }, { status: 400 });
+  const seatRequest = await getSeatRequest(email).catch(() => null);
+
+  // Provisioned in the meantime — just clear the request.
+  const existing = await getUser(email).catch(() => null);
+  if (existing && (existing.status === 'active' || existing.status === 'pending')) {
+    await removeSeatRequest(email).catch(() => {});
+    return Response.json({ ok: true, alreadyProvisioned: true });
   }
 
-  const firm = await getFirm(domain);
-  if (!firm) {
-    return Response.json({ error: 'firm_not_found' }, { status: 404 });
-  }
+  const fromRequest = splitFullName(seatRequest?.name ?? '');
+  const firstName   = sanitizeName(b.firstName) || fromRequest.firstName;
+  const lastName    = sanitizeName(b.lastName)  || fromRequest.lastName;
 
-  // Re-check seat limit
-  const activeSeatCount = await countActiveUsersForFirm(domain);
-  const seatLimit       = SEAT_LIMITS[firm.plan];
-  if (activeSeatCount >= seatLimit) {
+  if (!firstName || !lastName) {
     return Response.json(
-      { error: 'seat_limit_still_reached', message: 'Seat limit is still reached. Upgrade the firm plan first.' },
-      { status: 403 },
+      {
+        error:   'name_required',
+        message: 'This seat request has no usable name — enter a first and last name to approve it.',
+      },
+      { status: 400 },
     );
   }
 
-  // Concurrent protection
-  const claimResult = await tryClaimSeat(domain, email, 10);
-  if (claimResult === 'concurrent_signup') {
-    return Response.json({ error: 'concurrent_signup' }, { status: 409 });
+  const domain = seatRequest?.firmDomain || email.split('@')[1]?.toLowerCase() || '';
+  if (!domain) return Response.json({ error: 'invalid_email' }, { status: 400 });
+
+  const session = await getSessionUser(request);
+
+  const result = await provisionAccountInvite({
+    firstName,
+    lastName,
+    email,
+    organization:    { domain, name: seatRequest?.firmName },
+    invitedByEmail:  session.email,
+    isPlatformAdmin: true,
+  });
+
+  if (!result.ok) {
+    return Response.json({ error: result.error, message: result.message }, { status: result.status });
   }
 
-  try {
-    // Check existing user
-    const existing = await getUser(email);
-    if (existing && existing.status === 'active') {
-      // Already active — just remove the seat request
-      await removeSeatRequest(email).catch(() => {});
-      return Response.json({ ok: true });
-    }
+  await removeSeatRequest(email).catch(() => {});
 
-    // Upsert as pending (auth account gets a random password; the invite
-    // set-password flow replaces it).
-    await upsertUser(email, {
-      firmDomain: domain,
-      firmName:   firm.name,
-      role:       'user',
-      status:     'pending',
-    });
-
-    // Generate + store invite token
-    const { token, hash, expiry } = generateSignupToken(email, firm.name);
-    const ttlSeconds = Math.floor((expiry - Date.now()) / 1000);
-
-    const redis = getUpstashClient();
-    if (!redis) {
-      return Response.json({ error: 'storage_unavailable' }, { status: 503 });
-    }
-
-    await redis.set(`invite-token:${hash}`, email, { ex: ttlSeconds });
-
-    // Build set-password URL + send invite
-    const appUrl         = process.env.NEXT_PUBLIC_APP_URL ?? '';
-    const setPasswordUrl = `${appUrl}/auth/set-password?token=${encodeURIComponent(token)}`;
-
-    try {
-      await sendInviteEmail(email, firm.name, setPasswordUrl);
-    } catch {
-      console.error('[admin/seat-requests] invite email failed', { email: '[redacted]' });
-      await removeSeatRequest(email).catch(() => {});
-      return Response.json({ ok: true, warning: 'Invite email failed to send' });
-    }
-
-    await removeSeatRequest(email);
-    console.log('[admin/seat-requests] approved + invite sent', { domain });
-    return Response.json({ ok: true });
-  } finally {
-    await releaseSeatClaim(domain, email).catch(() => {});
-  }
+  return Response.json({
+    ok:        true,
+    emailSent: result.emailSent,
+    ...(result.emailSent ? {} : { warning: 'Invite created, but the email could not be delivered.' }),
+  });
 }

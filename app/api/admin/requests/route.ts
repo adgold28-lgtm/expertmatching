@@ -1,10 +1,8 @@
 import { NextRequest } from 'next/server';
-import { adminGuard } from '../../../../lib/auth';
-import { getUpstashClient } from '../../../../lib/upstashRedis';
-import { generateSignupToken } from '../../../../lib/signupToken';
-import { sendInviteEmail } from '../../../../lib/sendAvailabilityRequest';
+import { adminGuard, getSessionUser } from '../../../../lib/auth';
 import { getServiceRoleClient } from '../../../../lib/supabase/admin';
-import { upsertUser, upsertFirm, type FirmPlan } from '../../../../lib/firmStore';
+import { upsertFirm, type FirmPlan } from '../../../../lib/firmStore';
+import { provisionAccountInvite, splitFullName, sanitizeName } from '../../../../lib/accountProvisioning';
 
 // Wire shape consumed by app/admin/requests/page.tsx — kept stable.
 interface AccessRequest {
@@ -46,17 +44,22 @@ export async function GET(request: NextRequest): Promise<Response> {
   }
 }
 
+// POST { action: 'approve' | 'reject', email, plan?, firstName?, lastName?, firmName? }
+//
+// Approval creates the account through provisionAccountInvite: the requester's
+// submitted name is split into first / last and their firm name becomes the
+// organization name. The admin can correct either before approving.
 export async function POST(request: NextRequest): Promise<Response> {
   const err = await adminGuard(request);
   if (err) return err;
 
   let body: unknown;
   try { body = await request.json(); } catch {
-    return Response.json({ error: 'Invalid JSON' }, { status: 400 });
+    return Response.json({ error: 'invalid_json' }, { status: 400 });
   }
 
   if (typeof body !== 'object' || body === null) {
-    return Response.json({ error: 'Invalid request' }, { status: 400 });
+    return Response.json({ error: 'invalid_request' }, { status: 400 });
   }
 
   const b      = body as Record<string, unknown>;
@@ -64,11 +67,11 @@ export async function POST(request: NextRequest): Promise<Response> {
   const email  = typeof b.email === 'string' ? b.email.trim().toLowerCase() : '';
 
   if (!email || !email.includes('@')) {
-    return Response.json({ error: 'Valid email required' }, { status: 400 });
+    return Response.json({ error: 'valid_email_required' }, { status: 400 });
   }
 
   const db = getServiceRoleClient();
-  if (!db) return Response.json({ error: 'Storage unavailable' }, { status: 503 });
+  if (!db) return Response.json({ error: 'storage_unavailable' }, { status: 503 });
 
   if (action === 'reject') {
     await db.from('access_requests')
@@ -79,63 +82,71 @@ export async function POST(request: NextRequest): Promise<Response> {
     return Response.json({ ok: true });
   }
 
-  if (action === 'approve') {
-    const rawPlan = typeof b.plan === 'string' ? b.plan : 'starter';
-    const plan: FirmPlan = VALID_PLANS.has(rawPlan as FirmPlan) ? (rawPlan as FirmPlan) : 'starter';
-
-    // Retrieve firm name from the pending request record.
-    const { data: pending } = await db
-      .from('access_requests')
-      .select('firm_name')
-      .eq('kind', 'access')
-      .eq('email', email)
-      .eq('status', 'requested')
-      .maybeSingle();
-    const firmName = pending?.firm_name || (email.split('@')[0] ?? email);
-
-    const domain = email.split('@')[1] ?? '';
-
-    // Upsert firm + pending user (auth account is provisioned with a random
-    // password; the invite set-password flow replaces it).
-    if (domain) {
-      await upsertFirm(domain, { name: firmName, plan, status: 'active' }).catch(() => {});
-      await upsertUser(email, {
-        firmDomain: domain,
-        firmName,
-        role:       'user',
-        status:     'pending',
-      }).catch(() => {});
-    }
-
-    // Generate signup token and store in Redis (24h TTL) — short-lived
-    // single-use tokens stay in Redis by design.
-    const redis = getUpstashClient();
-    if (!redis) return Response.json({ error: 'Storage unavailable' }, { status: 503 });
-
-    const { token, hash, expiry } = generateSignupToken(email, firmName);
-    const ttlSeconds = Math.floor((expiry - Date.now()) / 1000);
-    await redis.set(`invite-token:${hash}`, email, { ex: ttlSeconds });
-
-    // Send invite email with the set-password URL.
-    const appUrl    = process.env.NEXT_PUBLIC_APP_URL ?? '';
-    const signupUrl = `${appUrl}/auth/set-password?token=${encodeURIComponent(token)}`;
-
-    try {
-      await sendInviteEmail(email, firmName, signupUrl);
-    } catch {
-      console.error('[admin/requests] invite email failed', { email: '[redacted]' });
-      // Don't fail the action — token is already in Redis
-      return Response.json({ ok: true, warning: 'Invite email failed to send' });
-    }
-
-    await db.from('access_requests')
-      .update({ status: 'approved', reviewed_at: new Date().toISOString() })
-      .eq('kind', 'access')
-      .eq('email', email)
-      .eq('status', 'requested');
-
-    return Response.json({ ok: true });
+  if (action !== 'approve') {
+    return Response.json({ error: 'invalid_action' }, { status: 400 });
   }
 
-  return Response.json({ error: 'Invalid action' }, { status: 400 });
+  // ── Recover the submission for the requester's name + firm ──────────────────
+  const { data: pending } = await db
+    .from('access_requests')
+    .select('name, firm_name')
+    .eq('kind', 'access')
+    .eq('email', email)
+    .eq('status', 'requested')
+    .maybeSingle();
+
+  const submitted = splitFullName(pending?.name ?? '');
+  const firstName = sanitizeName(b.firstName) || submitted.firstName;
+  const lastName  = sanitizeName(b.lastName)  || submitted.lastName;
+  const firmName  = sanitizeName(b.firmName)  || sanitizeName(pending?.firm_name ?? '');
+
+  if (!firstName || !lastName) {
+    return Response.json(
+      {
+        error:   'name_required',
+        message: 'This request has no usable first and last name — enter them before approving.',
+      },
+      { status: 400 },
+    );
+  }
+
+  const domain = email.split('@')[1]?.toLowerCase() ?? '';
+  if (!domain) return Response.json({ error: 'invalid_email' }, { status: 400 });
+
+  // Plan is descriptive only — seats are billed per active seat, not by plan.
+  const rawPlan = typeof b.plan === 'string' ? b.plan : '';
+  if (rawPlan && VALID_PLANS.has(rawPlan as FirmPlan)) {
+    await upsertFirm(domain, {
+      name:   firmName || domain,
+      plan:   rawPlan as FirmPlan,
+      status: 'active',
+    }).catch(() => { /* provisioning creates the organization if this failed */ });
+  }
+
+  const session = await getSessionUser(request);
+
+  const result = await provisionAccountInvite({
+    firstName,
+    lastName,
+    email,
+    organization:    { domain, name: firmName || domain },
+    invitedByEmail:  session.email,
+    isPlatformAdmin: true,
+  });
+
+  if (!result.ok) {
+    return Response.json({ error: result.error, message: result.message }, { status: result.status });
+  }
+
+  await db.from('access_requests')
+    .update({ status: 'approved', reviewed_at: new Date().toISOString() })
+    .eq('kind', 'access')
+    .eq('email', email)
+    .eq('status', 'requested');
+
+  return Response.json({
+    ok:        true,
+    emailSent: result.emailSent,
+    ...(result.emailSent ? {} : { warning: 'Invite created, but the email could not be delivered.' }),
+  });
 }

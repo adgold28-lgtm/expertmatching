@@ -7,10 +7,12 @@ export default function SetPasswordForm({
   token,
   email,
   firmName,
+  firstName,
 }: {
-  token:    string;
-  email:    string;
-  firmName: string;
+  token:      string;
+  email:      string;
+  firmName:   string;
+  firstName?: string;
 }) {
   const [password,  setPassword]  = useState('');
   const [confirm,   setConfirm]   = useState('');
@@ -84,6 +86,11 @@ export default function SetPasswordForm({
           >
             Create Your Account
           </p>
+          {firstName && (
+            <p className="text-sm font-semibold text-navy text-center mb-1">
+              Welcome, {firstName}
+            </p>
+          )}
           <p className="text-xs text-muted text-center mb-6" style={{ fontWeight: 300 }}>
             {firmName}
           </p>

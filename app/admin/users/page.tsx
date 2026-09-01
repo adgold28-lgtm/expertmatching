@@ -7,16 +7,28 @@ import Link from 'next/link';
 
 type UserRole   = 'admin' | 'user';
 type UserStatus = 'active' | 'pending' | 'disabled';
+type OrgRole    = 'org_admin' | 'org_member';
 
 interface UserInfo {
   email:               string;
   role:                UserRole;
+  firstName?:          string;
+  lastName?:           string;
   firmName:            string;
   firmDomain:          string;
+  orgRole?:            OrgRole;
   status:              UserStatus;
   createdAt:           number;
   onboardingComplete?: boolean;
 }
+
+interface FirmInfo {
+  domain:    string;
+  name:      string;
+  seatUsed?: number;
+}
+
+const NEW_ORG = '__new__';
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -25,6 +37,20 @@ function formatDate(ts: number): string {
   return new Date(ts).toLocaleDateString('en-US', {
     month: 'short', day: 'numeric', year: 'numeric',
   });
+}
+
+function fullName(user: UserInfo): string {
+  const name = `${user.firstName ?? ''} ${user.lastName ?? ''}`.trim();
+  return name || user.email;
+}
+
+async function readError(res: Response): Promise<string> {
+  try {
+    const data = await res.json() as { message?: string; error?: string };
+    return data.message ?? data.error ?? 'Something went wrong.';
+  } catch {
+    return 'Something went wrong.';
+  }
 }
 
 // ─── Shared UI ────────────────────────────────────────────────────────────────
@@ -65,13 +91,12 @@ function UserRow({
     setDeleting(true);
     setErrMsg('');
     try {
-      const res  = await fetch('/api/admin/users', {
+      const res = await fetch('/api/admin/users', {
         method:  'DELETE',
         headers: { 'Content-Type': 'application/json' },
         body:    JSON.stringify({ email: user.email }),
       });
-      const data = await res.json() as Record<string, string>;
-      if (!res.ok) throw new Error(data.message ?? data.error ?? 'Failed to delete user');
+      if (!res.ok) throw new Error(await readError(res));
       onDeleted();
     } catch (e) {
       setErrMsg(e instanceof Error ? e.message : 'Something went wrong');
@@ -79,55 +104,56 @@ function UserRow({
     }
   }
 
-  const firmLabel = user.firmName
+  const orgLabel = user.firmName
     ? user.firmDomain
       ? `${user.firmName} · ${user.firmDomain}`
       : user.firmName
     : user.firmDomain || (user.role === 'admin' ? 'ExpertMatch' : '—');
 
   return (
-    <div className="flex items-center gap-4 px-4 py-3 border border-frame bg-cream">
+    <div className="flex flex-col sm:flex-row sm:items-center gap-3 px-4 py-3 border border-frame bg-cream">
       <div className="flex-1 min-w-0">
-        <p className="text-xs text-navy font-medium truncate">{user.email}</p>
+        <p className="text-xs text-navy font-medium truncate">{fullName(user)}</p>
         <p className="text-[10px] text-muted truncate">
-          {firmLabel} · {formatDate(user.createdAt)}
+          {user.email} · {orgLabel} · {formatDate(user.createdAt)}
         </p>
       </div>
 
-      {/* Role badge */}
-      <span
-        className={`text-[10px] px-2 py-0.5 uppercase tracking-widest font-medium shrink-0 ${
-          user.role === 'admin'
-            ? 'bg-navy text-cream'
-            : 'border border-frame text-muted'
-        }`}
-        style={{ letterSpacing: '0.1em' }}
-      >
-        {user.role}
-      </span>
-
-      {/* Status */}
-      <span
-        className={`text-[10px] uppercase tracking-widest font-medium shrink-0 ${statusColor}`}
-        style={{ letterSpacing: '0.1em' }}
-      >
-        {user.status}
-      </span>
-
-      {errMsg && (
-        <span className="text-[10px] text-red-600 shrink-0 max-w-[160px] truncate">
-          {errMsg}
+      <div className="flex items-center gap-3 shrink-0">
+        {/* Role badge */}
+        <span
+          className={`text-[10px] px-2 py-0.5 uppercase tracking-widest font-medium ${
+            user.role === 'admin'
+              ? 'bg-navy text-cream'
+              : user.orgRole === 'org_admin'
+                ? 'border border-navy text-navy'
+                : 'border border-frame text-muted'
+          }`}
+          style={{ letterSpacing: '0.1em' }}
+        >
+          {user.role === 'admin' ? 'Platform admin' : user.orgRole === 'org_admin' ? 'Org admin' : 'User'}
         </span>
-      )}
 
-      <button
-        onClick={handleDelete}
-        disabled={deleting}
-        className="text-[10px] uppercase tracking-widest text-muted hover:text-red-600 border border-frame hover:border-red-300 px-2.5 py-1 transition-colors disabled:opacity-40 shrink-0"
-        style={{ letterSpacing: '0.1em' }}
-      >
-        {deleting ? '…' : 'Delete'}
-      </button>
+        <span
+          className={`text-[10px] uppercase tracking-widest font-medium ${statusColor}`}
+          style={{ letterSpacing: '0.1em' }}
+        >
+          {user.status}
+        </span>
+
+        {errMsg && (
+          <span className="text-[10px] text-red-600 max-w-[160px] truncate">{errMsg}</span>
+        )}
+
+        <button
+          onClick={handleDelete}
+          disabled={deleting}
+          className="text-[10px] uppercase tracking-widest text-muted hover:text-red-600 border border-frame hover:border-red-300 px-2.5 py-1 transition-colors disabled:opacity-40"
+          style={{ letterSpacing: '0.1em' }}
+        >
+          {deleting ? '…' : 'Delete'}
+        </button>
+      </div>
     </div>
   );
 }
@@ -140,24 +166,31 @@ export default function AdminUsersPage() {
   const [loading, setLoading] = useState(true);
   const [loadErr, setLoadErr] = useState('');
 
-  // Add-user form
+  // Organizations (for the picker)
+  const [firms,     setFirms]     = useState<FirmInfo[]>([]);
+  const [firmsErr,  setFirmsErr]  = useState('');
+
+  // Create-account form
+  const [firstName,  setFirstName]  = useState('');
+  const [lastName,   setLastName]   = useState('');
   const [email,      setEmail]      = useState('');
-  const [password,   setPassword]   = useState('');
-  const [confirm,    setConfirm]    = useState('');
+  const [orgChoice,  setOrgChoice]  = useState('');
+  const [newOrgName, setNewOrgName] = useState('');
+  const [newOrgDom,  setNewOrgDom]  = useState('');
   const [role,       setRole]       = useState<UserRole>('user');
-  const [firmName,   setFirmName]   = useState('');
-  const [firmDomain, setFirmDomain] = useState('');
   const [adding,     setAdding]     = useState(false);
   const [addErr,     setAddErr]     = useState('');
-  const [addOk,      setAddOk]      = useState(false);
+  const [addOk,      setAddOk]      = useState('');
 
   const loadUsers = useCallback(() => {
     setLoading(true);
     setLoadErr('');
     fetch('/api/admin/users?all=true')
-      .then(r => r.json())
-      .then((d: { users?: UserInfo[]; error?: string }) => {
-        if (d.error) throw new Error(d.error);
+      .then(async (r) => {
+        if (!r.ok) throw new Error(await readError(r));
+        return r.json() as Promise<{ users?: UserInfo[] }>;
+      })
+      .then((d) => {
         // Admins first, then alphabetical by email.
         const sorted = (d.users ?? []).sort((a, b) => {
           if (a.role === 'admin' && b.role !== 'admin') return -1;
@@ -172,70 +205,104 @@ export default function AdminUsersPage() {
       .finally(() => setLoading(false));
   }, []);
 
-  useEffect(() => { loadUsers(); }, [loadUsers]);
+  const loadFirms = useCallback(() => {
+    setFirmsErr('');
+    fetch('/api/admin/firms')
+      .then(async (r) => {
+        if (!r.ok) throw new Error(await readError(r));
+        return r.json() as Promise<{ firms?: FirmInfo[] }>;
+      })
+      .then(d => setFirms((d.firms ?? []).sort((a, b) => a.name.localeCompare(b.name))))
+      .catch((e: unknown) =>
+        setFirmsErr(e instanceof Error ? e.message : 'Failed to load organizations'),
+      );
+  }, []);
 
-  async function handleAddUser(e: React.FormEvent) {
+  useEffect(() => { loadUsers(); loadFirms(); }, [loadUsers, loadFirms]);
+
+  const creatingNewOrg = orgChoice === NEW_ORG;
+
+  async function handleCreateAccount(e: React.FormEvent) {
     e.preventDefault();
     if (adding) return;
     setAddErr('');
-    setAddOk(false);
+    setAddOk('');
 
-    if (password !== confirm) {
-      setAddErr('Passwords do not match.');
+    if (!orgChoice) {
+      setAddErr('Choose an organization for this account.');
       return;
     }
-    if (password.length < 8) {
-      setAddErr('Password must be at least 8 characters.');
+
+    const organization = creatingNewOrg
+      ? { domain: newOrgDom.trim().toLowerCase(), name: newOrgName.trim() }
+      : { domain: orgChoice };
+
+    if (creatingNewOrg && (!organization.domain || !organization.name)) {
+      setAddErr('New organizations need both a name and a domain.');
       return;
     }
 
     setAdding(true);
     try {
-      const res  = await fetch('/api/admin/users', {
+      const res = await fetch('/api/admin/users', {
         method:  'POST',
         headers: { 'Content-Type': 'application/json' },
-        body:    JSON.stringify({ email, password, role, firmName, firmDomain }),
+        body:    JSON.stringify({
+          firstName: firstName.trim(),
+          lastName:  lastName.trim(),
+          email:     email.trim(),
+          organization,
+          role,
+        }),
       });
-      const data = await res.json() as Record<string, string>;
-      if (!res.ok) throw new Error(data.message ?? data.error ?? 'Failed to create user');
+      if (!res.ok) throw new Error(await readError(res));
+      const data = await res.json() as { emailSent?: boolean };
 
-      setAddOk(true);
+      setAddOk(
+        data.emailSent === false
+          ? `Account created for ${email.trim()}, but the invite email could not be delivered.`
+          : `Invite sent to ${email.trim()}.`,
+      );
+      setFirstName('');
+      setLastName('');
       setEmail('');
-      setPassword('');
-      setConfirm('');
+      setNewOrgName('');
+      setNewOrgDom('');
       setRole('user');
-      setFirmName('');
-      setFirmDomain('');
       loadUsers();
-    } catch (e) {
-      setAddErr(e instanceof Error ? e.message : 'Something went wrong');
+      loadFirms();
+    } catch (err) {
+      setAddErr(err instanceof Error ? err.message : 'Something went wrong');
     } finally {
       setAdding(false);
     }
   }
 
-  const userCount = users.length;
+  const userCount  = users.length;
+  const inputClass =
+    'w-full border border-frame bg-cream px-3 py-2.5 text-xs text-ink focus:outline-none focus:border-navy transition-colors placeholder-muted/50';
+  const labelClass = 'block text-[10px] uppercase tracking-widest text-muted mb-1.5';
 
   return (
     <div className="min-h-screen flex flex-col" style={{ background: '#F7F9FC' }}>
 
       {/* Header */}
       <header className="bg-navy border-b-2 border-gold sticky top-0 z-40">
-        <div className="max-w-4xl mx-auto px-6 sm:px-10 py-4 flex items-center justify-between">
+        <div className="max-w-4xl mx-auto px-6 sm:px-10 py-4 flex items-center justify-between gap-4">
           <Link
             href="/app"
-            className="font-display text-cream font-semibold"
+            className="font-display text-cream font-semibold shrink-0"
             style={{ letterSpacing: '0.15em', fontSize: '13px' }}
           >
             EXPERTMATCH
           </Link>
-          <nav className="flex items-center gap-6">
+          <nav className="flex items-center gap-5">
             <Link
               href="/admin/requests"
               className="text-[10px] uppercase tracking-widest text-gold/50 hover:text-gold/80 transition-colors"
               style={{ letterSpacing: '0.18em' }}
             >
-              Firms
+              Organizations
             </Link>
             <span
               className="text-[10px] uppercase tracking-widest text-gold/80"
@@ -251,9 +318,7 @@ export default function AdminUsersPage() {
 
         {/* ── Section 1: All Users ── */}
         <section>
-          <SectionHeader
-            title={`All Users${userCount > 0 ? ` (${userCount})` : ''}`}
-          />
+          <SectionHeader title={`All Users${userCount > 0 ? ` (${userCount})` : ''}`} />
 
           {loading ? (
             <div className="space-y-2">
@@ -276,7 +341,7 @@ export default function AdminUsersPage() {
               </button>
             </div>
           ) : users.length === 0 ? (
-            <p className="text-sm text-muted py-2">No users yet. Create one below.</p>
+            <p className="text-sm text-muted py-2">No users yet. Create the first account below.</p>
           ) : (
             <div className="space-y-2">
               {users.map(u => (
@@ -286,151 +351,157 @@ export default function AdminUsersPage() {
           )}
         </section>
 
-        {/* ── Section 2: Add User ── */}
+        {/* ── Section 2: Create Account ── */}
         <section>
-          <SectionHeader title="Add User" />
+          <SectionHeader title="Create Account" />
 
-          <form onSubmit={handleAddUser} className="space-y-4" noValidate>
+          <p className="text-[11px] text-muted mb-5 leading-relaxed" style={{ fontWeight: 300 }}>
+            Every account starts as an invite — the person sets their own password from the emailed
+            link. Name, email and organization are required.
+          </p>
+
+          <form onSubmit={handleCreateAccount} className="space-y-4" noValidate>
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+
+              {/* First name */}
+              <div>
+                <label htmlFor="new-first" className={labelClass} style={{ letterSpacing: '0.14em' }}>
+                  First name <span className="text-red-500">*</span>
+                </label>
+                <input
+                  id="new-first"
+                  type="text"
+                  value={firstName}
+                  onChange={e => { setFirstName(e.target.value); setAddErr(''); setAddOk(''); }}
+                  placeholder="Jane"
+                  maxLength={100}
+                  required
+                  disabled={adding}
+                  className={inputClass}
+                />
+              </div>
+
+              {/* Last name */}
+              <div>
+                <label htmlFor="new-last" className={labelClass} style={{ letterSpacing: '0.14em' }}>
+                  Last name <span className="text-red-500">*</span>
+                </label>
+                <input
+                  id="new-last"
+                  type="text"
+                  value={lastName}
+                  onChange={e => { setLastName(e.target.value); setAddErr(''); setAddOk(''); }}
+                  placeholder="Okafor"
+                  maxLength={100}
+                  required
+                  disabled={adding}
+                  className={inputClass}
+                />
+              </div>
 
               {/* Email */}
               <div>
-                <label
-                  htmlFor="new-email"
-                  className="block text-[10px] uppercase tracking-widest text-muted mb-1.5"
-                  style={{ letterSpacing: '0.14em' }}
-                >
+                <label htmlFor="new-email" className={labelClass} style={{ letterSpacing: '0.14em' }}>
                   Email <span className="text-red-500">*</span>
                 </label>
                 <input
                   id="new-email"
                   type="email"
                   value={email}
-                  onChange={e => { setEmail(e.target.value); setAddOk(false); setAddErr(''); }}
-                  placeholder="user@firm.com"
+                  onChange={e => { setEmail(e.target.value); setAddErr(''); setAddOk(''); }}
+                  placeholder="jane@firm.com"
                   required
-                  className="w-full border border-frame bg-cream px-3 py-2.5 text-xs text-ink focus:outline-none focus:border-navy transition-colors placeholder-muted/50"
                   disabled={adding}
+                  className={inputClass}
                 />
               </div>
 
               {/* Role */}
               <div>
-                <label
-                  htmlFor="new-role"
-                  className="block text-[10px] uppercase tracking-widest text-muted mb-1.5"
-                  style={{ letterSpacing: '0.14em' }}
-                >
+                <label htmlFor="new-role" className={labelClass} style={{ letterSpacing: '0.14em' }}>
                   Role
                 </label>
                 <select
                   id="new-role"
                   value={role}
                   onChange={e => setRole(e.target.value as UserRole)}
-                  className="w-full border border-frame bg-cream px-3 py-2.5 text-xs text-ink focus:outline-none focus:border-navy"
                   disabled={adding}
+                  className="w-full border border-frame bg-cream px-3 py-2.5 text-xs text-ink focus:outline-none focus:border-navy"
                 >
                   <option value="user">User</option>
-                  <option value="admin">Admin</option>
+                  <option value="admin">Platform admin</option>
                 </select>
               </div>
 
-              {/* Firm Name */}
-              <div>
-                <label
-                  htmlFor="new-firmname"
-                  className="block text-[10px] uppercase tracking-widest text-muted mb-1.5"
-                  style={{ letterSpacing: '0.14em' }}
-                >
-                  Firm Name
+              {/* Organization */}
+              <div className="sm:col-span-2">
+                <label htmlFor="new-org" className={labelClass} style={{ letterSpacing: '0.14em' }}>
+                  Organization <span className="text-red-500">*</span>
                 </label>
-                <input
-                  id="new-firmname"
-                  type="text"
-                  value={firmName}
-                  onChange={e => setFirmName(e.target.value)}
-                  placeholder="Blackstone"
-                  className="w-full border border-frame bg-cream px-3 py-2.5 text-xs text-ink focus:outline-none focus:border-navy transition-colors placeholder-muted/50"
+                <select
+                  id="new-org"
+                  value={orgChoice}
+                  onChange={e => { setOrgChoice(e.target.value); setAddErr(''); setAddOk(''); }}
                   disabled={adding}
-                />
+                  className="w-full border border-frame bg-cream px-3 py-2.5 text-xs text-ink focus:outline-none focus:border-navy"
+                >
+                  <option value="">Select an organization…</option>
+                  {firms.map(f => (
+                    <option key={f.domain} value={f.domain}>
+                      {f.name} — {f.domain}
+                    </option>
+                  ))}
+                  <option value={NEW_ORG}>New organization…</option>
+                </select>
+                {firmsErr && <p className="text-[10px] text-red-600 mt-1.5">{firmsErr}</p>}
               </div>
 
-              {/* Firm Domain */}
-              <div>
-                <label
-                  htmlFor="new-firmdomain"
-                  className="block text-[10px] uppercase tracking-widest text-muted mb-1.5"
-                  style={{ letterSpacing: '0.14em' }}
-                >
-                  Firm Domain
-                </label>
-                <input
-                  id="new-firmdomain"
-                  type="text"
-                  value={firmDomain}
-                  onChange={e => setFirmDomain(e.target.value)}
-                  placeholder="blackstone.com"
-                  className="w-full border border-frame bg-cream px-3 py-2.5 text-xs text-ink focus:outline-none focus:border-navy transition-colors placeholder-muted/50"
-                  disabled={adding}
-                />
-              </div>
-
-              {/* Password */}
-              <div>
-                <label
-                  htmlFor="new-password"
-                  className="block text-[10px] uppercase tracking-widest text-muted mb-1.5"
-                  style={{ letterSpacing: '0.14em' }}
-                >
-                  Password <span className="text-red-500">*</span>
-                </label>
-                <input
-                  id="new-password"
-                  type="password"
-                  value={password}
-                  onChange={e => { setPassword(e.target.value); setAddErr(''); }}
-                  placeholder="Min. 8 characters"
-                  required
-                  autoComplete="new-password"
-                  className="w-full border border-frame bg-cream px-3 py-2.5 text-xs text-ink focus:outline-none focus:border-navy transition-colors placeholder-muted/50"
-                  disabled={adding}
-                />
-              </div>
-
-              {/* Confirm Password */}
-              <div>
-                <label
-                  htmlFor="new-confirm"
-                  className="block text-[10px] uppercase tracking-widest text-muted mb-1.5"
-                  style={{ letterSpacing: '0.14em' }}
-                >
-                  Confirm Password <span className="text-red-500">*</span>
-                </label>
-                <input
-                  id="new-confirm"
-                  type="password"
-                  value={confirm}
-                  onChange={e => { setConfirm(e.target.value); setAddErr(''); }}
-                  placeholder="Re-enter password"
-                  required
-                  autoComplete="new-password"
-                  className="w-full border border-frame bg-cream px-3 py-2.5 text-xs text-ink focus:outline-none focus:border-navy transition-colors placeholder-muted/50"
-                  disabled={adding}
-                />
-              </div>
+              {creatingNewOrg && (
+                <>
+                  <div>
+                    <label htmlFor="new-org-name" className={labelClass} style={{ letterSpacing: '0.14em' }}>
+                      Organization name <span className="text-red-500">*</span>
+                    </label>
+                    <input
+                      id="new-org-name"
+                      type="text"
+                      value={newOrgName}
+                      onChange={e => { setNewOrgName(e.target.value); setAddErr(''); }}
+                      placeholder="Blackstone"
+                      maxLength={100}
+                      disabled={adding}
+                      className={inputClass}
+                    />
+                  </div>
+                  <div>
+                    <label htmlFor="new-org-domain" className={labelClass} style={{ letterSpacing: '0.14em' }}>
+                      Organization domain <span className="text-red-500">*</span>
+                    </label>
+                    <input
+                      id="new-org-domain"
+                      type="text"
+                      value={newOrgDom}
+                      onChange={e => { setNewOrgDom(e.target.value); setAddErr(''); }}
+                      placeholder="blackstone.com"
+                      disabled={adding}
+                      className={inputClass}
+                    />
+                  </div>
+                </>
+              )}
             </div>
 
             <div className="flex flex-wrap items-center gap-4 pt-1">
               <button
                 type="submit"
-                disabled={!email.trim() || !password || !confirm || adding}
+                disabled={adding || !firstName.trim() || !lastName.trim() || !email.trim() || !orgChoice}
                 className="text-[10px] uppercase tracking-widest px-5 py-2.5 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
                 style={{ background: '#0B1F3B', color: '#C6A75E', letterSpacing: '0.14em' }}
               >
-                {adding ? 'Creating…' : 'Create User'}
+                {adding ? 'Sending invite…' : 'Create Account'}
               </button>
               {addErr && <p className="text-[11px] text-red-600">{addErr}</p>}
-              {addOk  && <p className="text-[11px] text-green-700">User created successfully.</p>}
+              {addOk  && <p className="text-[11px] text-green-700">{addOk}</p>}
             </div>
           </form>
         </section>
