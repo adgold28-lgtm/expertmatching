@@ -21,4 +21,8 @@ export const stripe = {
   get accounts()      { return getStripe().accounts; },
   get accountLinks()  { return getStripe().accountLinks; },
   get transfers()     { return getStripe().transfers; },
+  // Onboarding card capture + off-session charges at call completion.
+  get setupIntents()   { return getStripe().setupIntents; },
+  get paymentIntents() { return getStripe().paymentIntents; },
+  get paymentMethods() { return getStripe().paymentMethods; },
 };

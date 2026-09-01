@@ -62,6 +62,10 @@ export interface AppMetadata {
   firm_name?:           string;
   first_name?:          string;
   onboarding_complete?: boolean;
+  // True once a card is saved via the onboarding SetupIntent flow. Mirrored so
+  // the onboarding gate can branch without a DB read. Never carries the Stripe
+  // customer id — that stays server-side in profiles.
+  billing_complete?:    boolean;
 }
 
 /** Looks up the auth user id (== profiles.id) for an email, or null. */

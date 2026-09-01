@@ -1,15 +1,17 @@
 // lib/supabase/database.types.ts
 //
 // Hand-authored types for the Supabase schema created in
-// supabase/migrations/20260831000000_supabase_cutover_foundation.sql.
+//   supabase/migrations/20260831000000_supabase_cutover_foundation.sql
+//   supabase/migrations/20260901000000_onboarding_billing_calendar.sql
 //
-// Keep this file in sync with that migration. (Once the Supabase CLI is wired
-// up you can regenerate with: `supabase gen types typescript --linked`.)
+// Keep this file in sync with those migrations. (Once the Supabase CLI is
+// wired up you can regenerate with: `supabase gen types typescript --linked`.)
 //
 // Access model reminder:
 //   org-scoped     -> organizations, profiles, organization_members,
 //                     access_requests
 //   project-scoped -> projects, project_members, project_experts
+//   service-role   -> access_requests, user_calendar_connections
 // Project data is reachable only via project ownership or an explicit
 // project_members row — never org-wide.
 
@@ -67,6 +69,8 @@ export interface Database {
           title: string | null;
           onboarding_complete: boolean;
           is_platform_admin: boolean;
+          stripe_customer_id: string | null;
+          billing_complete: boolean;
           created_at: string;
           updated_at: string;
         };
@@ -79,6 +83,8 @@ export interface Database {
           title?: string | null;
           onboarding_complete?: boolean;
           is_platform_admin?: boolean;
+          stripe_customer_id?: string | null;
+          billing_complete?: boolean;
           created_at?: string;
           updated_at?: string;
         };
@@ -91,6 +97,8 @@ export interface Database {
           title?: string | null;
           onboarding_complete?: boolean;
           is_platform_admin?: boolean;
+          stripe_customer_id?: string | null;
+          billing_complete?: boolean;
           created_at?: string;
           updated_at?: string;
         };
@@ -264,6 +272,53 @@ export interface Database {
         };
         Relationships: [];
       };
+      // Service-role only (RLS enabled, no authenticated policies).
+      // access_token / refresh_token hold AES-256-GCM ciphertext.
+      user_calendar_connections: {
+        Row: {
+          profile_id: string;
+          provider: 'google' | 'calendly' | 'manual';
+          access_token: string | null;
+          refresh_token: string | null;
+          token_expiry: number | null;
+          calendar_email: string | null;
+          calendly_url: string | null;
+          manual_slots: Json | null;
+          timezone: string | null;
+          oauth_state: string | null;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: {
+          profile_id: string;
+          provider: 'google' | 'calendly' | 'manual';
+          access_token?: string | null;
+          refresh_token?: string | null;
+          token_expiry?: number | null;
+          calendar_email?: string | null;
+          calendly_url?: string | null;
+          manual_slots?: Json | null;
+          timezone?: string | null;
+          oauth_state?: string | null;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: {
+          profile_id?: string;
+          provider?: 'google' | 'calendly' | 'manual';
+          access_token?: string | null;
+          refresh_token?: string | null;
+          token_expiry?: number | null;
+          calendar_email?: string | null;
+          calendly_url?: string | null;
+          manual_slots?: Json | null;
+          timezone?: string | null;
+          oauth_state?: string | null;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Relationships: [];
+      };
     };
     Views: Record<string, never>;
     Functions: {
@@ -286,3 +341,4 @@ export type AccessRequestRow = Database['public']['Tables']['access_requests']['
 export type ProjectRow = Database['public']['Tables']['projects']['Row'];
 export type ProjectMemberRow = Database['public']['Tables']['project_members']['Row'];
 export type ProjectExpertRow = Database['public']['Tables']['project_experts']['Row'];
+export type UserCalendarConnectionRow = Database['public']['Tables']['user_calendar_connections']['Row'];

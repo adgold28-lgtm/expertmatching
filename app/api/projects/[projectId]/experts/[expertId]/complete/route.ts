@@ -84,13 +84,19 @@ export async function POST(
       invoiceAmount: serverAmount,
     });
 
-    // 7. Create Stripe payment link + send invoice email via shared helper
+    // 7. Bill the call via the shared helper — charges the client's saved card
+    //    off-session when one exists, otherwise creates a payment link and
+    //    emails a pay-now invoice.
     const result = await createAndSendInvoice(params.projectId, params.expertId, serverAmount, callDurationMin);
     if (!result) {
       return NextResponse.json({ error: 'invoice_failed', message: 'Failed to create invoice' }, { status: 500 });
     }
 
-    return NextResponse.json({ success: true, paymentLinkUrl: result.paymentLinkUrl });
+    return NextResponse.json({
+      success:        true,
+      charged:        result.charged,
+      paymentLinkUrl: result.paymentLinkUrl,
+    });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     console.error('[stripe] complete route error:', msg);

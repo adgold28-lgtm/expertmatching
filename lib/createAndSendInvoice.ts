@@ -1,13 +1,30 @@
 // lib/createAndSendInvoice.ts
-// Shared helper: create Stripe payment link and send invoice email.
-// Called from the complete route AND the Zoom meeting.ended webhook.
+// Shared billing helper for a completed expert call. Called from the complete
+// route AND the Zoom meeting.ended webhook.
+//
+// Two paths, decided per call:
+//   1. SAVED CARD — the project owner completed billing onboarding and has a
+//      default payment method. Charge it off-session (lib/chargeSavedCard.ts)
+//      and email a receipt. Idempotent per (projectId, expertId).
+//   2. PAYMENT LINK — no saved card, or the card needs SCA / was declined.
+//      Create a Stripe product + price + payment link, mark the engagement
+//      'invoice_sent', and email a pay-now invoice. This is the pre-existing
+//      behaviour, unchanged.
+//
+// Required env vars:
+//   STRIPE_SECRET_KEY    — server-side Stripe key
+//   RESEND_API_KEY       — invoice / receipt email (optional; skipped if absent)
+//   OUTREACH_FROM_EMAIL  — sender address (optional; skipped if absent)
+//   NEXT_PUBLIC_APP_URL  — payment-link success redirect
+//   DISABLE_EMAILS       — 'true' suppresses all outbound mail
 //
 // NEVER log: expert names, client names, emails.
-// Amounts are safe to log.
+// Amounts and projectId are safe to log.
 
 import { Resend } from 'resend';
 import { getStripe } from './stripe';
 import { getProject, updateExpertStatus, updateProjectFields } from './projectStore';
+import { chargeSavedCard } from './chargeSavedCard';
 
 // ─── Email HTML/text builders (shared with complete route) ────────────────────
 
@@ -20,13 +37,8 @@ function escapeHtml(s: string): string {
     .replace(/'/g,  '&#39;');
 }
 
-export function buildInvoiceHtml(
-  clientName:  string,
-  expertName:  string,
-  durationMin: number,
-  amount:      number,
-  paymentUrl:  string,
-): string {
+/** Shared branded shell so the invoice and the receipt stay visually identical. */
+function renderEmailShell(innerHtml: string): string {
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -45,13 +57,24 @@ export function buildInvoiceHtml(
         </tr>
         <tr>
           <td style="padding:32px;color:#1e293b;font-size:14px;line-height:1.7;">
-            <p style="margin:0 0 16px;">Hi ${escapeHtml(clientName)},</p>
-            <p style="margin:0 0 16px;">
-              Your expert call with <strong>${escapeHtml(expertName)}</strong> has been completed
-              (${durationMin} minute${durationMin !== 1 ? 's' : ''}).
-              Please find your invoice below.
-            </p>
-            <table cellpadding="0" cellspacing="0" style="margin:0 0 24px;width:100%;border:1px solid #e2e8f0;">
+${innerHtml}
+          </td>
+        </tr>
+        <tr>
+          <td style="padding:16px 32px;border-top:1px solid #e2e8f0;">
+            <p style="margin:0;font-size:11px;color:#94a3b8;">Sent via ExpertMatch</p>
+          </td>
+        </tr>
+      </table>
+    </td></tr>
+  </table>
+</body>
+</html>`;
+}
+
+/** Line-item table shared by both email variants. */
+function renderLineItem(expertName: string, durationMin: number, amount: number): string {
+  return `            <table cellpadding="0" cellspacing="0" style="margin:0 0 24px;width:100%;border:1px solid #e2e8f0;">
               <tr style="background:#f8fafc;">
                 <td style="padding:10px 16px;font-size:12px;color:#64748b;font-weight:bold;text-transform:uppercase;letter-spacing:1px;">Description</td>
                 <td style="padding:10px 16px;font-size:12px;color:#64748b;font-weight:bold;text-transform:uppercase;letter-spacing:1px;text-align:right;">Amount</td>
@@ -60,7 +83,23 @@ export function buildInvoiceHtml(
                 <td style="padding:12px 16px;font-size:13px;color:#1e293b;">Expert call — ${escapeHtml(expertName)} (${durationMin} min)</td>
                 <td style="padding:12px 16px;font-size:13px;color:#1e293b;text-align:right;font-weight:bold;">$${amount.toLocaleString()}</td>
               </tr>
-            </table>
+            </table>`;
+}
+
+export function buildInvoiceHtml(
+  clientName:  string,
+  expertName:  string,
+  durationMin: number,
+  amount:      number,
+  paymentUrl:  string,
+): string {
+  return renderEmailShell(`            <p style="margin:0 0 16px;">Hi ${escapeHtml(clientName)},</p>
+            <p style="margin:0 0 16px;">
+              Your expert call with <strong>${escapeHtml(expertName)}</strong> has been completed
+              (${durationMin} minute${durationMin !== 1 ? 's' : ''}).
+              Please find your invoice below.
+            </p>
+${renderLineItem(expertName, durationMin, amount)}
             <table cellpadding="0" cellspacing="0" style="margin:0 0 28px;">
               <tr>
                 <td style="background:#0d9488;padding:0;">
@@ -79,19 +118,7 @@ export function buildInvoiceHtml(
             </p>
             <p style="margin:0;font-size:12px;color:#94a3b8;">
               Thank you for working with ExpertMatch.
-            </p>
-          </td>
-        </tr>
-        <tr>
-          <td style="padding:16px 32px;border-top:1px solid #e2e8f0;">
-            <p style="margin:0;font-size:11px;color:#94a3b8;">Sent via ExpertMatch</p>
-          </td>
-        </tr>
-      </table>
-    </td></tr>
-  </table>
-</body>
-</html>`;
+            </p>`);
 }
 
 export function buildInvoiceText(
@@ -114,14 +141,105 @@ export function buildInvoiceText(
   ].join('\n');
 }
 
+/** Receipt for the auto-charge path — the client has already been charged. */
+export function buildReceiptHtml(
+  clientName:  string,
+  expertName:  string,
+  durationMin: number,
+  amount:      number,
+): string {
+  return renderEmailShell(`            <p style="margin:0 0 16px;">Hi ${escapeHtml(clientName)},</p>
+            <p style="margin:0 0 16px;">
+              Your expert call with <strong>${escapeHtml(expertName)}</strong> has been completed
+              (${durationMin} minute${durationMin !== 1 ? 's' : ''}).
+              We charged the card on file — no action is needed.
+            </p>
+${renderLineItem(expertName, durationMin, amount)}
+            <p style="margin:0 0 24px;font-size:13px;color:#1e293b;">
+              <strong>Total charged: $${amount.toLocaleString()}</strong>
+            </p>
+            <p style="margin:0 0 8px;font-size:12px;color:#64748b;">
+              This receipt is for your records. To change the card on file, visit
+              your billing settings.
+            </p>
+            <p style="margin:0;font-size:12px;color:#94a3b8;">
+              Thank you for working with ExpertMatch.
+            </p>`);
+}
+
+export function buildReceiptText(
+  clientName:  string,
+  expertName:  string,
+  durationMin: number,
+  amount:      number,
+): string {
+  return [
+    `Hi ${clientName},`,
+    '',
+    `Your expert call with ${expertName} has been completed (${durationMin} minutes).`,
+    '',
+    `We charged the card on file — no action is needed.`,
+    '',
+    `Total charged: $${amount.toLocaleString()}`,
+    '',
+    'This receipt is for your records.',
+    '',
+    '— ExpertMatch',
+  ].join('\n');
+}
+
+// ─── Email sending ────────────────────────────────────────────────────────────
+
+interface SendEmailParams {
+  to:      string;
+  subject: string;
+  html:    string;
+  text:    string;
+}
+
+/** Best-effort transactional send. No-ops when email is disabled/unconfigured. */
+async function sendClientEmail(params: SendEmailParams): Promise<void> {
+  if (process.env.DISABLE_EMAILS === 'true') return;
+
+  const resendKey = process.env.RESEND_API_KEY;
+  const fromAddr  = process.env.OUTREACH_FROM_EMAIL;
+  if (!resendKey || !fromAddr || !params.to) return;
+
+  const resend = new Resend(resendKey);
+  await resend.emails.send({
+    from:    fromAddr,
+    to:      params.to,
+    subject: params.subject,
+    html:    params.html,
+    text:    params.text,
+  });
+}
+
 // ─── Public API ───────────────────────────────────────────────────────────────
 
+export interface InvoiceResult {
+  /** True when the client's saved card was charged off-session. */
+  charged:         boolean;
+  /** Present only on the payment-link path. */
+  paymentLinkUrl:  string | null;
+  /** Present only on the auto-charge path. */
+  paymentIntentId: string | null;
+}
+
+/**
+ * Bills a completed expert call.
+ *
+ * Charges the project owner's saved card when one exists; otherwise (or when
+ * the card needs SCA / was declined) falls back to the manual payment link so
+ * the client can always pay. Returns null only when the project or expert
+ * cannot be loaded, or the payment link could not be created.
+ */
 export async function createAndSendInvoice(
   projectId:     string,
   expertId:      string,
   invoiceAmount: number,  // already-computed dollar amount
   durationMin:   number,
-): Promise<{ paymentLinkUrl: string } | null> {
+): Promise<InvoiceResult | null> {
   try {
     // 1. Load project and find expert
     const project = await getProject(projectId);
@@ -133,6 +251,67 @@ export async function createAndSendInvoice(
     if (!pe) {
       console.error('[stripe] createAndSendInvoice: expert not found');
       return null;
+    }
+
+    // 2. Durable double-bill guard. The Stripe idempotency key below only
+    //    covers a 24-hour window, so a re-completion after that would charge
+    //    the client a second time. An engagement that is already paid, or that
+    //    already has an auto-charge in flight, is never billed again.
+    //    (An 'invoice_sent' engagement with no intent still re-runs, so a lost
+    //    payment-link email can be regenerated.)
+    if (pe.paymentStatus === 'paid' || pe.stripePaymentIntentId) {
+      console.log('[stripe] already-billed-skip', { projectId });
+      return {
+        charged:         !!pe.stripePaymentIntentId && !pe.stripePaymentLinkUrl,
+        paymentLinkUrl:  pe.stripePaymentLinkUrl ?? null,
+        paymentIntentId: pe.stripePaymentIntentId ?? null,
+      };
+    }
+
+    const clientName    = project.clientName ?? 'there';
+    // The saved card belongs to the project OWNER (who onboarded); the invoice
+    // email still goes to the project's client contact when one is set.
+    const recipientEmail = project.clientEmail ?? project.ownerEmail;
+
+    // ─── Path 1: charge the saved card off-session ─────────────────────────
+    const charge = await chargeSavedCard({
+      projectId,
+      expertId,
+      ownerEmail: project.ownerEmail,
+      amount:     invoiceAmount,
+    });
+
+    if (charge.outcome === 'charged') {
+      // Persist the intent id immediately so a webhook retry, or a later
+      // reconciliation, can always tie the charge back to this engagement.
+      // paymentStatus is advanced to 'paid' by the payment_intent.succeeded
+      // webhook, which also runs the expert payout.
+      await updateExpertStatus(projectId, expertId, {
+        stripePaymentIntentId: charge.paymentIntentId,
+      });
+
+      await sendClientEmail({
+        to:      recipientEmail,
+        subject: 'Receipt for your expert call',
+        html:    buildReceiptHtml(clientName, pe.expert.name, durationMin, invoiceAmount),
+        text:    buildReceiptText(clientName, pe.expert.name, durationMin, invoiceAmount),
+      });
+
+      console.log('[stripe] auto-charge-invoice-sent', { amount: invoiceAmount, projectId });
+
+      return {
+        charged:         true,
+        paymentLinkUrl:  null,
+        paymentIntentId: charge.paymentIntentId,
+      };
+    }
+
+    // ─── Path 2: payment link (no saved card, SCA required, or declined) ───
+    if (charge.outcome !== 'no_saved_card') {
+      console.log('[stripe] falling-back-to-payment-link', {
+        projectId,
+        reason: charge.outcome,
+      });
     }
 
     const stripe = getStripe();
@@ -179,29 +358,26 @@ export async function createAndSendInvoice(
     });
 
     // 5. Send invoice email via Resend (if not suppressed)
-    if (process.env.DISABLE_EMAILS !== 'true' && project.clientEmail) {
-      const resendKey = process.env.RESEND_API_KEY;
-      const fromAddr  = process.env.OUTREACH_FROM_EMAIL;
-      if (resendKey && fromAddr) {
-        const resend     = new Resend(resendKey);
-        const clientName = project.clientName ?? 'there';
-        await resend.emails.send({
-          from:    fromAddr,
-          to:      project.clientEmail,
-          subject: 'Invoice for your expert call',
-          html:    buildInvoiceHtml(clientName, pe.expert.name, durationMin, invoiceAmount, paymentLink.url),
-          text:    buildInvoiceText(clientName, pe.expert.name, durationMin, invoiceAmount, paymentLink.url),
-        });
-      }
+    if (project.clientEmail) {
+      await sendClientEmail({
+        to:      project.clientEmail,
+        subject: 'Invoice for your expert call',
+        html:    buildInvoiceHtml(clientName, pe.expert.name, durationMin, invoiceAmount, paymentLink.url),
+        text:    buildInvoiceText(clientName, pe.expert.name, durationMin, invoiceAmount, paymentLink.url),
+      });
     }
 
     // 6. Log (no PII)
     console.log('[stripe] payment-link-created', { amount: invoiceAmount, projectId });
 
-    return { paymentLinkUrl: paymentLink.url };
+    return {
+      charged:         false,
+      paymentLinkUrl:  paymentLink.url,
+      paymentIntentId: null,
+    };
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    console.error('[stripe] createAndSendInvoice error:', msg);
+    console.error('[stripe] createAndSendInvoice error:', msg.slice(0, 120));
     return null;
   }
 }

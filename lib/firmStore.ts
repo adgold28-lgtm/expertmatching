@@ -56,6 +56,9 @@ export interface UserRecord {
   firstName?:            string;
   lastName?:             string;
   title?:                string;
+  // Billing (onboarding SetupIntent flow). Never logged.
+  stripeCustomerId?:     string | null;  // Stripe customer (cus_...)
+  billingComplete?:      boolean;        // a default payment method is saved
 }
 
 export interface SeatRequest {
@@ -76,6 +79,8 @@ export interface UpsertUserInput {
   lastName?:           string;
   title?:              string;
   onboardingComplete?: boolean;
+  stripeCustomerId?:   string | null;
+  billingComplete?:    boolean;
   createdAt?:          number;   // accepted for API compat; ignored (DB stamps it)
 }
 
@@ -144,6 +149,8 @@ function toUserRecord(
     status:             membership?.status ?? 'active',
     createdAt:          toMs(profile.created_at),
     onboardingComplete: profile.onboarding_complete,
+    stripeCustomerId:   profile.stripe_customer_id,
+    billingComplete:    profile.billing_complete,
     ...(profile.first_name ? { firstName: profile.first_name } : {}),
     ...(profile.last_name  ? { lastName:  profile.last_name  } : {}),
     ...(profile.title      ? { title:     profile.title      } : {}),
@@ -161,6 +168,7 @@ async function syncUserMetadata(email: string): Promise<void> {
     firm_name:           user.firmName,
     ...(user.firstName ? { first_name: user.firstName } : {}),
     onboarding_complete: user.onboardingComplete ?? false,
+    billing_complete:    user.billingComplete ?? false,
   });
 }
 
@@ -276,6 +284,9 @@ export async function upsertUser(email: string, fields: UpsertUserInput): Promis
     ...(fields.title              !== undefined ? { title:      fields.title     } : {}),
     ...(fields.onboardingComplete !== undefined ? { onboarding_complete: fields.onboardingComplete } : {}),
     ...(fields.role               !== undefined ? { is_platform_admin: fields.role === 'admin' } : {}),
+    // Service-role-only columns (see trg_prevent_profile_privileged_changes).
+    ...(fields.stripeCustomerId   !== undefined ? { stripe_customer_id: fields.stripeCustomerId } : {}),
+    ...(fields.billingComplete    !== undefined ? { billing_complete:   fields.billingComplete  } : {}),
   };
   if (Object.keys(profilePatch).length > 0) {
     const { error } = await db.from('profiles').update(profilePatch).eq('id', profileId);
