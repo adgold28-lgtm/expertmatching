@@ -2,17 +2,21 @@
 //
 // Step 2 of the billing onboarding flow. The client has confirmed the
 // SetupIntent with Stripe.js and posts its id back here. This route is the
-// server-side authority on whether billing is actually set up:
+// server-side authority on whether the FIRM's billing is actually set up:
 //
-//   1. Retrieve the SetupIntent from Stripe (never trust a client-supplied
+//   1. Resolve the caller's organization — the org is the paying entity.
+//   2. Retrieve the SetupIntent from Stripe (never trust a client-supplied
 //      status).
-//   2. Require status === 'succeeded'.
-//   3. Require the SetupIntent's customer to equal the caller's stored
+//   3. Require the SetupIntent's customer to equal the ORG's stored
 //      stripe_customer_id — otherwise any authenticated user could replay
-//      someone else's SetupIntent id and mark themselves billing-complete.
-//   4. Attach the resulting payment method as the customer's default for
-//      invoices, which is what the off-session charge at call completion uses.
-//   5. Mark the user billingComplete.
+//      another firm's SetupIntent id and mark that firm billing-complete.
+//   4. Require status === 'succeeded' and a payment method.
+//   5. Hand off to completeOrgBilling(): default payment method on the org
+//      customer, organization_billing.billing_complete = true (recording who
+//      did it), then the per-seat subscription is created or resized.
+//
+// profiles.billing_complete is NOT written any more — it is a legacy per-user
+// field kept only as a read fallback for accounts created before org billing.
 //
 // Required env vars:
 //   STRIPE_SECRET_KEY  — server-side Stripe key
@@ -22,8 +26,13 @@
 import { NextRequest } from 'next/server';
 import type Stripe from 'stripe';
 import { routeAuthGuard, getSessionUser } from '../../../../../lib/auth';
-import { getUser, upsertUser } from '../../../../../lib/firmStore';
 import { stripe } from '../../../../../lib/stripe';
+import { getAuthUserIdByEmail } from '../../../../../lib/supabase/admin';
+import {
+  getOrganizationIdForUser,
+  getOrgBillingRow,
+  completeOrgBilling,
+} from '../../../../../lib/orgBilling';
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -59,14 +68,15 @@ export async function POST(request: NextRequest): Promise<Response> {
     return Response.json({ error: 'unauthorized' }, { status: 401 });
   }
 
-  const record = await getUser(sessionUser.email);
-  if (!record) {
-    return Response.json({ error: 'user_not_found' }, { status: 404 });
+  const organizationId = sessionUser.orgId ?? (await getOrganizationIdForUser(sessionUser.email));
+  if (!organizationId) {
+    return Response.json({ error: 'no_organization' }, { status: 409 });
   }
 
-  // No stored customer means this user never started the flow — nothing a
+  // No stored customer means this firm never started the flow — nothing a
   // retrieved SetupIntent could legitimately match.
-  const expectedCustomerId = record.stripeCustomerId ?? null;
+  const billingRow         = await getOrgBillingRow(organizationId);
+  const expectedCustomerId = billingRow?.stripe_customer_id ?? null;
   if (!expectedCustomerId) {
     return Response.json({ error: 'setup_intent_mismatch' }, { status: 403 });
   }
@@ -95,14 +105,11 @@ export async function POST(request: NextRequest): Promise<Response> {
       return Response.json({ error: 'setup_intent_no_payment_method' }, { status: 400 });
     }
 
-    // ─── Make it the default for off-session charges ───────────────────────
-    await stripe.customers.update(expectedCustomerId, {
-      invoice_settings: { default_payment_method: paymentMethodId },
-    });
+    // ─── Firm-level completion: default card + seat subscription ───────────
+    const setUpByProfileId = await getAuthUserIdByEmail(sessionUser.email);
+    await completeOrgBilling(organizationId, { paymentMethodId, setUpByProfileId });
 
-    await upsertUser(record.email, { billingComplete: true });
-
-    console.log('[api/onboarding/billing/confirm] billing-complete');
+    console.log('[api/onboarding/billing/confirm] org-billing-complete', { organizationId });
 
     return Response.json({ ok: true });
   } catch (err) {
