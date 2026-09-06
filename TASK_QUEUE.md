@@ -2,6 +2,12 @@
 Last updated: 2026-09-06
 
 ## NOW (blocking or broken)
+- [x] Matchy Phase 1 (relay MVP) — LIVE 2026-09-06 (parts 1–3, see HANDOFF.md
+      "Matchy Phase 1"; e2e-matchy green in prod).
+- [ ] Matchy Phase 2 — contact discovery job on bookmark, propose-times +
+      booking from calendar overlap, card statuses (docs/MATCHY_SPEC.md).
+- [ ] Legal [CONFIRM] placeholders in app/terms, app/privacy, app/contact
+      (grep -rn CONFIRM app/terms app/privacy app/contact) — founder.
 - [x] Per-seat billing branch merged to main + new pricing — DONE 2026-09-06
       ($250/$200/talk-to-us seats, 50% call take, 15-min minimum, client-rate
       billing; smoke 16/16; deployed e4817b1). Stripe seat Price v2 is created
@@ -17,9 +23,8 @@ Last updated: 2026-09-06
       no "later". Also verify in a real browser at expertmatch.fit as a
       throwaway non-admin user, not just in code. Founder rules: no machinery
       talk, verbs not chat, honest claims only.
-- [ ] Terms of Service + Privacy Policy + Contact pages and footer links
-      (docs/COPY_AUDIT.md item 10). Needed before any client signs up — the site
-      takes cards and stores deal-adjacent research with no policy anywhere.
+- [x] Terms of Service + Privacy Policy + Contact pages and footer links — DONE
+      2026-09-06 (placeholders pending, see above).
 - [ ] Copy audit rewrites (docs/COPY_AUDIT.md — 102 REWRITE rows). Workspace
       vocabulary (Brief→Source→Outreach→Screen→Deliver, "shortlist", Email 1/2/3)
       is replaced by Matchy Phase 1; do the marketing-page rows before then.

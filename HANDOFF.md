@@ -1,15 +1,25 @@
 # ExpertMatch — Session Handoff
 
-**Written:** 2026-09-06 · **Branch:** `main` (deployed = production) · **Status:** live at expertmatch.fit, everything below verified in production
+**Written:** 2026-09-06 (evening, session 2) · **Branch:** `main` (deployed = production) · **Status:** live at expertmatch.fit; Matchy Phase 1 shipped and verified in production (`scripts/e2e-matchy.ts` all green, `scripts/smoke-cutover.ts` 16/16)
 
 Read with `CLAUDE.md` (operating rules), `TASK_QUEUE.md` (priorities), `docs/MATCHY_SPEC.md` (next build), `docs/OUTREACH_BOT_AUDIT.md` (why Matchy replaces the outreach bot).
 
 ## How to continue (for the next session)
 
 Open Claude Code in `/Users/ashergoldstein/Projects/expertmatch` and say:
-> Read HANDOFF.md, then plan Matchy Phase 1 with me from docs/MATCHY_SPEC.md — answer the open questions first, then dispatch Opus agents to build.
+> Read HANDOFF.md, then plan Matchy Phase 2 (scheduling + contact discovery) from docs/MATCHY_SPEC.md and dispatch Opus agents to build. Before that, run the post-Phase-1 website audit gate in TASK_QUEUE.md.
 
-Working pattern that has worked: Fable plans and writes agent briefs; Opus subagents (general-purpose, model `opus`) build in sequence when they share files, in parallel when they don't; Explore agents do read-only recon first. Verify with `npx tsc --noEmit`, the scripts below, and a production E2E with a throwaway user.
+Working pattern that has worked: Fable plans and writes agent briefs; Opus subagents (general-purpose, model `opus`) build in parallel when files are disjoint (tell each agent exactly which paths it may not touch, and NOT to commit); the lead commits by path, verifies, pushes. Verify with `npx tsc --noEmit`, `npm run build:local` (real `next build` with Google Fonts mocked — tsc alone missed a Next route-export error once), the scripts below, and the two production E2E scripts.
+
+**Founder actions still open:** 24 `[CONFIRM: …]` placeholders in `app/terms/page.tsx`, `app/privacy/page.tsx`, `app/contact/page.tsx` (`grep -rn CONFIRM app/terms app/privacy app/contact`) — legal entity, governing law, contact email, postal address, retention windows. Live Stripe keys + live webhook before real money.
+
+## Matchy Phase 1 (live 2026-09-06)
+
+`docs/MATCHY_SPEC.md` is the contract. Shipped: `bookmarked` status + `POST …/experts/[expertId]/bookmark` (seeds `expertRate` from tier, `clientRate = clientRateFor(expertRate)`, emits events, sends the anonymized intro or drafts it when `projects.review_first`); `conversation_messages` + `engagement_events` tables (migration `20260907000000_matchy_phase1.sql`, applied in prod); intro + follow-up templates (`lib/matchyTemplates.ts`), regex screen (`lib/matchyScreen.ts`), email cleaner (`lib/emailClean.ts`), one-LLM-call classify+summarize (`lib/matchyClassify.ts`, deterministic fallback); inbound rewired (`app/api/inbound-email`: verify → sender check → clean → screen → store encrypted → classify → stage → events → auto follow-up unless review-first; idempotent on Svix retries); thread API `GET|POST …/messages`, `POST …/messages/[id]/send`, `POST …/outreach/approve`; client UI = Brief · Matches · Conversations (Outreach/Screen/Deliver tabs are admin-only); Email 2/3 cadence retired (trigger route acknowledges and does nothing).
+
+Money rules as built: `EXPERT_SHARE = 0.50`; `clientRateFor(expertRate) = ceil(expertRate/0.5/50)×50`; calls bill `callChargeDollars` (client rate × billable minutes, 15-minute minimum) in the complete route, the Zoom webhook and OutreachCard; payout = `expertPayoutDollars` (accepted rate × same minutes). Clients never receive `expertRate`, `expertCounterRate`, `contactEmail`, `emailProvider`; `redactMessageForViewer` masks every dollar amount in Matchy's outbound messages for non-admins. Seat pricing: `SEAT_TIERS` $250 (1–5) / $200 (6–20) / talk-to-us (21+, Stripe bills $200 until custom terms); Stripe seat Price `expertmatch_seat_monthly_v2` is created lazily on first org billing setup (test mode; no seat price or subscription exists in the test account yet).
+
+Not in Phase 1 (Phase 2): autonomous contact discovery on bookmark (today bookmark uses an address already on the record, else `contact_not_found`), propose-times/booking from calendar overlap, suggested replies, digest.
 
 ## Where the product is (all live)
 
@@ -25,7 +35,10 @@ Working pattern that has worked: Fable plans and writes agent briefs; Opus subag
 ## Scripts (all run with `npx tsx`)
 
 - `scripts/smoke-cutover.ts` — 16 auth/CRUD/IDOR/RLS checks against localhost (edit BASE for prod). Provisions/deletes its own throwaway user. **Logs in AND out as the admin — signOut revokes all admin sessions; don't run it while the founder is logged in.**
-- `scripts/check-redaction.ts` — ~60 assertions on `redactExpertForViewer`.
+- `scripts/check-redaction.ts` — assertions on `redactExpertForViewer` (incl. clientRate visible / expertRate hidden).
+- `scripts/e2e-matchy.ts` — Matchy E2E against any base URL with THROWAWAY users only, no email sent (`SMOKE_BASE_URL=https://expertmatch.fit npx tsx scripts/e2e-matchy.ts`). Safe to run while the founder is logged in.
+- `scripts/test-pricing.ts`, `test-matchy-templates.ts`, `test-matchy-screen.ts`, `test-email-clean.ts`, `test-matchy-classify.ts`, `test-conversations-redaction.ts` — pure unit tests, no network.
+- `scripts/verify-matchy-migration.ts` — PRESENT/MISSING for the Phase 1 tables/columns.
 - `scripts/verify-svix.ts` — Svix signature verification self-test.
 - `scripts/seed-admin.ts <email> --org-name <name>` — seed an admin (reads `SEED_ADMIN_PASSWORD`).
 - Pattern for prod E2E: provision a throwaway user via service role with `app_metadata` (`role`, `status:'active'`, `firm_domain`, `onboarding_complete`), org + `organization_members` row, log in via `/api/auth/login`, exercise routes, delete everything after. Never log out as the real admin.
@@ -40,8 +53,10 @@ Working pattern that has worked: Fable plans and writes agent briefs; Opus subag
 - Repo is **Next 14.2**, not 15/16 — ignore hook suggestions about `proxy.ts` and async `params`.
 - Upstash is account-rate-limited; caches/rate limits fail open.
 
-## Next: Matchy Phase 1
+## Next
 
-`docs/MATCHY_SPEC.md` draft 2 is the plan. Start by getting the founder's answers to its **Open questions** (firm-type wording, review-switch default, rate ranges per tier, minimum billable minutes, collaborator send rights, digest cadence). Then Phase 1 in order: pricing rule (clientRate/expertRate, billing charges clientRate) → `bookmarked` status + bookmark action → `conversation_messages` + `engagement_events` migrations → intro/follow-up templates with auto-send + review switch → inbound rewired → thread UI + Conversations tab → regex screen → retire Email 2/3 cadence.
+1. **Website audit gate** (TASK_QUEUE) — second pass of `docs/COPY_AUDIT.md` now that the workspace is Brief · Matches · Conversations; real-browser walkthrough as a throwaway non-admin.
+2. **Matchy Phase 2** — contact discovery job on bookmark (bounded provider attempts, one send, bounce retry), propose-times from calendar overlap + preferences, book on confirmation (Zoom + ICS), card statuses.
+3. Legal `[CONFIRM]` placeholders; live Stripe.
 
-Founder preferences to honor: no machinery talk in Matchy's messages; verbs not chat; not a GPT wrapper; collect as much data as possible; ExpertMatch takes 50% of the call (raised from 30% on 2026-09-06 — see spec) plus $250/$200 per seat/month.
+Founder preferences to honor: no machinery talk in Matchy's messages; verbs not chat; not a GPT wrapper; collect as much data as possible; ExpertMatch takes 50% of the call plus $250/$200 per seat/month; honest claims only on the website.

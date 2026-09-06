@@ -7,13 +7,14 @@ transparent, and fully self-serve. Every UI and engineering decision should feel
 belongs at Stripe, Linear, or Notion — not a hackathon project.
 
 ## The Core Workflow (understand this before touching anything)
-1. Client is invited by admin, links billing + calendar during onboarding
+Brief → Matches → Conversations (see docs/MATCHY_SPEC.md):
+1. Client is invited by admin (or approved via /request-access), links calendar + card during onboarding; org pays per seat monthly
 2. Client submits a research brief
-3. Platform sources and scores experts automatically
-4. Client selects preferred experts from a shortlist
-5. Platform finds contact info, generates concise outreach, manages replies
-6. Platform schedules calls via linked calendars, sends Zoom links
-7. Platform tracks time and bills by the minute
+3. Platform sources and scores anonymized expert candidates (Matches)
+4. Client bookmarks an expert — that is the consent for Matchy (our agent) to reach out
+5. Matchy emails the anonymized intro, handles the reply, asks conflicts + rate, relays every message through a compliance screen (Conversations)
+6. Matchy schedules the call (Zoom + ICS); identities reveal both ways at `scheduled`
+7. Call completes → client's saved card is charged the client rate (15-min minimum, per minute after); expert is paid their accepted rate via Stripe Connect
 
 ## Target Users
 - Private equity firms
@@ -27,7 +28,7 @@ belongs at Stripe, Linear, or Notion — not a hackathon project.
 - Every feature needs loading states, error states, and mobile responsiveness
 - Prefer proven libraries over custom implementations for auth, payments, scheduling
 - No hardcoded secrets — use env vars with clear names
-- Run npm run build before every commit
+- Run `npm run build:local` before every commit (real `next build` with Google Fonts mocked; tsc alone is not enough)
 - No console.log left in production code
 - No `any` types in TypeScript unless truly unavoidable
 - Follow existing file structure and naming conventions exactly
@@ -36,13 +37,12 @@ belongs at Stripe, Linear, or Notion — not a hackathon project.
 Next.js, Vercel, [DB], [email provider]. Do not introduce new dependencies 
 without noting it explicitly.
 
-## Auth Model (as of May 2026)
-- Invite-only. Admin sends invite, user sets password via tokenized link
-- Firm-based seat limits tied to billing plan
-- bcrypt password hashing
-- Role field on user record: user / admin
-- No master password backdoor — removed
-- Session via cookie, verified with HMAC
+## Auth Model (as of September 2026)
+- Supabase Auth + Postgres with RLS is the source of truth (see HANDOFF.md); Redis only for rate limits, caches, short tokens
+- Invite-only / approved-domain access; user sets password via tokenized link
+- Per-seat org billing (lib/pricing.ts SEAT_TIERS); `organizations.seat_limit` is an optional admin cap
+- Role in `app_metadata` (service-role written): user / admin; project owner vs collaborator (read-only) inside a project
+- No master password backdoor
 
 ## Before Every Task
 1. Read this file
@@ -53,7 +53,7 @@ without noting it explicitly.
 5. Then code
 
 ## After Every Task
-1. Run npm run build — zero errors required
+1. Run `npm run build:local` — zero errors required
 2. Commit with a clear message
 3. Update TASK_QUEUE.md
 4. Note any architectural decisions made
