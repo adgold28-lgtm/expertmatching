@@ -1,10 +1,16 @@
 // lib/chargeSavedCard.ts
-// Off-session charge against the card the client saved during onboarding.
+// Off-session charge against the card the client's FIRM saved during
+// onboarding.
 //
-// The payer is the PROJECT OWNER (project.ownerEmail), not the project-level
-// Stripe customer that lib/createAndSendInvoice.ts creates for payment links.
-// The owner's customer id and billing flag live on their profile, written by
-// the onboarding SetupIntent flow (app/api/onboarding/billing/*).
+// The payer is resolved in this order — never the project-level Stripe customer
+// that lib/createAndSendInvoice.ts creates for payment links:
+//   1. The ORGANIZATION that owns the project (projects.organization_id) once
+//      organization_billing says it has a card on file. The firm is the paying
+//      entity: one colleague saves the card, every project the firm runs is
+//      billed to it.
+//   2. LEGACY fallback — the project owner's own Stripe customer on their
+//      profile, written by the pre-org onboarding flow. Kept so accounts that
+//      completed billing before org billing existed keep charging cleanly.
 //
 // This module only decides and charges. Persistence, emails, and the
 // payment-link fallback are orchestrated by lib/createAndSendInvoice.ts.
@@ -17,6 +23,7 @@
 
 import { stripe } from './stripe';
 import { getUser } from './firmStore';
+import { getBillingCustomerForProject } from './orgBilling';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -87,10 +94,29 @@ async function resolveDefaultPaymentMethod(customerId: string): Promise<string |
   return methods.data[0]?.id ?? null;
 }
 
+/**
+ * The Stripe customer to charge for this call: the project's organization when
+ * the firm has a card on file, else the project owner's legacy per-user
+ * customer. Null when neither exists — the caller falls back to a payment link.
+ */
+async function resolvePayerCustomerId(
+  projectId:  string,
+  ownerEmail: string,
+): Promise<string | null> {
+  const orgCustomerId = await getBillingCustomerForProject(projectId);
+  if (orgCustomerId) return orgCustomerId;
+
+  if (!ownerEmail) return null;
+  const payer = await getUser(ownerEmail);
+  if (!payer?.stripeCustomerId || !payer.billingComplete) return null;
+  return payer.stripeCustomerId;
+}
+
 // ─── Public API ───────────────────────────────────────────────────────────────
 
 /**
- * Attempts an off-session charge against the project owner's saved card.
+ * Attempts an off-session charge against the firm's saved card (falling back to
+ * the project owner's legacy per-user card).
  *
  * Never throws — every failure is reported as an outcome so the caller can fall
  * back to the manual payment-link flow.
@@ -102,17 +128,15 @@ async function resolveDefaultPaymentMethod(customerId: string): Promise<string |
 export async function chargeSavedCard(params: ChargeSavedCardParams): Promise<ChargeResult> {
   const { projectId, expertId, ownerEmail, amount } = params;
 
-  // Stripe's minimum chargeable amount is $0.50.
-  if (!ownerEmail || !Number.isFinite(amount) || amount < 1) {
+  // A payer needs either a project (→ its organization's card) or an owner
+  // email (→ the legacy per-user card). Stripe's minimum charge is $0.50.
+  if ((!projectId && !ownerEmail) || !Number.isFinite(amount) || amount < 1) {
     return { outcome: 'no_saved_card' };
   }
 
   try {
-    const payer = await getUser(ownerEmail);
-    if (!payer?.stripeCustomerId || !payer.billingComplete) {
-      return { outcome: 'no_saved_card' };
-    }
-    const customerId = payer.stripeCustomerId;
+    const customerId = await resolvePayerCustomerId(projectId, ownerEmail);
+    if (!customerId) return { outcome: 'no_saved_card' };
 
     const paymentMethodId = await resolveDefaultPaymentMethod(customerId);
     if (!paymentMethodId) return { outcome: 'no_saved_card' };

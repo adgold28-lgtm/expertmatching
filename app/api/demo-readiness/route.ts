@@ -4,9 +4,10 @@
 // - Returns ONLY boolean presence flags (!!process.env.X).
 // - NEVER returns, logs, or exposes env var values.
 // - All "present" booleans are computed server-side; nothing sensitive reaches the client.
-// - TODO: Restrict to admin auth before public launch.
+// - Platform-admin only (adminGuard) in every environment.
 
 import { NextRequest } from 'next/server';
+import { adminGuard } from '../../../lib/auth';
 
 interface CheckResult {
   key: string;
@@ -25,21 +26,10 @@ function check(key: string): CheckResult {
 }
 
 export async function GET(request: NextRequest) {
-  // Guard: only allow in non-production OR if an admin token is set.
-  // In production without auth, return 404 to avoid leaking the endpoint.
-  const isProduction  = process.env.NODE_ENV === 'production';
-  const hasAdminToken = !!process.env.DEMO_READINESS_TOKEN;
-
-  // Observability: log access attempt — no values, no auth tokens, no env data.
-  console.log('[demo-readiness] GET', JSON.stringify({
-    env: process.env.NODE_ENV,
-    guarded: isProduction && !hasAdminToken,
-    ip: request.headers.get('x-forwarded-for')?.split(',')[0]?.trim() ?? 'unknown',
-  }));
-
-  if (isProduction && !hasAdminToken) {
-    return Response.json({ error: 'not_found' }, { status: 404 });
-  }
+  // Platform admins only. 404 (not 403) so the endpoint's existence is not
+  // confirmed to non-admins.
+  const authErr = await adminGuard(request);
+  if (authErr) return Response.json({ error: 'not_found' }, { status: 404 });
 
   const groups: ChecklistGroup[] = [
     {
@@ -82,7 +72,6 @@ export async function GET(request: NextRequest) {
       label: 'Security (Optional)',
       checks: [
         check('CONTACT_ENRICHMENT_ADMIN_TOKEN'),
-        check('DEMO_READINESS_TOKEN'),
       ],
     },
   ];

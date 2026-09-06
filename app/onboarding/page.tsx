@@ -40,7 +40,9 @@ interface Banner {
 interface ServerState {
   calendarConnected: boolean;
   calendarProvider:  CalendarProvider | null;
+  /** Firm-level: true as soon as any colleague saved the firm's card. */
   billingComplete:   boolean;
+  orgName:           string;
   seed:              ProfileSeed;
 }
 
@@ -96,7 +98,7 @@ async function loadServerState(): Promise<ServerState | null> {
 
     const me = await meRes.json() as {
       firstName?: string; lastName?: string; title?: string;
-      firmName?: string; billingComplete?: boolean;
+      firmName?: string; orgName?: string; billingComplete?: boolean;
     };
     const calendar = await calendarRes.json() as { connected?: boolean; provider?: unknown };
 
@@ -104,6 +106,7 @@ async function loadServerState(): Promise<ServerState | null> {
       calendarConnected: calendar.connected === true,
       calendarProvider:  narrowProvider(calendar.provider),
       billingComplete:   me.billingComplete === true,
+      orgName:           me.orgName || me.firmName || '',
       seed: {
         firstName: me.firstName ?? '',
         lastName:  me.lastName  ?? '',
@@ -135,6 +138,7 @@ export default function OnboardingPage() {
   const [calendarConnected, setCalendarConnected] = useState(false);
   const [calendarProvider,  setCalendarProvider]  = useState<CalendarProvider | null>(null);
   const [billingComplete,   setBillingComplete]   = useState(false);
+  const [orgName,           setOrgName]           = useState('');
   const [seed,              setSeed]              = useState<ProfileSeed>(EMPTY_SEED);
 
   /** Re-reads server state and moves to the first incomplete step. */
@@ -148,6 +152,7 @@ export default function OnboardingPage() {
     setCalendarConnected(state.calendarConnected);
     setCalendarProvider(state.calendarProvider);
     setBillingComplete(state.billingComplete);
+    setOrgName(state.orgName);
     setSeed(state.seed);
     setStep(firstIncompleteStep(state.calendarConnected, state.billingComplete));
     return state;
@@ -357,9 +362,15 @@ export default function OnboardingPage() {
             ) : step === 2 ? (
               <BillingStep
                 complete={billingComplete}
-                onComplete={() => {
+                orgName={orgName}
+                onComplete={context => {
                   setBillingComplete(true);
-                  setBanner({ kind: 'success', text: 'Payment method saved.' });
+                  setBanner({
+                    kind: 'success',
+                    text: context === 'already_set_up'
+                      ? `Billing is already set up for ${orgName || 'your firm'}.`
+                      : 'Payment method saved.',
+                  });
                 }}
                 onContinue={() => goTo(3)}
               />

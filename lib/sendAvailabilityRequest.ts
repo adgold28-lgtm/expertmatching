@@ -145,7 +145,13 @@ function buildEmailText(expertName: string, projectName: string, availabilityLin
 
 // ─── Invite email ─────────────────────────────────────────────────────────────
 
-export async function sendInviteEmail(email: string, firmName: string, signupUrl: string): Promise<void> {
+export async function sendInviteEmail(
+  email:     string,
+  firmName:  string,
+  signupUrl: string,
+  /** Invitee's first name, captured at invite time. Falls back to the email local part. */
+  inviteeFirstName?: string,
+): Promise<void> {
   if (process.env.DISABLE_EMAILS === 'true') {
     console.log('[sendInviteEmail] suppressed in dev mode');
     return;
@@ -154,7 +160,7 @@ export async function sendInviteEmail(email: string, firmName: string, signupUrl
   const from = process.env.OUTREACH_FROM_EMAIL;
   if (!from) throw new Error('[sendInviteEmail] OUTREACH_FROM_EMAIL not configured');
 
-  const firstName = email.split('@')[0] ?? email;
+  const firstName = (inviteeFirstName ?? '').trim() || (email.split('@')[0] ?? email);
 
   const html = `<!DOCTYPE html>
 <html lang="en">
@@ -179,7 +185,7 @@ export async function sendInviteEmail(email: string, firmName: string, signupUrl
               Your access to ExpertMatch has been approved for <strong>${escapeHtml(firmName)}</strong>.
             </p>
             <p style="margin:0 0 24px;">
-              Set up your account here — the link expires in 7 days:
+              Set up your account here — the link expires in 24 hours:
             </p>
             <table cellpadding="0" cellspacing="0" style="margin:0 0 28px;">
               <tr>
@@ -212,7 +218,7 @@ export async function sendInviteEmail(email: string, firmName: string, signupUrl
     '',
     `Your access to ExpertMatch has been approved for ${firmName}.`,
     '',
-    'Set up your account here — the link expires in 7 days:',
+    'Set up your account here — the link expires in 24 hours:',
     '',
     signupUrl,
     '',

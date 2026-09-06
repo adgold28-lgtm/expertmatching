@@ -8,10 +8,10 @@ import {
   upsertUser,
   getFirm,
   countActiveUsersForFirm,
-  SEAT_LIMITS,
   recordSeatRequest,
   sendSeatLimitNotification,
 } from '../../../../lib/firmStore';
+import { syncOrgSeatQuantity } from '../../../../lib/orgBilling';
 
 const HOUR_MS    = 60 * 60 * 1000;
 const RATE_LIMIT = 5;
@@ -161,11 +161,14 @@ export async function POST(request: NextRequest): Promise<Response> {
         countActiveUsersForFirm(domain),
       ]);
 
-      const plan      = firm?.plan ?? 'starter';
-      const seatLimit = SEAT_LIMITS[plan];
+      // seat_limit is an optional platform-admin cap; null means unlimited.
+      const seatLimit = firm?.seatLimit ?? null;
 
-      if (activeCount >= seatLimit) {
-        await recordSeatRequest(email, domain).catch(() => {});
+      if (seatLimit !== null && activeCount >= seatLimit) {
+        await recordSeatRequest(email, domain, {
+          name:     `${user.firstName ?? ''} ${user.lastName ?? ''}`.trim(),
+          firmName: firm?.name ?? firmName,
+        }).catch(() => {});
         await sendSeatLimitNotification({
           attemptedEmail:  email,
           firmName:        firm?.name ?? firmName,
@@ -201,6 +204,14 @@ export async function POST(request: NextRequest): Promise<Response> {
   } catch {
     console.error('[auth/set-password] failed to activate user', { email: '[redacted]' });
     return Response.json({ error: 'internal_error' }, { status: 500 });
+  }
+
+  // The organization just gained an active seat. upsertUser already syncs on a
+  // membership status change; this is the explicit belt-and-braces call and is
+  // idempotent. Never fails the activation.
+  const activated = await getUser(email).catch(() => null);
+  if (activated?.orgId) {
+    try { await syncOrgSeatQuantity(activated.orgId); } catch { /* best effort */ }
   }
 
   // ── 9. Sign in and return the session cookies ─────────────────────────────

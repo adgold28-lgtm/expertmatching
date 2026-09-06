@@ -7,6 +7,10 @@
 //   payment_intent.succeeded              → paymentStatus='paid' + expert payout
 //                                           (off-session auto-charge path)
 //   payment_intent.payment_failed         → paymentStatus='failed'
+//   customer.subscription.updated         → mirror status onto organization_billing
+//   customer.subscription.deleted         → mirror status onto organization_billing
+//   invoice.payment_failed                → mirror 'past_due' for the org whose
+//                                           seat subscription the invoice bills
 //
 // Both "money received" branches funnel into runExpertPayout()
 // (lib/expertPayout.ts), which recomputes the payout server-side from the
@@ -28,6 +32,7 @@ import type Stripe from 'stripe';
 import { stripe } from '../../../../lib/stripe';
 import { updateExpertStatus } from '../../../../lib/projectStore';
 import { runExpertPayout } from '../../../../lib/expertPayout';
+import { recordSubscriptionStatus } from '../../../../lib/orgBilling';
 
 // ─── Shared branch handlers ───────────────────────────────────────────────────
 
@@ -50,6 +55,24 @@ async function handlePaymentSucceeded(
 
   // Never throws — the client payment is already recorded.
   await runExpertPayout(projectId, expertId);
+}
+
+/**
+ * The subscription an invoice bills, on this API version. Since the 2025 basil
+ * releases `invoice.subscription` is gone: the link lives under
+ * `invoice.parent.subscription_details.subscription`. The legacy top-level
+ * field is still read (behind a narrow cast, never `any`) so replayed events
+ * from an older API version are handled too.
+ */
+function subscriptionIdForInvoice(invoice: Stripe.Invoice): string | null {
+  const fromParent = invoice.parent?.subscription_details?.subscription;
+  if (typeof fromParent === 'string') return fromParent;
+  if (fromParent && typeof fromParent === 'object') return fromParent.id;
+
+  const legacy = (invoice as { subscription?: string | { id?: string } }).subscription;
+  if (typeof legacy === 'string') return legacy;
+  if (legacy && typeof legacy.id === 'string') return legacy.id;
+  return null;
 }
 
 async function handlePaymentFailed(projectId: string, expertId: string): Promise<void> {
@@ -121,6 +144,29 @@ export async function POST(request: NextRequest) {
 
     if (projectId && expertId) {
       await handlePaymentFailed(projectId, expertId);
+    }
+  }
+
+  // ── Per-seat subscription (organization billing) ────────────────────────
+  // Mirrored onto organization_billing so the app can tell a firm its billing
+  // needs attention without calling Stripe. recordSubscriptionStatus never
+  // throws and ignores subscriptions this deployment does not own.
+  if (event.type === 'customer.subscription.updated' || event.type === 'customer.subscription.deleted') {
+    const subscription = event.data.object as Stripe.Subscription;
+    await recordSubscriptionStatus(
+      subscription.id,
+      // A deleted subscription is terminal regardless of the status Stripe sent.
+      event.type === 'customer.subscription.deleted' ? 'canceled' : subscription.status,
+    );
+  }
+
+  if (event.type === 'invoice.payment_failed') {
+    const invoice = event.data.object as Stripe.Invoice;
+    const subscriptionId = subscriptionIdForInvoice(invoice);
+    // Only subscription invoices matter here; one-off call charges are tracked
+    // through payment_intent.payment_failed above.
+    if (subscriptionId) {
+      await recordSubscriptionStatus(subscriptionId, 'past_due');
     }
   }
 

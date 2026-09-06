@@ -60,6 +60,9 @@ export interface AppMetadata {
   status?:              'pending' | 'active' | 'disabled';
   firm_domain?:         string;
   firm_name?:           string;
+  // Organization membership, mirrored so orgAdminGuard needs no DB read.
+  org_id?:              string;
+  org_role?:            'org_admin' | 'org_member';
   first_name?:          string;
   onboarding_complete?: boolean;
   // True once a card is saved via the onboarding SetupIntent flow. Mirrored so

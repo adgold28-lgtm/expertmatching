@@ -1,6 +1,7 @@
 import { NextRequest } from 'next/server';
 import { adminGuard, getSessionUser } from '../../../../lib/auth';
-import { ensureSupabaseUser } from '../../../../lib/supabase/admin';
+import { provisionAccountInvite } from '../../../../lib/accountProvisioning';
+import { syncOrgSeatQuantity } from '../../../../lib/orgBilling';
 import {
   getUser,
   upsertUser,
@@ -12,8 +13,14 @@ import {
 
 const VALID_STATUSES = new Set<UserStatus>(['active', 'disabled']);
 
-// GET ?all=true          — list all users across every firm (admin panel)
-// GET ?domain=<domain>   — list users for a specific firm
+/** Seat quantity sync — never lets a billing outage fail an account write. */
+async function syncSeats(organizationId: string | undefined): Promise<void> {
+  if (!organizationId) return;
+  try { await syncOrgSeatQuantity(organizationId); } catch { /* best effort */ }
+}
+
+// GET ?all=true          — list all users across every organization (admin panel)
+// GET ?domain=<domain>   — list users for a specific organization
 export async function GET(request: NextRequest): Promise<Response> {
   const err = await adminGuard(request);
   if (err) return err;
@@ -39,12 +46,15 @@ export async function GET(request: NextRequest): Promise<Response> {
     const users = await listUsersForFirm(domain);
     return Response.json({ users });
   } catch {
-    console.error('[admin/users] failed to list users for firm', { domain: '[redacted]' });
+    console.error('[admin/users] failed to list users for organization');
     return Response.json({ error: 'Failed to load users' }, { status: 500 });
   }
 }
 
-// POST { email, password, role, firmName, firmDomain } — create a new user
+// POST { firstName, lastName, email, organization: { domain?, name? }, role? }
+//
+// Creating a user IS sending an invite: the invitee sets their own password via
+// the tokenized link. There is no admin-sets-password path.
 export async function POST(request: NextRequest): Promise<Response> {
   const err = await adminGuard(request);
   if (err) return err;
@@ -54,50 +64,37 @@ export async function POST(request: NextRequest): Promise<Response> {
     return Response.json({ error: 'invalid_json' }, { status: 400 });
   }
 
-  const b          = body as Record<string, unknown>;
-  const email      = typeof b.email      === 'string' ? b.email.trim().toLowerCase().slice(0, 254) : '';
-  const password   = typeof b.password   === 'string' ? b.password.slice(0, 200)                   : '';
-  const role       = typeof b.role       === 'string' ? b.role                                      : 'user';
-  const firmName   = typeof b.firmName   === 'string' ? b.firmName.trim().slice(0, 200)             : '';
-  const firmDomain = typeof b.firmDomain === 'string' ? b.firmDomain.trim().toLowerCase().slice(0, 200) : '';
+  const b   = (body ?? {}) as Record<string, unknown>;
+  const org = (b.organization ?? {}) as Record<string, unknown>;
 
-  if (!email || !email.includes('@')) {
-    return Response.json({ error: 'valid_email_required' }, { status: 400 });
-  }
-  if (password.length < 8) {
-    return Response.json(
-      { error: 'password_too_short', message: 'Password must be at least 8 characters.' },
-      { status: 400 },
-    );
-  }
-  if (role !== 'admin' && role !== 'user') {
-    return Response.json(
-      { error: 'invalid_role', message: 'role must be "admin" or "user"' },
-      { status: 400 },
-    );
+  const session = await getSessionUser(request);
+
+  const result = await provisionAccountInvite({
+    firstName:    typeof b.firstName === 'string' ? b.firstName : '',
+    lastName:     typeof b.lastName  === 'string' ? b.lastName  : '',
+    email:        typeof b.email     === 'string' ? b.email     : '',
+    organization: {
+      domain: typeof org.domain === 'string' ? org.domain : undefined,
+      name:   typeof org.name   === 'string' ? org.name   : undefined,
+    },
+    role:            b.role === 'admin' ? 'admin' : 'user',
+    invitedByEmail:  session.email,
+    isPlatformAdmin: true,
+  });
+
+  if (!result.ok) {
+    return Response.json({ error: result.error, message: result.message }, { status: result.status });
   }
 
-  try {
-    // Credentials live in Supabase Auth; domain data + app_metadata via upsertUser.
-    const authId = await ensureSupabaseUser(email, password);
-    if (!authId) {
-      return Response.json({ error: 'Failed to create user' }, { status: 500 });
-    }
-    await upsertUser(email, {
-      role:               role as 'admin' | 'user',
-      firmName,
-      firmDomain,
-      status:             'active',
-      onboardingComplete: true,
-    });
-    return Response.json({ ok: true });
-  } catch {
-    console.error('[admin/users] failed to create user');
-    return Response.json({ error: 'Failed to create user' }, { status: 500 });
-  }
+  return Response.json({
+    ok:        true,
+    email:     result.email,
+    emailSent: result.emailSent,
+    ...(result.emailSent ? {} : { warning: 'Invite created, but the email could not be delivered.' }),
+  });
 }
 
-// PATCH { email, status } — update user status (active | disabled)
+// PATCH { email, status } — update membership status (active | disabled)
 export async function PATCH(request: NextRequest): Promise<Response> {
   const err = await adminGuard(request);
   if (err) return err;
@@ -126,9 +123,13 @@ export async function PATCH(request: NextRequest): Promise<Response> {
     if (!user) return Response.json({ error: 'user_not_found' }, { status: 404 });
 
     await upsertUser(email, { status: status as UserStatus });
+
+    // The organization's billable seat count changed.
+    await syncSeats(user.orgId);
+
     return Response.json({ ok: true });
   } catch {
-    console.error('[admin/users] failed to update status', { email: '[redacted]' });
+    console.error('[admin/users] failed to update status');
     return Response.json({ error: 'Failed to update user' }, { status: 500 });
   }
 }
@@ -164,9 +165,13 @@ export async function DELETE(request: NextRequest): Promise<Response> {
     if (!user) return Response.json({ error: 'user_not_found' }, { status: 404 });
 
     await deleteUser(email);
+
+    // Removing a membership frees a billable seat.
+    await syncSeats(user.orgId);
+
     return Response.json({ ok: true });
   } catch {
-    console.error('[admin/users] failed to delete user', { email: '[redacted]' });
+    console.error('[admin/users] failed to delete user');
     return Response.json({ error: 'Failed to delete user' }, { status: 500 });
   }
 }

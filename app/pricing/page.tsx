@@ -1,10 +1,11 @@
 import type { Metadata } from 'next';
 import Link from 'next/link';
 import NavBar from '../../components/NavBar';
+import { SEAT_TIERS, formatUsdFromCents } from '../../lib/pricing';
 
 export const metadata: Metadata = {
   title: 'Pricing — ExpertMatch',
-  description: 'Flat monthly fee. Per-minute billing on calls. No minimums, no contracts.',
+  description: 'Per-seat monthly pricing with volume tiers. Per-minute billing on calls. No minimums, no contracts.',
 };
 
 const GOLD = '#C6A75E';
@@ -28,56 +29,16 @@ function Footer() {
   );
 }
 
-const PLANS = [
-  {
-    name: 'Starter',
-    price: '$1,500',
-    period: '/month',
-    tagline: 'For small teams with occasional expert projects.',
-    featured: false,
-    features: [
-      '3 analyst seats',
-      '10 expert calls per month',
-      'AI expert sourcing',
-      'Direct outreach on your behalf',
-      'Calendar and scheduling support',
-      'Per-minute billing and invoicing',
-      'Email support',
-    ],
-  },
-  {
-    name: 'Growth',
-    price: '$3,500',
-    period: '/month',
-    tagline: 'For funds with multiple active research workstreams.',
-    featured: true,
-    features: [
-      '10 analyst seats',
-      '25 expert calls per month',
-      'Everything in Starter',
-      'Priority sourcing queue',
-      'Dedicated onboarding session',
-      'Custom conflict exclusion rules',
-      'Phone and email support',
-    ],
-  },
-  {
-    name: 'Enterprise',
-    price: 'Custom',
-    period: '',
-    tagline: 'For large teams with compliance requirements.',
-    featured: false,
-    features: [
-      'Unlimited analyst seats',
-      'Unlimited expert calls',
-      'Everything in Growth',
-      'Custom data integrations',
-      'SOC 2 and compliance package',
-      'SLA with uptime guarantee',
-      'Dedicated account manager',
-    ],
-  },
-];
+// Rendered from lib/pricing.ts so the marketing page can never drift from what
+// Stripe actually charges.
+const SEAT_ROWS = SEAT_TIERS.map(tier => ({
+  range: tier.maxSeats === null ? `${tier.minSeats}+ seats` : `${tier.minSeats}–${tier.maxSeats} seats`,
+  price: `${formatUsdFromCents(tier.unitPriceCents)}/seat/mo`,
+  note:
+    tier.maxSeats === null
+      ? 'Enterprise teams — volume rate on every seat'
+      : `Every seat billed at ${formatUsdFromCents(tier.unitPriceCents)} once your team reaches this range`,
+}));
 
 const CALL_TIERS = [
   { tier: 'Mid-Level',           rate: '$400/hr', desc: 'Directors, VPs, Senior Managers' },
@@ -87,24 +48,24 @@ const CALL_TIERS = [
 
 const FAQS = [
   {
-    q: 'Are there per-call fees on top of the subscription?',
-    a: 'No. The rates below are what clients pay per call. Calls within your monthly allowance are included in the subscription. Calls beyond your limit are billed at standard rates.',
+    q: 'How does per-seat pricing work?',
+    a: 'You pay monthly for each active seat. Your total team size selects a tier, and every seat is billed at that tier — reaching 10 seats moves all 10 to the lower rate, not just the tenth.',
   },
   {
-    q: 'What happens if I exceed my monthly call limit?',
-    a: "Additional calls are billed at the standard per-call rates. We'll notify you before you hit the limit.",
+    q: 'What happens when I add or remove someone?',
+    a: 'Any organization admin can add or remove seats from the Team page. Changes are prorated: you are charged for the remainder of the month when a seat is added, and credited when one is removed.',
+  },
+  {
+    q: 'Are expert calls included in the seat price?',
+    a: 'No. Seats cover the platform — sourcing, outreach, scheduling and billing. Calls are billed per minute at the rates above, so you only pay for the expert time you actually use.',
   },
   {
     q: 'How do experts get paid?',
     a: 'Experts are compensated competitively and paid directly through the platform within 5 business days of a completed call. No invoicing required on their end.',
   },
   {
-    q: 'Can I switch plans at any time?',
-    a: 'Yes. Plan changes take effect at the start of your next billing cycle. Upgrades can be activated immediately.',
-  },
-  {
-    q: 'Is there a setup fee or long-term contract?',
-    a: 'No setup fees. Plans are month-to-month. Enterprise contracts are available for teams that prefer annual billing.',
+    q: 'Is there a setup fee, minimum, or long-term contract?',
+    a: 'No setup fee, no seat minimum and no contract. Billing is month-to-month and you can add or remove seats at any time.',
   },
 ];
 
@@ -125,87 +86,62 @@ export default function PricingPage() {
           className="font-display text-cream mb-4"
           style={{ fontSize: 'clamp(2rem, 4vw, 3rem)', fontWeight: 500 }}
         >
-          Flat fee. No markups.
+          Per seat. No markups.
         </h1>
         <p className="text-cream/50 text-sm leading-relaxed mx-auto" style={{ maxWidth: '480px', fontWeight: 300 }}>
-          One monthly subscription covers sourcing, outreach, and billing.
-          Experts are compensated competitively for their time.
+          Billed monthly per active seat — every seat at your team&apos;s volume tier.
+          Calls are billed by the minute, and experts are compensated competitively
+          for their time.
         </p>
       </section>
 
-      {/* ── Plan cards ── */}
+      {/* ── Seat tiers ── */}
       <section className="py-16 px-6 border-b border-frame bg-cream">
-        <div className="max-w-5xl mx-auto">
-          <div className="grid sm:grid-cols-3 gap-5">
-            {PLANS.map(({ name, price, period, tagline, featured, features }) => (
-              <div
-                key={name}
-                className="flex flex-col p-7"
-                style={{
-                  background: featured ? NAVY : '#FFFFFF',
-                  border: featured ? `2px solid ${GOLD}` : '1px solid #DDE3EA',
-                }}
-              >
-                {featured && (
-                  <p
-                    className="text-[9px] uppercase font-bold mb-4 tracking-widest self-start px-2 py-0.5"
-                    style={{ background: GOLD, color: NAVY, letterSpacing: '0.2em' }}
-                  >
-                    Most Popular
-                  </p>
-                )}
-                <p
-                  className="text-[11px] uppercase font-semibold mb-1"
-                  style={{ letterSpacing: '0.18em', color: featured ? GOLD : NAVY }}
-                >
-                  {name}
-                </p>
-                <p
-                  className="text-[12px] mb-4 leading-snug"
-                  style={{ color: featured ? 'rgba(255,255,255,0.45)' : '#8A9BAD', fontWeight: 300 }}
-                >
-                  {tagline}
-                </p>
-                <div className="flex items-baseline gap-1 mb-6 border-b pb-6" style={{ borderColor: featured ? 'rgba(255,255,255,0.1)' : '#DDE3EA' }}>
-                  <span
-                    className="font-display"
-                    style={{ fontSize: '2.2rem', fontWeight: 500, color: featured ? '#FFFFFF' : NAVY }}
-                  >
-                    {price}
-                  </span>
-                  {period && (
-                    <span className="text-sm" style={{ color: featured ? 'rgba(255,255,255,0.4)' : '#8A9BAD' }}>
-                      {period}
-                    </span>
-                  )}
-                </div>
-                <ul className="space-y-2.5 flex-1 mb-8">
-                  {features.map(f => (
-                    <li key={f} className="flex items-start gap-2.5">
-                      <span style={{ color: GOLD, fontSize: '11px', marginTop: '2px', flexShrink: 0 }}>✓</span>
-                      <span
-                        className="text-[12px] leading-snug"
-                        style={{ color: featured ? 'rgba(255,255,255,0.65)' : '#5A6B7A', fontWeight: 300 }}
-                      >
-                        {f}
-                      </span>
-                    </li>
-                  ))}
-                </ul>
-                <Link
-                  href="/request-access"
-                  className="block text-center text-[10px] uppercase font-medium py-3 transition-colors"
-                  style={{
-                    letterSpacing: '0.14em',
-                    background: featured ? GOLD : 'transparent',
-                    color: NAVY,
-                    border: featured ? 'none' : `1px solid ${NAVY}30`,
-                  }}
-                >
-                  {name === 'Enterprise' ? 'Contact Us' : 'Request Access'}
-                </Link>
-              </div>
-            ))}
+        <div className="max-w-3xl mx-auto">
+          <p
+            className="text-[10px] uppercase font-medium mb-2 text-center tracking-widest"
+            style={{ color: NAVY, letterSpacing: '0.22em' }}
+          >
+            Seat Pricing
+          </p>
+          <p className="text-center text-muted text-sm mb-8 mx-auto" style={{ fontWeight: 300, maxWidth: '520px' }}>
+            Billed monthly per active seat. Every seat is billed at the tier your team size
+            falls into — add or remove seats any time, prorated.
+          </p>
+
+          <div className="border border-frame overflow-x-auto">
+            <table className="w-full text-sm border-collapse min-w-[420px]">
+              <thead>
+                <tr style={{ background: NAVY }}>
+                  <th className="text-left px-5 py-3.5 text-[10px] uppercase font-medium text-cream/50" style={{ letterSpacing: '0.14em' }}>Team Size</th>
+                  <th className="text-left px-5 py-3.5 text-[10px] uppercase font-medium text-cream/50" style={{ letterSpacing: '0.14em' }}>What It Means</th>
+                  <th className="text-center px-5 py-3.5 text-[10px] uppercase font-medium" style={{ letterSpacing: '0.14em', color: GOLD }}>Price</th>
+                </tr>
+              </thead>
+              <tbody>
+                {SEAT_ROWS.map(({ range, price, note }, i) => (
+                  <tr key={range} style={{ background: i % 2 === 0 ? '#FFFFFF' : '#F7F9FC' }} className="border-b border-frame last:border-b-0">
+                    <td className="px-5 py-4 text-[12px] font-semibold text-ink whitespace-nowrap">{range}</td>
+                    <td className="px-5 py-4 text-[12px] text-muted" style={{ fontWeight: 300 }}>{note}</td>
+                    <td className="px-5 py-4 text-center text-[13px] font-semibold whitespace-nowrap" style={{ color: GOLD }}>{price}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+
+          <p className="text-[11px] text-muted mt-3 text-center" style={{ fontWeight: 300 }}>
+            Seats include AI sourcing, outreach on your behalf, scheduling, and per-minute call billing.
+          </p>
+
+          <div className="text-center mt-8">
+            <Link
+              href="/request-access"
+              className="inline-block px-10 py-3.5 text-[11px] font-medium uppercase"
+              style={{ background: NAVY, color: GOLD, letterSpacing: '0.14em' }}
+            >
+              Request Access
+            </Link>
           </div>
         </div>
       </section>
@@ -220,7 +156,7 @@ export default function PricingPage() {
             Per-Call Rates
           </p>
           <p className="text-center text-muted text-sm mb-8" style={{ fontWeight: 300 }}>
-            Call allowances are included in your plan. These rates apply to additional calls.
+            Calls are billed by the minute at these rates, on top of your seats.
           </p>
           <div className="border border-frame overflow-hidden">
             <table className="w-full text-sm border-collapse">

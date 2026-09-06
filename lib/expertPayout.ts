@@ -5,7 +5,10 @@
 //
 // The payout amount is ALWAYS recomputed server-side from the stored
 // expertRate and duration. A webhook payload is never trusted for money:
-//   payout = round(expertRate × (actualDurationMin ?? callDurationMin) / 60) × 70%
+//   gross  = round(expertRate × (actualDurationMin ?? callDurationMin) / 60)
+//   payout = splitCallAmountCents(gross × 100).expertCents   (EXPERT_SHARE)
+// The split lives in lib/pricing.ts — the expert's share and the platform's
+// remainder always sum exactly to the gross, with no rounding leak.
 //
 // Behaviour:
 //   1. Load the ProjectExpert; skip silently if there is no contact email.
@@ -29,14 +32,16 @@ import {
   transferExpertPayout,
 } from './stripeConnect';
 import { generateAvailabilityToken } from './availabilityToken';
+import { splitCallAmountCents, formatUsdFromCents } from './pricing';
 
 // ─── Expert payout email ──────────────────────────────────────────────────────
 
 export async function sendPayoutOnboardingEmail(
-  expertEmail:     string,
-  expertFirstName: string,
-  expertAmount:    number,
-  onboardingUrl:   string,
+  expertEmail:       string,
+  expertFirstName:   string,
+  /** Expert's share of the call, in whole cents. */
+  expertAmountCents: number,
+  onboardingUrl:     string,
 ): Promise<void> {
   if (process.env.DISABLE_EMAILS === 'true') return;
 
@@ -45,6 +50,8 @@ export async function sendPayoutOnboardingEmail(
   if (!resendKey || !fromAddr) return;
 
   const resend = new Resend(resendKey);
+  // Cents in, formatted dollars out — a 70% split is rarely a whole dollar.
+  const amountLabel = formatUsdFromCents(expertAmountCents);
 
   const htmlBody = `<!DOCTYPE html>
 <html lang="en">
@@ -66,7 +73,7 @@ export async function sendPayoutOnboardingEmail(
             <p style="margin:0 0 16px;">Hi ${expertFirstName},</p>
             <p style="margin:0 0 16px;">Your call is complete and payment has been received.</p>
             <p style="margin:0 0 24px;">
-              To receive your <strong>$${expertAmount.toLocaleString()}</strong>, please set up your payout account.
+              To receive your <strong>${amountLabel}</strong>, please set up your payout account.
               It takes about 5 minutes:
             </p>
             <table cellpadding="0" cellspacing="0" style="margin:0 0 24px;">
@@ -100,7 +107,7 @@ export async function sendPayoutOnboardingEmail(
     '',
     'Your call is complete and payment has been received.',
     '',
-    `To receive your $${expertAmount.toLocaleString()}, please set up your payout account — it takes about 5 minutes:`,
+    `To receive your ${amountLabel}, please set up your payout account — it takes about 5 minutes:`,
     '',
     onboardingUrl,
     '',
@@ -112,7 +119,7 @@ export async function sendPayoutOnboardingEmail(
   const { error } = await resend.emails.send({
     from:    fromAddr,
     to:      expertEmail,
-    subject: `Set up your payout account — $${expertAmount.toLocaleString()} waiting`,
+    subject: `Set up your payout account — ${amountLabel} waiting`,
     html:    htmlBody,
     text:    textBody,
   });
@@ -149,8 +156,9 @@ export async function runExpertPayout(projectId: string, expertId: string): Prom
     const grossAmount = rate > 0 && durationMin > 0
       ? Math.round((rate * durationMin) / 60)
       : (pe.invoiceAmount ?? 0);
-    const expertAmountDollars = Math.round(grossAmount * 0.70);
-    const expertAmountCents   = expertAmountDollars * 100;
+    // Work in cents: EXPERT_SHARE of the gross, with the platform keeping the
+    // remainder so the two parts sum exactly (lib/pricing.ts).
+    const expertAmountCents = splitCallAmountCents(Math.round(grossAmount * 100)).expertCents;
 
     // Check if expert has a Connect account and onboarding is complete
     const connectAccountId = pe.stripeConnectAccountId
@@ -185,14 +193,14 @@ export async function runExpertPayout(projectId: string, expertId: string): Prom
       if (!onboardingDone) {
         // Account exists but onboarding not complete — resend link
         await updateExpertStatus(projectId, expertId, { expertOnboardingStatus: 'pending' });
-        await sendOnboardingLink(projectId, expertId, expertEmail, expertFirstName, expertAmountDollars);
+        await sendOnboardingLink(projectId, expertId, expertEmail, expertFirstName, expertAmountCents);
       }
       return;
     }
 
     // No Connect account yet — send onboarding email
     await updateExpertStatus(projectId, expertId, { expertOnboardingStatus: 'pending' });
-    await sendOnboardingLink(projectId, expertId, expertEmail, expertFirstName, expertAmountDollars);
+    await sendOnboardingLink(projectId, expertId, expertEmail, expertFirstName, expertAmountCents);
   } catch (err) {
     // Never throw — payment is already recorded
     console.error('[stripe] payout error:', err instanceof Error ? err.message.slice(0, 120) : String(err));
@@ -202,15 +210,15 @@ export async function runExpertPayout(projectId: string, expertId: string): Prom
 // ─── Internal ─────────────────────────────────────────────────────────────────
 
 async function sendOnboardingLink(
-  projectId:       string,
-  expertId:        string,
-  expertEmail:     string,
-  expertFirstName: string,
-  expertAmount:    number,
+  projectId:         string,
+  expertId:          string,
+  expertEmail:       string,
+  expertFirstName:   string,
+  expertAmountCents: number,
 ): Promise<void> {
   if (process.env.DISABLE_EMAILS === 'true') return;
   const { token }     = generateAvailabilityToken(projectId, expertId);
   const baseUrl       = process.env.NEXT_PUBLIC_BASE_URL ?? process.env.NEXT_PUBLIC_APP_URL ?? 'https://expertmatch.fit';
   const onboardingUrl = `${baseUrl}/expert-onboarding/${token}`;
-  await sendPayoutOnboardingEmail(expertEmail, expertFirstName, expertAmount, onboardingUrl);
+  await sendPayoutOnboardingEmail(expertEmail, expertFirstName, expertAmountCents, onboardingUrl);
 }

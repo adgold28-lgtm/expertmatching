@@ -16,6 +16,21 @@ import { getServiceRoleClient } from './supabase/admin';
 import type { Database, ProjectRow, ProjectExpertRow } from './supabase/database.types';
 import type { SupabaseClient } from '@supabase/supabase-js';
 
+// ─── Collaborator organization rule ───────────────────────────────────────────
+
+/**
+ * Thrown when a collaborator does not belong to the project's organization.
+ * Cross-organization sharing is closed by product decision; the database
+ * trigger is the backstop and this is the application-level guard.
+ */
+export class CollaboratorNotInOrganizationError extends Error {
+  readonly code = 'collaborator_not_in_organization';
+  constructor(message = 'Collaborators must belong to the same organization as the project.') {
+    super(message);
+    this.name = 'CollaboratorNotInOrganizationError';
+  }
+}
+
 // ─── Input types ──────────────────────────────────────────────────────────────
 
 export interface CreateProjectInput {
@@ -340,6 +355,15 @@ class InMemoryProjectStore implements ProjectStore {
     if (!project) throw new Error(`Project not found: ${id}`);
     if (project.ownerEmail !== ownerEmail) throw new Error('Only the project owner can add collaborators');
     if (project.collaborators.includes(collaboratorEmail)) return project;
+
+    // Dev store has no membership table — approximate the same-organization
+    // rule by the email domain so local behaviour matches production.
+    const projectOrg      = (project.firmDomain ?? '').toLowerCase();
+    const collaboratorOrg = (collaboratorEmail.split('@')[1] ?? '').toLowerCase();
+    if (projectOrg && projectOrg !== '*' && projectOrg !== collaboratorOrg) {
+      throw new CollaboratorNotInOrganizationError();
+    }
+
     return this.updateProject({ ...project, collaborators: [...project.collaborators, collaboratorEmail] });
   }
 
@@ -752,7 +776,24 @@ class SupabaseProjectStore implements ProjectStore {
     if (project.collaborators.includes(collaboratorEmail)) return project;
 
     const profileId = await this.profileIdByEmail(collaboratorEmail);
-    if (!profileId) throw new Error('Collaborator has no account');
+    if (!profileId) {
+      throw new CollaboratorNotInOrganizationError(
+        'That email does not belong to an ExpertMatch account in your organization.',
+      );
+    }
+
+    // Same-organization rule: the collaborator must hold a membership in the
+    // organization that owns the project. (A database trigger backstops this.)
+    const row = await this.getRow(id);
+    if (!row) throw new Error(`Project not found: ${id}`);
+    const { data: membership } = await this.db
+      .from('organization_members')
+      .select('id')
+      .eq('organization_id', row.organization_id)
+      .eq('profile_id', profileId)
+      .neq('status', 'disabled')
+      .maybeSingle();
+    if (!membership) throw new CollaboratorNotInOrganizationError();
 
     const { error } = await this.db
       .from('project_members')

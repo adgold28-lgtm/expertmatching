@@ -3,9 +3,10 @@
 // route AND the Zoom meeting.ended webhook.
 //
 // Two paths, decided per call:
-//   1. SAVED CARD — the project owner completed billing onboarding and has a
-//      default payment method. Charge it off-session (lib/chargeSavedCard.ts)
-//      and email a receipt. Idempotent per (projectId, expertId).
+//   1. SAVED CARD — the FIRM that owns the project has a default payment method
+//      (falling back to the project owner's legacy per-user card). Charge it
+//      off-session (lib/chargeSavedCard.ts) and email a receipt. Idempotent per
+//      (projectId, expertId).
 //   2. PAYMENT LINK — no saved card, or the card needs SCA / was declined.
 //      Create a Stripe product + price + payment link, mark the engagement
 //      'invoice_sent', and email a pay-now invoice. This is the pre-existing
@@ -229,8 +230,9 @@ export interface InvoiceResult {
 /**
  * Bills a completed expert call.
  *
- * Charges the project owner's saved card when one exists; otherwise (or when
- * the card needs SCA / was declined) falls back to the manual payment link so
+ * Charges the firm's saved card when one exists (legacy: the project owner's);
+ * otherwise (or when the card needs SCA / was declined) falls back to the
+ * manual payment link so
  * the client can always pay. Returns null only when the project or expert
  * cannot be loaded, or the payment link could not be created.
  */
@@ -269,8 +271,9 @@ export async function createAndSendInvoice(
     }
 
     const clientName    = project.clientName ?? 'there';
-    // The saved card belongs to the project OWNER (who onboarded); the invoice
-    // email still goes to the project's client contact when one is set.
+    // The saved card belongs to the project's FIRM (or, for legacy accounts,
+    // its owner); the invoice email still goes to the project's client contact
+    // when one is set — unchanged.
     const recipientEmail = project.clientEmail ?? project.ownerEmail;
 
     // ─── Path 1: charge the saved card off-session ─────────────────────────

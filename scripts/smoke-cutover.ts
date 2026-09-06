@@ -1,14 +1,29 @@
-// ExpertMatch Supabase cutover smoke test — runs against localhost:3000.
+// ExpertMatch Supabase cutover smoke test.
 // Reads secrets from .env.local; never prints them.
+//
+// Defaults to the local dev server. To run it against a deployed environment:
+//
+//   SMOKE_BASE_URL=https://expertmatch.fit \
+//   SMOKE_ADMIN_EMAIL=<admin@example.com> \
+//   npx tsx scripts/smoke-cutover.ts
+//
+// It provisions and deletes its own throwaway intruder account, and deletes the
+// project it creates — but it DOES sign the admin account in, so use a throwaway
+// admin when pointing it at production (Supabase signOut revokes every session
+// for that user, including the one in your browser).
 import * as dotenv from 'dotenv';
 import * as path from 'path';
 
-const ROOT = '/Users/ashergoldstein/Projects/expertmatch';
+// Run from the repo root: `npx tsx scripts/smoke-cutover.ts`.
+const ROOT = process.cwd();
 dotenv.config({ path: path.join(ROOT, '.env.local') });
 
-const BASE   = 'http://localhost:3000';
-const ORIGIN = process.env.NEXT_PUBLIC_APP_URL ?? '';
-const ADMIN_EMAIL = 'ashergoldsteinbusiness@gmail.com';
+const BASE   = (process.env.SMOKE_BASE_URL ?? 'http://localhost:3000').replace(/\/+$/, '');
+// Origin must match what the routes' same-origin guards expect.
+const ORIGIN = process.env.NEXT_PUBLIC_APP_URL ?? BASE;
+// SMOKE_ADMIN_EMAIL first, then SEED_ADMIN_EMAIL from .env.local (the account
+// scripts/seed-admin.ts provisioned). No hardcoded address.
+const ADMIN_EMAIL = process.env.SMOKE_ADMIN_EMAIL ?? process.env.SEED_ADMIN_EMAIL ?? '';
 const ADMIN_PW    = process.env.SEED_ADMIN_PASSWORD ?? '';
 
 let failures = 0;
@@ -54,7 +69,12 @@ async function req(jar: Jar, method: string, p: string, body?: unknown): Promise
 }
 
 async function main(): Promise<void> {
+  if (!ADMIN_EMAIL) {
+    console.error('SMOKE_ADMIN_EMAIL (or SEED_ADMIN_EMAIL) missing — set it to the account to sign in as');
+    process.exit(1);
+  }
   if (!ADMIN_PW) { console.error('SEED_ADMIN_PASSWORD missing'); process.exit(1); }
+  console.log(`smoke: target ${BASE}`);
 
   // ── 1. Admin login ────────────────────────────────────────────────────────
   const admin = new Jar();

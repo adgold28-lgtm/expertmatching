@@ -5,9 +5,10 @@
 // is the gate, it re-checks the two required prerequisites server-side rather
 // than trusting the stepper's client-side sequencing:
 //
-//   billing  — profiles.billing_complete, written only by
-//              /api/onboarding/billing/confirm after Stripe confirms the
-//              SetupIntent succeeded and belongs to this customer
+//   billing  — the FIRM has a card on file (organization_billing.billing_complete,
+//              written only by /api/onboarding/billing/confirm after Stripe
+//              confirms the SetupIntent belongs to the org's customer), or the
+//              legacy per-user profiles.billing_complete for older accounts
 //   calendar — a usable row in user_calendar_connections (an in-flight OAuth
 //              nonce does not count)
 //
@@ -20,6 +21,7 @@ import { NextRequest } from 'next/server';
 import { routeAuthGuard, getSessionUser } from '../../../../lib/auth';
 import { getUser, upsertUser } from '../../../../lib/firmStore';
 import { isCalendarConnected } from '../../../../lib/calendarConnections';
+import { isBillingCompleteForUser } from '../../../../lib/orgBilling';
 
 export async function POST(request: NextRequest): Promise<Response> {
   const authError = await routeAuthGuard(request);
@@ -44,10 +46,12 @@ export async function POST(request: NextRequest): Promise<Response> {
   // ── Prerequisite check (server-side authority) ──────────────────────────────
   let record: Awaited<ReturnType<typeof getUser>>;
   let calendarConnected: boolean;
+  let billingComplete: boolean;
   try {
-    [record, calendarConnected] = await Promise.all([
+    [record, calendarConnected, billingComplete] = await Promise.all([
       getUser(sessionUser.email),
       isCalendarConnected(sessionUser.email),
+      isBillingCompleteForUser(sessionUser.email),
     ]);
   } catch {
     return Response.json({ error: 'internal_error' }, { status: 500 });
@@ -55,7 +59,6 @@ export async function POST(request: NextRequest): Promise<Response> {
 
   if (!record) return Response.json({ error: 'user_not_found' }, { status: 404 });
 
-  const billingComplete = record.billingComplete === true;
   if (!billingComplete || !calendarConnected) {
     return Response.json(
       {

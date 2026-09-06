@@ -1,10 +1,10 @@
 import { NextRequest } from 'next/server';
 import { Resend } from 'resend';
-import { getUpstashClient } from '../../../lib/upstashRedis';
+import { createHmac } from 'crypto';
 import { getServiceRoleClient } from '../../../lib/supabase/admin';
+import { getUpstashClient } from '../../../lib/upstashRedis';
 import { isApprovedDomain } from '../../../lib/firmStore';
-import { generateSignupToken } from '../../../lib/signupToken';
-import { sendInviteEmail } from '../../../lib/sendAvailabilityRequest';
+import { provisionAccountInvite, splitFullName } from '../../../lib/accountProvisioning';
 
 interface AccessRequest {
   name:        string;
@@ -26,6 +26,34 @@ function escapeHtml(s: string): string {
 // Admin recipients for access-request notifications. Both addresses are
 // notified so a request is never missed if one inbox is unattended.
 const ADMIN_NOTIFY_EMAILS = ['adgold28@colby.edu', 'ashergoldsteinbusiness@gmail.com'];
+
+// Public, unauthenticated endpoint: cap submissions per IP and per email so it
+// cannot be used to spray invites (auto-approved domains) or flood the inbox.
+const RATE_LIMIT_PER_IP    = 5;
+const RATE_LIMIT_PER_EMAIL = 3;
+const RATE_WINDOW_MS       = 60 * 60 * 1000; // 1 hour
+
+/** HMAC-pseudonymised key — no IPs or emails in Redis key names. */
+function rlKey(kind: 'ip' | 'email', value: string): string {
+  const secret = process.env.LOG_HASH_SECRET ?? 'dev-insecure-fallback';
+  const hash   = createHmac('sha256', secret).update(value).digest('hex').slice(0, 24);
+  return `access-rl:${kind}:${hash}`;
+}
+
+/** True when the caller is over the limit. Fails open if Redis is unavailable. */
+async function isRateLimited(ip: string, email: string): Promise<boolean> {
+  const redis = getUpstashClient();
+  if (!redis) return false;
+  try {
+    const [byIp, byEmail] = await Promise.all([
+      redis.incrWithWindow(rlKey('ip', ip), RATE_WINDOW_MS),
+      redis.incrWithWindow(rlKey('email', email), RATE_WINDOW_MS),
+    ]);
+    return byIp.count > RATE_LIMIT_PER_IP || byEmail.count > RATE_LIMIT_PER_EMAIL;
+  } catch {
+    return false;
+  }
+}
 
 let _resend: Resend | null = null;
 
@@ -73,6 +101,16 @@ export async function POST(request: NextRequest) {
 
   const domain = record.email.split('@')[1] ?? '';
 
+  const ip = request.headers.get('x-forwarded-for')?.split(',')[0]?.trim()
+          ?? request.headers.get('x-real-ip')
+          ?? 'unknown';
+  if (await isRateLimited(ip, record.email)) {
+    return Response.json(
+      { error: 'Too many requests. Please try again later.' },
+      { status: 429, headers: { 'Retry-After': String(RATE_WINDOW_MS / 1000) } },
+    );
+  }
+
   // Check if domain is already approved — if so, send invite immediately
   let autoApproved = false;
   if (domain) {
@@ -83,22 +121,25 @@ export async function POST(request: NextRequest) {
     }
   }
 
-  if (autoApproved && process.env.NEXT_PUBLIC_APP_URL) {
-    try {
-      const { token, hash, expiry } = generateSignupToken(record.email, record.firm);
-      const redis = getUpstashClient();
-      if (redis) {
-        const ttlSeconds = Math.floor((expiry - Date.now()) / 1000);
-        // Use invite-token: prefix — consumed by /api/auth/set-password
-        await redis.set(`invite-token:${hash}`, record.email, { ex: ttlSeconds });
-      }
-      const signupUrl = `${process.env.NEXT_PUBLIC_APP_URL}/auth/set-password?token=${encodeURIComponent(token)}`;
-      await sendInviteEmail(record.email, record.firm, signupUrl);
-      return Response.json({ ok: true });
-    } catch {
-      // Fall through to manual review on any error
-      autoApproved = false;
+  // Known organization → provision the invite immediately. Account creation
+  // always runs through provisionAccountInvite, so the requester's name and
+  // organization are mandatory here too.
+  if (autoApproved) {
+    const { firstName, lastName } = splitFullName(record.name);
+
+    if (firstName && lastName) {
+      const result = await provisionAccountInvite({
+        firstName,
+        lastName,
+        email:        record.email,
+        organization: { domain, name: record.firm },
+      });
+      if (result.ok) return Response.json({ ok: true });
     }
+
+    // Anything we cannot auto-provision (single-word name, existing account,
+    // seat cap, storage) falls through to manual review below. The response is
+    // identical either way, so the form never reveals whether an account exists.
   }
 
   // Store as pending (service-role write — access_requests has no
