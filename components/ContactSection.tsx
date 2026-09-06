@@ -88,6 +88,27 @@ function chipClass(confidence: SuggestedDomain['confidence']): string {
   return 'border-frame bg-cream hover:border-navy hover:text-navy text-muted transition-colors';
 }
 
+// ─── Viewer role ───────────────────────────────────────────────────────────────
+//
+// This section is admin-only (see the early return in the component). A project
+// can render dozens of cards, so the identity lookup is memoized at module level
+// — one request per page load, shared by every mounted ContactSection.
+//
+// This is a UI affordance, not the security boundary: /api/enrich-contact is
+// gated by adminGuard and the project API redacts identity server-side.
+
+type ViewerRole = 'admin' | 'user' | null;
+
+let viewerRolePromise: Promise<ViewerRole> | null = null;
+
+function fetchViewerRole(): Promise<ViewerRole> {
+  viewerRolePromise ??= fetch('/api/auth/me')
+    .then(r => (r.ok ? r.json() as Promise<{ role?: 'admin' | 'user' }> : { role: undefined }))
+    .then(d => d.role ?? null)
+    .catch(() => null);
+  return viewerRolePromise;
+}
+
 // ─── Main component ────────────────────────────────────────────────────────────
 
 export default function ContactSection({
@@ -95,6 +116,10 @@ export default function ContactSection({
   initialResolvedPaths,
 }: Props) {
   const [isOpen, setIsOpen] = useState(initialState !== 'idle');
+
+  // null until known — the section stays hidden while the role is in flight, so
+  // a client never sees a contact affordance flash on screen.
+  const [viewerRole, setViewerRole] = useState<ViewerRole>(null);
 
   // Local suggestions — computed once, never re-fetched
   const [localSuggestions] = useState<SuggestedDomain[]>(() => suggestDomainsForExpert(expert));
@@ -151,6 +176,12 @@ export default function ContactSection({
   useEffect(() => {
     if (initialState === 'confirming') prefillForm();
   // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    let active = true;
+    fetchViewerRole().then(role => { if (active) setViewerRole(role); });
+    return () => { active = false; };
   }, []);
 
   function handleToggle() {
@@ -353,6 +384,13 @@ export default function ContactSection({
   }
 
   // ─── Render ────────────────────────────────────────────────────────────────
+
+  // Contact discovery is staff work. /api/enrich-contact is admin-only
+  // (adminGuard), so for a client this section could only ever fail — and
+  // showing it would advertise a path around the platform that
+  // lib/redactExpert.ts exists to close. Render nothing until the role is
+  // known, then nothing at all for non-admins.
+  if (viewerRole !== 'admin') return null;
 
   if (!isOpen) {
     return (

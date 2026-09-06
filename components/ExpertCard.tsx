@@ -6,6 +6,7 @@ import { isLinkedInProfileUrl } from '../lib/domainSuggestions';
 import { classifySeniority, RATE_DISCLAIMER, TIER_PRICING } from '../lib/seniorityClassifier';
 import OutreachModal from './OutreachModal';
 import ContactSection from './ContactSection';
+import IdentityProtectedLabel, { isAnonymized } from './IdentityProtectedLabel';
 
 interface QuickActions {
   isShortlisted: boolean;
@@ -50,8 +51,11 @@ function scoreClass(score: number): string {
 
 export default function ExpertCard({ expert, query, index = 0, quickActions, hideContact = false }: Props) {
   const [showOutreach, setShowOutreach] = useState(false);
-  const tier    = classifySeniority(expert.title ?? '');
-  const pricing = TIER_PRICING[tier];
+  // Prefer the tier persisted at sourcing time — `title` is blanked for
+  // anonymized experts, so classifying from it would read every one as Mid-Level.
+  const tier    = expert.seniorityTier ?? classifySeniority(expert.title ?? '');
+  const pricing = expert.tierPricing ?? TIER_PRICING[tier];
+  const anonymized = isAnonymized(expert);
 
   return (
     <>
@@ -67,8 +71,17 @@ export default function ExpertCard({ expert, query, index = 0, quickActions, hid
               <h3 className="font-display text-xl font-semibold text-navy leading-tight tracking-wide">
                 {expert.name}
               </h3>
-              <p className="text-sm text-muted mt-1 leading-snug">{expert.title}</p>
-              <p className="text-sm font-medium text-ink mt-0.5">{expert.company}</p>
+              {anonymized ? (
+                <>
+                  <p className="text-sm text-ink mt-1 leading-snug">{expert.anonymizedDescriptor}</p>
+                  <IdentityProtectedLabel className="mt-1.5" />
+                </>
+              ) : (
+                <>
+                  {expert.title   && <p className="text-sm text-muted mt-1 leading-snug">{expert.title}</p>}
+                  {expert.company && <p className="text-sm font-medium text-ink mt-0.5">{expert.company}</p>}
+                </>
+              )}
             </div>
             <div className="text-right shrink-0">
               <div className={`font-display text-2xl font-semibold leading-none ${expert.relevance_score > 0 ? scoreClass(expert.relevance_score) : 'text-muted/40'}`}>
@@ -88,22 +101,27 @@ export default function ExpertCard({ expert, query, index = 0, quickActions, hid
             </div>
           </div>
 
-          {/* Location */}
-          <div className="flex items-center gap-1.5 text-xs text-muted -mt-2">
-            <svg className="w-3 h-3 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-              <path strokeLinecap="round" strokeLinejoin="round" d="M17.657 16.657L13.414 20.9a2 2 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z" />
-              <path strokeLinecap="round" strokeLinejoin="round" d="M15 11a3 3 0 11-6 0 3 3 0 016 0z" />
-            </svg>
-            {expert.location}
-          </div>
+          {/* Location — generalized to region/country for anonymized experts,
+              and omitted entirely when even that would be identifying. */}
+          {expert.location && (
+            <div className="flex items-center gap-1.5 text-xs text-muted -mt-2">
+              <svg className="w-3 h-3 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M17.657 16.657L13.414 20.9a2 2 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z" />
+                <path strokeLinecap="round" strokeLinejoin="round" d="M15 11a3 3 0 11-6 0 3 3 0 016 0z" />
+              </svg>
+              {expert.location}
+            </div>
+          )}
 
           {/* Divider */}
           <div className="rule-divider" />
 
-          {/* Justification */}
-          <p className="text-sm text-ink leading-relaxed" style={{ fontWeight: 300 }}>
-            {expert.justification}
-          </p>
+          {/* Justification — the anonymized rationale when identity is protected */}
+          {expert.justification && (
+            <p className="text-sm text-ink leading-relaxed" style={{ fontWeight: 300 }}>
+              {expert.justification}
+            </p>
+          )}
 
           {/* Evidence items — structured backing evidence; absent on legacy experts */}
           {expert.evidenceItems && expert.evidenceItems.length > 0 && (
@@ -173,7 +191,9 @@ export default function ExpertCard({ expert, query, index = 0, quickActions, hid
             );
           })()}
 
-          {/* CTA */}
+          {/* CTA — outreach is staff work and needs the real identity, so it is
+              hidden on anonymized cards rather than drafting from "Scott S." */}
+          {!anonymized && (
           <div className="mt-auto pt-1">
             <button
               onClick={() => setShowOutreach(true)}
@@ -186,9 +206,11 @@ export default function ExpertCard({ expert, query, index = 0, quickActions, hid
               Draft Outreach
             </button>
           </div>
+          )}
 
-          {/* Contact enrichment — only runs on explicit user action; suppressed in project context */}
-          {!hideContact && <ContactSection expert={expert} query={query} />}
+          {/* Contact enrichment — admin-only, and only on explicit user action;
+              suppressed in project context */}
+          {!hideContact && !anonymized && <ContactSection expert={expert} query={query} />}
 
           {/* Quick actions — shown when browsing search results before saving to a project */}
           {quickActions && (

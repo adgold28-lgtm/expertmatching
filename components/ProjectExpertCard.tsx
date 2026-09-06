@@ -44,8 +44,11 @@ interface Props {
 
 export default function ProjectExpertCard({ projectExpert, projectId, query, onUpdate, onRemove, onInterviewGuide }: Props) {
   const { expert, status, rejectionReason, rejectionNotes, userNotes, contactEmail } = projectExpert;
-  const tier    = classifySeniority(expert.title ?? '');
-  const pricing = TIER_PRICING[tier];
+  // Prefer the tier persisted at sourcing time — lib/redactExpert.ts blanks
+  // `title` for anonymized experts, so classifying from it would read them all
+  // as Mid-Level.
+  const tier    = expert.seniorityTier ?? classifySeniority(expert.title ?? '');
+  const pricing = expert.tierPricing ?? TIER_PRICING[tier];
   const [saving,           setSaving]           = useState(false);
   const [removing,         setRemoving]         = useState(false);
   const [noteOpen,         setNoteOpen]         = useState(false);

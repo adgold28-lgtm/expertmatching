@@ -67,3 +67,46 @@ export function isFullHumanName(name: string): boolean {
   const last  = tokens[tokens.length - 1].replace(/\.$/, '');
   return first.length >= 2 && last.length >= 2;
 }
+
+// ─── Anonymized display form ──────────────────────────────────────────────────
+
+/**
+ * Generational and post-nominal suffixes. These are never the surname, so they
+ * must be skipped when picking the token to take the last initial from.
+ */
+export const NAME_SUFFIX_RE =
+  /^(jr|sr|ii|iii|iv|v|vi|vii|phd|ph\.d|md|mba|jd|esq|dds|dvm|do|rn|cfa|cpa|pe|pmp|msc|ma|ms|bsc|bs|ba)\.?$/i;
+
+/**
+ * Reduces a display name to "First L." — the only form a non-admin viewer sees
+ * before an expert's call is scheduled.
+ *
+ * Handles: honorifics ("Dr. Scott Smith" → "Scott S."), suffixes
+ * ("Scott Smith, Jr." / "Scott Smith PhD" → "Scott S."), hyphenated and
+ * multi-word surnames ("Maria Garcia-Lopez" → "Maria G.", "Ana de la Cruz" →
+ * "Ana C."), and single-token names ("Prince" → "Prince", no fabricated
+ * initial). Returns '' only for an empty/non-string input.
+ */
+export function toInitialForm(name: string): string {
+  if (!name || typeof name !== 'string') return '';
+
+  const stripped = name.trim().replace(HONORIFIC_RE, '').trim();
+  if (!stripped) return '';
+
+  // Commas separate suffix groups ("Smith, Jr., PhD") — treat them as spaces.
+  const tokens = stripped.split(/[\s,]+/).filter(Boolean);
+  if (tokens.length === 0) return '';
+
+  const first = tokens[0];
+
+  // Last token that is not a suffix; never the first token (single-name case).
+  let lastIdx = -1;
+  for (let i = tokens.length - 1; i >= 1; i--) {
+    if (!NAME_SUFFIX_RE.test(tokens[i])) { lastIdx = i; break; }
+  }
+  if (lastIdx === -1) return first;
+
+  // Strip leading punctuation ("(Bob)" style nicknames) before taking the letter.
+  const initial = tokens[lastIdx].replace(/^[^A-Za-zÀ-ɏ]+/, '').charAt(0).toUpperCase();
+  return initial ? `${first} ${initial}.` : first;
+}

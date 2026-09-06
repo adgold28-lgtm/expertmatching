@@ -54,6 +54,11 @@ export interface Expert {
   valueChainLabel?: string;   // human-readable supply-chain position label (e.g. "Fiber & Textile Science")
   seniorityTier?: SeniorityTier;
   tierPricing?:   TierPricing;
+  // ── Anonymized presentation (client-facing before identity reveal) ──────────
+  // Generated at sourcing time, or backfilled by lib/anonymizeExpert.ts. Never
+  // names the person, their employer, or a product. See lib/redactExpert.ts.
+  anonymizedDescriptor?:    string;  // ≤140 chars: role level + org type + scale
+  anonymizedJustification?: string;  // ≤200 chars: relevance rationale, de-identified
 }
 
 export interface InsufficientExperts {

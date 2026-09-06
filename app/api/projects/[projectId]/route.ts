@@ -3,8 +3,30 @@ import { getProject, getProjectForUser, updateProject, deleteProject } from '../
 import { guardReadRequest, guardMutatingRequest } from '../../../../lib/projectsGuard';
 import { sanitizeText, LIMITS, VALID_PERSPECTIVES } from '../../../../lib/projectValidation';
 import { getSessionUser } from '../../../../lib/auth';
+import { redactProjectForViewer, isIdentityRevealed } from '../../../../lib/redactExpert';
+import { backfillProjectAnonymization, needsAnonymization } from '../../../../lib/anonymizeExpert';
 
 const ID_RE = /^[a-f0-9]{24}$/;
+
+/**
+ * Lazily enriches experts that predate anonymized descriptors.
+ *
+ * The response is NOT held up for this: the redactor already substitutes a
+ * deterministic fallback descriptor, so the client sees a complete card now and
+ * an LLM-written one on the next load. Next 14 has no `after()` helper, so this
+ * is a deliberate floating promise (same convention as
+ * lib/sourcingJob.runSourcingJobDetached). If the serverless instance freezes
+ * before it finishes, the work is simply retried on the next load — the backfill
+ * is idempotent and only ever touches experts still missing a descriptor.
+ *
+ * Failures are swallowed and logged without any expert data.
+ */
+function scheduleAnonymizationBackfill(projectId: string): void {
+  void backfillProjectAnonymization(projectId).catch((err: unknown) => {
+    console.warn('[api/projects/[id]] anonymization backfill failed:',
+      err instanceof Error ? err.message : String(err));
+  });
+}
 
 export async function GET(
   request: NextRequest,
@@ -20,7 +42,17 @@ export async function GET(
     const { email, role } = await getSessionUser(request);
     const project = await getProjectForUser(params.projectId, email, role);
     if (!project) return Response.json({ error: 'not_found' }, { status: 404 });
-    return Response.json({ project });
+
+    // A non-admin looking at an expert who is still anonymized needs a
+    // descriptor. If any such expert has none stored, enrich them for next time.
+    if (role !== 'admin') {
+      const needsBackfill = project.experts.some(pe =>
+        !isIdentityRevealed(pe.status) && needsAnonymization(pe.expert),
+      );
+      if (needsBackfill) scheduleAnonymizationBackfill(params.projectId);
+    }
+
+    return Response.json({ project: redactProjectForViewer(project, { role }) });
   } catch (err) {
     console.error('[api/projects/[id]] GET error:', err instanceof Error ? err.message : String(err));
     return Response.json({ error: 'failed_to_get_project' }, { status: 500 });
@@ -103,7 +135,7 @@ export async function PUT(
       }),
     });
 
-    return Response.json({ project: updated });
+    return Response.json({ project: redactProjectForViewer(updated, { role }) });
   } catch (err) {
     console.error('[api/projects/[id]] PUT error:', err instanceof Error ? err.message : String(err));
     return Response.json({ error: 'failed_to_update_project' }, { status: 500 });

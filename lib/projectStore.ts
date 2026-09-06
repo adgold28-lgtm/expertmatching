@@ -115,6 +115,25 @@ export interface UpdateExpertInput {
   stripeTransferId?:        string;
   expertPaidAt?:            number;
   expertOnboardingStatus?:  'pending' | 'complete' | 'failed';
+  // The one key that writes INSIDE the nested Expert rather than onto the
+  // ProjectExpert. Deliberately narrow: only derived presentation fields, never
+  // the raw identity data (name/title/company/sources), which is immutable
+  // after sourcing. Used by lib/anonymizeExpert.ts's backfill.
+  expertPatch?: Partial<Pick<
+    Expert,
+    'anonymizedDescriptor' | 'anonymizedJustification' | 'seniorityTier' | 'tierPricing'
+  >>;
+}
+
+/** Merges an UpdateExpertInput into a ProjectExpert, honouring `expertPatch`. */
+function applyExpertInput(current: ProjectExpert, input: UpdateExpertInput): ProjectExpert {
+  const { expertPatch, ...projectExpertFields } = input;
+  return {
+    ...current,
+    ...projectExpertFields,
+    ...(expertPatch && { expert: { ...current.expert, ...expertPatch } }),
+    updatedAt: Date.now(),
+  };
 }
 
 export interface UpdateProjectInput {
@@ -281,7 +300,7 @@ class InMemoryProjectStore implements ProjectStore {
     const project = await this.getProject(id);
     if (!project) throw new Error(`Project not found: ${id}`);
     const experts = project.experts.map(pe =>
-      pe.expert.id !== expertId ? pe : { ...pe, ...input, updatedAt: Date.now() },
+      pe.expert.id !== expertId ? pe : applyExpertInput(pe, input),
     );
     return this.updateProject({ ...project, experts });
   }
@@ -690,7 +709,7 @@ class SupabaseProjectStore implements ProjectStore {
   }
 
   async updateExpertStatus(id: string, expertId: string, input: UpdateExpertInput): Promise<Project> {
-    return this.mutateExpert(id, expertId, current => ({ ...current, ...input, updatedAt: Date.now() }));
+    return this.mutateExpert(id, expertId, current => applyExpertInput(current, input));
   }
 
   async updateProjectFields(id: string, input: UpdateProjectInput): Promise<Project> {

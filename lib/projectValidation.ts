@@ -2,8 +2,9 @@
 // All functions are pure — no I/O, no side effects.
 // These run at the API boundary before any data reaches the store.
 
-import type { Expert, ExpertStatus, SourceLink, EvidenceItem } from '../types';
+import type { Expert, ExpertStatus, SourceLink, EvidenceItem, SeniorityTier } from '../types';
 import { EXPERT_STATUSES } from './expertPipeline';
+import { TIER_PRICING } from './seniorityClassifier';
 
 // ─── Limits ───────────────────────────────────────────────────────────────────
 
@@ -42,6 +43,10 @@ export const LIMITS = {
   companiesToAvoid:    2_000,
   peopleToAvoid:       2_000,
   conflictExclusions:  2_000,
+  // Anonymized presentation — kept tight on purpose. These are what a client
+  // sees in place of title/company/justification, so they must stay one-liners.
+  anonymizedDescriptor:    140,
+  anonymizedJustification: 200,
 } as const;
 
 // Valid values for perspectivesNeeded
@@ -130,6 +135,7 @@ function validateEvidenceItem(raw: unknown): EvidenceItem | null {
 const VALID_CATEGORIES  = new Set(['Operator', 'Advisor', 'Outsider']);
 const VALID_OUTSIDER_SC = new Set([null, undefined, 'Government', 'Large Enterprise', 'Small Business']);
 const VALID_LI_CONF     = new Set(['high', 'medium', 'low']);
+const VALID_TIERS       = new Set<string>(['executive', 'senior', 'mid']);
 
 // Returns a sanitized Expert or null if required fields are missing.
 // Strips any fields not present in the Expert interface so no raw provider
@@ -172,6 +178,18 @@ export function validateProjectExpert(raw: unknown): Expert | null {
 
   const liUrl = sanitizeSourceUrl(e.linkedin_url) ?? undefined;
 
+  // Seniority tier is persisted at sourcing time so the redactor can blank
+  // `title` without every render site losing the ability to show the tier and
+  // its pricing. tierPricing is always re-derived from the tier — a client can
+  // supply a tier label but never its rates.
+  const seniorityTier: SeniorityTier | undefined =
+    typeof e.seniorityTier === 'string' && VALID_TIERS.has(e.seniorityTier)
+      ? (e.seniorityTier as SeniorityTier)
+      : undefined;
+
+  const anonymizedDescriptor    = sanitizeText(e.anonymizedDescriptor,    LIMITS.anonymizedDescriptor);
+  const anonymizedJustification = sanitizeText(e.anonymizedJustification, LIMITS.anonymizedJustification);
+
   return {
     id,
     name,
@@ -193,6 +211,12 @@ export function validateProjectExpert(raw: unknown): Expert | null {
     ...(typeof e.linkedin_source === 'string' && {
       linkedin_source: sanitizeText(e.linkedin_source, LIMITS.sourceLabel),
     }),
+    ...(typeof e.valueChainLabel === 'string' && {
+      valueChainLabel: sanitizeText(e.valueChainLabel, LIMITS.sourceLabel),
+    }),
+    ...(seniorityTier && { seniorityTier, tierPricing: TIER_PRICING[seniorityTier] }),
+    ...(anonymizedDescriptor    && { anonymizedDescriptor }),
+    ...(anonymizedJustification && { anonymizedJustification }),
   };
 }
 

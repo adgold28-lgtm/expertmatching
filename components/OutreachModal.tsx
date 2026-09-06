@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { Expert } from '../types';
 import { useFocusTrap } from '../lib/useFocusTrap';
+import IdentityProtectedLabel, { isAnonymized } from './IdentityProtectedLabel';
 
 interface Props {
   expert: Expert;
@@ -20,6 +21,9 @@ export default function OutreachModal({ expert, query, onClose, prefillEmail, ou
   const [copied, setCopied] = useState(false);
   const [emailCopied, setEmailCopied] = useState(false);
   const modalRef = useRef<HTMLDivElement>(null);
+  // Anonymized experts never reach a real outreach draft — the modal renders a
+  // protected header rather than "Scott S. · , ".
+  const anonymized = isAnonymized(expert);
 
   useEffect(() => {
     async function generate() {
@@ -88,9 +92,17 @@ export default function OutreachModal({ expert, query, onClose, prefillEmail, ou
             >
               Outreach Draft
             </h2>
-            <p className="text-xs text-muted mt-1">
-              {expert.name} · {expert.title}, {expert.company}
-            </p>
+            {anonymized ? (
+              <div className="mt-1 space-y-1">
+                <p className="text-xs text-muted">{expert.name} · {expert.anonymizedDescriptor}</p>
+                <IdentityProtectedLabel />
+              </div>
+            ) : (
+              <p className="text-xs text-muted mt-1">
+                {[expert.name, [expert.title, expert.company].filter(Boolean).join(', ')]
+                  .filter(Boolean).join(' · ')}
+              </p>
+            )}
             {(prefillEmail || generalContactEmail) && (() => {
               const displayEmail = outreachMode === 'general_company_contact'
                 ? generalContactEmail
@@ -148,7 +160,7 @@ export default function OutreachModal({ expert, query, onClose, prefillEmail, ou
               </div>
               <div className="text-center">
                 <p className="text-sm text-ink font-medium">Composing message...</p>
-                <p className="text-xs text-muted mt-1">Calibrating to {expert.name.split(' ')[0]}&apos;s profile</p>
+                <p className="text-xs text-muted mt-1">Calibrating to {expert.name.split(' ')[0] || 'the expert'}&apos;s profile</p>
               </div>
             </div>
           ) : error ? (

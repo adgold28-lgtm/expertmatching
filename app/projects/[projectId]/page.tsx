@@ -129,6 +129,15 @@ function formatDate(ts: number): string {
   return new Date(ts).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
 }
 
+/**
+ * The seniority tier for an expert, preferring the value persisted at sourcing
+ * time. lib/redactExpert.ts blanks `title` for anonymized experts, so deriving
+ * the tier from the title alone would read every one of them as "Mid-Level".
+ */
+function tierOf(expert: Expert): SeniorityTier {
+  return expert.seniorityTier ?? classifySeniority(expert.title ?? '');
+}
+
 // ─── Expert profile modal ─────────────────────────────────────────────────────
 
 function ExpertProfileModal({ projectExpert, query, onClose }: {
@@ -834,7 +843,15 @@ function SourcePanel({
                             {expert.valueChainLabel ?? expert.category}
                           </span>
                         </div>
-                        <p className="text-xs text-muted mt-0.5">{expert.title} · {expert.company}</p>
+                        {expert.anonymizedDescriptor && !expert.title ? (
+                          <p className="text-xs text-muted mt-0.5">{expert.anonymizedDescriptor}</p>
+                        ) : (
+                          (expert.title || expert.company) && (
+                            <p className="text-xs text-muted mt-0.5">
+                              {[expert.title, expert.company].filter(Boolean).join(' · ')}
+                            </p>
+                          )
+                        )}
                         {expert.justification && (
                           <p className="text-[11px] text-muted/80 mt-1 leading-relaxed line-clamp-2">{expert.justification}</p>
                         )}
@@ -1545,10 +1562,12 @@ function ProjectPageInner() {
   const sourceTierCounts: Record<SeniorityTier | 'all', number> = {
     all: sourceCohort.length, executive: 0, senior: 0, mid: 0,
   };
-  for (const pe of sourceCohort) sourceTierCounts[classifySeniority(pe.expert.title ?? '')] += 1;
+  // Prefer the tier persisted at sourcing time — `title` is blanked for
+  // anonymized experts, so classifying from it would bucket them all as Mid.
+  for (const pe of sourceCohort) sourceTierCounts[tierOf(pe.expert)] += 1;
   const sourceComparator = expertComparator(sortKey);
   const visibleSourceExperts = sourceCohort
-    .filter(pe => tierFilter === 'all' || classifySeniority(pe.expert.title ?? '') === tierFilter)
+    .filter(pe => tierFilter === 'all' || tierOf(pe.expert) === tierFilter)
     .sort((a, b) => sourceComparator(a.expert, b.expert));
   const outreachExperts   = project.experts.filter(e => OUTREACH_STATUSES.includes(e.status));
   // Pipeline-stage filter applied on top of the outreach cohort. Derived on every

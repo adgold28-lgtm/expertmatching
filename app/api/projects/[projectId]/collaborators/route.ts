@@ -3,6 +3,7 @@ import { getProjectForUser, addCollaborator, removeCollaborator } from '../../..
 import { guardMutatingRequest } from '../../../../../lib/projectsGuard';
 import { getSessionUser } from '../../../../../lib/auth';
 import { getUser, isApprovedDomain } from '../../../../../lib/firmStore';
+import { redactProjectForViewer } from '../../../../../lib/redactExpert';
 
 const ID_RE = /^[a-f0-9]{24}$/;
 
@@ -65,7 +66,7 @@ export async function POST(
 
     const ownerEmail = role === 'admin' ? project.ownerEmail : email;
     const updated = await addCollaborator(params.projectId, ownerEmail, collaboratorEmail);
-    return Response.json({ project: updated });
+    return Response.json({ project: redactProjectForViewer(updated, { role }) });
   } catch (err) {
     console.error('[collaborators] POST error:', err instanceof Error ? err.message : String(err));
     return Response.json({ error: 'failed_to_add_collaborator' }, { status: 500 });
@@ -104,7 +105,7 @@ export async function DELETE(
 
     const ownerEmail = role === 'admin' ? project.ownerEmail : email;
     const updated = await removeCollaborator(params.projectId, ownerEmail, collaboratorEmail);
-    return Response.json({ project: updated });
+    return Response.json({ project: redactProjectForViewer(updated, { role }) });
   } catch (err) {
     console.error('[collaborators] DELETE error:', err instanceof Error ? err.message : String(err));
     return Response.json({ error: 'failed_to_remove_collaborator' }, { status: 500 });

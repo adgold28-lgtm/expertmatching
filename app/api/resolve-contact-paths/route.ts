@@ -14,7 +14,7 @@
 
 import { timingSafeEqual } from 'crypto';
 import { NextRequest }     from 'next/server';
-import { isAuthEnabled }   from '../../../lib/auth';
+import { isAuthEnabled, adminGuard } from '../../../lib/auth';
 import { resolveContactPaths } from '../../../lib/contactPathResolver';
 import { getSearchProvider }   from '../../../lib/searchProviders';
 import { createRateLimiterStore } from '../../../lib/rateLimiter';
@@ -40,9 +40,12 @@ function checkOrigin(request: NextRequest): Response | null {
   return null;
 }
 
-function checkAuth(request: NextRequest): Response | null {
-  // In production with session auth, middleware verified the session cookie already.
-  if (isAuthEnabled()) return null;
+async function checkAuth(request: NextRequest): Promise<Response | null> {
+  // ADMIN ONLY. Resolving a contact path is the same staff capability as
+  // /api/enrich-contact: a client who could call it would be one step away from
+  // going around the platform, which is exactly what lib/redactExpert.ts exists
+  // to prevent. Its only caller, components/ContactSection, is admin-gated too.
+  if (isAuthEnabled()) return adminGuard(request);
 
   // Dev / staging without global auth: check admin token if configured.
   const adminToken = process.env.CONTACT_ENRICHMENT_ADMIN_TOKEN;
@@ -85,8 +88,8 @@ export async function POST(request: NextRequest) {
   const originErr = checkOrigin(request);
   if (originErr) return originErr;
 
-  // 2. Auth check
-  const authErr = checkAuth(request);
+  // 2. Auth check — admin only
+  const authErr = await checkAuth(request);
   if (authErr) return authErr;
 
   // 3. Content-type

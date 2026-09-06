@@ -190,6 +190,10 @@ export async function triggerOverlapCheck(
             ?? process.env.OUTREACH_FROM_EMAIL
             ?? 'asher@expertmatch.fit';
 
+          // ── IDENTITY REVEAL BOUNDARY ──
+          // This runs when the expert reaches 'scheduled', which is exactly the
+          // point lib/redactExpert.ts stops anonymizing them. Full name, title
+          // and company are correct here: the client has booked the call.
           const description = [
             `Expert: ${pe.expert.name}, ${pe.expert.title} at ${pe.expert.company}`,
             '',

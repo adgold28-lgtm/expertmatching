@@ -1,6 +1,7 @@
 'use client';
 
 import type { ProjectExpert, ValueChainPosition } from '../types';
+import IdentityProtectedLabel, { isAnonymized } from './IdentityProtectedLabel';
 
 // ─── Display metadata ─────────────────────────────────────────────────────────
 
@@ -55,6 +56,7 @@ interface Props {
 
 export default function ClientReadyCard({ projectExpert }: Props) {
   const { expert } = projectExpert;
+  const anonymized = isAnonymized(expert);
 
   return (
     <div className="border border-frame bg-cream flex flex-col">
@@ -63,8 +65,17 @@ export default function ClientReadyCard({ projectExpert }: Props) {
         <div className="flex items-start justify-between gap-2">
           <div className="min-w-0">
             <p className="text-xs font-medium text-ink">{expert.name}</p>
-            <p className="text-[11px] text-muted truncate">{expert.title}</p>
-            <p className="text-[11px] text-muted truncate">{expert.company}</p>
+            {anonymized ? (
+              <>
+                <p className="text-[11px] text-ink leading-snug">{expert.anonymizedDescriptor}</p>
+                <IdentityProtectedLabel className="mt-1" />
+              </>
+            ) : (
+              <>
+                {expert.title   && <p className="text-[11px] text-muted truncate">{expert.title}</p>}
+                {expert.company && <p className="text-[11px] text-muted truncate">{expert.company}</p>}
+              </>
+            )}
           </div>
           <div className="flex flex-col items-end gap-1 shrink-0">
             <span className="text-[9px] uppercase tracking-widest text-navy border border-navy/20 bg-navy/5 px-1.5 py-0.5 font-medium">
@@ -129,10 +140,12 @@ export default function ClientReadyCard({ projectExpert }: Props) {
           </div>
         )}
 
-        {/* Justification */}
-        <div className="pt-1 border-t border-frame">
-          <p className="text-[11px] text-ink leading-relaxed line-clamp-3">{expert.justification}</p>
-        </div>
+        {/* Justification — the anonymized rationale when identity is protected */}
+        {expert.justification && (
+          <div className="pt-1 border-t border-frame">
+            <p className="text-[11px] text-ink leading-relaxed line-clamp-3">{expert.justification}</p>
+          </div>
+        )}
 
         {/* Source links — public evidence only */}
         {expert.source_links && expert.source_links.length > 0 && (

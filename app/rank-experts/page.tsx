@@ -693,7 +693,10 @@ function RankExpertsPageInner() {
       const res = await fetch('/api/rank-experts', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ brief, experts, weights }),
+        // projectId lets the server re-hydrate identity from stored data —
+        // a non-admin's copy of these experts is anonymized, so ranking on the
+        // client's copy alone would score "Scott S." with no title.
+        body: JSON.stringify({ brief, experts, weights, ...(projectId && { projectId }) }),
       });
       const data = await res.json();
       if (data.error) throw new Error(data.error);

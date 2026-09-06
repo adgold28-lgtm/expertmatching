@@ -13,6 +13,12 @@ import {
 } from './searchProviders';
 import type { SearchResult } from './searchProviders';
 import { getCachedSearchPage, setCachedSearchPage } from './searchCache';
+import { classifySeniority, TIER_PRICING } from './seniorityClassifier';
+import {
+  ANONYMIZATION_RULES,
+  MAX_DESCRIPTOR_LEN,
+  MAX_JUSTIFICATION_LEN,
+} from './anonymizeExpert';
 
 const client = new Anthropic({ apiKey: process.env.ANTRHOPICKEYREAL });
 
@@ -213,7 +219,32 @@ function normalizeExpert(raw: unknown): any | null {
       ? e.relevance_score
       : 0;
 
-  return { ...e, source_links, evidenceItems, relevance_score };
+  // Seniority is classified and PERSISTED here, not recomputed at render time.
+  // lib/redactExpert.ts blanks `title` for non-admin viewers before a call is
+  // scheduled, so a render site that derives the tier from the title would show
+  // every anonymized expert as "Mid-Level".
+  const seniorityTier = classifySeniority(typeof e.title === 'string' ? e.title : '');
+
+  // Anonymized presentation fields — trimmed to their stored limits. Absent or
+  // malformed values are simply dropped; lib/anonymizeExpert.ts backfills them
+  // and the redactor falls back to a deterministic descriptor either way.
+  const anonymizedDescriptor = typeof e.anonymizedDescriptor === 'string'
+    ? e.anonymizedDescriptor.trim().slice(0, MAX_DESCRIPTOR_LEN)
+    : '';
+  const anonymizedJustification = typeof e.anonymizedJustification === 'string'
+    ? e.anonymizedJustification.trim().slice(0, MAX_JUSTIFICATION_LEN)
+    : '';
+
+  return {
+    ...e,
+    source_links,
+    evidenceItems,
+    relevance_score,
+    seniorityTier,
+    tierPricing: TIER_PRICING[seniorityTier],
+    ...(anonymizedDescriptor    && { anonymizedDescriptor }),
+    ...(anonymizedJustification && { anonymizedJustification }),
+  };
 }
 
 // ─── Relevance gating ─────────────────────────────────────────────────────────
@@ -1300,6 +1331,8 @@ Return ONLY valid JSON. Critical formatting rules:
       "relevance_score": 85,
       "tier": "core",
       "valueChainLabel": "Manufacturing / Production",
+      "anonymizedDescriptor": "Former President & CEO, regional veterinary clinic group — scaled to 40+ locations, ~$200M revenue",
+      "anonymizedJustification": "Ran multi-site consolidation across a regional clinic group through two ownership transitions.",
       "source_url": "https://...",
       "source_label": "LinkedIn",
       "source_links": [
@@ -1329,6 +1362,16 @@ evidenceItems rules:
 
 - outsider_subcategory: "Government", "Large Enterprise", or "Small Business" for Outsiders; null for others
 - valueChainLabel: a short human-readable label describing where in the value chain this expert sits. Use the labels provided in the VALUE CHAIN CONTEXT above if available, or describe their position: "Waste Source / Byproducts", "Fiber & Textile Science", "Biomaterials / Processing", "Commercialization", "Adjacent Materials", "Manufacturing", "Supply Chain", "Market / Advisory", etc.
+
+━━━ ANONYMIZED PROFILE (required for every expert) ━━━
+
+Clients see an anonymized version of each expert until a call is scheduled — that is how this platform stays in the middle of the relationship. Write both of these fields for EVERY expert, from the same evidence you used for the justification.
+
+- anonymizedDescriptor (max ${MAX_DESCRIPTOR_LEN} characters): role level + generalized organization type + scale/scope. Example: "Former President & CEO, regional veterinary clinic group — scaled to 40+ locations, ~$200M revenue"
+- anonymizedJustification (max ${MAX_JUSTIFICATION_LEN} characters): the relevance rationale above, one sentence, with every identifying name generalized.
+
+${ANONYMIZATION_RULES}
+
 RELEVANCE SCORING GUIDANCE (0–100):
 - Base score from direct evidence of domain experience
 - +10–15 if candidate can directly address the key questions stated in the brief

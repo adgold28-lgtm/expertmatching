@@ -7,6 +7,7 @@ import EmailStatusBadge from './EmailStatusBadge';
 import OutreachModal from './OutreachModal';
 import { isLinkedInProfileUrl } from '../lib/domainSuggestions';
 import { STATUS_META, STAGE_META, pipelineStage, type PipelineStage } from '../lib/expertPipeline';
+import IdentityProtectedLabel, { isAnonymized } from './IdentityProtectedLabel';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -193,6 +194,10 @@ export default function OutreachCard({
   const linkedInLinks = (expert.source_links ?? []).filter(
     l => l.type === 'LinkedIn' && isLinkedInProfileUrl(l.url),
   );
+  const anonymized = isAnonymized(expert);
+  const roleLine   = anonymized
+    ? expert.anonymizedDescriptor
+    : [expert.title, expert.company].filter(Boolean).join(' · ');
 
   // Sequence phase detection
   const hasEmail1  = !!projectExpert.email1SentAt;
@@ -419,7 +424,8 @@ export default function OutreachCard({
             ) : (
               <p className="text-sm font-medium text-ink truncate">{expert.name}</p>
             )}
-            <p className="text-[11px] text-muted truncate mt-0.5">{expert.title} · {expert.company}</p>
+            {roleLine && <p className="text-[11px] text-muted truncate mt-0.5">{roleLine}</p>}
+            {anonymized && <IdentityProtectedLabel />}
           </div>
           <div className="shrink-0 flex items-center justify-end gap-1.5 flex-wrap">
             <span

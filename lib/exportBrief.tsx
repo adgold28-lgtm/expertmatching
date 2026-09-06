@@ -272,6 +272,25 @@ const OUTREACH_LABEL: Record<string, string> = {
 
 // ─── PDF Document ─────────────────────────────────────────────────────────────
 
+// The project handed to this PDF comes straight from React state, which the API
+// already ran through lib/redactExpert.ts — no identity is sourced from anywhere
+// else here. For a non-admin the anonymized experts therefore arrive with a
+// blank title/company and a descriptor instead; these two helpers keep the
+// layout from rendering a bare " · " separator.
+
+function expertHeadline(expert: {
+  title?: string;
+  company?: string;
+  anonymizedDescriptor?: string;
+}): string {
+  if (expert.anonymizedDescriptor && !expert.title) return expert.anonymizedDescriptor;
+  return [expert.title, expert.company].filter(Boolean).join(' · ');
+}
+
+function expertNameLine(expert: { name: string; company?: string }): string {
+  return [expert.name, expert.company].filter(Boolean).join(' · ');
+}
+
 function BriefDocument({ project, today }: { project: Project; today: string }) {
   // Recommended = everyone not yet in the pipeline or explicitly rejected
   const recommended = project.experts.filter(pe =>
@@ -337,7 +356,7 @@ function BriefDocument({ project, today }: { project: Project; today: string }) 
                     <View style={s.expertTop}>
                       <View style={s.expertLeft}>
                         <Text style={s.expertName}>{expert.name}</Text>
-                        <Text style={s.expertMeta}>{expert.title} · {expert.company}</Text>
+                        <Text style={s.expertMeta}>{expertHeadline(expert)}</Text>
                       </View>
                       <View style={s.expertRight}>
                         {score > 0 && <Text style={scoreStyle}>{score}</Text>}
@@ -346,7 +365,9 @@ function BriefDocument({ project, today }: { project: Project; today: string }) 
                         )}
                       </View>
                     </View>
-                    <Text style={s.justification}>{expert.justification}</Text>
+                    {expert.justification ? (
+                      <Text style={s.justification}>{expert.justification}</Text>
+                    ) : null}
                   </View>
                 );
               })}
@@ -384,7 +405,7 @@ function BriefDocument({ project, today }: { project: Project; today: string }) 
                 return (
                   <View key={pe.expert.id} style={s.screenRow}>
                     <View style={s.screenLeft}>
-                      <Text style={s.screenName}>{pe.expert.name} · {pe.expert.company}</Text>
+                      <Text style={s.screenName}>{expertNameLine(pe.expert)}</Text>
                       {pe.screeningNotes ? (
                         <Text style={s.screenNotes}>{pe.screeningNotes}</Text>
                       ) : null}
@@ -408,7 +429,7 @@ function BriefDocument({ project, today }: { project: Project; today: string }) 
                     <Text style={s.outreachStatus}>{OUTREACH_LABEL[st].toUpperCase()}</Text>
                     {group.map(pe => (
                       <Text key={pe.expert.id} style={s.outreachExpert}>
-                        {pe.expert.name} · {pe.expert.company}
+                        {expertNameLine(pe.expert)}
                       </Text>
                     ))}
                   </View>

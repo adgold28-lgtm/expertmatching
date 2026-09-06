@@ -1,6 +1,8 @@
 import { openai } from '../../../lib/openai';
 import { NextRequest, NextResponse } from 'next/server';
-import { routeAuthGuard } from '../../../lib/auth';
+import { routeAuthGuard, getSessionUser } from '../../../lib/auth';
+import { getProjectForUser } from '../../../lib/projectStore';
+import type { Expert } from '../../../types';
 import {
   RankableExpert,
   RankedExpertResult,
@@ -37,6 +39,33 @@ function buildExpertSummary(expert: RankableExpert): string {
     expert.linkedinOrSourceUrl ? `Source URL: ${expert.linkedinOrSourceUrl}` : '',
   ].filter(Boolean);
   return lines.join('\n');
+}
+
+// ─── Server-side identity resolution ──────────────────────────────────────────
+//
+// Non-admin browsers receive experts with the identity fields anonymized
+// (lib/redactExpert.ts), so the body they post back carries "Scott S." and a
+// blank title. Ranking on that would be both wrong and a way to launder
+// client-supplied identity into an LLM prompt. When the request names a
+// project, the stored expert is authoritative for every identity field —
+// whatever the client sent for those is discarded.
+//
+// Manually entered experts (no matching id in the project) keep the values the
+// user typed: that is the user's own research, not platform data.
+
+const PROJECT_ID_RE = /^[a-f0-9]{24}$/;
+
+function withStoredIdentity(input: RankableExpert, stored: Expert): RankableExpert {
+  return {
+    ...input,
+    fullName:            stored.name,
+    currentTitle:        stored.title   || '',
+    currentCompany:      stored.company || '',
+    geography:           stored.location || '',
+    linkedinOrSourceUrl: stored.linkedin_url || stored.source_url || '',
+    sourceNotes:         `Via ${stored.source_label || 'expert search'}. ${stored.source_url}`,
+    whyRelevant:         stored.justification || input.whyRelevant,
+  };
 }
 
 function computeRawScore(breakdown: ScoreBreakdown, weights: ScoringWeights): number {
@@ -83,14 +112,34 @@ export async function POST(request: NextRequest) {
   if (authErr) return authErr;
 
   try {
-    const body = (await request.json()) as RankExpertsRequest;
-    const { brief, experts, weights } = body;
+    const body = (await request.json()) as RankExpertsRequest & { projectId?: unknown };
+    const { brief, weights } = body;
 
-    if (!experts || experts.length === 0) {
+    if (!body.experts || body.experts.length === 0) {
       return NextResponse.json({ error: 'No experts provided.' }, { status: 400 });
     }
     if (!brief.researchQuestion.trim()) {
       return NextResponse.json({ error: 'Research question is required.' }, { status: 400 });
+    }
+
+    // Step 0: re-hydrate identity from the store for project-backed experts.
+    let experts = body.experts;
+    const projectId = typeof body.projectId === 'string' && PROJECT_ID_RE.test(body.projectId)
+      ? body.projectId
+      : null;
+
+    if (projectId) {
+      const { email, role } = await getSessionUser(request);
+      // Access-scoped: an inaccessible project simply yields no overrides, so a
+      // caller cannot use this endpoint to read another firm's expert data.
+      const project = await getProjectForUser(projectId, email, role);
+      if (project) {
+        const stored = new Map(project.experts.map(pe => [pe.expert.id, pe.expert]));
+        experts = experts.map(e => {
+          const match = stored.get(e.id);
+          return match ? withStoredIdentity(e, match) : e;
+        });
+      }
     }
 
     // Step 1: compute deterministic scores for every expert

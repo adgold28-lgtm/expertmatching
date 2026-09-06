@@ -10,6 +10,7 @@
 
 import { useState } from 'react';
 import type { ProjectExpert } from '../types';
+import IdentityProtectedLabel, { isAnonymized } from './IdentityProtectedLabel';
 
 // ─── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -49,6 +50,7 @@ export default function ScreeningCard({
   onViewProfile,
 }: Props) {
   const { expert } = projectExpert;
+  const anonymized = isAnonymized(expert);
 
   const [saving,       setSaving]       = useState(false);
   const [notesOpen,    setNotesOpen]    = useState(false);
@@ -154,7 +156,18 @@ export default function ScreeningCard({
             ) : (
               <p className="text-sm font-medium text-ink truncate">{expert.name}</p>
             )}
-            <p className="text-[11px] text-muted truncate mt-0.5">{expert.title} · {expert.company}</p>
+            {anonymized ? (
+              <>
+                <p className="text-[11px] text-ink leading-snug mt-0.5">{expert.anonymizedDescriptor}</p>
+                <IdentityProtectedLabel className="mt-1" />
+              </>
+            ) : (
+              (expert.title || expert.company) && (
+                <p className="text-[11px] text-muted truncate mt-0.5">
+                  {[expert.title, expert.company].filter(Boolean).join(' · ')}
+                </p>
+              )
+            )}
           </div>
           {expert.relevance_score > 0 && (
             <span className={`shrink-0 font-display text-lg font-semibold leading-none ${

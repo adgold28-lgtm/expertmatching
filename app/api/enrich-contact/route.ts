@@ -1,5 +1,5 @@
 import { NextRequest } from 'next/server';
-import { routeAuthGuard } from '../../../lib/auth';
+import { adminGuard } from '../../../lib/auth';
 import {
   createCacheStore,
   makeCacheKey,
@@ -384,8 +384,14 @@ export async function POST(request: NextRequest): Promise<Response> {
     }
   }
 
-  // 5. Session auth gate — uses the same session cookie as all other API routes.
-  const authError = await routeAuthGuard(request);
+  // 5. Auth gate — ADMIN ONLY.
+  //
+  // Finding an expert's contact details is staff work. A client who could call
+  // this would be one lookup away from going around the platform, which is the
+  // exact thing lib/redactExpert.ts exists to prevent — and the request body
+  // (name + company domain) is client-supplied identity we do not trust from a
+  // non-admin. The Matchy relay will own client-side contact requests later.
+  const authError = await adminGuard(request);
   if (authError) return authError;
 
   // 6. Request hardening

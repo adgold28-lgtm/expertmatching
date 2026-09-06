@@ -329,7 +329,10 @@ export async function createAndSendInvoice(
     }
 
     // 3. Create Stripe product + price + payment link
-    const productName = `Expert Call: ${pe.expert.name} — ${project.researchQuestion.slice(0, 50)}`;
+    // No expert name on the product: it surfaces on card statements and Stripe
+    // receipts, which are not covered by the platform's identity-reveal rules.
+    // The project name is enough for the client to reconcile the charge.
+    const productName = `Expert Call — ${project.name}`;
     const product = await stripe.products.create({ name: productName });
     const price   = await stripe.prices.create({
       product:     product.id,

@@ -4,6 +4,7 @@ import { guardMutatingRequest } from '../../../../../lib/projectsGuard';
 import { getSessionUser } from '../../../../../lib/auth';
 import { validateProjectExpert, MAX_EXPERTS_PER_PROJECT } from '../../../../../lib/projectValidation';
 import { EXPERT_STATUSES } from '../../../../../lib/expertPipeline';
+import { redactProjectForViewer } from '../../../../../lib/redactExpert';
 import type { ExpertStatus } from '../../../../../types';
 
 const ID_RE = /^[a-f0-9]{24}$/;
@@ -41,12 +42,22 @@ export async function POST(
       );
     }
 
+    // The Source panel's "adjacent candidates" reach the browser through
+    // project.sourcingAdjacent, which is ANONYMIZED for a non-admin. If we
+    // stored what comes back we would overwrite raw identity with "Scott S."
+    // and a blank title. The stored candidate is authoritative: whenever the
+    // posted id matches one, the server's own copy is what gets persisted.
+    const storedCandidates = new Map(
+      (existing.sourcingAdjacent ?? []).map(candidate => [candidate.id, candidate]),
+    );
+
     const validated = (body.experts as unknown[])
       .map(raw => {
         if (!raw || typeof raw !== 'object') return null;
         const entry  = raw as Record<string, unknown>;
-        const expert = validateProjectExpert(entry.expert);
-        if (!expert) return null;
+        const posted = validateProjectExpert(entry.expert);
+        if (!posted) return null;
+        const expert = storedCandidates.get(posted.id) ?? posted;
         const rawStatus = entry.status;
         const status: ExpertStatus | undefined =
           typeof rawStatus === 'string' && VALID_STATUSES.has(rawStatus as ExpertStatus)
@@ -61,7 +72,7 @@ export async function POST(
     }
 
     const project = await addExpertsToProject(params.projectId, validated as Parameters<typeof addExpertsToProject>[1]);
-    return Response.json({ project });
+    return Response.json({ project: redactProjectForViewer(project, { role }) });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     if (msg.includes('not found')) return Response.json({ error: 'not_found' }, { status: 404 });

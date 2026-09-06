@@ -3,9 +3,13 @@
 // Client-facing view of an expert shortlist.
 //
 // Security model:
-// - Shows only shortlisted / client_ready experts.
-// - Strips: confidentialNotes, rejectionNotes, userNotes (internal), screeningNotes,
-//   rejectionReason, rejectedAt, contactEmail, outreachDraft, outreachSubject.
+// - Redaction is SERVER-SIDE. GET /api/projects/[id] runs the project through
+//   lib/redactExpert.redactProjectForViewer before it leaves the server, so a
+//   non-admin never receives contact emails, internal notes, tokens, or — until
+//   an expert's call is scheduled — that expert's name, employer, LinkedIn,
+//   sources or evidence. This page cannot leak what it was never sent.
+// - What stays here is the PRESENTATION allowlist: which statuses appear on the
+//   shortlist at all. That is a product decision, not a security boundary.
 // - Project IDs are 24-char hex (96-bit entropy); URL is unguessable.
 // - TODO: Replace with session/JWT auth before public launch.
 
@@ -13,6 +17,7 @@ import { useEffect, useState } from 'react';
 import { useParams } from 'next/navigation';
 import type { Project, ProjectExpert, SourceLink, EvidenceItem } from '../../../../types';
 import { isLinkedInProfileUrl } from '../../../../lib/domainSuggestions';
+import IdentityProtectedLabel from '../../../../components/IdentityProtectedLabel';
 
 // ─── Client-safe data shapes ──────────────────────────────────────────────────
 
@@ -21,6 +26,9 @@ interface ClientExpert {
   name: string;
   title: string;
   company: string;
+  // Present when the server anonymized this expert — shown in place of
+  // title · company, with the "identity protected" label.
+  anonymizedDescriptor?: string;
   location: string;
   category: string;
   justification: string;
@@ -61,10 +69,19 @@ const VALUE_CHAIN_LABEL: Record<string, string> = {
   other:                  'Other',
 };
 
-function sanitizeForClient(project: Project): ClientView {
-  // Only include experts the team has marked as shortlisted or client_ready.
-  const clientStatuses = new Set(['shortlisted', 'contacted', 'replied', 'scheduled', 'completed']);
-  const clientReadyScreen = new Set(['client_ready', 'screened']);
+// Statuses that belong on a client shortlist. This is the presentation
+// allowlist — the security filtering already happened server-side in
+// lib/redactExpert.ts before this data reached the browser.
+const CLIENT_STATUSES     = new Set(['shortlisted', 'contacted', 'replied', 'scheduled', 'completed']);
+const CLIENT_READY_SCREEN = new Set(['client_ready', 'screened']);
+
+/**
+ * Selects and reshapes the (already redacted) project for the brief layout.
+ * Deliberately NOT a security boundary — see the file header.
+ */
+function toClientView(project: Project): ClientView {
+  const clientStatuses    = CLIENT_STATUSES;
+  const clientReadyScreen = CLIENT_READY_SCREEN;
 
   const experts: ClientExpert[] = project.experts
     .filter(pe => {
@@ -79,6 +96,9 @@ function sanitizeForClient(project: Project): ClientView {
       name:           pe.expert.name,
       title:          pe.expert.title,
       company:        pe.expert.company,
+      ...(pe.expert.anonymizedDescriptor && {
+        anonymizedDescriptor: pe.expert.anonymizedDescriptor,
+      }),
       location:       pe.expert.location,
       category:       pe.expert.category,
       justification:  pe.expert.justification,
@@ -147,6 +167,9 @@ function ExpertBlock({ expert }: { expert: ClientExpert }) {
   const visibleLinks = (expert.source_links ?? []).filter((link: SourceLink) =>
     link.type !== 'LinkedIn' || isLinkedInProfileUrl(link.url)
   );
+  // The server sends a descriptor and no title/company when identity is still
+  // protected — no client-side check can be fooled, there is nothing to hide.
+  const anonymized = !!expert.anonymizedDescriptor && !expert.title;
 
   return (
     <div className="border border-frame bg-white">
@@ -154,8 +177,17 @@ function ExpertBlock({ expert }: { expert: ClientExpert }) {
       <div className="px-6 py-5 border-b border-frame flex items-start justify-between gap-4">
         <div className="flex-1 min-w-0">
           <h3 className="font-display text-lg font-semibold text-navy leading-tight">{expert.name}</h3>
-          <p className="text-sm text-muted mt-0.5">{expert.title}</p>
-          <p className="text-sm font-medium text-ink mt-0.5">{expert.company}</p>
+          {anonymized ? (
+            <>
+              <p className="text-sm text-ink mt-0.5 leading-snug">{expert.anonymizedDescriptor}</p>
+              <IdentityProtectedLabel className="mt-1.5" />
+            </>
+          ) : (
+            <>
+              {expert.title   && <p className="text-sm text-muted mt-0.5">{expert.title}</p>}
+              {expert.company && <p className="text-sm font-medium text-ink mt-0.5">{expert.company}</p>}
+            </>
+          )}
           {expert.location && (
             <p className="text-xs text-muted/70 mt-1">{expert.location}</p>
           )}
@@ -178,10 +210,12 @@ function ExpertBlock({ expert }: { expert: ClientExpert }) {
       {/* Body */}
       <div className="px-6 py-5 space-y-5">
 
-        {/* Justification */}
-        <p className="text-sm text-ink leading-relaxed" style={{ fontWeight: 300 }}>
-          {expert.justification}
-        </p>
+        {/* Justification — the anonymized rationale when identity is protected */}
+        {expert.justification && (
+          <p className="text-sm text-ink leading-relaxed" style={{ fontWeight: 300 }}>
+            {expert.justification}
+          </p>
+        )}
 
         {/* Evidence items */}
         {expert.evidenceItems && expert.evidenceItems.length > 0 && (
@@ -275,7 +309,7 @@ export default function ClientViewPage() {
           setError(data.error === 'not_found' ? 'Project not found.' : 'Failed to load project.');
           return;
         }
-        setView(sanitizeForClient(data.project));
+        setView(toClientView(data.project));
       } catch {
         setError('Failed to load project.');
       } finally {

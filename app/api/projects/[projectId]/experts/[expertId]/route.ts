@@ -4,6 +4,7 @@ import { guardMutatingRequest, guardReadRequest } from '../../../../../../lib/pr
 import { getSessionUser } from '../../../../../../lib/auth';
 import { sanitizeText, LIMITS } from '../../../../../../lib/projectValidation';
 import { EXPERT_STATUSES } from '../../../../../../lib/expertPipeline';
+import { redactProjectForViewer } from '../../../../../../lib/redactExpert';
 import type { ExpertStatus, RejectionReason, ValueChainPosition, ScreeningStatus, ContactStatus, SuggestedDomain, PublicContactEmail } from '../../../../../../types';
 
 const ID_RE        = /^[a-f0-9]{24}$/;
@@ -61,7 +62,7 @@ export async function PUT(
       const note = body.note.trim().slice(0, LIMITS.userNotes);
       if (!note) return Response.json({ error: 'note cannot be empty' }, { status: 400 });
       const project = await addExpertNote(params.projectId, params.expertId, note);
-      return Response.json({ project });
+      return Response.json({ project: redactProjectForViewer(project, { role }) });
     }
 
     // Status / metadata update
@@ -219,7 +220,7 @@ export async function PUT(
     }
 
     const project = await updateExpertStatus(params.projectId, params.expertId, input);
-    return Response.json({ project });
+    return Response.json({ project: redactProjectForViewer(project, { role }) });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     if (msg.includes('not found')) return Response.json({ error: 'not_found' }, { status: 404 });
@@ -250,7 +251,7 @@ export async function DELETE(
     if (!accessible) return Response.json({ error: 'not_found' }, { status: 404 });
 
     const project = await removeExpertFromProject(params.projectId, params.expertId);
-    return Response.json({ project });
+    return Response.json({ project: redactProjectForViewer(project, { role }) });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     if (msg.includes('not found')) return Response.json({ error: 'not_found' }, { status: 404 });
