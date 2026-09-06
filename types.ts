@@ -166,6 +166,10 @@ export type ExpertStatus =
   | 'outreach_drafted'
   | 'contacted'
   | 'replied'
+  // Matchy: the follow-up (conflict / NDA questions + the rate ask) has gone
+  // out and we are waiting on the expert's terms. Replaces the retired
+  // 'email2_sent' of the 3-email cadence.
+  | 'followup_sent'
   | 'scheduled'
   | 'completed'
   | 'email2_sent'
@@ -305,7 +309,20 @@ export interface ProjectExpert {
   replyDetectedAt?:      number;
   replyIntent?:          'interested' | 'declined' | 'counter_rate' | 'conflict' | 'unclear';
   counterRateProposed?:  number;
+  // Matchy: the EXPERT-side hourly rate the expert countered with, in whole
+  // dollars, as read off their reply. Staff- and expert-side only — the client
+  // is shown clientRateFor(expertCounterRate) instead, never this number
+  // (docs/MATCHY_SPEC.md, "Pricing rule").
+  expertCounterRate?:    number | null;
+  // The SAME counter expressed as what the client would pay:
+  // lib/pricing.clientRateFor(expertCounterRate). This is the only counter
+  // number a client may ever see, and it is what the negotiation decision card
+  // renders. Derived, never entered by hand.
+  clientCounterRate?:    number | null;
   conflictNote?:         string;
+  // Unix ms when Matchy's follow-up (conflicts + rate ask) was sent. Set once;
+  // its presence is what stops a second reply producing a second follow-up.
+  followupSentAt?:       number;
   // Billing / Stripe
   // The two numbers of the engagement — see lib/pricing.ts, the only place
   // that converts between them. clientRate is client-facing everywhere;

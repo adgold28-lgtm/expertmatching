@@ -88,6 +88,12 @@ const INTERNAL_PROJECT_EXPERT_KEYS: readonly (keyof ProjectExpert)[] = [
   // stripped at every status, including after the identity reveal — what we
   // pay the expert stays between us and the expert.
   'expertRate',
+  // The expert's own counter, expert-side. Same rule: the client is shown
+  // `clientCounterRate` (kept), which is clientRateFor() of this number.
+  // `counterRateProposed` is the legacy field the retired cadence wrote — it
+  // holds the same expert-side figure, so it is stripped too.
+  'expertCounterRate',
+  'counterRateProposed',
   // Staff-only assessment and drafting
   'rejectionNotes',
   'screeningNotes',

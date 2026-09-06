@@ -305,3 +305,105 @@ export function screenMessage(input: ScreenInput): ScreenResult {
 
   return { blocked: findings.length > 0, findings };
 }
+
+// ─── Masking ──────────────────────────────────────────────────────────────────
+
+/**
+ * The finding kinds that carry an identifier a viewer must not receive. Used
+ * by lib/conversations.redactMessageForViewer as belt and braces on top of the
+ * anonymization layer: even if an expert signs off with a phone number, the
+ * client sees `[removed]` where it was.
+ *
+ * `off_platform_phrase` is deliberately absent — "let's connect directly" is a
+ * thing the expert said, not an identifier, and the client is better off
+ * reading it than reading a hole.
+ */
+export const MASKABLE_FINDING_KINDS: readonly ScreenFindingKind[] = [
+  'phone',
+  'email',
+  'url',
+  'scheduling_link',
+  'client_firm_name',
+  'expert_real_name',
+  'client_real_name',
+] as const;
+
+/** The placeholder that stands in for a masked identifier. */
+export const MASK_TOKEN = '[removed]';
+
+/**
+ * Replaces every occurrence of the given findings' matched text with
+ * `[removed]`. Longest matches first, so masking "scott@example.com" does not
+ * leave "@example.com" behind after a shorter host match was replaced.
+ *
+ * Pure. Never throws — a finding whose match no longer appears is a no-op.
+ */
+export function maskFindings(
+  text: string,
+  findings: readonly ScreenFinding[],
+  kinds: readonly ScreenFindingKind[] = MASKABLE_FINDING_KINDS,
+): string {
+  if (!text) return text;
+
+  const allowed = new Set(kinds);
+  const matches = findings
+    .filter(f => allowed.has(f.kind) && f.match)
+    .map(f => f.match)
+    .sort((a, b) => b.length - a.length);
+
+  let out = text;
+  for (const match of matches) {
+    out = out.split(match).join(MASK_TOKEN);
+  }
+  return out;
+}
+
+/**
+ * Belt and braces on top of `maskFindings`: a second, context-free sweep for
+ * the three identifiers that must never reach a client — an email address, a
+ * link, a phone number — regardless of whether the screen recorded them.
+ * Used on text the screen did not itself produce (an LLM summary, a body
+ * cleaned after the screen ran).
+ */
+export function maskContactDetails(text: string): string {
+  if (!text) return text;
+
+  let out = text.replace(EMAIL_RE, MASK_TOKEN);
+  out = out.replace(URL_RE, MASK_TOKEN);
+
+  for (const pattern of PHONE_PATTERNS) {
+    out = out.replace(pattern, (match, offset: number) =>
+      isNotAPhoneNumber(match, out, offset) ? match : MASK_TOKEN);
+  }
+  out = out.replace(SPELLED_PHONE_RE, MASK_TOKEN);
+
+  return out;
+}
+
+/**
+ * Every shape a dollar amount takes in our own outbound copy: "$400/hr",
+ * "$400 per hour", "$1,200", "USD 400". Deliberately narrow — a year, a
+ * duration ("45 minutes") and a plain count are not money and must survive.
+ */
+const CURRENCY_PATTERNS: RegExp[] = [
+  /\$\s?\d[\d,]*(?:\.\d{2})?(?:\s*(?:\/|\s+per\s+)\s*(?:hr|hour|hourly))?/gi,
+  /\b(?:usd|us\$)\s?\d[\d,]*(?:\.\d{2})?\b/gi,
+];
+
+/**
+ * Replaces every dollar amount with `[removed]`.
+ *
+ * WHY THIS EXISTS: Matchy's follow-up quotes `expertRate`, because it is
+ * written for the expert. That same text is stored on the thread, and the
+ * thread is shown to the client — who is only ever shown client-side numbers
+ * (docs/MATCHY_SPEC.md, "Pricing rule": the two numbers never share a
+ * message). So an outbound message written for the expert has its amounts
+ * masked on the way to a client's screen. The client's own number lives on the
+ * expert card as `clientRate`, where it belongs.
+ */
+export function maskCurrency(text: string): string {
+  if (!text) return text;
+  let out = text;
+  for (const pattern of CURRENCY_PATTERNS) out = out.replace(pattern, MASK_TOKEN);
+  return out;
+}

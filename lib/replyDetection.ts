@@ -1,5 +1,13 @@
-// Parse inbound expert reply emails using GPT-4o-mini.
+// Parse inbound expert reply emails.
 // Classifies intent and extracts structured data.
+//
+// SUPERSEDED, Matchy Phase 1 (docs/MATCHY_SPEC.md, "API surface"):
+// lib/matchyClassify.classifyMessage does this job now and returns the summary
+// as well, so the inbound handler makes ONE model call instead of two. Nothing
+// calls parseReply any more. The module is kept because its failure contract —
+// an unreadable answer classifies as 'unclear' — is the contract
+// matchyClassify's fallback deliberately mirrors, and because deleting a
+// classifier is a separate decision from replacing it. Do not wire it back in.
 //
 // Input is sanitized before LLM call (max 2000 chars, control chars stripped).
 // Never logs email content.

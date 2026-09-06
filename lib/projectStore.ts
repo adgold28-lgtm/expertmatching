@@ -124,7 +124,13 @@ export interface UpdateExpertInput {
   replyDetectedAt?:      number;
   replyIntent?:          'interested' | 'declined' | 'counter_rate' | 'conflict' | 'unclear';
   counterRateProposed?:  number;
+  // Matchy: the expert-side counter and its client-side equivalent
+  // (lib/pricing.clientRateFor). Written together, never apart.
+  expertCounterRate?:    number | null;
+  clientCounterRate?:    number | null;
   conflictNote?:         string;
+  /** Unix ms when Matchy's follow-up went out. Set once. */
+  followupSentAt?:       number;
   // Stripe Connect
   stripeConnectAccountId?:  string;
   stripeTransferId?:        string;

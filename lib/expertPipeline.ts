@@ -23,7 +23,7 @@ import type { ProjectExpert, ExpertStatus } from '../types';
 // ─── Status universe ──────────────────────────────────────────────────────────
 
 /**
- * Every valid ExpertStatus — all 15 members of the union, in pipeline order so
+ * Every valid ExpertStatus — all 16 members of the union, in pipeline order so
  * consumers can render them directly. API allowlists and UI selectors build
  * from this rather than repeating the literals.
  *
@@ -43,6 +43,7 @@ export const EXPERT_STATUSES: readonly ExpertStatus[] = [
   'email2_sent',
   'scheduling_sent',
   'replied',
+  'followup_sent',
   'rate_negotiation',
   'conflict_flagged',
   'scheduled',
@@ -79,9 +80,17 @@ const DECLINED_STATUSES = new Set<ExpertStatus>([
   'rejected_after_outreach',
 ]);
 
+/**
+ * In flight, waiting on the expert. 'email2_sent' is the RETIRED cadence's
+ * second email — nothing writes it any more (docs/MATCHY_SPEC.md, "Phasing"),
+ * but rows written before Matchy shipped still carry it, so it stays mapped.
+ * 'followup_sent' is its replacement: Matchy's follow-up went out because the
+ * expert said yes, not because a clock ran out.
+ */
 const OUTREACH_SENT_STATUSES = new Set<ExpertStatus>([
   'contacted',
   'email2_sent',
+  'followup_sent',
   'scheduling_sent',
 ]);
 
@@ -143,6 +152,7 @@ export const STATUS_META: Record<ExpertStatus, { label: string; classes: string 
   outreach_drafted:        { label: 'Draft Ready',      classes: 'text-sky-700 border-sky-300 bg-sky-50'       },
   contacted:               { label: 'Email 1 Sent',     classes: 'text-amber-700 border-amber-300 bg-amber-50' },
   email2_sent:             { label: 'Email 2 Sent',     classes: 'text-amber-700 border-amber-300 bg-amber-50' },
+  followup_sent:           { label: 'Follow-up Sent',   classes: 'text-amber-700 border-amber-300 bg-amber-50' },
   scheduling_sent:         { label: 'Scheduling Sent',  classes: 'text-teal-700 border-teal-300 bg-teal-50'    },
   replied:                 { label: 'Replied',          classes: 'text-green-700 border-green-200 bg-green-50' },
   rate_negotiation:        { label: 'Rate Negotiation', classes: 'text-amber-700 border-amber-400 bg-amber-50' },
