@@ -1,86 +1,109 @@
 # Matchy — the conversation layer
 
-*Product spec / build framework. Draft 1, 2026-09-06. Supersedes the 3-email outreach autopilot (see `OUTREACH_BOT_AUDIT.md`).*
+*Product spec / build framework. **Draft 2**, 2026-09-06 — revised with founder feedback. Supersedes the 3-email outreach autopilot (see `OUTREACH_BOT_AUDIT.md`).*
 
 ## The idea in one paragraph
 
-A client bookmarks an expert from their matches. From that moment Matchy — ExpertMatch's agent — owns the expert relationship: it finds and verifies the expert's email, drafts the introduction for the client to approve, relays every message between the client's in-app inbox and the expert's ordinary email, screens each message so identities and contact details never cross the wall, summarizes every reply, keeps the pipeline stage current, and hands off to scheduling and billing when the two sides agree. The client never sees a raw email address; the expert never installs anything. The workflow collapses from **Brief → Source → Outreach → Screen → Deliver** to **Brief → Matches → Conversations**.
+A client bookmarks an expert from their matches. From that moment Matchy — ExpertMatch's agent — owns the expert relationship: it finds the expert's email, sends a short intro asking whether they'd take a paid expert call with a firm of the client's type, follows up on a "yes" with the conflict/NDA questions and the rate, relays every message between the client's in-app inbox and the expert's ordinary email, screens each message so identities and contact details never cross the wall, summarizes every reply in plain language, keeps the pipeline stage current, proposes and books call times, and hands off to Zoom and billing. The client never sees a raw email address; the expert never installs anything. The workflow collapses from **Brief → Source → Outreach → Screen → Deliver** to **Brief → Matches → Conversations**.
 
-## Why this beats the current design
+## Principles (what keeps this from being a GPT wrapper)
 
-| Today | With Matchy |
-|---|---|
-| AI writes 3 cold emails on a timer; nobody reviews them | Human writes (with AI drafts); AI screens; nothing sends unapproved |
-| Anonymity is cosmetic — parties can email directly by week two | Anonymity is structural — the relay is the only channel |
-| "Find contact" is one click, one provider, take what you get | Matchy iterates providers, verifies, scores, retries on bounce |
-| Replies are classified into 5 buckets and that's it | Replies are summarized in detail, stage updates itself |
-| Counter-rates and conflicts dead-end in a panel | They are just messages in a thread, with Matchy suggesting a reply |
-| Outreach + Screen are separate tabs with duplicated state | One thread per expert holds the whole relationship |
+1. **Verbs, not chat.** Every Matchy surface is a proposal that ends in a button (Send / Schedule / Accept / Use this). No open-ended text box in v1.
+2. **Silent by default.** Matchy speaks when it has done something or needs a decision. Never a greeting, never filler.
+3. **Plain status, no machinery.** "Address found for Scott. Not found for Priya." Never provider names, confidence scores, or how it got there. The *why* lives in an expandable activity log for staff, not in the client's face.
+4. **Operator voice.** First person, short, specific. One dry line at most. A name and a small mark on its cards — no face, no bubble in the corner.
+5. **Continuity is the companion.** It remembers every expert, every rate, every thing this client said no to. That's what makes it feel like someone.
+6. **Transparent and reversible.** Every action is logged and undoable; every automated send has a per-project "review first" switch.
+7. **Collect everything.** Every reply, rate, rejection reason, response time, and outcome is an event. The product gets sharper per client.
 
 ## Workflow
 
-1. **Bookmark.** On a match card the client clicks *Save* (bookmark icon). Status → `bookmarked`. Matchy starts contact discovery in the background (server job, same QStash pattern as sourcing).
-2. **Contact discovery (Matchy, autonomous).** Try in order: Hunter email-finder → Snov → domain-pattern inference from any verified colleague → Hunter/Snov verifier on each candidate. Score candidates; keep all with confidence. Result states: `found_verified`, `found_unverified`, `not_found`. **Never sends to more than one address.** Surfaces "Contact found · verified" or "Couldn't find a verified address — try LinkedIn InMail?" on the card.
-3. **Introduction.** Client opens the thread. Matchy has pre-drafted the intro (facts only — no invented biography; research question generalized, no client name, rate stated as an opening position). Client edits or accepts → *Send*. Status → `contacted`.
-4. **Relay.** Expert replies by email to `reply+<token>@expertmatch.fit`. Inbound webhook (Svix-verified) → strip quoted history + signature → Matchy screens → stored as a message → summary generated → classifier updates stage → client notified. Client replies in-app → Matchy screens → sent via Resend with the thread's reply-to token.
-5. **Agreement.** Rate/availability/conflict questions are just conversation. When Matchy detects agreement (rate accepted + no conflict + intent to schedule), it offers *Schedule call* → existing availability/overlap/Zoom/ICS flow. Status → `scheduled`; identity reveals both ways per the anonymization rule.
-6. **After the call.** Existing Zoom webhook → `completed` → auto-charge. The thread gets a final Matchy summary + the client's screening notes ("client-ready" decision lives here; the Screen tab is retired).
+1. **Bookmark.** Client saves an expert from Matches. Status → `bookmarked`. Matchy starts contact discovery (server job).
+2. **Contact discovery (Matchy, autonomous).** Tries the providers, verifies, picks one address. Never sends to more than one address; bounces trigger the next candidate. Client sees only: *"Address found for Scott."* or *"Couldn't find Priya — want me to keep trying / try LinkedIn?"*
+3. **Intro (Matchy sends it — default auto, per-project review switch).** Short, anonymized, no rate, no client name:
+   > *Subject: Paid expert call — {industry} question*
+   > *Hi Scott — I'm reaching out on behalf of a {private equity firm / strategy consultancy / corporate strategy team} evaluating {generalized topic from the brief}. Given your background in {generalized descriptor fragment}, they'd value a 45–60 minute paid consultation. Would you be open to it? If so, I'll send the details.*
+   Status → `contacted`. Matchy card in the thread: *"Sent Scott the intro. I'll let you know when he replies."*
+4. **Follow-up on "yes" (Matchy drafts; sends automatically unless review switch is on).** Conflict/NDA questions + the rate ask — asked, never asserted:
+   > *Glad to hear it. Three quick things before we schedule: (1) any NDAs or employer restrictions that would limit discussing {topic}? (2) any current involvement with companies in this space we should know about? (3) We compensate experts at ${expertRate}/hr, billed per minute — does that work for you? If so, I'll propose a couple of times.*
+5. **Relay + summary.** Every expert email is verified, cleaned, screened, stored, summarized ("Interested. Free Tue/Thu afternoons ET. Wants $650 — you're offering $560. Possible NDA with a competitor."), and the pipeline stage updates. Client replies in-app; Matchy screens and sends.
+6. **Rate negotiation.** Expert counters → Matchy summarizes and shows the client a decision card with the *client-side* numbers (see Pricing). Client picks; Matchy replies to the expert with the *expert-side* number. The two numbers never appear in the same message.
+7. **Scheduling (Matchy's job).** Once conflicts are clear and the rate is agreed, Matchy proposes concrete times to the expert from the client's connected calendar ("Would Tue 2:00pm or Thu 4:00pm ET work?"), reads the expert's preference reply (free text — the existing parser), and books: Zoom meeting, ICS invites to both, status → `scheduled`, identity reveals both ways. The availability link is the fallback if the expert prefers to pick. The client can add preferences ("mornings only, not Fridays") to the thread and Matchy honors them.
+8. **Call → billing.** Existing Zoom webhook → `completed` → auto-charge the **client rate**. Matchy wrap-up card: *"Call ran 47 min → $627 charged. Screening notes summarized — mark client-ready?"*
 
-## Matchy's jobs (in priority order)
+## Pricing rule (must be explicit everywhere)
 
-1. **Compliance screen** — both directions, before anything is stored or sent. Blocks or flags: phone numbers, personal/work email addresses, LinkedIn/Calendly/any scheduling URL, physical addresses, real names when the thread is pre-reveal, client firm name, "let's take this offline / connect directly." Response: hold the message, show the sender exactly what to remove. Deterministic regex first, LLM second; the LLM never gets to *approve* what regex blocked.
-2. **Reply summary** — 2–4 sentences: intent, availability, rate position vs. ours, conflicts/NDAs, open questions, recommended next action. Stored on the message; shown in the thread and on the card.
-3. **Stage tracking** — the existing classifier (`interested / declined / counter_rate / conflict / unclear`) maps to `ExpertStatus` and feeds the pipeline strip. Declined → global suppression list.
-4. **Drafting** — intro draft, and suggested replies when the client opens the composer. Suggestions only.
-5. **Contact discovery loop** — described above; runs without a human.
+ExpertMatch takes **30%**. Two numbers exist per engagement:
+- `clientRate` — what the client pays. Shown to the client everywhere (cards, decision cards, receipts) with "includes ExpertMatch fee." Tier defaults $400 / $600 / $800 are **opening positions**.
+- `expertRate = round(clientRate × 0.70)` — what the expert is offered and paid. Shown only to the expert and to staff.
+
+Rules: the intro never mentions money; the follow-up asks the expert about `expertRate`; negotiation cards show the client `clientRate` (with the implied expert number visible only to staff); auto-billing charges `clientRate` (fixing the current code, which charges `expertRate`); payouts transfer `expertRate`. When an expert counters, Matchy converts: "Scott wants $650/hr → that's $929/hr for you; accept, or offer $600 ($857 to you)?"
+
+## Matchy's jobs (priority order)
+
+1. **Compliance screen** both directions — phone numbers, emails, LinkedIn/Calendly/any link, real names pre-reveal, client firm name, "let's connect directly." Hold + show what to remove. Regex first, LLM second; the LLM never overrides a regex block.
+2. **Reply summary** — intent, availability, rate position (converted to the viewer's side), conflicts, next action. On the message and on the card.
+3. **Stage tracking** — classifier → `ExpertStatus` → pipeline strip. Declined → global do-not-contact.
+4. **Scheduling** — propose times from calendar overlap + stated preferences; book on confirmation.
+5. **Drafting** — intro + follow-up templates filled from the brief; suggested replies on request.
+6. **Contact discovery** — silent, bounded attempts, one send.
+7. **Learning loop** — rejection reasons re-weight the next search; accepted/declined rates per tier and industry tune the opening position; descriptor phrasings that convert get reused. Surfaced to the client as one line: *"You've passed on 4 experts as too junior — I'm weighting VP+ operators next."*
 
 ## Data model (additions)
 
-- `conversation_messages`: `id uuid`, `project_id text`, `expert_id text`, `direction ('outbound'|'inbound')`, `author ('client'|'expert'|'matchy')`, `body_raw text` (inbound only, ciphertext), `body_clean text`, `summary text`, `intent text`, `screen_result jsonb` ({blocked: bool, findings: [...]}) , `resend_message_id text`, `created_at`. RLS: project-member read via `has_project_access(project_id)`, writes service-role only (the relay writes).
-- `contact_candidates` (or a jsonb array on `ProjectExpert`): `{email, source, verificationStatus, confidence, checkedAt, bounced?}`. Start as jsonb on `ProjectExpert.contactCandidates` — no writer outside Matchy.
-- `outreach_suppressions` (being added now): global do-not-contact.
-- New `ExpertStatus` value: `bookmarked` (between `shortlisted` and `contact_found`). Pipeline stage helper (`lib/expertPipeline.ts`) gains it.
-- Reply-to token: reuse `lib/outreachToken.ts` but per-thread, 180-day expiry, and the inbound route validates the sender against `contactEmail`.
+- `conversation_messages`: id, project_id, expert_id, direction, author (`client`|`expert`|`matchy`), body_raw (inbound, ciphertext), body_clean, summary, intent, screen_result jsonb, resend_message_id, created_at. RLS: project-member read via `has_project_access`; writes service-role only.
+- `engagement_events` (the data asset): id, project_id, expert_id, org_id, type (`bookmarked`, `contact_found`, `contact_not_found`, `intro_sent`, `reply_received`, `intent_classified`, `rate_offered`, `rate_countered`, `rate_agreed`, `conflict_flagged`, `times_proposed`, `scheduled`, `completed`, `charged`, `rejected` (+reason), `client_ready`), payload jsonb (numbers, tiers, industries, timings — never free text with PII), created_at. Service-role write, admin read. Every Matchy action emits one.
+- `contactCandidates` jsonb on `ProjectExpert`: [{email, source, verificationStatus, confidence, bounced}]. Staff-only.
+- `ExpertStatus` gains `bookmarked` (after `shortlisted`); `lib/expertPipeline.ts` updated.
+- `clientRate` becomes required on engagement start; `expertRate` derived. Tier defaults seeded from `TIER_PRICING` on bookmark.
+- Per-thread reply-to token (180 days); inbound validates sender.
 
 ## API surface
 
-- `POST /api/projects/[id]/experts/[expertId]/bookmark` — sets `bookmarked`, enqueues discovery.
-- `POST /api/jobs/contact-discovery` — QStash worker.
-- `GET /api/projects/[id]/experts/[expertId]/messages` — thread (redacted per anonymization rules for non-admins).
-- `POST /api/projects/[id]/experts/[expertId]/messages` — client sends; runs screen; 422 `message_blocked` with findings if held.
-- `POST /api/inbound-email` — existing route, rewired: verify → match thread → clean → screen → store → summarize → classify → notify.
-- `POST /api/projects/[id]/experts/[expertId]/messages/draft` — Matchy suggestion (intro or reply).
-- Delete when live: `/api/email-sequence/trigger` email2/email3 paths, `scheduleNextEmail`, the auto-cadence.
+- `POST /api/projects/[id]/experts/[expertId]/bookmark` → sets `bookmarked`, seeds rates from tier, enqueues discovery.
+- `POST /api/jobs/contact-discovery` (QStash worker) → finds + verifies, then sends the intro unless the project's review switch is on (then it drafts and waits).
+- `GET|POST /api/projects/[id]/experts/[expertId]/messages` — thread read (redacted per viewer) / client send (screened; 422 `message_blocked` with findings).
+- `POST /api/inbound-email` — rewired: verify → thread → clean → screen → store → summarize + classify (one LLM call) → stage → emit events → maybe auto-follow-up / propose times.
+- `POST /api/projects/[id]/experts/[expertId]/propose-times` → Matchy computes slots from calendar overlap + preferences and emails the expert.
+- `POST .../messages/draft` → suggested reply.
+- Retire: `/api/email-sequence/trigger` email2/email3, `scheduleNextEmail`, the cadence.
 
 ## UI
 
-- **Matches** (was Source): cards get a bookmark button; bookmarked cards show contact-discovery status and last-message summary.
-- **Conversations** (replaces Outreach + Screen): left list of bookmarked experts with stage pill + unread dot; right pane = thread. Messages show author, time, body, and Matchy's summary card on inbound. Composer with "Ask Matchy for a draft," screen feedback inline, *Schedule call* CTA when Matchy detects agreement. Screening notes + "Mark client-ready" at the bottom of the thread after `completed`.
-- **Dashboard sharing**: already covered by org membership + project collaborators; the Conversations pane respects the same access. Nothing new to build beyond an invite affordance.
-- Pipeline strip stays and becomes the summary of Conversations.
+- **Matches** (was Source): bookmark button; bookmarked cards show a one-line Matchy status and the last summary.
+- **Conversations** (replaces Outreach + Screen): left list of bookmarked experts with stage pill + unread dot; right pane = thread. Inbound messages carry Matchy's summary card; decision cards (rate, times) sit inline with buttons. Composer with "Ask Matchy for a draft"; screen feedback inline. After `completed`: notes + "Mark client-ready" at the bottom of the thread.
+- **Matchy rail**: activity feed + proposals for the project, digest-style. Staff see the expandable "why" (provider, confidence, candidates); clients don't.
+- **Digest email** to the client: replies overnight, decisions waiting, proposed times.
+- Sharing: existing org membership + project collaborators; Conversations respects the same access.
 
 ## Phasing
 
-**Phase 1 — Relay MVP (build after anonymization lands)**
-Messages table, send/receive routes on the existing token plumbing, thread UI, regex compliance screen, Matchy summaries + stage updates, intro draft. Suppression + footer (in progress now). Retire Email 2/3 cadence.
+**Phase 1 — Relay MVP.** Pricing rule (clientRate/expertRate everywhere, billing charges clientRate). `bookmarked` status + bookmark action. Messages + events tables. Intro + follow-up templates with auto-send and per-project review switch. Inbound rewired (verify → screen → summarize → stage → events). Thread UI + Conversations tab. Regex screen. Retire Email 2/3 cadence.
 
-**Phase 2 — Matchy discovery loop**
-Bookmark action, discovery job across Hunter/Snov + verifier, bounce webhook from Resend to retry the next candidate, card status.
+**Phase 2 — Matchy scheduling + discovery loop.** Propose-times from calendar overlap + preferences; book on confirmation; discovery job across providers with bounce retry; card statuses.
 
-**Phase 3 — Polish**
-LLM-assisted screen on top of regex, suggested replies, Schedule-call detection, retire the Screen tab into the thread, notifications (email digest to the client when an expert replies).
+**Phase 3 — Learning + polish.** Rejection re-weighting into sourcing; rate tuning from events; LLM-assisted screen; suggested replies; digest; retire Screen tab into the thread.
 
 ## Decisions taken (change if you disagree)
 
-- Expert side stays email-only. No expert portal for messaging.
-- Client side is in-app only. No "also email me the thread" in v1 (it reopens the leak).
-- Identity reveal both ways at `scheduled`, not before.
-- Rate in the intro is stated as an opening position, never as agreed.
-- Matchy never sends anything on its own except the automated system messages (scheduling links, receipts), which contain no free text from an LLM.
+- Intro and follow-up auto-send by default; "review first" is a per-project switch.
+- Expert side is email-only; client side is in-app only.
+- Identity reveals both ways at `scheduled`.
+- Money is never in the intro; the follow-up asks, never asserts; the two rates never share a message.
+- Matchy never free-writes to an expert without a human-approved draft or a template.
+
+## Open questions for the founder
+
+1. **Firm type wording** in the intro: "a private equity firm" / "a consulting firm" / "a corporate strategy team" — is that the right level of disclosure, or more vague ("an investment firm")?
+2. **Review switch default** for a brand-new client: auto-send (faster) or review-first (safer) for their first project?
+3. **Rate floor/ceiling per tier** for negotiation cards — e.g. Executive $600–$1,000 client-side — so Matchy's suggestions stay in bounds. Give me the three ranges.
+4. **Minimum call length** billed (e.g. 30 min) — currently per-minute from minute one.
+5. **Who is "the client" on a shared dashboard** — any collaborator can send to experts, or only the project owner (collaborators read-only)?
+6. **Digest cadence** — real-time nudge + morning digest, or digest only at first?
 
 ## Risks
 
-- Email cleaning (quoted history, signatures, HTML) is the messy engineering. Use a proven parser, test on real replies before launch.
-- Deliverability: one sending domain, DKIM/SPF/DMARC must be right; suppression must be honored everywhere.
-- Over-blocking: an aggressive screen that stops legitimate content ("my Calendly is…") will frustrate. Show findings, let the sender fix, never silently drop.
-- Cost: one LLM call per inbound message (summary + classify in one prompt) — cheap; the discovery loop's provider API calls are the real spend, cap attempts per expert.
+- Email cleaning (quoted history, signatures) is the messy engineering — test on real replies.
+- Deliverability: single sending domain; DKIM/SPF/DMARC must be right; suppression honored everywhere.
+- Over-blocking: the screen shows findings and lets the sender fix; never silently drops.
+- Cost: one LLM call per inbound message; provider API calls in discovery are the real spend — cap attempts per expert.
