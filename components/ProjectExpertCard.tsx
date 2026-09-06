@@ -1,17 +1,26 @@
 'use client';
 
-import { useState, useEffect, useRef } from 'react';
+import { useState } from 'react';
 import type { ProjectExpert, ExpertStatus, RejectionReason } from '../types';
 import { classifySeniority, RATE_DISCLAIMER, TIER_PRICING } from '../lib/seniorityClassifier';
 import ExpertCard from './ExpertCard';
 import { STATUS_META, EXPERT_STATUSES } from '../lib/expertPipeline';
+import { CLIENT_STATUS_META, hasConversation } from './matchyStatus';
+import MatchyLine from './MatchyLine';
+import {
+  bookmarkExpert,
+  unbookmarkExpert,
+  bookmarkLine,
+  firstNameOf,
+  formatRate,
+} from '../lib/matchyClient';
 
 const REJECTION_REASONS: Array<{ value: RejectionReason; label: string }> = [
   { value: 'too_generic',             label: 'Too Generic'              },
   { value: 'wrong_industry',          label: 'Wrong Industry'           },
   { value: 'wrong_geography',         label: 'Wrong Geography'          },
   { value: 'weak_evidence',           label: 'Weak Evidence'            },
-  { value: 'no_contact_path',         label: 'No Contact Path'          },
+  { value: 'no_contact_path',         label: "Couldn't reach them"      },
   { value: 'conflict_risk',           label: 'Conflict Risk'            },
   { value: 'not_senior_enough',       label: 'Not Senior Enough'        },
   { value: 'too_academic',            label: 'Too Academic'             },
@@ -38,11 +47,27 @@ interface Props {
   onUpdate: (updated: ProjectExpert) => void;
   onRemove: (expertId: string) => void;
   onInterviewGuide: (expertId: string) => void;
+  /** Owner or staff. Collaborators browse Matches but cannot start outreach. */
+  canBookmark?: boolean;
+  /** Staff see the raw status machinery; clients see plain stages only. */
+  isAdmin?: boolean;
+  /** Jump to this expert's thread after a bookmark starts the engagement. */
+  onOpenConversation?: (expertId: string) => void;
 }
 
 // ─── Component ────────────────────────────────────────────────────────────────
 
-export default function ProjectExpertCard({ projectExpert, projectId, query, onUpdate, onRemove, onInterviewGuide }: Props) {
+export default function ProjectExpertCard({
+  projectExpert,
+  projectId,
+  query,
+  onUpdate,
+  onRemove,
+  onInterviewGuide,
+  canBookmark = true,
+  isAdmin = false,
+  onOpenConversation,
+}: Props) {
   const { expert, status, rejectionReason, rejectionNotes, userNotes, contactEmail } = projectExpert;
   // Prefer the tier persisted at sourcing time — lib/redactExpert.ts blanks
   // `title` for anonymized experts, so classifying from it would read them all
@@ -55,14 +80,57 @@ export default function ProjectExpertCard({ projectExpert, projectId, query, onU
   const [noteText,         setNoteText]         = useState('');
   const [rejNoteText,      setRejNoteText]      = useState(rejectionNotes ?? '');
   const [rejNoteSaving,    setRejNoteSaving]    = useState(false);
-  const [showOutreachConfirm, setShowOutreachConfirm] = useState(false);
-  const outreachConfirmTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Matchy's one line about this expert — the outcome of the last thing it did.
+  const [matchyNote, setMatchyNote] = useState<{ text: string; tone: 'default' | 'quiet' | 'alert' } | null>(null);
+  const [bookmarking, setBookmarking] = useState(false);
+  const [confirmRemove, setConfirmRemove] = useState(false);
 
-  useEffect(() => {
-    return () => {
-      if (outreachConfirmTimer.current) clearTimeout(outreachConfirmTimer.current);
-    };
-  }, []);
+  const firstName  = firstNameOf(expert.name);
+  // What the client pays. Falls back to the tier's opening position until the
+  // engagement seeds a number. `expertRate` is never read here.
+  const clientRate = projectExpert.clientRate ?? pricing.callRate;
+
+  // ── Bookmark: the one action that starts an engagement ─────────────────────
+
+  async function handleBookmark() {
+    if (bookmarking) return;
+    setBookmarking(true);
+    setMatchyNote(null);
+    // Optimistic — the button should never look like it did nothing.
+    const now = Date.now();
+    onUpdate({ ...projectExpert, status: 'bookmarked', updatedAt: now });
+
+    const res = await bookmarkExpert(projectId, expert.id);
+    setBookmarking(false);
+
+    if (!res.ok) {
+      // Put the card back the way it was and say what happened.
+      onUpdate({ ...projectExpert, updatedAt: now });
+      setMatchyNote({ text: res.message, tone: 'alert' });
+      return;
+    }
+
+    onUpdate(res.projectExpert);
+    setMatchyNote({
+      text: bookmarkLine(res.outcome, firstName),
+      tone: res.outcome === 'intro_sent' || res.outcome === 'intro_drafted' ? 'default' : 'quiet',
+    });
+  }
+
+  async function handleUnbookmark() {
+    if (bookmarking) return;
+    setBookmarking(true);
+    const res = await unbookmarkExpert(projectId, expert.id);
+    setBookmarking(false);
+
+    if (!res.ok) {
+      setMatchyNote({ text: res.message, tone: 'alert' });
+      return;
+    }
+    setMatchyNote(null);
+    if (res.projectExpert) onUpdate(res.projectExpert);
+    else onUpdate({ ...projectExpert, status: 'shortlisted', updatedAt: Date.now() });
+  }
 
   async function patchExpert(patch: Record<string, unknown>) {
     setSaving(true);
@@ -103,12 +171,6 @@ export default function ProjectExpertCard({ projectExpert, projectId, query, onU
       ...(next === 'rejected' ? { rejectedAt: now } : { rejectionReason: undefined, rejectionNotes: undefined }),
       ...(next === 'contacted' && !projectExpert.contactedAt ? { contactedAt: now } : {}),
     });
-    // Show "Added to Outreach" confirmation for 3 seconds
-    if (next === 'shortlisted') {
-      if (outreachConfirmTimer.current) clearTimeout(outreachConfirmTimer.current);
-      setShowOutreachConfirm(true);
-      outreachConfirmTimer.current = setTimeout(() => setShowOutreachConfirm(false), 3000);
-    }
   }
 
   async function saveRejectionNote() {
@@ -131,7 +193,7 @@ export default function ProjectExpertCard({ projectExpert, projectId, query, onU
   }
 
   async function handleRemove() {
-    if (!window.confirm('Remove this expert from the project?')) return;
+    setConfirmRemove(false);
     setRemoving(true);
     try {
       await fetch(`/api/projects/${projectId}/experts/${expert.id}`, { method: 'DELETE' });
@@ -158,65 +220,85 @@ export default function ProjectExpertCard({ projectExpert, projectId, query, onU
           }`} style={{ letterSpacing: '0.1em' }}>
             {pricing.label}
           </span>
-          <span className="text-[9px] text-muted cursor-help" title={RATE_DISCLAIMER}>${pricing.callRate.toLocaleString('en-US')}/hr</span>
+          {status === 'bookmarked' || hasConversation(status) ? (
+            <span className="text-[9px] text-muted">
+              {formatRate(clientRate)}/hr · includes ExpertMatch fee
+            </span>
+          ) : (
+            <span className="text-[9px] text-muted cursor-help" title={RATE_DISCLAIMER}>
+              {formatRate(clientRate)}/hr
+            </span>
+          )}
           {projectExpert.agreedRate != null && (
-            <span className="text-[9px] text-amber-700 font-medium">Agreed: ${projectExpert.agreedRate}/call</span>
+            <span className="text-[9px] text-amber-700 font-medium">Agreed: {formatRate(projectExpert.agreedRate)}/hr</span>
           )}
         </div>
 
-        {/* ── Primary actions: Shortlist / Reject (prominent, top row) ── */}
-        {status !== 'shortlisted' && status !== 'rejected' ? (
+        {/* ── Primary actions: Bookmark / Pass ──
+            Bookmarking is what starts the engagement: Matchy finds the address
+            and sends the intro (docs/MATCHY_SPEC.md, "Workflow"). */}
+        {status === 'discovered' || status === 'shortlisted' ? (
           <div className="flex gap-2">
             <button
-              onClick={() => handleStatusChange('shortlisted')}
-              disabled={saving}
-              className="flex-1 text-[11px] uppercase tracking-widest border-2 border-amber-400 text-amber-700 bg-amber-50 hover:bg-amber-100 py-2 font-medium transition-colors disabled:opacity-40"
+              onClick={handleBookmark}
+              disabled={saving || bookmarking || !canBookmark}
+              className="flex-1 text-[11px] uppercase tracking-widest border-2 border-navy text-navy bg-navy/5 hover:bg-navy hover:text-cream py-2 font-medium transition-colors disabled:opacity-40"
               style={{ letterSpacing: '0.1em' }}
+              title={canBookmark ? undefined : 'Only the project owner can start outreach.'}
             >
-              ★ Shortlist
+              {bookmarking ? 'Bookmarking…' : 'Bookmark'}
             </button>
             <button
               onClick={() => handleStatusChange('rejected')}
-              disabled={saving}
-              className="flex-1 text-[11px] uppercase tracking-widest border-2 border-red-300 text-red-600 bg-red-50 hover:bg-red-100 py-2 font-medium transition-colors disabled:opacity-40"
+              disabled={saving || bookmarking}
+              className="flex-1 text-[11px] uppercase tracking-widest border-2 border-frame text-muted hover:text-navy hover:border-navy py-2 font-medium transition-colors disabled:opacity-40"
               style={{ letterSpacing: '0.1em' }}
             >
-              ✗ Reject
+              Pass
             </button>
           </div>
-        ) : status === 'shortlisted' ? (
-          <div className="space-y-1.5">
-            <div className="flex items-center gap-2">
-              <span className="flex-1 text-center text-[11px] uppercase tracking-widest border-2 border-amber-400 text-amber-700 bg-amber-50 py-2 font-medium">
-                ★ Shortlisted
-              </span>
+        ) : status === 'bookmarked' ? (
+          <div className="flex items-center gap-2">
+            <span className="flex-1 text-center text-[11px] uppercase tracking-widest border-2 border-navy text-navy bg-navy/5 py-2 font-medium">
+              Bookmarked
+            </span>
+            {canBookmark && (
               <button
-                onClick={() => handleStatusChange('discovered')}
-                disabled={saving}
+                onClick={handleUnbookmark}
+                disabled={bookmarking}
                 className="text-[10px] uppercase tracking-widest text-muted hover:text-navy border border-frame px-2.5 py-2 transition-colors disabled:opacity-40"
-                title="Move back to discovered"
+                title="Undo the bookmark"
               >
                 Undo
               </button>
-            </div>
-            {showOutreachConfirm && (
-              <p className="text-[10px] text-amber-700 text-center" style={{ transition: 'opacity 0.3s', opacity: showOutreachConfirm ? 1 : 0 }}>
-                → Added to Outreach
-              </p>
+            )}
+          </div>
+        ) : status !== 'rejected' ? (
+          <div className="flex items-center gap-2">
+            <span className={`flex-1 text-center text-[11px] px-2 py-2 border font-medium uppercase tracking-wider ${CLIENT_STATUS_META[status].classes}`}>
+              {CLIENT_STATUS_META[status].label}
+            </span>
+            {onOpenConversation && (
+              <button
+                onClick={() => onOpenConversation(expert.id)}
+                className="text-[10px] uppercase tracking-widest text-muted hover:text-navy border border-frame px-2.5 py-2 transition-colors"
+              >
+                Open
+              </button>
             )}
           </div>
         ) : (
           /* rejected */
           <div className="space-y-2">
             <div className="flex items-center gap-2">
-              <span className="flex-1 text-center text-[11px] uppercase tracking-widest border-2 border-red-300 text-red-600 bg-red-50 py-2 font-medium">
-                ✗ Rejected
+              <span className="flex-1 text-center text-[11px] uppercase tracking-widest border-2 border-slate-200 text-slate-500 bg-slate-50 py-2 font-medium">
+                Passed
               </span>
               <button
                 onClick={() => handleStatusChange('discovered')}
                 disabled={saving}
                 className="text-[10px] uppercase tracking-widest text-muted hover:text-navy border border-frame px-2.5 py-2 transition-colors disabled:opacity-40"
-                title="Move back to discovered"
+                title="Put them back in Matches"
               >
                 Undo
               </button>
@@ -246,7 +328,7 @@ export default function ProjectExpertCard({ projectExpert, projectId, query, onU
                       ? 'Note the conflict (not shared externally)…'
                       : rejectionReason === 'better_option_available'
                       ? 'Who is the better option?'
-                      : 'Add a note on this rejection…'
+                      : 'Why did you pass on them?'
                   }
                   rows={2}
                   disabled={rejNoteSaving}
@@ -257,8 +339,14 @@ export default function ProjectExpertCard({ projectExpert, projectId, query, onU
           </div>
         )}
 
-        {/* ── Status detail row (for post-shortlist statuses) ── */}
-        {status !== 'discovered' && status !== 'shortlisted' && status !== 'rejected' && (
+        {/* ── Matchy's line — the outcome of the last thing it did here ── */}
+        {matchyNote && (
+          <MatchyLine variant="card" tone={matchyNote.tone}>{matchyNote.text}</MatchyLine>
+        )}
+
+        {/* ── Status machinery — staff only. Clients get the plain stage pill
+              above and the thread in Conversations. ── */}
+        {isAdmin && status !== 'discovered' && status !== 'shortlisted' && status !== 'rejected' && (
           <div className="space-y-1.5">
             <div className="flex items-center gap-2">
             <span className={`text-[10px] px-2 py-0.5 border font-medium uppercase tracking-wider shrink-0 ${STATUS_META[status].classes}`}>
@@ -284,8 +372,10 @@ export default function ProjectExpertCard({ projectExpert, projectId, query, onU
           </div>
         )}
 
-        {/* ── Contact email badge ── */}
-        {contactEmail && (
+        {/* ── Contact email badge — staff only. A client never sees an
+              address (docs/MATCHY_SPEC.md); redaction already strips it, and
+              this gate makes that visible at the render site. ── */}
+        {isAdmin && contactEmail && (
           <div className="flex items-center gap-1.5 flex-wrap">
             <span className="text-[9px] uppercase tracking-widest text-muted font-medium">Email:</span>
             <a
@@ -317,14 +407,33 @@ export default function ProjectExpertCard({ projectExpert, projectId, query, onU
           >
             Interview guide →
           </button>
-          <button
-            onClick={handleRemove}
-            disabled={removing}
-            className="text-[10px] uppercase tracking-widest text-muted hover:text-red-500 transition-colors disabled:opacity-40"
-            title="Remove from project"
-          >
-            Remove
-          </button>
+          {confirmRemove ? (
+            <span className="flex items-center gap-2">
+              <span className="text-[10px] text-muted">Remove from this project?</span>
+              <button
+                onClick={handleRemove}
+                disabled={removing}
+                className="text-[10px] uppercase tracking-widest text-red-600 border border-red-200 hover:bg-red-50 px-2 py-0.5 transition-colors disabled:opacity-40"
+              >
+                {removing ? 'Removing…' : 'Remove'}
+              </button>
+              <button
+                onClick={() => setConfirmRemove(false)}
+                className="text-[10px] uppercase tracking-widest text-muted hover:text-navy transition-colors"
+              >
+                Cancel
+              </button>
+            </span>
+          ) : (
+            <button
+              onClick={() => setConfirmRemove(true)}
+              disabled={removing}
+              className="text-[10px] uppercase tracking-widest text-muted hover:text-red-500 transition-colors disabled:opacity-40"
+              title="Remove from project"
+            >
+              Remove
+            </button>
+          )}
         </div>
 
         {noteOpen && (

@@ -1,6 +1,6 @@
 'use client';
 
-// Client-facing view of an expert shortlist.
+// Client-facing summary of the experts on a project.
 //
 // Security model:
 // - Redaction is SERVER-SIDE. GET /api/projects/[id] runs the project through
@@ -69,10 +69,18 @@ const VALUE_CHAIN_LABEL: Record<string, string> = {
   other:                  'Other',
 };
 
-// Statuses that belong on a client shortlist. This is the presentation
+// Statuses that belong on the shareable summary. This is the presentation
 // allowlist — the security filtering already happened server-side in
 // lib/redactExpert.ts before this data reached the browser.
-const CLIENT_STATUSES     = new Set(['shortlisted', 'contacted', 'replied', 'scheduled', 'completed']);
+//
+// Everything from 'bookmarked' on is included: under Matchy a bookmark starts
+// the engagement, so an expert the client has committed to must not vanish
+// from the summary while Matchy is mid-conversation with them.
+const CLIENT_STATUSES     = new Set([
+  'shortlisted', 'bookmarked', 'contact_found', 'outreach_drafted', 'contacted',
+  'email2_sent', 'followup_sent', 'scheduling_sent', 'replied', 'rate_negotiation',
+  'conflict_flagged', 'scheduled', 'completed',
+]);
 const CLIENT_READY_SCREEN = new Set(['client_ready', 'screened']);
 
 /**
@@ -397,7 +405,7 @@ export default function ClientViewPage() {
             <div className="h-8 w-px bg-frame" />
             <p className="text-xs text-navy/70 leading-relaxed">
               {view.experts.length === 0
-                ? 'No shortlisted experts yet — check back soon.'
+                ? 'No experts here yet — check back soon.'
                 : `${view.experts.length} expert${view.experts.length !== 1 ? 's' : ''} selected for your review, each with direct domain relevance to your research question.`
               }
             </p>

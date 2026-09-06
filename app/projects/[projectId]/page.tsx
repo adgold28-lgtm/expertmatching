@@ -21,31 +21,48 @@ import PipelineBar from '../../../components/PipelineBar';
 import ClientReadyCard from '../../../components/ClientReadyCard';
 import ExpertCard from '../../../components/ExpertCard';
 import ClientSchedulingSection from '../../../components/ClientSchedulingSection';
+import ConversationsPanel from '../../../components/ConversationsPanel';
 import { useFocusTrap } from '../../../lib/useFocusTrap';
 import { pipelineStage, STAGE_META, type PipelineStage } from '../../../lib/expertPipeline';
+import { hasConversation } from '../../../components/matchyStatus';
 
 // ─── Workflow step config ─────────────────────────────────────────────────────
 
-type WorkflowStep = 'brief' | 'source' | 'outreach' | 'screen' | 'deliver';
+// The client's workflow is Brief -> Matches -> Conversations
+// (docs/MATCHY_SPEC.md, "The idea in one paragraph"). Outreach, Screen and
+// Deliver are the retired staff steps: still here, still working, but only
+// rendered for role 'admin'.
+type WorkflowStep = 'brief' | 'matches' | 'conversations' | 'outreach' | 'screen' | 'deliver';
 
-const VALID_STEPS = new Set<string>(['brief', 'source', 'outreach', 'screen', 'deliver']);
+const VALID_STEPS = new Set<string>(['brief', 'matches', 'conversations', 'outreach', 'screen', 'deliver']);
 
-const STEPS: Array<{ id: WorkflowStep; label: string }> = [
-  { id: 'brief',    label: 'Brief'    },
-  { id: 'source',   label: 'Source'   },
+/** Old ?tab= values still in bookmarks and shared links. */
+const LEGACY_TABS: Record<string, WorkflowStep> = { source: 'matches' };
+
+const CLIENT_STEPS: Array<{ id: WorkflowStep; label: string }> = [
+  { id: 'brief',         label: 'Brief'         },
+  { id: 'matches',       label: 'Matches'       },
+  { id: 'conversations', label: 'Conversations' },
+];
+
+const STAFF_STEPS: Array<{ id: WorkflowStep; label: string }> = [
   { id: 'outreach', label: 'Outreach' },
   { id: 'screen',   label: 'Screen'   },
   { id: 'deliver',  label: 'Deliver'  },
 ];
+
+function stepsFor(role: 'admin' | 'user'): Array<{ id: WorkflowStep; label: string }> {
+  return role === 'admin' ? [...CLIENT_STEPS, ...STAFF_STEPS] : CLIENT_STEPS;
+}
 
 // Every status that belongs to the outreach cohort. Mid-pipeline reply states
 // (email2_sent → rejected_after_outreach) must be listed here or those experts
 // vanish from the Outreach grid. rejected_after_outreach stays visible — it is
 // an outcome of outreach, styled as declined.
 const OUTREACH_STATUSES: ExpertStatus[] = [
-  'shortlisted', 'contact_found', 'outreach_drafted', 'contacted', 'email2_sent',
-  'scheduling_sent', 'replied', 'rate_negotiation', 'conflict_flagged',
-  'scheduled', 'completed', 'rejected_after_outreach',
+  'shortlisted', 'bookmarked', 'contact_found', 'outreach_drafted', 'contacted',
+  'email2_sent', 'followup_sent', 'scheduling_sent', 'replied', 'rate_negotiation',
+  'conflict_flagged', 'scheduled', 'completed', 'rejected_after_outreach',
 ];
 
 // Experts whose vetting call is booked, done, or being arranged off a reply —
@@ -62,9 +79,13 @@ function stepSummary(project: Project, step: WorkflowStep): StepSummary {
   switch (step) {
     case 'brief':
       return { text: 'Research question defined', done: true };
-    case 'source': {
+    case 'matches': {
       const n = experts.filter(e => e.status !== 'rejected').length;
-      return { text: `${n} discovered`, done: n > 0 };
+      return { text: `${n} candidate${n !== 1 ? 's' : ''}`, done: n > 0 };
+    }
+    case 'conversations': {
+      const n = experts.filter(e => hasConversation(e.status)).length;
+      return { text: `${n} conversation${n !== 1 ? 's' : ''}`, done: n > 0 };
     }
     case 'outreach': {
       const n = experts.filter(e => OUTREACH_STATUSES.includes(e.status)).length;
@@ -85,42 +106,44 @@ function stepSummary(project: Project, step: WorkflowStep): StepSummary {
   }
 }
 
-type NextActionId = 'complete_brief' | 'source_experts' | 'screen_experts' | 'start_outreach' | 'export_brief';
+type NextActionId = 'complete_brief' | 'find_experts' | 'bookmark_experts' | 'open_conversations' | 'screen_experts';
 interface NextAction { id: NextActionId; step?: WorkflowStep; message: string; cta: string }
 
-function getNextAction(project: Project): NextAction | null {
+/**
+ * The one thing worth doing next. Client-facing by default; the staff-only
+ * screening prompt is gated on `isAdmin` so a client is never handed an
+ * ExpertMatch operator's task (docs/COPY_AUDIT.md 7.10, 7.6).
+ */
+function getNextAction(project: Project, isAdmin: boolean): NextAction | null {
   const { researchQuestion, experts } = project;
   const briefComplete = !!researchQuestion || experts.length > 0;
   if (!briefComplete) {
     return { id: 'complete_brief', step: 'brief', message: 'Describe the business problem and the type of expert you need.', cta: 'Complete brief' };
   }
-  const active      = experts.filter(e => e.status !== 'rejected');
+  const active = experts.filter(e => e.status !== 'rejected');
   if (active.length === 0) {
-    return { id: 'source_experts', step: 'source', message: 'No experts discovered yet. Source candidates to fill the pipeline.', cta: 'Go to Source' };
+    return { id: 'find_experts', step: 'matches', message: 'No candidates yet. Run sourcing to see who fits.', cta: 'Find experts' };
   }
-  const inOutreach = active.filter(e => OUTREACH_STATUSES.includes(e.status));
-  if (inOutreach.length === 0) {
-    return { id: 'source_experts', step: 'source', message: 'Shortlist candidates from the discovery pool — they appear in Outreach immediately.', cta: 'Go to Source' };
-  }
-  // Experts who've had their vetting call and need a screening outcome recorded
-  const callDone   = active.filter(e => SCREEN_STATUSES.includes(e.status));
-  const postScreen = active.filter(e =>
-    e.screeningStatus && e.screeningStatus !== 'not_screened' && e.screeningStatus !== 'vetting_questions_ready',
-  );
-  if (callDone.length > 0 && postScreen.length === 0) {
+  const engaged = active.filter(e => hasConversation(e.status));
+  if (engaged.length === 0) {
     return {
-      id: 'screen_experts', step: 'screen',
-      message: `${callDone.length} expert${callDone.length !== 1 ? 's' : ''} ready for vetting call review.`,
-      cta: 'Record outcomes',
+      id: 'bookmark_experts', step: 'matches',
+      message: "Bookmark the candidates worth talking to — we'll reach out for you.",
+      cta: 'Go to Matches',
     };
   }
-  const clientReady = active.filter(e => e.screeningStatus === 'client_ready' || e.recommendToClient);
-  if (clientReady.length > 0) {
-    return {
-      id: 'export_brief',
-      message: `${clientReady.length} expert${clientReady.length !== 1 ? 's' : ''} are client-ready. Export the brief to deliver.`,
-      cta: 'Export brief',
-    };
+  if (isAdmin) {
+    const callDone   = active.filter(e => SCREEN_STATUSES.includes(e.status));
+    const postScreen = active.filter(e =>
+      e.screeningStatus && e.screeningStatus !== 'not_screened' && e.screeningStatus !== 'vetting_questions_ready',
+    );
+    if (callDone.length > 0 && postScreen.length === 0) {
+      return {
+        id: 'screen_experts', step: 'screen',
+        message: `${callDone.length} expert${callDone.length !== 1 ? 's' : ''} ready for vetting call review.`,
+        cta: 'Record outcomes',
+      };
+    }
   }
   return null;
 }
@@ -389,7 +412,7 @@ function BriefSection({
         const d = await res.json() as { project?: Project };
         if (d.project) onSave(d.project);
       }
-      onStepChange('source');
+      onStepChange('matches');
     } finally {
       setSaving(false);
     }
@@ -428,7 +451,7 @@ function BriefSection({
       }
 
       // Switch to Source tab — the run continues in the background either way.
-      onStepChange('source');
+      onStepChange('matches');
     } catch (err) {
       setSourceError(err instanceof Error ? err.message : 'Sourcing failed. Please try again.');
     } finally {
@@ -507,7 +530,7 @@ function BriefSection({
             className="text-[10px] uppercase tracking-widest px-5 py-2.5 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
             style={{ background: '#0B1F3B', color: '#C6A75E', letterSpacing: '0.14em', minHeight: '40px' }}
           >
-            {saving ? 'Saving…' : 'Complete Brief →'}
+            {saving ? 'Saving…' : 'Save brief'}
           </button>
           <button
             onClick={handleSourceExperts}
@@ -521,13 +544,12 @@ function BriefSection({
                 Sourcing experts…
               </>
             ) : (
-              <>Source Experts →</>
+              <>Find experts →</>
             )}
           </button>
         </div>
         <p className="text-[10px] text-muted" style={{ fontWeight: 300 }}>
-          Complete Brief saves and moves to Source. Source Experts saves and runs AI discovery in the background —
-          you can keep working, or close the tab and come back.
+          We&apos;ll keep looking in the background — close the tab and come back whenever.
         </p>
         {(sourceError || sourcingError) && (
           <p className="text-xs text-red-600 border border-red-200 bg-red-50 px-3 py-2">{sourceError || sourcingError}</p>
@@ -537,7 +559,7 @@ function BriefSection({
       {/* ── Danger zone ── */}
       <div className="pt-6 border-t border-frame">
         <p className="text-[10px] uppercase tracking-widest text-muted font-medium mb-3" style={{ letterSpacing: '0.14em' }}>
-          Danger Zone
+          Delete this project
         </p>
         <button
           onClick={onDeleteStart}
@@ -714,13 +736,10 @@ function SourcePanel({
       <div className="px-5 py-4 border-b border-frame flex items-start justify-between gap-4">
         <div>
           <p className="text-[10px] uppercase tracking-widest text-navy font-semibold" style={{ letterSpacing: '0.16em' }}>
-            Source Experts for This Project
+            Find experts
           </p>
           <p className="text-[11px] text-muted mt-1 leading-relaxed">
-            Experts are sourced against the full brief — key questions, hypotheses, required expertise, and exclusions.
-            {depth > 0 && (
-              <span className="ml-1 text-navy/60">({depth} brief context field{depth !== 1 ? 's' : ''} active)</span>
-            )}
+            We work from your brief — the business problem and the kind of person you want to talk to.
           </p>
         </div>
         {stage === 'idle' || stage === 'error' ? (
@@ -732,7 +751,7 @@ function SourcePanel({
             <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
               <path strokeLinecap="round" strokeLinejoin="round" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
             </svg>
-            {stage === 'error' ? 'Retry' : 'Source Experts'}
+            {stage === 'error' ? 'Retry' : 'Find experts'}
           </button>
         ) : stage === 'results' ? (
           <button
@@ -740,7 +759,7 @@ function SourcePanel({
             className="shrink-0 text-[10px] uppercase tracking-widest text-muted hover:text-navy border border-frame hover:border-navy px-4 py-2 transition-colors whitespace-nowrap"
             style={{ letterSpacing: '0.12em' }}
           >
-            Re-source
+            Look again
           </button>
         ) : null}
       </div>
@@ -763,7 +782,7 @@ function SourcePanel({
           <span className="inline-block w-4 h-4 border border-navy border-t-transparent rounded-full animate-spin shrink-0" />
           <RotatingLoadingMessage />
           <p className="text-[10px] text-muted/70 text-center max-w-xs leading-relaxed">
-            This runs on our servers and takes a few minutes. You can switch tabs, close this page, and come back.
+            This takes a few minutes. Close the tab if you like — we&apos;ll keep going.
           </p>
         </div>
       )}
@@ -783,7 +802,7 @@ function SourcePanel({
                 <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126zM12 15.75h.007v.008H12v-.008z" />
               </svg>
               <p className="text-[11px] text-amber-700 leading-relaxed">
-                Limited direct expert pool. Showing direct matches first — adjacent material and domain perspectives appear below.
+                Few exact matches for this one. The closest fits are first; related perspectives are below.
               </p>
             </div>
           )}
@@ -791,16 +810,16 @@ function SourcePanel({
           <div className="px-5 py-3 border-b border-frame/60">
             <p className="text-[10px] text-muted">
               {sourcedCoreCount > 0
-                ? `${sourcedCoreCount} core expert${sourcedCoreCount !== 1 ? 's' : ''} in the discovery pool below.`
-                : 'No core experts from the last run.'}
-              {adjacentResults.length > 0 && ' Adjacent perspectives are listed below — add the ones worth pursuing.'}
+                ? `${sourcedCoreCount} direct match${sourcedCoreCount !== 1 ? 'es' : ''} below.`
+                : 'No direct matches this time.'}
+              {adjacentResults.length > 0 && ' Related perspectives are listed below — add the ones worth pursuing.'}
             </p>
           </div>
           {/* Adjacent count / Add All */}
           {adjacentResults.length > 0 && pendingCount > 0 && (
             <div className="px-5 py-3 border-b border-frame/60 flex items-center justify-between gap-4">
               <p className="text-[10px] text-muted">
-                {pendingCount} adjacent candidate{pendingCount !== 1 ? 's' : ''} not yet added
+                {pendingCount} related candidate{pendingCount !== 1 ? 's' : ''} not yet added
               </p>
               <button
                 onClick={addAll}
@@ -817,10 +836,10 @@ function SourcePanel({
             <div className="border-t border-frame">
               <div className="px-5 py-3 bg-amber-50/50 border-b border-amber-100/80">
                 <p className="text-[10px] uppercase tracking-widest text-amber-700 font-semibold" style={{ letterSpacing: '0.14em' }}>
-                  Adjacent Perspectives
+                  Related Perspectives
                 </p>
                 <p className="text-[11px] text-amber-700/70 mt-0.5 leading-relaxed">
-                  These candidates may not directly own the primary domain, but can help evaluate material, technical, or commercialization pathways.
+                  Not a direct match, but close enough to be useful — suppliers, buyers, regulators, adjacent operators.
                 </p>
               </div>
               <div className="divide-y divide-frame/60">
@@ -904,18 +923,26 @@ function EmptyStep({ message, action }: { message: string; action?: React.ReactN
 // ─── Source list controls (sort + filters) ────────────────────────────────────
 
 type ExpertCategory     = Expert['category'];
-type SourceStatusFilter = 'all' | 'discovered' | 'shortlisted';
+/** 'new' is anything not yet bookmarked; 'bookmarked' is anything engaged. */
+type SourceStatusFilter = 'all' | 'new' | 'bookmarked';
 
 /** Per-browser memory of the discovery-pool sort choice. */
 const SOURCE_SORT_KEY = 'expertmatch.source.sort';
 
 const CATEGORY_OPTIONS: readonly ExpertCategory[]     = ['Operator', 'Advisor', 'Outsider'];
-const STATUS_OPTIONS:   readonly SourceStatusFilter[] = ['all', 'discovered', 'shortlisted'];
+const STATUS_OPTIONS:   readonly SourceStatusFilter[] = ['all', 'new', 'bookmarked'];
 const STATUS_LABELS: Record<SourceStatusFilter, string> = {
-  all:         'All',
-  discovered:  'Discovered',
-  shortlisted: 'Shortlisted',
+  all:        'All',
+  new:        'New',
+  bookmarked: 'Bookmarked',
 };
+
+/** Whether an expert belongs in the chosen chip. */
+function matchesStatusFilter(status: ExpertStatus, filter: SourceStatusFilter): boolean {
+  if (filter === 'all')        return true;
+  if (filter === 'bookmarked') return hasConversation(status);
+  return status === 'discovered' || status === 'shortlisted';
+}
 
 /** One chip in a filter group. Mirrors the PipelineBar segment: selected reads as cream + navy rule. */
 function FilterChip({
@@ -1344,6 +1371,13 @@ function ShareModal({
 
           {error && <p className="text-[11px] text-red-600">{error}</p>}
 
+          {/* What sharing actually grants — a collaborator who does not know
+              they are read-only will try to message an expert and fail
+              (docs/COPY_AUDIT.md 7.101). */}
+          <p className="text-[11px] text-muted leading-relaxed">
+            Collaborators can see everything and add notes. Only you can bookmark experts and write to them.
+          </p>
+
           {collaborators.length > 0 ? (
             <div className="space-y-2">
               <p className="text-[10px] uppercase tracking-widest text-muted" style={{ letterSpacing: '0.14em' }}>
@@ -1380,8 +1414,9 @@ function ProjectPageInner() {
   const projectId = params.projectId as string;
 
   // Derive initial step from ?tab= param, default to 'brief'
-  const tabParam = searchParams.get('tab') ?? '';
-  const initialStep: WorkflowStep = VALID_STEPS.has(tabParam) ? (tabParam as WorkflowStep) : 'brief';
+  const tabParam     = searchParams.get('tab') ?? '';
+  const resolvedTab  = LEGACY_TABS[tabParam] ?? tabParam;
+  const initialStep: WorkflowStep = VALID_STEPS.has(resolvedTab) ? (resolvedTab as WorkflowStep) : 'brief';
 
   const [project,     setProject]     = useState<Project | null>(null);
   const [loading,     setLoading]     = useState(true);
@@ -1547,13 +1582,21 @@ function ProjectPageInner() {
     );
   }
 
-  const nextAction        = getNextAction(project);
+  const isAdmin           = currentUserRole === 'admin';
+  const isOwner           = project.ownerEmail === currentUserEmail;
+  // Only the owner (or staff) may start outreach or write to an expert
+  // (docs/MATCHY_SPEC.md, founder answer 5). Collaborators read.
+  const canSend           = isAdmin || isOwner;
+  const steps             = stepsFor(currentUserRole);
+  const nextAction        = getNextAction(project, isAdmin);
+  // A deep link to a staff tab must not strand a client on a blank pane.
+  const viewStep: WorkflowStep = steps.some(x => x.id === activeStep) ? activeStep : 'brief';
   const sourceExperts     = project.experts.filter(e => e.status !== 'rejected');
   // Category + status narrow the pool first; tier counts are then computed over
   // what's left, so a chip's count always equals what clicking it would show.
   const sourceCohort = sourceExperts.filter(pe =>
     (categoryFilter === 'all' || pe.expert.category === categoryFilter) &&
-    (statusFilter   === 'all' || pe.status === statusFilter)
+    matchesStatusFilter(pe.status, statusFilter)
   );
   const sourceTierCounts: Record<SeniorityTier | 'all', number> = {
     all: sourceCohort.length, executive: 0, senior: 0, mid: 0,
@@ -1600,9 +1643,9 @@ function ProjectPageInner() {
             rel="noopener"
             className="shrink-0 text-[10px] uppercase tracking-widest text-gold/50 hover:text-gold/80 transition-colors hidden sm:block"
             style={{ letterSpacing: '0.12em' }}
-            title="Open client-safe view (no internal notes)"
+            title="A read-only summary you can share"
           >
-            Client View ↗
+            Shareable summary ↗
           </Link>
           {(currentUserRole === 'admin' || project.ownerEmail === currentUserEmail) && (
             <button
@@ -1651,9 +1694,9 @@ function ProjectPageInner() {
             </div>
           )}
           <div className="order-1 flex overflow-x-auto min-w-0">
-            {STEPS.map((step, idx) => {
+            {steps.map((step, idx) => {
               const summary  = stepSummary(project, step.id);
-              const isActive = activeStep === step.id;
+              const isActive = viewStep === step.id;
               return (
                 <button
                   key={step.id}
@@ -1690,25 +1733,25 @@ function ProjectPageInner() {
       </div>
 
       {/* ── Brief-first banner (experts already sourced) ── */}
-      {activeStep === 'brief' && hasExpertsSourced && (
+      {viewStep === 'brief' && hasExpertsSourced && (
         <div className="bg-amber-50 border-b border-amber-200">
           <div className="max-w-6xl mx-auto px-6 sm:px-10 py-3 flex items-center justify-between gap-4">
             <p className="text-xs text-amber-800">
-              Experts have already been sourced for this brief. Review the brief, then continue to Source.
+              We&apos;ve already found candidates for this brief. Review it, then head to Matches.
             </p>
             <button
-              onClick={() => navigateTo('source')}
+              onClick={() => navigateTo('matches')}
               className="shrink-0 text-[10px] uppercase tracking-widest text-amber-700 border border-amber-300 hover:border-amber-500 px-3 py-1 transition-colors"
               style={{ letterSpacing: '0.12em' }}
             >
-              Go to Source
+              Go to Matches
             </button>
           </div>
         </div>
       )}
 
       {/* ── Ambient next-best-action (non-brief steps) ── */}
-      {activeStep !== 'brief' && nextAction && nextAction.step && nextAction.step !== activeStep && (
+      {viewStep !== 'brief' && nextAction && nextAction.step && nextAction.step !== viewStep && (
         <div className="bg-navy/5 border-b border-navy/10">
           <div className="max-w-6xl mx-auto px-6 sm:px-10 py-3 flex items-center justify-between gap-4">
             <p className="text-xs text-navy/70">{nextAction.message}</p>
@@ -1727,7 +1770,7 @@ function ProjectPageInner() {
       <main className="flex-1 max-w-6xl w-full mx-auto px-6 sm:px-10 py-10">
 
         {/* 1 — Brief */}
-        {activeStep === 'brief' && (
+        {viewStep === 'brief' && (
           <BriefSection
             project={project}
             onSave={handleBriefSave}
@@ -1741,14 +1784,13 @@ function ProjectPageInner() {
         )}
 
         {/* 2 — Source */}
-        {activeStep === 'source' && (
+        {viewStep === 'matches' && (
           <div className="space-y-6">
             <div className="flex items-start justify-between gap-4 flex-wrap">
               <div className="max-w-xl">
                 <p className="text-sm text-muted leading-relaxed" style={{ fontWeight: 300 }}>
-                  <strong className="font-medium text-navy">Who might have the knowledge we need?</strong>{' '}
-                  Run brief-informed sourcing to populate the discovery pool. Shortlist the strongest candidates —
-                  they appear in the Outreach tab immediately.
+                  <strong className="font-medium text-navy">Who&apos;s actually done this?</strong>{' '}
+                  Bookmark anyone worth a call — we&apos;ll take it from there.
                 </p>
               </div>
             </div>
@@ -1778,7 +1820,7 @@ function ProjectPageInner() {
               <>
                 <div className="flex items-center gap-4 pt-2 flex-wrap">
                   <p className="text-[10px] uppercase tracking-widest text-muted font-medium shrink-0" style={{ letterSpacing: '0.16em' }}>
-                    Discovery Pool
+                    Candidates
                   </p>
                   <div className="flex-1 rule-divider" />
                 </div>
@@ -1818,6 +1860,9 @@ function ProjectPageInner() {
                         onUpdate={handleExpertUpdate}
                         onRemove={handleExpertRemove}
                         onInterviewGuide={id => setGuideExpert({ id, name: pe.expert.name })}
+                        canBookmark={canSend}
+                        isAdmin={isAdmin}
+                        onOpenConversation={() => navigateTo('conversations')}
                       />
                     ))}
                   </div>
@@ -1827,8 +1872,27 @@ function ProjectPageInner() {
           </div>
         )}
 
-        {/* 3 — Outreach */}
-        {activeStep === 'outreach' && (
+        {/* 3 — Conversations (replaces Outreach + Screen for clients) */}
+        {viewStep === 'conversations' && (
+          <div className="space-y-6">
+            <p className="text-sm text-muted leading-relaxed max-w-xl" style={{ fontWeight: 300 }}>
+              <strong className="font-medium text-navy">We&apos;ve reached out.</strong>{' '}
+              Replies land here — we&apos;ll tell you when there&apos;s something to decide.
+            </p>
+
+            <ConversationsPanel
+              projectId={projectId}
+              project={project}
+              canSend={canSend}
+              onExpertUpdate={handleExpertUpdate}
+              onProjectUpdate={p => setProject(p)}
+              onGoToMatches={() => navigateTo('matches')}
+            />
+          </div>
+        )}
+
+        {/* Staff-only: the retired Outreach step */}
+        {isAdmin && viewStep === 'outreach' && (
           <div className="space-y-6">
             <p className="text-sm text-muted leading-relaxed max-w-xl" style={{ fontWeight: 300 }}>
               <strong className="font-medium text-navy">Find, contact, and schedule.</strong>{' '}
@@ -1844,8 +1908,8 @@ function ProjectPageInner() {
               <EmptyStep
                 message="No experts in outreach yet."
                 action={
-                  <button onClick={() => navigateTo('source')} className="text-xs text-muted hover:text-navy underline">
-                    Shortlist candidates in Source first
+                  <button onClick={() => navigateTo('matches')} className="text-xs text-muted hover:text-navy underline">
+                    Bookmark a candidate in Matches first
                   </button>
                 }
               />
@@ -1892,7 +1956,7 @@ function ProjectPageInner() {
         )}
 
         {/* 4 — Screen */}
-        {activeStep === 'screen' && (
+        {isAdmin && viewStep === 'screen' && (
           <div className="space-y-6">
             <div className="flex items-start justify-between gap-4 flex-wrap">
               <div className="max-w-xl">
@@ -1946,7 +2010,7 @@ function ProjectPageInner() {
         )}
 
         {/* 5 — Deliver */}
-        {activeStep === 'deliver' && (
+        {isAdmin && viewStep === 'deliver' && (
           <div className="space-y-6">
             <div className="flex items-start justify-between gap-4 flex-wrap">
               <p className="text-sm text-muted leading-relaxed max-w-xl" style={{ fontWeight: 300 }}>
