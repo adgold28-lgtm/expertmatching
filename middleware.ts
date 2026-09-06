@@ -11,6 +11,9 @@ const PUBLIC_PATHS = new Set([
   '/pricing',
   '/request-access',
   '/api/request-access',
+  '/terms',
+  '/privacy',
+  '/contact',
 ]);
 
 // Path prefixes that bypass auth (public pages — no session required).

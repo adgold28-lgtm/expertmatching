@@ -48,7 +48,7 @@ export default function SetPasswordForm({
       }
 
       if (data.error === 'seat_limit_reached') {
-        setError("Your firm's account is full. Reach out to your account admin to add more seats.");
+        setError("Your firm has no free seat right now. Ask your account admin to add one — seats are billed monthly and can be added at any time.");
       } else if (data.error === 'invite_used') {
         setError('This invite link has already been used.');
       } else if (data.error === 'invite_expired') {
@@ -121,9 +121,13 @@ export default function SetPasswordForm({
                 value={password}
                 onChange={e => setPassword(e.target.value)}
                 className="w-full border border-frame bg-cream px-3 py-2.5 text-sm text-ink placeholder:text-muted/50 focus:outline-none focus:border-navy transition-colors"
-                placeholder="Min. 8 chars, at least one number"
+                placeholder="Choose a password"
+                aria-describedby="password-rule"
                 disabled={loading}
               />
+              <p id="password-rule" className="mt-1.5 text-[11px] text-muted leading-snug">
+                At least 8 characters, including one number.
+              </p>
             </div>
 
             <div>

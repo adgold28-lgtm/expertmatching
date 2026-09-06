@@ -300,7 +300,7 @@ export default function CalendarStep({
         Connect Your Calendar
       </h2>
       <p className="mb-6 leading-relaxed" style={{ color: MUTED, fontSize: '14px', fontWeight: 300 }}>
-        So ExpertMatch can find your availability and schedule expert calls automatically. This step is required.
+        So we can propose call times that actually work for you. Required.
       </p>
 
       {connected && (

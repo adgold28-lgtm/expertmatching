@@ -1,39 +1,18 @@
 import type { Metadata } from 'next';
 import Link from 'next/link';
 import NavBar from '../components/NavBar';
+import MarketingFooter from '../components/MarketingFooter';
 import { createClient } from '../lib/supabase/server';
 import { SEAT_TIERS, formatUsdFromCents } from '../lib/pricing';
 
 export const metadata: Metadata = {
   title: 'ExpertMatch — Expert Calls, Sourced and Billed in Hours.',
-  description: 'ExpertMatch replaces traditional expert networks for PE firms, hedge funds, and strategy consultants. AI-sourced practitioners, direct outreach, per-minute billing. No account managers, no hidden fees.',
+  description: 'ExpertMatch replaces traditional expert networks for PE firms, family offices, consulting firms, and law firms. We source the expert, run the outreach, book the call, and bill it — no account managers, no research fees.',
 };
 
 const GOLD = '#C6A75E';
 const NAVY = '#0B1F3B';
 
-
-function Footer() {
-  return (
-    <footer style={{ background: NAVY, borderTop: `1px solid rgba(198,167,94,0.2)` }}>
-      <div className="max-w-6xl mx-auto px-6 sm:px-10 py-8 flex flex-col sm:flex-row items-center justify-between gap-4">
-        <span
-          className="font-display text-cream/40 font-semibold"
-          style={{ letterSpacing: '0.15em', fontSize: '11px' }}
-        >
-          EXPERTMATCH
-        </span>
-        <div className="flex items-center gap-6">
-          <Link href="/pricing" className="text-[11px] text-cream/40 hover:text-cream/60 transition-colors" style={{ letterSpacing: '0.1em' }}>Pricing</Link>
-          <Link href="/request-access" className="text-[11px] text-cream/40 hover:text-cream/60 transition-colors" style={{ letterSpacing: '0.1em' }}>Request Access</Link>
-        </div>
-        <p className="text-[10px] text-cream/25" style={{ letterSpacing: '0.06em' }}>
-          © {new Date().getFullYear()} ExpertMatch
-        </p>
-      </div>
-    </footer>
-  );
-}
 
 export default async function LandingPage() {
   let isSignedIn = false;
@@ -54,7 +33,7 @@ export default async function LandingPage() {
             className="text-[10px] uppercase font-medium mb-6 tracking-widest"
             style={{ color: GOLD, letterSpacing: '0.22em' }}
           >
-            Expert Network Operations
+            For PE, family offices, consulting and law
           </p>
           <h1
             className="font-display text-cream leading-tight mb-6"
@@ -69,8 +48,10 @@ export default async function LandingPage() {
             className="text-cream/60 leading-relaxed mx-auto mb-10"
             style={{ fontSize: '1rem', maxWidth: '520px', fontWeight: 300 }}
           >
-            ExpertMatch replaces traditional expert networks for PE firms, hedge funds, and strategy consultants.
-            We identify the right practitioners, handle outreach, and bill by the minute.
+            ExpertMatch replaces traditional expert networks for PE firms, family offices,
+            consulting firms, and law firms. We find the right practitioners, run the outreach,
+            book the call from your calendar, and bill it to your card — 15-minute minimum,
+            per-minute after that.
           </p>
           <div className="flex flex-col sm:flex-row gap-3 justify-center">
             {isSignedIn ? (
@@ -105,9 +86,9 @@ export default async function LandingPage() {
       <section className="border-b border-frame bg-cream py-10 px-6">
         <div className="max-w-4xl mx-auto grid grid-cols-3 gap-6 text-center">
           {[
-            { stat: '< 2 hours',    label: 'Brief to expert shortlist' },
-            { stat: 'Per minute',   label: 'Pay for time used, not a flat hourly rate' },
-            { stat: 'No contracts', label: 'Month to month. No account managers.' },
+            { stat: '< 2 hours',       label: 'Brief to expert candidates' },
+            { stat: '15 min minimum',  label: 'Then per minute. Pay for the time actually used.' },
+            { stat: 'Month to month',  label: 'No annual contract. No account managers.' },
           ].map(({ stat, label }) => (
             <div key={stat}>
               <p
@@ -142,13 +123,13 @@ export default async function LandingPage() {
               },
               {
                 n: '02',
-                title: 'We find and contact the right experts',
-                body: 'Operators, advisors, and domain experts are identified from public records and contacted on your behalf.',
+                title: 'We find them and reach out',
+                body: 'We identify the operators and advisors who fit. Matchy contacts them anonymously on your behalf and handles the conflict and rate conversation.',
               },
               {
                 n: '03',
-                title: 'Get on a call. Billed by the minute.',
-                body: 'Once an expert confirms, the call is set up. You pay for the time actually used.',
+                title: 'Get on the call',
+                body: 'We book the Zoom from your calendar. 15-minute minimum, per minute after that, charged to your card when the call ends.',
               },
             ].map(({ n, title, body }) => (
               <div key={n} className="flex flex-col">
@@ -199,13 +180,13 @@ export default async function LandingPage() {
               </thead>
               <tbody>
                 {[
-                  ['Expert sourcing',     'AI, from public records',  'Manual researcher'],
+                  ['Expert sourcing',     'Automated, in minutes',    'Manual researcher'],
                   ['Sourcing turnaround', '< 2 hours',                '2–5 business days'],
                   ['Outreach',           'Handled for you',           'Not offered'],
                   ['Scheduling',         'Handled for you',           'Manual back-and-forth'],
-                  ['Billing',            'Per-minute, instant',       'Invoice + 30-day net'],
+                  ['Billing',            'Per-minute after 15 min, charged instantly', 'Invoice + 30-day net'],
                   ['Per-call pricing',   'One rate, shown up front',  'Opaque markup, 3–10× expert rate'],
-                  ['Sourcing evidence',  'Full evidence trail',       'Opaque'],
+                  ['Expert vetting',     'Verified background, identity revealed at booking', 'Opaque'],
                 ].map(([cap, em, trad], i) => (
                   <tr
                     key={cap}
@@ -306,7 +287,7 @@ export default async function LandingPage() {
         </div>
       </section>
 
-      <Footer />
+      <MarketingFooter activePath="/" />
     </div>
   );
 }

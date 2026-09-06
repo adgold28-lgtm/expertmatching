@@ -33,7 +33,16 @@ export default function LoginPage() {
         router.push(next);
         router.refresh();
       } else {
-        setError('Incorrect credentials. Please try again.');
+        // 401 always shows the generic line so the form never confirms whether
+        // an address has an account. 429 and 403 are safe to surface verbatim
+        // and are useless without them — a rate-limited user would otherwise be
+        // told their password is wrong (COPY_AUDIT 4.10 / 4.11).
+        let message = 'Incorrect credentials. Please try again.';
+        if (res.status === 429 || res.status === 403) {
+          const data = (await res.json().catch(() => null)) as { message?: string } | null;
+          if (typeof data?.message === 'string' && data.message) message = data.message;
+        }
+        setError(message);
         setPassword('');
         emailRef.current?.focus();
       }
@@ -127,6 +136,10 @@ export default function LoginPage() {
               {loading ? 'Signing in…' : 'Sign In'}
             </button>
           </form>
+
+          <p className="mt-5 text-center text-[11px] text-muted leading-relaxed">
+            Forgot your password? Ask your account admin to send you a new invitation link.
+          </p>
         </div>
 
       </div>

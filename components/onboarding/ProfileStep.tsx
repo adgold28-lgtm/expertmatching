@@ -79,7 +79,7 @@ export default function ProfileStep({ seed, onComplete, onStepsIncomplete }: Pro
         Your Profile
       </h2>
       <p className="mb-8 leading-relaxed" style={{ color: MUTED, fontSize: '14px', fontWeight: 300 }}>
-        So we can personalize your experience and communicate with experts on your behalf.
+        So we can address you properly and speak to experts on your behalf.
       </p>
 
       <form onSubmit={e => void handleSubmit(e)} className="space-y-4">

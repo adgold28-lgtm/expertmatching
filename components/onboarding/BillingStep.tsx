@@ -268,8 +268,8 @@ export default function BillingStep({ complete, orgName, onComplete, onContinue 
         {showSetUpState ? 'Billing' : 'Add Your Firm’s Payment Method'}
       </h2>
       <p className="mb-2 leading-relaxed" style={{ color: MUTED, fontSize: '14px', fontWeight: 300 }}>
-        One card covers your whole firm: expert calls billed by the minute with a 15-minute minimum — no call, no charge —
-        and the monthly per-seat subscription for your team’s accounts. This step is required.
+        One card covers your whole firm. Calls are billed after they happen — 15-minute minimum,
+        then per minute. Your seat subscription is billed monthly. This step is required.
       </p>
       {seatLine && (
         <p className="mb-6 leading-relaxed" style={{ color: FAINT, fontSize: '12px' }}>
@@ -300,11 +300,10 @@ export default function BillingStep({ complete, orgName, onComplete, onContinue 
         >
           <span aria-hidden="true" style={{ color: '#B45309' }}>!</span>
           <div>
-            <p className="font-medium" style={{ color: '#B45309' }}>Billing is not configured</p>
+            <p className="font-medium" style={{ color: '#B45309' }}>Card setup is temporarily unavailable</p>
             <p className="mt-1 text-xs leading-relaxed" style={{ color: MUTED }}>
-              This deployment has no Stripe publishable key, so card details cannot be collected.
-              An administrator needs to set <span className="font-mono text-[11px]">NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY</span>{' '}
-              and redeploy. Onboarding cannot be completed until then.
+              We’ve been notified. Please try again shortly — or contact us and we’ll set this up
+              for you. You can’t finish setup until a card is on file.
             </p>
           </div>
         </div>

@@ -1,6 +1,7 @@
 import type { Metadata } from 'next';
 import Link from 'next/link';
 import NavBar from '../../components/NavBar';
+import MarketingFooter from '../../components/MarketingFooter';
 import { SEAT_TIERS, formatUsdFromCents, MIN_BILLABLE_MINUTES } from '../../lib/pricing';
 import { TIER_PRICING } from '../../lib/seniorityClassifier';
 
@@ -12,23 +13,6 @@ export const metadata: Metadata = {
 const GOLD = '#C6A75E';
 const NAVY = '#0B1F3B';
 
-
-function Footer() {
-  return (
-    <footer style={{ background: NAVY, borderTop: `1px solid rgba(198,167,94,0.2)` }}>
-      <div className="max-w-6xl mx-auto px-6 sm:px-10 py-8 flex flex-col sm:flex-row items-center justify-between gap-4">
-        <span className="font-display text-cream/40 font-semibold" style={{ letterSpacing: '0.15em', fontSize: '11px' }}>
-          EXPERTMATCH
-        </span>
-        <div className="flex items-center gap-6">
-          <Link href="/" className="text-[11px] text-cream/40 hover:text-cream/60 transition-colors" style={{ letterSpacing: '0.1em' }}>Home</Link>
-          <Link href="/request-access" className="text-[11px] text-cream/40 hover:text-cream/60 transition-colors" style={{ letterSpacing: '0.1em' }}>Request Access</Link>
-        </div>
-        <p className="text-[10px] text-cream/25" style={{ letterSpacing: '0.06em' }}>© {new Date().getFullYear()} ExpertMatch</p>
-      </div>
-    </footer>
-  );
-}
 
 // Rendered from lib/pricing.ts so the marketing page can never drift from what
 // Stripe actually charges.
@@ -63,7 +47,7 @@ const FAQS = [
   },
   {
     q: 'How do experts get paid?',
-    a: 'Experts are compensated competitively and paid directly through the platform within 5 business days of a completed call. No invoicing required on their end.',
+    a: 'Experts are paid through Stripe as soon as the call is billed, usually the same day. No invoicing on their end.',
   },
   {
     q: 'Is there a setup fee, minimum, or long-term contract?',
@@ -92,8 +76,8 @@ export default function PricingPage() {
         </h1>
         <p className="text-cream/50 text-sm leading-relaxed mx-auto" style={{ maxWidth: '480px', fontWeight: 300 }}>
           Billed monthly per active seat — every seat at your team&apos;s volume tier.
-          Calls are billed by the minute, and experts are compensated competitively
-          for their time.
+          Your subscription covers sourcing, outreach, scheduling and billing. Call rates are
+          quoted all in: the expert&apos;s fee and ours are inside the one number you see.
         </p>
       </section>
 
@@ -133,7 +117,7 @@ export default function PricingPage() {
           </div>
 
           <p className="text-[11px] text-muted mt-3 text-center" style={{ fontWeight: 300 }}>
-            Seats include AI sourcing, outreach on your behalf, scheduling, and call billing.
+            Seats include sourcing, outreach on your behalf, scheduling, and call billing.
           </p>
 
           <div className="text-center mt-8">
@@ -181,7 +165,7 @@ export default function PricingPage() {
             </table>
           </div>
           <p className="text-[11px] text-muted mt-3 text-center" style={{ fontWeight: 300 }}>
-            Billed per minute. Experts are compensated competitively for their time.
+            {MIN_BILLABLE_MINUTES}-minute minimum, then billed per minute. The rate you see is all in.
           </p>
           <p className="text-[11px] text-muted mt-1.5 text-center" style={{ fontWeight: 300 }}>
             These rates are our opening position — the final rate is agreed per engagement.
@@ -226,7 +210,7 @@ export default function PricingPage() {
         </Link>
       </section>
 
-      <Footer />
+      <MarketingFooter activePath="/pricing" />
     </div>
   );
 }

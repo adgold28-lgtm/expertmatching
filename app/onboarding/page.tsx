@@ -60,7 +60,7 @@ const EMPTY_SEED: ProfileSeed = { firstName: '', lastName: '', title: '', firmNa
 function messageForCalendarError(code: string): string {
   switch (code) {
     case 'oauth_not_configured':
-      return 'Google Calendar is not enabled on this deployment yet. Use Calendly or enter your availability manually to continue, and let your ExpertMatch contact know.';
+      return 'Google Calendar isn’t available right now. Use Calendly or enter your availability manually — we’ll let you know when Google is back.';
     case 'access_denied':
       return 'You cancelled the Google permission screen, so nothing was connected. Try again, or pick one of the other options.';
     case 'missing_refresh_token':
@@ -227,7 +227,7 @@ export default function OnboardingPage() {
   async function handleStepsIncomplete(): Promise<void> {
     setBanner({
       kind: 'error',
-      text: 'Setup could not be completed because a required step is still outstanding.',
+      text: 'One of the earlier steps still needs finishing — we’ve taken you back to it.',
     });
     await resync();
   }
