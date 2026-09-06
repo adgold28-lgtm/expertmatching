@@ -4,7 +4,15 @@ import { useCallback, useEffect, useRef, useState, Suspense } from 'react';
 import Link from 'next/link';
 import { useParams, useRouter, useSearchParams } from 'next/navigation';
 import type { Project, ProjectExpert, ExpertStatus, Expert, SeniorityTier } from '../../../types';
-import { classifySeniority } from '../../../lib/seniorityClassifier';
+import {
+  classifySeniority,
+  expertComparator,
+  RATE_DISCLAIMER,
+  SORT_LABELS,
+  TIER_ORDER,
+  TIER_PRICING,
+  type ExpertSortKey,
+} from '../../../lib/seniorityClassifier';
 import ProjectExpertCard from '../../../components/ProjectExpertCard';
 import { downloadProjectBriefPdf } from '../../../lib/exportBrief';
 import ScreeningCard from '../../../components/ScreeningCard';
@@ -880,6 +888,199 @@ function EmptyStep({ message, action }: { message: string; action?: React.ReactN
   );
 }
 
+// ─── Source list controls (sort + filters) ────────────────────────────────────
+
+type ExpertCategory     = Expert['category'];
+type SourceStatusFilter = 'all' | 'discovered' | 'shortlisted';
+
+/** Per-browser memory of the discovery-pool sort choice. */
+const SOURCE_SORT_KEY = 'expertmatch.source.sort';
+
+const CATEGORY_OPTIONS: readonly ExpertCategory[]     = ['Operator', 'Advisor', 'Outsider'];
+const STATUS_OPTIONS:   readonly SourceStatusFilter[] = ['all', 'discovered', 'shortlisted'];
+const STATUS_LABELS: Record<SourceStatusFilter, string> = {
+  all:         'All',
+  discovered:  'Discovered',
+  shortlisted: 'Shortlisted',
+};
+
+/** One chip in a filter group. Mirrors the PipelineBar segment: selected reads as cream + navy rule. */
+function FilterChip({
+  label,
+  count,
+  selected,
+  onClick,
+}: {
+  label:    string;
+  count?:   number;
+  selected: boolean;
+  onClick:  () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      aria-pressed={selected}
+      className={`relative shrink-0 text-[10px] uppercase tracking-widest px-2 py-1 border transition-colors focus:outline-none focus-visible:ring-1 focus-visible:ring-gold ${
+        selected
+          ? 'bg-cream border-navy text-navy font-medium'
+          : 'border-frame text-muted hover:border-navy/40 hover:text-navy'
+      }`}
+      style={{ letterSpacing: '0.1em' }}
+    >
+      {label}
+      {count !== undefined && (
+        <span className={`ml-1.5 ${selected ? 'text-navy/60' : 'text-muted/60'}`}>{count}</span>
+      )}
+      {selected && <span aria-hidden className="absolute inset-x-0 bottom-0 h-[2px] bg-navy" />}
+    </button>
+  );
+}
+
+/** Micro-label + horizontally scrollable chip row. */
+function FilterGroup({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div
+      role="group"
+      aria-label={label}
+      className="flex items-center gap-2 min-w-0 max-w-full"
+    >
+      <span
+        className="text-[10px] uppercase tracking-widest text-muted font-medium shrink-0"
+        style={{ letterSpacing: '0.12em' }}
+      >
+        {label}
+      </span>
+      <div className="flex items-center gap-1.5 overflow-x-auto">{children}</div>
+    </div>
+  );
+}
+
+/**
+ * Sort + filter strip above the Source discovery pool.
+ *
+ * Purely presentational: every count is passed in, already derived from the
+ * live project on each render, so a card's status change moves the numbers
+ * without any local copy of state here.
+ */
+function SourceListControls({
+  tierCounts,
+  total,
+  visibleCount,
+  tierFilter,
+  categoryFilter,
+  statusFilter,
+  sortKey,
+  onTierChange,
+  onCategoryChange,
+  onStatusChange,
+  onSortChange,
+  onClearFilters,
+}: {
+  tierCounts:       Record<SeniorityTier | 'all', number>;
+  total:            number;
+  visibleCount:     number;
+  tierFilter:       SeniorityTier | 'all';
+  categoryFilter:   ExpertCategory | 'all';
+  statusFilter:     SourceStatusFilter;
+  sortKey:          ExpertSortKey;
+  onTierChange:     (t: SeniorityTier | 'all') => void;
+  onCategoryChange: (c: ExpertCategory | 'all') => void;
+  onStatusChange:   (s: SourceStatusFilter) => void;
+  onSortChange:     (k: ExpertSortKey) => void;
+  onClearFilters:   () => void;
+}) {
+  const filtersActive = tierFilter !== 'all' || categoryFilter !== 'all' || statusFilter !== 'all';
+
+  return (
+    <div className="space-y-2">
+      <div className="border border-frame bg-surface px-3 py-2.5 flex flex-wrap items-center gap-x-6 gap-y-3">
+        <FilterGroup label="Tier">
+          {(['all', ...TIER_ORDER] as const).map(t => (
+            <FilterChip
+              key={t}
+              label={t === 'all' ? 'All' : TIER_PRICING[t].label}
+              count={tierCounts[t]}
+              selected={tierFilter === t}
+              onClick={() => onTierChange(t)}
+            />
+          ))}
+        </FilterGroup>
+
+        <FilterGroup label="Category">
+          <FilterChip label="All" selected={categoryFilter === 'all'} onClick={() => onCategoryChange('all')} />
+          {CATEGORY_OPTIONS.map(c => (
+            <FilterChip
+              key={c}
+              label={c}
+              selected={categoryFilter === c}
+              onClick={() => onCategoryChange(categoryFilter === c ? 'all' : c)}
+            />
+          ))}
+        </FilterGroup>
+
+        <FilterGroup label="Status">
+          {STATUS_OPTIONS.map(s => (
+            <FilterChip
+              key={s}
+              label={STATUS_LABELS[s]}
+              selected={statusFilter === s}
+              onClick={() => onStatusChange(s)}
+            />
+          ))}
+        </FilterGroup>
+
+        <div className="lg:ml-auto">
+          <FilterGroup label="Sort">
+            <FilterChip
+              label="Seniority"
+              selected={sortKey === 'seniority'}
+              onClick={() => onSortChange('seniority')}
+            />
+            <FilterChip
+              label="Relevance score"
+              selected={sortKey === 'score'}
+              onClick={() => onSortChange('score')}
+            />
+          </FilterGroup>
+        </div>
+      </div>
+
+      {/* Current sort, result count, clear affordance */}
+      <div className="flex items-center gap-x-3 gap-y-1 flex-wrap">
+        <p
+          className="text-[10px] uppercase tracking-widest text-muted font-medium"
+          style={{ letterSpacing: '0.12em' }}
+        >
+          Sorted by: <span className="text-navy">{SORT_LABELS[sortKey]}</span>
+        </p>
+        <span aria-hidden className="text-muted/40 text-[10px]">·</span>
+        <p
+          className="text-[10px] uppercase tracking-widest text-muted font-medium"
+          style={{ letterSpacing: '0.12em' }}
+        >
+          {visibleCount} of {total} expert{total !== 1 ? 's' : ''}
+        </p>
+        {filtersActive && (
+          <button
+            type="button"
+            onClick={onClearFilters}
+            className="text-[10px] uppercase tracking-widest text-muted border border-frame hover:border-navy hover:text-navy px-2 py-0.5 transition-colors focus:outline-none focus-visible:ring-1 focus-visible:ring-gold"
+            style={{ letterSpacing: '0.12em' }}
+          >
+            Clear filters ✕
+          </button>
+        )}
+      </div>
+
+      {/* Rates are an opening position, not a price list */}
+      <p className="text-[11px] text-muted/80" style={{ fontWeight: 300 }}>
+        {RATE_DISCLAIMER}
+      </p>
+    </div>
+  );
+}
+
 // ─── Outreach mode selector ───────────────────────────────────────────────────
 
 function OutreachModeSelector({
@@ -1179,9 +1380,39 @@ function ProjectPageInner() {
   const [showShare,   setShowShare]   = useState(false);
   const [currentUserEmail, setCurrentUserEmail] = useState<string>('');
   const [currentUserRole,  setCurrentUserRole]  = useState<'admin' | 'user'>('user');
-  const [tierFilter,  setTierFilter]  = useState<SeniorityTier | 'all'>('all');
+  // Source discovery pool — filters are per-visit, the sort choice is remembered.
+  const [tierFilter,     setTierFilter]     = useState<SeniorityTier | 'all'>('all');
+  const [categoryFilter, setCategoryFilter] = useState<ExpertCategory | 'all'>('all');
+  const [statusFilter,   setStatusFilter]   = useState<SourceStatusFilter>('all');
+  const [sortKey,        setSortKey]        = useState<ExpertSortKey>('seniority');
   // Outreach pipeline strip — null means "All". Purely client-side.
   const [stageFilter, setStageFilter] = useState<PipelineStage | null>(null);
+
+  // Restore the remembered sort after mount — reading storage during render
+  // would desync the server-rendered markup.
+  useEffect(() => {
+    try {
+      const stored = window.localStorage.getItem(SOURCE_SORT_KEY);
+      if (stored === 'seniority' || stored === 'score') setSortKey(stored);
+    } catch {
+      // Storage blocked (private mode, disabled cookies) — the default stands.
+    }
+  }, []);
+
+  const handleSortChange = useCallback((key: ExpertSortKey) => {
+    setSortKey(key);
+    try {
+      window.localStorage.setItem(SOURCE_SORT_KEY, key);
+    } catch {
+      // Storage blocked — the choice still applies for this visit.
+    }
+  }, []);
+
+  const clearSourceFilters = useCallback(() => {
+    setTierFilter('all');
+    setCategoryFilter('all');
+    setStatusFilter('all');
+  }, []);
 
   useEffect(() => {
     fetch(`/api/projects/${projectId}`)
@@ -1305,6 +1536,20 @@ function ProjectPageInner() {
 
   const nextAction        = getNextAction(project);
   const sourceExperts     = project.experts.filter(e => e.status !== 'rejected');
+  // Category + status narrow the pool first; tier counts are then computed over
+  // what's left, so a chip's count always equals what clicking it would show.
+  const sourceCohort = sourceExperts.filter(pe =>
+    (categoryFilter === 'all' || pe.expert.category === categoryFilter) &&
+    (statusFilter   === 'all' || pe.status === statusFilter)
+  );
+  const sourceTierCounts: Record<SeniorityTier | 'all', number> = {
+    all: sourceCohort.length, executive: 0, senior: 0, mid: 0,
+  };
+  for (const pe of sourceCohort) sourceTierCounts[classifySeniority(pe.expert.title ?? '')] += 1;
+  const sourceComparator = expertComparator(sortKey);
+  const visibleSourceExperts = sourceCohort
+    .filter(pe => tierFilter === 'all' || classifySeniority(pe.expert.title ?? '') === tierFilter)
+    .sort((a, b) => sourceComparator(a.expert, b.expert));
   const outreachExperts   = project.experts.filter(e => OUTREACH_STATUSES.includes(e.status));
   // Pipeline-stage filter applied on top of the outreach cohort. Derived on every
   // render from project.experts, so a card update moves both cards and counts.
@@ -1521,39 +1766,35 @@ function ProjectPageInner() {
                     Discovery Pool
                   </p>
                   <div className="flex-1 rule-divider" />
-                  {/* Tier filter buttons */}
-                  <div className="flex items-center gap-1.5 shrink-0">
-                    {(['all', 'executive', 'senior', 'mid'] as const).map(t => (
-                      <button
-                        key={t}
-                        onClick={() => setTierFilter(t)}
-                        className={`text-[9px] uppercase tracking-widest px-2 py-1 border transition-colors ${
-                          tierFilter === t
-                            ? 'bg-navy text-cream border-navy'
-                            : 'border-frame text-muted hover:border-navy/40 hover:text-navy'
-                        }`}
-                        style={{ letterSpacing: '0.1em' }}
-                      >
-                        {t === 'all' ? 'All' : t === 'executive' ? 'Executive' : t === 'senior' ? 'Senior' : 'Mid-Level'}
-                      </button>
-                    ))}
-                  </div>
-                  <span className="text-[10px] text-muted shrink-0">{sourceExperts.length} expert{sourceExperts.length !== 1 ? 's' : ''}</span>
                 </div>
-                <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-5">
-                  {[...sourceExperts]
-                    .filter(pe => {
-                      if (tierFilter === 'all') return true;
-                      return classifySeniority(pe.expert.title ?? '') === tierFilter;
-                    })
-                    .sort((a, b) => {
-                      const tierOrder: Record<string, number> = { executive: 0, senior: 1, mid: 2 };
-                      const ta = tierOrder[classifySeniority(a.expert.title ?? '')] ?? 2;
-                      const tb = tierOrder[classifySeniority(b.expert.title ?? '')] ?? 2;
-                      if (ta !== tb) return ta - tb;
-                      return (b.expert.relevance_score ?? 0) - (a.expert.relevance_score ?? 0);
-                    })
-                    .map(pe => (
+
+                <SourceListControls
+                  tierCounts={sourceTierCounts}
+                  total={sourceExperts.length}
+                  visibleCount={visibleSourceExperts.length}
+                  tierFilter={tierFilter}
+                  categoryFilter={categoryFilter}
+                  statusFilter={statusFilter}
+                  sortKey={sortKey}
+                  onTierChange={setTierFilter}
+                  onCategoryChange={setCategoryFilter}
+                  onStatusChange={setStatusFilter}
+                  onSortChange={handleSortChange}
+                  onClearFilters={clearSourceFilters}
+                />
+
+                {visibleSourceExperts.length === 0 ? (
+                  <EmptyStep
+                    message="No experts match these filters."
+                    action={
+                      <button onClick={clearSourceFilters} className="text-xs text-muted hover:text-navy underline">
+                        Clear filters
+                      </button>
+                    }
+                  />
+                ) : (
+                  <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-5">
+                    {visibleSourceExperts.map(pe => (
                       <ProjectExpertCard
                         key={pe.expert.id}
                         projectExpert={pe}
@@ -1564,7 +1805,8 @@ function ProjectPageInner() {
                         onInterviewGuide={id => setGuideExpert({ id, name: pe.expert.name })}
                       />
                     ))}
-                </div>
+                  </div>
+                )}
               </>
             )}
           </div>

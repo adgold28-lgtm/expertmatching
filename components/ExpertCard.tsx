@@ -3,7 +3,7 @@
 import { useState } from 'react';
 import { Expert, SourceLink, EvidenceItem } from '../types';
 import { isLinkedInProfileUrl } from '../lib/domainSuggestions';
-import { classifySeniority, TIER_PRICING } from '../lib/seniorityClassifier';
+import { classifySeniority, RATE_DISCLAIMER, TIER_PRICING } from '../lib/seniorityClassifier';
 import OutreachModal from './OutreachModal';
 import ContactSection from './ContactSection';
 
@@ -82,7 +82,9 @@ export default function ExpertCard({ expert, query, index = 0, quickActions, hid
               }`} style={{ letterSpacing: '0.1em' }}>
                 {tier === 'executive' ? 'Executive' : tier === 'senior' ? 'Senior' : 'Mid-Level'}
               </div>
-              <div className="text-[9px] text-muted mt-0.5">${pricing.callRate}/call</div>
+              <div className="text-[9px] text-muted mt-0.5 cursor-help" title={RATE_DISCLAIMER}>
+                ${pricing.callRate}/call
+              </div>
             </div>
           </div>
 

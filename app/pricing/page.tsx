@@ -245,6 +245,9 @@ export default function PricingPage() {
           <p className="text-[11px] text-muted mt-3 text-center" style={{ fontWeight: 300 }}>
             Billed per minute. Experts are compensated competitively for their time.
           </p>
+          <p className="text-[11px] text-muted mt-1.5 text-center" style={{ fontWeight: 300 }}>
+            These rates are our opening position — the final rate is agreed per engagement.
+          </p>
         </div>
       </section>
 

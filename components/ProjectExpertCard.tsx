@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useRef } from 'react';
 import type { ProjectExpert, ExpertStatus, RejectionReason } from '../types';
-import { classifySeniority, TIER_PRICING } from '../lib/seniorityClassifier';
+import { classifySeniority, RATE_DISCLAIMER, TIER_PRICING } from '../lib/seniorityClassifier';
 import ExpertCard from './ExpertCard';
 import { STATUS_META, EXPERT_STATUSES } from '../lib/expertPipeline';
 
@@ -155,7 +155,7 @@ export default function ProjectExpertCard({ projectExpert, projectId, query, onU
           }`} style={{ letterSpacing: '0.1em' }}>
             {pricing.label}
           </span>
-          <span className="text-[9px] text-muted">${pricing.callRate}/call</span>
+          <span className="text-[9px] text-muted cursor-help" title={RATE_DISCLAIMER}>${pricing.callRate}/call</span>
           {projectExpert.agreedRate != null && (
             <span className="text-[9px] text-amber-700 font-medium">Agreed: ${projectExpert.agreedRate}/call</span>
           )}
