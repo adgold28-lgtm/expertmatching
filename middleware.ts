@@ -61,6 +61,7 @@ export async function middleware(request: NextRequest): Promise<NextResponse> {
       const onboardingAllowed =
         pathname.startsWith('/onboarding') ||
         pathname.startsWith('/api/onboarding') ||
+        pathname === '/api/auth/me' ||       // stepper reads it for resume state
         pathname === '/api/auth/logout';
       if (!onboardingAllowed) {
         if (pathname.startsWith('/api/')) {
