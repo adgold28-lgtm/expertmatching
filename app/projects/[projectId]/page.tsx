@@ -9,10 +9,12 @@ import ProjectExpertCard from '../../../components/ProjectExpertCard';
 import { downloadProjectBriefPdf } from '../../../lib/exportBrief';
 import ScreeningCard from '../../../components/ScreeningCard';
 import OutreachCard from '../../../components/OutreachCard';
+import PipelineBar from '../../../components/PipelineBar';
 import ClientReadyCard from '../../../components/ClientReadyCard';
 import ExpertCard from '../../../components/ExpertCard';
 import ClientSchedulingSection from '../../../components/ClientSchedulingSection';
 import { useFocusTrap } from '../../../lib/useFocusTrap';
+import { pipelineStage, STAGE_META, type PipelineStage } from '../../../lib/expertPipeline';
 
 // ─── Workflow step config ─────────────────────────────────────────────────────
 
@@ -28,9 +30,20 @@ const STEPS: Array<{ id: WorkflowStep; label: string }> = [
   { id: 'deliver',  label: 'Deliver'  },
 ];
 
+// Every status that belongs to the outreach cohort. Mid-pipeline reply states
+// (email2_sent → rejected_after_outreach) must be listed here or those experts
+// vanish from the Outreach grid. rejected_after_outreach stays visible — it is
+// an outcome of outreach, styled as declined.
 const OUTREACH_STATUSES: ExpertStatus[] = [
-  'shortlisted', 'contact_found', 'outreach_drafted', 'contacted', 'replied', 'scheduled', 'completed',
+  'shortlisted', 'contact_found', 'outreach_drafted', 'contacted', 'email2_sent',
+  'scheduling_sent', 'replied', 'rate_negotiation', 'conflict_flagged',
+  'scheduled', 'completed', 'rejected_after_outreach',
 ];
+
+// Experts whose vetting call is booked, done, or being arranged off a reply —
+// shared by the Screen cohort and the "record outcomes" next action so the two
+// cannot drift apart.
+const SCREEN_STATUSES: ExpertStatus[] = ['replied', 'scheduled', 'completed'];
 
 // ─── Step summary & next action ───────────────────────────────────────────────
 
@@ -82,7 +95,7 @@ function getNextAction(project: Project): NextAction | null {
     return { id: 'source_experts', step: 'source', message: 'Shortlist candidates from the discovery pool — they appear in Outreach immediately.', cta: 'Go to Source' };
   }
   // Experts who've had their vetting call and need a screening outcome recorded
-  const callDone   = active.filter(e => e.status === 'scheduled' || e.status === 'completed' || e.status === 'replied');
+  const callDone   = active.filter(e => SCREEN_STATUSES.includes(e.status));
   const postScreen = active.filter(e =>
     e.screeningStatus && e.screeningStatus !== 'not_screened' && e.screeningStatus !== 'vetting_questions_ready',
   );
@@ -284,6 +297,60 @@ function BriefSection({
   const [saving,          setSaving]          = useState(false);
   const [sourcing,        setSourcing]        = useState(false);
   const [sourceError,     setSourceError]     = useState('');
+  const [parsing,         setParsing]         = useState(false);
+  const [parseError,      setParseError]      = useState('');
+  const [parseSuccess,    setParseSuccess]    = useState('');
+
+  async function handleBriefUpload(file: File) {
+    setParsing(true);
+    setParseError('');
+    setParseSuccess('');
+    try {
+      if (file.size > 5 * 1024 * 1024) {
+        throw new Error('Document is too large — 5 MB max.');
+      }
+      const mediaType = file.type === 'application/pdf' ? 'application/pdf'
+        : file.name.toLowerCase().endsWith('.md') ? 'text/markdown'
+        : file.type.startsWith('text/') || file.name.toLowerCase().endsWith('.txt') ? 'text/plain'
+        : file.type;
+
+      const buf  = await file.arrayBuffer();
+      const data = btoa(Array.from(new Uint8Array(buf), b => String.fromCharCode(b)).join(''));
+
+      const res  = await fetch('/api/parse-brief', {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({ filename: file.name, mediaType, data }),
+      });
+      const d = await res.json() as { brief?: Record<string, string>; error?: string; message?: string };
+      if (!res.ok || !d.brief) throw new Error(d.message ?? 'Could not read the document.');
+
+      const brief = d.brief;
+      // Fill the two on-screen fields immediately.
+      if (brief.researchQuestion) setBusinessProblem(brief.researchQuestion);
+      if (brief.expertType)       setExpertType(brief.expertType);
+
+      // Persist everything (including the extended brief fields) in one PUT.
+      const putRes = await fetch(`/api/projects/${project.id}`, {
+        method:  'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify(brief),
+      });
+      if (putRes.ok) {
+        const saved = await putRes.json() as { project?: Project };
+        if (saved.project) onSave(saved.project);
+      }
+
+      const extraCount = Object.keys(brief).filter(k => !['researchQuestion', 'expertType'].includes(k)).length;
+      setParseSuccess(
+        `Brief imported${extraCount > 0 ? ` — ${extraCount} additional field${extraCount === 1 ? '' : 's'} saved to the full brief` : ''}. Review and edit before sourcing.`,
+      );
+    } catch (err) {
+      setParseError(err instanceof Error ? err.message : 'Could not read the document.');
+    } finally {
+      setParsing(false);
+    }
+  }
 
   async function handleCompleteBrief() {
     setSaving(true);
@@ -311,7 +378,7 @@ function BriefSection({
     setSourcing(true);
     setSourceError('');
     try {
-      await fetch(`/api/projects/${project.id}`, {
+      const saveRes = await fetch(`/api/projects/${project.id}`, {
         method:  'PUT',
         headers: { 'Content-Type': 'application/json' },
         body:    JSON.stringify({
@@ -319,6 +386,12 @@ function BriefSection({
           expertType:       expertType      || undefined,
         }),
       });
+      // Keep parent state in sync — otherwise Re-source later in this session
+      // reads a stale empty researchQuestion and fails with "Query is required".
+      if (saveRes.ok) {
+        const saved = await saveRes.json() as { project?: Project };
+        if (saved.project) onSave(saved.project);
+      }
 
       const briefContext = buildBriefContext({
         ...project,
@@ -382,6 +455,36 @@ function BriefSection({
 
   return (
     <div className="space-y-8 max-w-3xl">
+
+      {/* ── Upload a brief document ── */}
+      <div className="border border-dashed border-frame bg-cream/50 px-4 py-3 flex items-center justify-between gap-4 flex-wrap">
+        <div className="min-w-0">
+          <p className="text-[10px] uppercase tracking-widest text-muted font-medium mb-0.5">Have a brief document?</p>
+          <p className="text-xs text-muted">
+            Upload a PDF or text file and we&apos;ll fill in the fields below. Word docs: export to PDF first.
+          </p>
+          {parseError   && <p className="text-xs text-red-700 mt-1">{parseError}</p>}
+          {parseSuccess && <p className="text-xs text-navy mt-1 font-medium">{parseSuccess}</p>}
+        </div>
+        <label
+          className={`shrink-0 flex items-center gap-2 text-[10px] uppercase tracking-widest px-4 py-2.5 border border-navy transition-colors ${parsing ? 'opacity-40 cursor-not-allowed' : 'cursor-pointer hover:bg-navy hover:text-cream'}`}
+          style={{ letterSpacing: '0.14em', color: '#0B1F3B' }}
+        >
+          {parsing && <span className="inline-block w-3 h-3 border border-current border-t-transparent rounded-full animate-spin shrink-0" />}
+          {parsing ? 'Reading document…' : 'Upload Brief'}
+          <input
+            type="file"
+            accept=".pdf,.txt,.md,application/pdf,text/plain,text/markdown"
+            className="hidden"
+            disabled={parsing}
+            onChange={e => {
+              const f = e.target.files?.[0];
+              if (f) void handleBriefUpload(f);
+              e.target.value = '';
+            }}
+          />
+        </label>
+      </div>
 
       {/* ── Brief fields ── */}
       <div className="space-y-6">
@@ -1162,6 +1265,8 @@ function ProjectPageInner() {
   const [currentUserEmail, setCurrentUserEmail] = useState<string>('');
   const [currentUserRole,  setCurrentUserRole]  = useState<'admin' | 'user'>('user');
   const [tierFilter,  setTierFilter]  = useState<SeniorityTier | 'all'>('all');
+  // Outreach pipeline strip — null means "All". Purely client-side.
+  const [stageFilter, setStageFilter] = useState<PipelineStage | null>(null);
 
   useEffect(() => {
     fetch(`/api/projects/${projectId}`)
@@ -1231,10 +1336,13 @@ function ProjectPageInner() {
   const nextAction        = getNextAction(project);
   const sourceExperts     = project.experts.filter(e => e.status !== 'rejected');
   const outreachExperts   = project.experts.filter(e => OUTREACH_STATUSES.includes(e.status));
+  // Pipeline-stage filter applied on top of the outreach cohort. Derived on every
+  // render from project.experts, so a card update moves both cards and counts.
+  const visibleOutreachExperts = stageFilter
+    ? outreachExperts.filter(pe => pipelineStage(pe) === stageFilter)
+    : outreachExperts;
   // Screen shows experts who've had (or are about to have) their vetting call
-  const screenExperts     = project.experts.filter(
-    e => e.status === 'scheduled' || e.status === 'replied' || e.status === 'completed',
-  );
+  const screenExperts     = project.experts.filter(e => SCREEN_STATUSES.includes(e.status));
   const deliverExperts    = project.experts.filter(e => e.screeningStatus === 'client_ready' || e.recommendToClient === true);
   const hasExpertsSourced = sourceExperts.length > 0;
 
@@ -1494,19 +1602,43 @@ function ProjectPageInner() {
                 }
               />
             ) : (
-              <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-5">
-                {outreachExperts.map(pe => (
-                  <OutreachCard
-                    key={pe.expert.id}
-                    projectExpert={pe}
-                    projectId={projectId}
-                    query={project.researchQuestion}
-                    onUpdate={handleExpertUpdate}
-                    onContactUpdated={handleExpertUpdate}
-                    onViewProfile={() => setProfilePE(pe)}
+              <>
+                {/* ── Pipeline summary + stage filter ── */}
+                <PipelineBar
+                  experts={outreachExperts}
+                  activeStage={stageFilter}
+                  onStageChange={setStageFilter}
+                />
+
+                {/* Only a stage filter can empty this grid — the cohort itself is non-empty here. */}
+                {stageFilter && visibleOutreachExperts.length === 0 ? (
+                  <EmptyStep
+                    message={`No experts at the ${STAGE_META[stageFilter].label} stage right now.`}
+                    action={
+                      <button
+                        onClick={() => setStageFilter(null)}
+                        className="text-xs text-muted hover:text-navy underline"
+                      >
+                        Clear filter — show all {outreachExperts.length} experts
+                      </button>
+                    }
                   />
-                ))}
-              </div>
+                ) : (
+                  <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-5">
+                    {visibleOutreachExperts.map(pe => (
+                      <OutreachCard
+                        key={pe.expert.id}
+                        projectExpert={pe}
+                        projectId={projectId}
+                        query={project.researchQuestion}
+                        onUpdate={handleExpertUpdate}
+                        onContactUpdated={handleExpertUpdate}
+                        onViewProfile={() => setProfilePE(pe)}
+                      />
+                    ))}
+                  </div>
+                )}
+              </>
             )}
           </div>
         )}

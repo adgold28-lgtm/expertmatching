@@ -6,6 +6,7 @@
 
 import { getProject, updateExpertStatus, updateProjectFields } from './projectStore';
 import { computeOverlap }       from './computeOverlap';
+import { getCalendarConnection, connectionIsUsable, getClientSlotsForUser } from './calendarConnections';
 import { fetchCalendlySlots }   from './fetchCalendlySlots';
 import { fetchGoogleFreebusy }  from './fetchGoogleFreebusy';
 import { createZoomMeeting }    from './createZoomMeeting';
@@ -64,23 +65,49 @@ export async function triggerOverlapCheck(
     }
 
     // ── 4. Get client slots ──────────────────────────────────────────────
+    // Precedence:
+    //   1. The project owner's own calendar connection, linked during
+    //      onboarding (user_calendar_connections). Covers google / calendly /
+    //      manual and is the only path that needs no per-project setup.
+    //   2. Project-level client calendar fields, written by an availability
+    //      token flow for a client who is not an app user.
+    //   3. Slots the client typed into the availability form.
     let clientSlots: AvailabilitySlot[] = [];
 
-    if (project.clientCalendarProvider === 'google' &&
-        project.clientCalendarAccessToken && project.clientCalendarRefreshToken && project.clientCalendarEmail) {
-      clientSlots = await fetchGoogleFreebusy(
-        project.clientCalendarAccessToken,
-        project.clientCalendarRefreshToken,
-        project.clientCalendarEmail,
-        14,
-        async (newToken) => {
-          await updateProjectFields(projectId, { clientCalendarAccessToken: newToken });
-        },
-      );
-    } else if (project.clientCalendarProvider === 'calendly' && project.clientCalendlyUrl) {
-      clientSlots = await fetchCalendlySlots(project.clientCalendlyUrl);
-    } else {
-      clientSlots = project.clientAvailabilitySlots ?? [];
+    // IANA zone recorded on the owner's connection, used only when the returned
+    // slots carry no zone of their own (see step 5).
+    let connectionTimezone: string | null = null;
+
+    if (project.ownerEmail) {
+      const connection = await getCalendarConnection(project.ownerEmail);
+      if (connectionIsUsable(connection)) {
+        const ownerSlots = await getClientSlotsForUser(project.ownerEmail, 14);
+        if (ownerSlots.length > 0) {
+          clientSlots        = ownerSlots;
+          connectionTimezone = connection.timezone;
+        }
+      }
+    }
+
+    // Fall back to the project-level paths when the owner has no usable
+    // connection (or it returned nothing).
+    if (clientSlots.length === 0) {
+      if (project.clientCalendarProvider === 'google' &&
+          project.clientCalendarAccessToken && project.clientCalendarRefreshToken && project.clientCalendarEmail) {
+        clientSlots = await fetchGoogleFreebusy(
+          project.clientCalendarAccessToken,
+          project.clientCalendarRefreshToken,
+          project.clientCalendarEmail,
+          14,
+          async (newToken) => {
+            await updateProjectFields(projectId, { clientCalendarAccessToken: newToken });
+          },
+        );
+      } else if (project.clientCalendarProvider === 'calendly' && project.clientCalendlyUrl) {
+        clientSlots = await fetchCalendlySlots(project.clientCalendlyUrl);
+      } else {
+        clientSlots = project.clientAvailabilitySlots ?? [];
+      }
     }
 
     if (expertSlots.length === 0 || clientSlots.length === 0) {
@@ -94,7 +121,16 @@ export async function triggerOverlapCheck(
 
     // ── 5. Determine timezones ───────────────────────────────────────────
     const expertTimezone = extractTimezone(expertSlots);
-    const clientTimezone = extractTimezone(clientSlots);
+
+    // The connection's IANA zone is a FALLBACK, never an override:
+    // computeOverlap reads each slot's wall-clock time in the zone passed here,
+    // and Google freebusy / Calendly slots are already stamped 'UTC'. Forcing
+    // the owner's zone onto them would shift every window by its UTC offset.
+    // Manual slots inherit the connection zone at write time (POST
+    // /api/onboarding/calendar), so it reaches computeOverlap through the slots.
+    const clientTimezone = clientSlots.some(s => s.timezone)
+      ? extractTimezone(clientSlots)
+      : (connectionTimezone ?? 'UTC');
 
     // ── 6. Compute overlap ───────────────────────────────────────────────
     const result = await computeOverlap(expertSlots, clientSlots, expertTimezone, clientTimezone);

@@ -1,6 +1,7 @@
 import { NextRequest } from 'next/server';
 import { Resend } from 'resend';
 import { getUpstashClient } from '../../../lib/upstashRedis';
+import { getServiceRoleClient } from '../../../lib/supabase/admin';
 import { isApprovedDomain } from '../../../lib/firmStore';
 import { generateSignupToken } from '../../../lib/signupToken';
 import { sendInviteEmail } from '../../../lib/sendAvailabilityRequest';
@@ -89,7 +90,6 @@ export async function POST(request: NextRequest) {
       }
       const signupUrl = `${process.env.NEXT_PUBLIC_APP_URL}/auth/set-password?token=${encodeURIComponent(token)}`;
       await sendInviteEmail(record.email, record.firm, signupUrl);
-      console.log('[request-access] auto-approved invite sent', { domain });
       return Response.json({ ok: true });
     } catch {
       // Fall through to manual review on any error
@@ -97,27 +97,28 @@ export async function POST(request: NextRequest) {
     }
   }
 
-  // Store as pending and notify admin
+  // Store as pending (service-role write — access_requests has no
+  // authenticated RLS policies) and notify admin.
   try {
-    const redis = getUpstashClient();
-    if (redis) {
-      await redis.set(`access-request:${record.email}`, JSON.stringify(record));
-
-      const listKey = 'access-requests:list';
-      const existing = await redis.get(listKey);
-      let list: AccessRequest[] = [];
-      if (existing) {
-        try {
-          list = JSON.parse(typeof existing === 'string' ? existing : JSON.stringify(existing));
-        } catch {
-          list = [];
-        }
-      }
-      list = [record, ...list.filter(r => r.email !== record.email)].slice(0, 500);
-      await redis.set(listKey, JSON.stringify(list));
+    const db = getServiceRoleClient();
+    if (db) {
+      // One open request per email — replace any prior pending row.
+      await db.from('access_requests')
+        .delete()
+        .eq('kind', 'access')
+        .eq('email', record.email)
+        .eq('status', 'requested');
+      await db.from('access_requests').insert({
+        kind:             'access',
+        email:            record.email,
+        requested_domain: domain || null,
+        name:             record.name,
+        firm_name:        record.firm,
+        use_case:         record.useCase,
+      });
     }
   } catch {
-    // Redis failure must not fail the request
+    // Storage failure must not fail the request — the admin email below still lands.
   }
 
   // Notify admin — non-blocking
@@ -139,6 +140,5 @@ export async function POST(request: NextRequest) {
     }
   }
 
-  console.log('[request-access] submission received', { status: 'ok' });
   return Response.json({ ok: true });
 }

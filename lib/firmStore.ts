@@ -1,17 +1,27 @@
-// firmStore.ts — data layer for the new multi-firm, multi-user auth model.
-// All storage is in Upstash Redis via the custom HTTP client (no SDK).
+// firmStore.ts — data layer for the multi-firm, multi-user account model.
 //
-// Redis key scheme:
-//   firm:{domain}            → JSON FirmRecord
-//   firms:index              → JSON string[] (all domains)
-//   user:{email}             → JSON UserRecord (backward-compat with old format)
-//   firm-users:{domain}      → Set<email> (all users, all statuses)
-//   seat-request:{email}     → JSON SeatRequest
-//   seat-requests:list       → JSON string[] (pending emails)
+// Source of truth: Supabase Postgres.
+//   organizations        ← firms (domain unique)
+//   profiles             ← users (1:1 with Supabase Auth; role = is_platform_admin)
+//   organization_members ← firm membership + per-firm status
+//   access_requests      ← access requests (kind='access') and seat requests (kind='seat')
+//
+// Supabase Auth owns credentials — there is no passwordHash here. Every
+// mutation also syncs the auth user's app_metadata (role/status/firm/
+// onboarding) so middleware and guards never need a DB read per request.
+//
+// Redis is used ONLY for the short-TTL seat-claim lock (concurrency guard).
 //
 // Never logs: email, firm name, domain, token, or PII.
 
 import { getUpstashClient } from './upstashRedis';
+import {
+  getServiceRoleClient,
+  ensureSupabaseUser,
+  syncAppMetadata,
+  deleteSupabaseUser,
+} from './supabase/admin';
+import type { OrganizationRow, ProfileRow, OrganizationMemberRow } from './supabase/database.types';
 import { Resend } from 'resend';
 
 // ─── Types ─────────────────────────────────────────────────────────────────────
@@ -37,18 +47,18 @@ export const SEAT_LIMITS: Record<FirmPlan, number> = {
 
 export interface UserRecord {
   email:                 string;     // lowercase
-  passwordHash:          string;
-  firmDomain:            string;     // lowercase
+  firmDomain:            string;     // lowercase; '' for platform admins with no firm
   firmName:              string;
-  role:                  'admin' | 'user';
+  role:                  'admin' | 'user';   // 'admin' = platform admin
   status:                UserStatus;
   createdAt:             number;
-  inviteTokenHash?:      string;    // SHA-256(token) — for revocation
-  inviteTokenExpiresAt?: number;
   onboardingComplete?:   boolean;   // false = must complete onboarding; absent/true = done
   firstName?:            string;
   lastName?:             string;
   title?:                string;
+  // Billing (onboarding SetupIntent flow). Never logged.
+  stripeCustomerId?:     string | null;  // Stripe customer (cus_...)
+  billingComplete?:      boolean;        // a default payment method is saved
 }
 
 export interface SeatRequest {
@@ -59,328 +69,409 @@ export interface SeatRequest {
   createdAt:  number;
 }
 
+/** Fields accepted by upsertUser — all optional; only provided fields change. */
+export interface UpsertUserInput {
+  role?:               'admin' | 'user';
+  status?:             UserStatus;
+  firmDomain?:         string;
+  firmName?:           string;
+  firstName?:          string;
+  lastName?:           string;
+  title?:              string;
+  onboardingComplete?: boolean;
+  stripeCustomerId?:   string | null;
+  billingComplete?:    boolean;
+  createdAt?:          number;   // accepted for API compat; ignored (DB stamps it)
+}
+
+// ─── Internal helpers ──────────────────────────────────────────────────────────
+
+function normEmail(email: string): string {
+  return email.toLowerCase().trim();
+}
+
+function normDomain(domain: string): string {
+  return domain.toLowerCase().trim();
+}
+
+function toMs(iso: string): number {
+  const t = Date.parse(iso);
+  return Number.isFinite(t) ? t : 0;
+}
+
+function toFirmRecord(row: OrganizationRow): FirmRecord {
+  return {
+    domain:    row.domain ?? '',
+    name:      row.name,
+    plan:      row.plan,
+    status:    row.status,
+    createdAt: toMs(row.created_at),
+  };
+}
+
+interface MembershipContext {
+  membership: OrganizationMemberRow | null;
+  org:        OrganizationRow | null;
+}
+
+/** First membership (+ its org) for a profile. Most users have exactly one. */
+async function getMembership(profileId: string): Promise<MembershipContext> {
+  const db = getServiceRoleClient();
+  if (!db) return { membership: null, org: null };
+
+  const { data: membership } = await db
+    .from('organization_members')
+    .select('*')
+    .eq('profile_id', profileId)
+    .order('created_at', { ascending: true })
+    .limit(1)
+    .maybeSingle();
+  if (!membership) return { membership: null, org: null };
+
+  const { data: org } = await db
+    .from('organizations')
+    .select('*')
+    .eq('id', membership.organization_id)
+    .maybeSingle();
+  return { membership, org: org ?? null };
+}
+
+function toUserRecord(
+  profile: ProfileRow,
+  membership: OrganizationMemberRow | null,
+  org: OrganizationRow | null,
+): UserRecord {
+  return {
+    email:              profile.email,
+    firmDomain:         org?.domain ?? '',
+    firmName:           org?.name ?? '',
+    role:               profile.is_platform_admin ? 'admin' : 'user',
+    status:             membership?.status ?? 'active',
+    createdAt:          toMs(profile.created_at),
+    onboardingComplete: profile.onboarding_complete,
+    stripeCustomerId:   profile.stripe_customer_id,
+    billingComplete:    profile.billing_complete,
+    ...(profile.first_name ? { firstName: profile.first_name } : {}),
+    ...(profile.last_name  ? { lastName:  profile.last_name  } : {}),
+    ...(profile.title      ? { title:     profile.title      } : {}),
+  };
+}
+
+/** Mirrors the user's authorization state onto app_metadata (best-effort). */
+async function syncUserMetadata(email: string): Promise<void> {
+  const user = await getUser(email);
+  if (!user) return;
+  await syncAppMetadata(email, {
+    role:                user.role,
+    status:              user.status,
+    firm_domain:         user.firmDomain,
+    firm_name:           user.firmName,
+    ...(user.firstName ? { first_name: user.firstName } : {}),
+    onboarding_complete: user.onboardingComplete ?? false,
+    billing_complete:    user.billingComplete ?? false,
+  });
+}
+
 // ─── Firm operations ───────────────────────────────────────────────────────────
 
 export async function upsertFirm(
   domain: string,
   fields: Partial<Omit<FirmRecord, 'domain'>>,
 ): Promise<void> {
-  const redis = getUpstashClient();
-  if (!redis) return;
+  const db = getServiceRoleClient();
+  if (!db) return;
+  const d = normDomain(domain);
 
-  const key = `firm:${domain.toLowerCase().trim()}`;
+  const { data: existing } = await db
+    .from('organizations')
+    .select('id')
+    .eq('domain', d)
+    .maybeSingle();
 
-  // Read existing to merge
-  const existing = await getFirm(domain);
-
-  const record: FirmRecord = {
-    domain:    domain.toLowerCase().trim(),
-    name:      fields.name      ?? existing?.name      ?? '',
-    plan:      fields.plan      ?? existing?.plan      ?? 'starter',
-    status:    fields.status    ?? existing?.status    ?? 'active',
-    createdAt: existing?.createdAt ?? Date.now(),
+  const patch = {
+    ...(fields.name   !== undefined ? { name:   fields.name }   : {}),
+    ...(fields.plan   !== undefined ? { plan:   fields.plan, seat_limit: fields.plan === 'enterprise' ? 2147483647 : SEAT_LIMITS[fields.plan] } : {}),
+    ...(fields.status !== undefined ? { status: fields.status } : {}),
   };
 
-  await redis.set(key, JSON.stringify(record));
-
-  // Maintain firms:index
-  const indexRaw = await redis.get('firms:index');
-  const index: string[] = indexRaw ? JSON.parse(indexRaw) : [];
-  if (!index.includes(record.domain)) {
-    index.push(record.domain);
-    await redis.set('firms:index', JSON.stringify(index));
+  if (existing) {
+    if (Object.keys(patch).length > 0) {
+      await db.from('organizations').update(patch).eq('id', existing.id);
+    }
+    return;
   }
+
+  await db.from('organizations').insert({
+    domain: d,
+    name:   fields.name ?? d,
+    ...patch,
+  });
 }
 
 export async function getFirm(domain: string): Promise<FirmRecord | null> {
-  const redis = getUpstashClient();
-  if (!redis) return null;
-
-  const raw = await redis.get(`firm:${domain.toLowerCase().trim()}`);
-  if (!raw) return null;
-
-  try {
-    return JSON.parse(raw) as FirmRecord;
-  } catch {
-    return null;
-  }
+  const db = getServiceRoleClient();
+  if (!db) return null;
+  const { data } = await db
+    .from('organizations')
+    .select('*')
+    .eq('domain', normDomain(domain))
+    .maybeSingle();
+  return data ? toFirmRecord(data) : null;
 }
 
 export async function deleteFirm(domain: string): Promise<void> {
-  const redis = getUpstashClient();
-  if (!redis) return;
-
-  const normalized = domain.toLowerCase().trim();
-  await redis.del(`firm:${normalized}`);
-
-  // Remove from firms:index
-  const indexRaw = await redis.get('firms:index');
-  if (indexRaw) {
-    try {
-      const index: string[] = JSON.parse(indexRaw);
-      const filtered = index.filter(d => d !== normalized);
-      await redis.set('firms:index', JSON.stringify(filtered));
-    } catch { /* best effort */ }
-  }
+  const db = getServiceRoleClient();
+  if (!db) return;
+  // Cascades to organization_members (and projects via FK) by schema design.
+  await db.from('organizations').delete().eq('domain', normDomain(domain));
 }
 
 export async function listFirms(): Promise<FirmRecord[]> {
-  const redis = getUpstashClient();
-  if (!redis) return [];
-
-  const indexRaw = await redis.get('firms:index');
-  if (!indexRaw) return [];
-
-  let index: string[];
-  try {
-    index = JSON.parse(indexRaw);
-  } catch {
-    return [];
-  }
-
-  const records = await Promise.all(index.map(d => getFirm(d)));
-  return records.filter((r): r is FirmRecord => r !== null);
+  const db = getServiceRoleClient();
+  if (!db) return [];
+  const { data } = await db
+    .from('organizations')
+    .select('*')
+    .order('created_at', { ascending: true });
+  return (data ?? []).map(toFirmRecord);
 }
 
-// ─── Domain approval check ─────────────────────────────────────────────────────
-
-// Returns true only if a FirmRecord exists for this exact domain AND status === 'active'.
-// Always lowercase + trim — never substring match.
 export async function isApprovedDomain(domain: string): Promise<boolean> {
-  const firm = await getFirm(domain.toLowerCase().trim());
-  if (!firm) return false;
-  return firm.status === 'active';
+  const db = getServiceRoleClient();
+  if (!db) return false;
+  const { data } = await db
+    .from('organizations')
+    .select('id')
+    .eq('domain', normDomain(domain))
+    .eq('status', 'active')
+    .maybeSingle();
+  return !!data;
 }
 
 // ─── User operations ───────────────────────────────────────────────────────────
 
-// Backward compat: old records have { email, firmName, passwordHash, createdAt, domain }
-// but no role, status, or firmDomain fields.
 export async function getUser(email: string): Promise<UserRecord | null> {
-  const redis = getUpstashClient();
-  if (!redis) return null;
-
-  const raw = await redis.get(`user:${email.toLowerCase().trim()}`);
-  if (!raw) return null;
-
-  try {
-    const record = JSON.parse(raw) as Record<string, unknown>;
-
-    // Apply backward-compat defaults
-    const firmDomain =
-      (typeof record.firmDomain === 'string' && record.firmDomain)
-        ? record.firmDomain
-        : (typeof record.domain === 'string' && record.domain)
-          ? record.domain
-          : '';
-
-    const firmName =
-      typeof record.firmName === 'string' ? record.firmName : '';
-
-    return {
-      email:                 (typeof record.email === 'string' ? record.email : email).toLowerCase().trim(),
-      passwordHash:          typeof record.passwordHash === 'string' ? record.passwordHash : '',
-      firmDomain:            firmDomain.toLowerCase(),
-      firmName,
-      role:                  (record.role === 'admin' || record.role === 'user') ? record.role : 'user',
-      status:                (record.status === 'active' || record.status === 'pending' || record.status === 'disabled')
-                               ? record.status
-                               : 'active',
-      createdAt:             typeof record.createdAt === 'number' ? record.createdAt : 0,
-      inviteTokenHash:       typeof record.inviteTokenHash === 'string' ? record.inviteTokenHash : undefined,
-      inviteTokenExpiresAt:  typeof record.inviteTokenExpiresAt === 'number' ? record.inviteTokenExpiresAt : undefined,
-      onboardingComplete:    typeof record.onboardingComplete === 'boolean' ? record.onboardingComplete : undefined,
-      firstName:             typeof record.firstName === 'string' ? record.firstName : undefined,
-      lastName:              typeof record.lastName  === 'string' ? record.lastName  : undefined,
-      title:                 typeof record.title     === 'string' ? record.title     : undefined,
-    };
-  } catch {
-    return null;
-  }
+  const db = getServiceRoleClient();
+  if (!db) return null;
+  const { data: profile } = await db
+    .from('profiles')
+    .select('*')
+    .eq('email', normEmail(email))
+    .maybeSingle();
+  if (!profile) return null;
+  const { membership, org } = await getMembership(profile.id);
+  return toUserRecord(profile, membership, org);
 }
 
-export async function upsertUser(
-  email: string,
-  fields: Partial<Omit<UserRecord, 'email'>>,
-): Promise<void> {
-  const redis = getUpstashClient();
-  if (!redis) return;
+/**
+ * Creates or updates a user. Ensures a Supabase auth account + profile exist,
+ * applies profile fields, ensures firm membership when firmDomain is given,
+ * and syncs app_metadata. Throws on hard failures so callers can 500.
+ */
+export async function upsertUser(email: string, fields: UpsertUserInput): Promise<void> {
+  const db = getServiceRoleClient();
+  if (!db) throw new Error('[firmStore] Supabase unavailable');
+  const e = normEmail(email);
 
-  const normalizedEmail = email.toLowerCase().trim();
-  const existing = await getUser(normalizedEmail);
+  // 1. Ensure auth account + profile row exist.
+  const profileId = await ensureSupabaseUser(e, null);
+  if (!profileId) throw new Error('[firmStore] failed to ensure auth user');
 
-  const record: UserRecord = {
-    email:                normalizedEmail,
-    passwordHash:         fields.passwordHash        ?? existing?.passwordHash        ?? '',
-    firmDomain:           (fields.firmDomain         ?? existing?.firmDomain          ?? '').toLowerCase(),
-    firmName:             fields.firmName             ?? existing?.firmName             ?? '',
-    role:                 fields.role                 ?? existing?.role                 ?? 'user',
-    status:               fields.status               ?? existing?.status               ?? 'active',
-    createdAt:            fields.createdAt            ?? existing?.createdAt            ?? Date.now(),
-    inviteTokenHash:      fields.inviteTokenHash      ?? existing?.inviteTokenHash,
-    inviteTokenExpiresAt: fields.inviteTokenExpiresAt ?? existing?.inviteTokenExpiresAt,
-    // onboardingComplete can be explicitly false — use !== undefined guard to preserve it
-    onboardingComplete:   fields.onboardingComplete !== undefined ? fields.onboardingComplete : existing?.onboardingComplete,
-    firstName:            fields.firstName  ?? existing?.firstName,
-    lastName:             fields.lastName   ?? existing?.lastName,
-    title:                fields.title      ?? existing?.title,
+  // 2. Apply profile fields.
+  const profilePatch = {
+    ...(fields.firstName          !== undefined ? { first_name: fields.firstName } : {}),
+    ...(fields.lastName           !== undefined ? { last_name:  fields.lastName  } : {}),
+    ...(fields.title              !== undefined ? { title:      fields.title     } : {}),
+    ...(fields.onboardingComplete !== undefined ? { onboarding_complete: fields.onboardingComplete } : {}),
+    ...(fields.role               !== undefined ? { is_platform_admin: fields.role === 'admin' } : {}),
+    // Service-role-only columns (see trg_prevent_profile_privileged_changes).
+    ...(fields.stripeCustomerId   !== undefined ? { stripe_customer_id: fields.stripeCustomerId } : {}),
+    ...(fields.billingComplete    !== undefined ? { billing_complete:   fields.billingComplete  } : {}),
   };
-
-  // Remove undefined optional fields
-  if (record.inviteTokenHash      === undefined) delete record.inviteTokenHash;
-  if (record.inviteTokenExpiresAt === undefined) delete record.inviteTokenExpiresAt;
-  if (record.onboardingComplete   === undefined) delete record.onboardingComplete;
-  if (record.firstName            === undefined) delete record.firstName;
-  if (record.lastName             === undefined) delete record.lastName;
-  if (record.title                === undefined) delete record.title;
-
-  await redis.set(`user:${normalizedEmail}`, JSON.stringify(record));
-
-  // Maintain firm-users:{domain} set
-  if (record.firmDomain) {
-    await redis.sadd(`firm-users:${record.firmDomain}`, normalizedEmail);
+  if (Object.keys(profilePatch).length > 0) {
+    const { error } = await db.from('profiles').update(profilePatch).eq('id', profileId);
+    if (error) throw new Error('[firmStore] profile update failed');
   }
+
+  // 3. Ensure firm membership.
+  if (fields.firmDomain) {
+    const d = normDomain(fields.firmDomain);
+    let { data: org } = await db.from('organizations').select('id').eq('domain', d).maybeSingle();
+    if (!org) {
+      await upsertFirm(d, { name: fields.firmName ?? d });
+      ({ data: org } = await db.from('organizations').select('id').eq('domain', d).maybeSingle());
+    }
+    if (org) {
+      const { data: member } = await db
+        .from('organization_members')
+        .select('id')
+        .eq('organization_id', org.id)
+        .eq('profile_id', profileId)
+        .maybeSingle();
+      if (member) {
+        if (fields.status !== undefined) {
+          await db.from('organization_members').update({ status: fields.status }).eq('id', member.id);
+        }
+      } else {
+        await db.from('organization_members').insert({
+          organization_id: org.id,
+          profile_id:      profileId,
+          status:          fields.status ?? 'active',
+        });
+      }
+    }
+  } else if (fields.status !== undefined) {
+    // Status change without a firm hint — apply to the existing membership.
+    await db
+      .from('organization_members')
+      .update({ status: fields.status })
+      .eq('profile_id', profileId);
+  }
+
+  // 4. Mirror onto app_metadata (best-effort).
+  await syncUserMetadata(e).catch(() => {});
 }
 
 export async function updateUserStatus(email: string, status: UserStatus): Promise<void> {
-  const normalizedEmail = email.toLowerCase().trim();
-  const user = await getUser(normalizedEmail);
-  if (!user) return;
-  await upsertUser(normalizedEmail, { status });
+  await upsertUser(email, { status });
 }
 
 export async function listUsersForFirm(domain: string): Promise<UserRecord[]> {
-  const redis = getUpstashClient();
-  if (!redis) return [];
+  const db = getServiceRoleClient();
+  if (!db) return [];
+  const { data: org } = await db
+    .from('organizations')
+    .select('*')
+    .eq('domain', normDomain(domain))
+    .maybeSingle();
+  if (!org) return [];
 
-  const emails = await redis.smembers(`firm-users:${domain.toLowerCase().trim()}`);
-  const users = await Promise.all(emails.map(e => getUser(e)));
-  return users.filter((u): u is UserRecord => u !== null);
+  const { data: members } = await db
+    .from('organization_members')
+    .select('*')
+    .eq('organization_id', org.id);
+  if (!members || members.length === 0) return [];
+
+  const { data: profiles } = await db
+    .from('profiles')
+    .select('*')
+    .in('id', members.map(m => m.profile_id));
+
+  const byId = new Map((profiles ?? []).map(p => [p.id, p]));
+  return members
+    .map(m => {
+      const p = byId.get(m.profile_id);
+      return p ? toUserRecord(p, m, org) : null;
+    })
+    .filter((u): u is UserRecord => u !== null);
 }
 
 export async function countActiveUsersForFirm(domain: string): Promise<number> {
-  const users = await listUsersForFirm(domain);
-  return users.filter(u => u.status === 'active').length;
+  const db = getServiceRoleClient();
+  if (!db) return 0;
+  const { data: org } = await db
+    .from('organizations')
+    .select('id')
+    .eq('domain', normDomain(domain))
+    .maybeSingle();
+  if (!org) return 0;
+  const { count } = await db
+    .from('organization_members')
+    .select('id', { count: 'exact', head: true })
+    .eq('organization_id', org.id)
+    .eq('status', 'active');
+  return count ?? 0;
 }
 
-// List every user record in the system (admin-only use).
-// Uses KEYS user:* — acceptable for small admin datasets; never call from hot paths.
 export async function listAllUsers(): Promise<UserRecord[]> {
-  const redis = getUpstashClient();
-  if (!redis) return [];
-
-  const keys = await redis.keys('user:*');
-  if (keys.length === 0) return [];
-
-  const users = await Promise.all(
-    keys.map(k => getUser(k.slice('user:'.length))),
-  );
-  return users.filter((u): u is UserRecord => u !== null);
+  const db = getServiceRoleClient();
+  if (!db) return [];
+  const [{ data: profiles }, { data: members }, { data: orgs }] = await Promise.all([
+    db.from('profiles').select('*'),
+    db.from('organization_members').select('*'),
+    db.from('organizations').select('*'),
+  ]);
+  const orgById     = new Map((orgs ?? []).map(o => [o.id, o]));
+  const memberByPid = new Map((members ?? []).map(m => [m.profile_id, m]));
+  return (profiles ?? []).map(p => {
+    const m = memberByPid.get(p.id) ?? null;
+    const o = m ? (orgById.get(m.organization_id) ?? null) : null;
+    return toUserRecord(p, m, o);
+  });
 }
 
-// Hard-delete a user record and remove them from all index sets.
 export async function deleteUser(email: string): Promise<void> {
-  const redis = getUpstashClient();
-  if (!redis) return;
-
-  const normalizedEmail = email.toLowerCase().trim();
-
-  // Read first so we know which firm-users set to clean up.
-  const user = await getUser(normalizedEmail);
-
-  await redis.del(`user:${normalizedEmail}`);
-
-  if (user?.firmDomain) {
-    await redis.srem(`firm-users:${user.firmDomain}`, normalizedEmail);
-  }
+  // Deleting the auth user cascades to profiles and organization_members.
+  await deleteSupabaseUser(normEmail(email));
 }
 
-// ─── Concurrent seat claim protection ──────────────────────────────────────────
+// ─── Seat claim lock (Redis — short-TTL concurrency guard only) ────────────────
 
-// Returns 'ok' on success, 'concurrent_signup' if another claim is in flight.
 export async function tryClaimSeat(domain: string, email: string, ttlSeconds = 5): Promise<'ok' | 'concurrent_signup'> {
   const redis = getUpstashClient();
-  if (!redis) return 'ok'; // if no Redis, let other checks catch it
-
-  const key = `seat-claim:${domain.toLowerCase()}:${email.toLowerCase()}`;
-  const result = await redis.set(key, '1', { ex: ttlSeconds, nx: true });
+  if (!redis) return 'ok'; // no lock available — proceed (best-effort guard)
+  const key = `seat-claim:${normDomain(domain)}:${normEmail(email)}`;
+  const result = await redis.set(key, '1', { ex: ttlSeconds, nx: true }).catch(() => 'OK' as const);
   return result === 'OK' ? 'ok' : 'concurrent_signup';
 }
 
 export async function releaseSeatClaim(domain: string, email: string): Promise<void> {
   const redis = getUpstashClient();
   if (!redis) return;
-  await redis.del(`seat-claim:${domain.toLowerCase()}:${email.toLowerCase()}`);
+  await redis.del(`seat-claim:${normDomain(domain)}:${normEmail(email)}`).catch(() => {});
 }
 
-// ─── Seat request operations ───────────────────────────────────────────────────
+// ─── Seat requests (access_requests, kind='seat') ─────────────────────────────
 
 export async function recordSeatRequest(email: string, firmDomain: string): Promise<void> {
-  const redis = getUpstashClient();
-  if (!redis) return;
-
-  const normalizedEmail = email.toLowerCase().trim();
-  const record: SeatRequest = {
-    email:      normalizedEmail,
-    firmDomain: firmDomain.toLowerCase().trim(),
-    reason:     'seat_limit_reached',
-    status:     'pending',
-    createdAt:  Date.now(),
-  };
-
-  await redis.set(`seat-request:${normalizedEmail}`, JSON.stringify(record));
-
-  // Add to list if not already present
-  const listRaw = await redis.get('seat-requests:list');
-  const list: string[] = listRaw ? JSON.parse(listRaw) : [];
-  if (!list.includes(normalizedEmail)) {
-    list.push(normalizedEmail);
-    await redis.set('seat-requests:list', JSON.stringify(list));
-  }
+  const db = getServiceRoleClient();
+  if (!db) return;
+  const e = normEmail(email);
+  // One open seat request per email — skip if one is already pending.
+  const { data: existing } = await db
+    .from('access_requests')
+    .select('id')
+    .eq('kind', 'seat')
+    .eq('email', e)
+    .eq('status', 'requested')
+    .maybeSingle();
+  if (existing) return;
+  await db.from('access_requests').insert({
+    kind:             'seat',
+    email:            e,
+    requested_domain: normDomain(firmDomain),
+  });
 }
 
 export async function listSeatRequests(): Promise<SeatRequest[]> {
-  const redis = getUpstashClient();
-  if (!redis) return [];
-
-  const listRaw = await redis.get('seat-requests:list');
-  if (!listRaw) return [];
-
-  let emails: string[];
-  try {
-    emails = JSON.parse(listRaw);
-  } catch {
-    return [];
-  }
-
-  const records = await Promise.all(
-    emails.map(async (e) => {
-      const raw = await redis.get(`seat-request:${e}`);
-      if (!raw) return null;
-      try { return JSON.parse(raw) as SeatRequest; } catch { return null; }
-    }),
-  );
-
-  return records.filter((r): r is SeatRequest => r !== null);
+  const db = getServiceRoleClient();
+  if (!db) return [];
+  const { data } = await db
+    .from('access_requests')
+    .select('*')
+    .eq('kind', 'seat')
+    .eq('status', 'requested')
+    .order('created_at', { ascending: false });
+  return (data ?? []).map(r => ({
+    email:      r.email,
+    firmDomain: r.requested_domain ?? '',
+    reason:     'seat_limit_reached' as const,
+    status:     'pending' as const,
+    createdAt:  toMs(r.created_at),
+  }));
 }
 
 export async function removeSeatRequest(email: string): Promise<void> {
-  const redis = getUpstashClient();
-  if (!redis) return;
-
-  const normalizedEmail = email.toLowerCase().trim();
-  await redis.del(`seat-request:${normalizedEmail}`);
-
-  const listRaw = await redis.get('seat-requests:list');
-  if (!listRaw) return;
-  try {
-    const list: string[] = JSON.parse(listRaw);
-    const filtered = list.filter(e => e !== normalizedEmail);
-    await redis.set('seat-requests:list', JSON.stringify(filtered));
-  } catch { /* best effort */ }
+  const db = getServiceRoleClient();
+  if (!db) return;
+  await db
+    .from('access_requests')
+    .delete()
+    .eq('kind', 'seat')
+    .eq('email', normEmail(email));
 }
 
-// ─── Admin seat-limit notification ────────────────────────────────────────────
+// ─── Seat limit notification (Resend) ─────────────────────────────────────────
 
 let _adminResend: Resend | null = null;
 

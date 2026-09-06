@@ -3,15 +3,13 @@ import { updateExpertStatus, addExpertNote, removeExpertFromProject, getProjectF
 import { guardMutatingRequest, guardReadRequest } from '../../../../../../lib/projectsGuard';
 import { getSessionUser } from '../../../../../../lib/auth';
 import { sanitizeText, LIMITS } from '../../../../../../lib/projectValidation';
+import { EXPERT_STATUSES } from '../../../../../../lib/expertPipeline';
 import type { ExpertStatus, RejectionReason, ValueChainPosition, ScreeningStatus, ContactStatus, SuggestedDomain, PublicContactEmail } from '../../../../../../types';
 
 const ID_RE        = /^[a-f0-9]{24}$/;
 const EXPERT_ID_RE = /^[a-zA-Z0-9\-_]+$/;
 
-const VALID_STATUSES = new Set<ExpertStatus>([
-  'discovered', 'shortlisted', 'rejected', 'contact_found',
-  'outreach_drafted', 'contacted', 'replied', 'scheduled', 'completed',
-]);
+const VALID_STATUSES = new Set<ExpertStatus>(EXPERT_STATUSES);
 
 const VALID_REJECTION_REASONS = new Set<RejectionReason>([
   'too_generic', 'wrong_industry', 'wrong_geography', 'weak_evidence',

@@ -1,6 +1,5 @@
-import { cookies } from 'next/headers';
 import Link from 'next/link';
-import { getSessionPayload, COOKIE_NAME } from '../lib/auth';
+import { createClient } from '../lib/supabase/server';
 import SignOutButton from './SignOutButton';
 
 const GOLD = '#C6A75E';
@@ -18,18 +17,18 @@ function displayName(email: string): string {
 }
 
 export default async function NavBar({ activePath }: NavBarProps = {}) {
-  const cookieStore = cookies();
-  const token = cookieStore.get(COOKIE_NAME)?.value ?? '';
   let sessionEmail: string | null = null;
   let sessionFirstName: string | null = null;
-  if (token) {
-    try {
-      const payload = await getSessionPayload(token);
-      sessionEmail = payload?.email ?? null;
-      sessionFirstName = payload?.firstName ?? null;
-    } catch {
-      sessionEmail = null;
+  try {
+    const supabase = createClient();
+    const { data: { user } } = await supabase.auth.getUser();
+    if (user?.email) {
+      sessionEmail = user.email;
+      const meta = user.app_metadata as { first_name?: string };
+      sessionFirstName = meta.first_name ?? null;
     }
+  } catch {
+    sessionEmail = null;
   }
 
   return (

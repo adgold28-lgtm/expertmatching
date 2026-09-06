@@ -1,0 +1,143 @@
+// Canonical expert pipeline model.
+//
+// Single source of truth for:
+//   1. the full set of valid ExpertStatus values (API allowlists derive from it)
+//   2. the derived pipeline stage an expert sits in (Outreach Sent → Replied Yes
+//      → Scheduled → Completed → Billed, plus Needs Attention / Declined)
+//   3. per-status and per-stage display metadata (label + pill classes)
+//
+// The stage is DERIVED from `status` + `replyIntent` + `paymentStatus`. It is
+// never persisted — there is no schema change and no new status value.
+//
+// Colour language:
+//   sky   — contact found / draft ready
+//   amber — in-flight, waiting, negotiating
+//   teal  — scheduling link sent
+//   green — replied interested / scheduled / billed (shade deepens along the funnel)
+//   navy  — completed
+//   red   — conflict
+//   slate — declined
+
+import type { ProjectExpert, ExpertStatus } from '../types';
+
+// ─── Status universe ──────────────────────────────────────────────────────────
+
+/**
+ * Every valid ExpertStatus — all 14 members of the union, in pipeline order so
+ * consumers can render them directly. API allowlists and UI selectors build
+ * from this rather than repeating the literals.
+ */
+export const EXPERT_STATUSES: readonly ExpertStatus[] = [
+  'discovered',
+  'shortlisted',
+  'contact_found',
+  'outreach_drafted',
+  'contacted',
+  'email2_sent',
+  'scheduling_sent',
+  'replied',
+  'rate_negotiation',
+  'conflict_flagged',
+  'scheduled',
+  'completed',
+  'rejected',
+  'rejected_after_outreach',
+] as const;
+
+// ─── Pipeline stages ──────────────────────────────────────────────────────────
+
+export type PipelineStage =
+  | 'pre_outreach'
+  | 'outreach_sent'
+  | 'replied_yes'
+  | 'needs_attention'
+  | 'scheduled'
+  | 'completed'
+  | 'billed'
+  | 'declined';
+
+/** Board columns / summary strip order. Excludes pre_outreach; declined is last. */
+export const PIPELINE_STAGES: readonly PipelineStage[] = [
+  'outreach_sent',
+  'replied_yes',
+  'needs_attention',
+  'scheduled',
+  'completed',
+  'billed',
+  'declined',
+] as const;
+
+const DECLINED_STATUSES = new Set<ExpertStatus>([
+  'rejected',
+  'rejected_after_outreach',
+]);
+
+const OUTREACH_SENT_STATUSES = new Set<ExpertStatus>([
+  'contacted',
+  'email2_sent',
+  'scheduling_sent',
+]);
+
+/**
+ * Derive the pipeline stage for an expert.
+ *
+ * Precedence: declined statuses always win; a completed expert with an invoice
+ * sent or paid is `billed`; a `replied` expert splits on replyIntent —
+ * 'interested' is `replied_yes`, anything else (declined / counter_rate /
+ * conflict / unclear / absent) needs a human look. A payment status on a
+ * non-completed expert is ignored — we trust `status`.
+ */
+export function pipelineStage(pe: ProjectExpert): PipelineStage {
+  const status = pe.status;
+
+  if (DECLINED_STATUSES.has(status)) return 'declined';
+
+  if (status === 'completed') {
+    return pe.paymentStatus === 'invoice_sent' || pe.paymentStatus === 'paid'
+      ? 'billed'
+      : 'completed';
+  }
+
+  if (status === 'scheduled') return 'scheduled';
+
+  if (status === 'rate_negotiation' || status === 'conflict_flagged') return 'needs_attention';
+
+  if (status === 'replied') {
+    return pe.replyIntent === 'interested' ? 'replied_yes' : 'needs_attention';
+  }
+
+  if (OUTREACH_SENT_STATUSES.has(status)) return 'outreach_sent';
+
+  // discovered, shortlisted, contact_found, outreach_drafted
+  return 'pre_outreach';
+}
+
+// ─── Display metadata ─────────────────────────────────────────────────────────
+
+export const STAGE_META: Record<PipelineStage, { label: string; classes: string }> = {
+  pre_outreach:    { label: 'Pre-Outreach',    classes: 'text-muted border-frame'                     },
+  outreach_sent:   { label: 'Outreach Sent',   classes: 'text-amber-700 border-amber-300 bg-amber-50' },
+  replied_yes:     { label: 'Replied Yes',     classes: 'text-green-700 border-green-200 bg-green-50' },
+  needs_attention: { label: 'Needs Attention', classes: 'text-amber-700 border-amber-400 bg-amber-50' },
+  scheduled:       { label: 'Scheduled',       classes: 'text-green-700 border-green-300 bg-green-50' },
+  completed:       { label: 'Completed',       classes: 'text-navy border-navy/20 bg-navy/5'          },
+  billed:          { label: 'Billed',          classes: 'text-green-800 border-green-400 bg-green-50' },
+  declined:        { label: 'Declined',        classes: 'text-slate-500 border-slate-200 bg-slate-50' },
+};
+
+export const STATUS_META: Record<ExpertStatus, { label: string; classes: string }> = {
+  discovered:              { label: 'Discovered',       classes: 'text-muted border-frame'                     },
+  shortlisted:             { label: 'Shortlisted',      classes: 'text-amber-700 border-amber-300 bg-amber-50' },
+  rejected:                { label: 'Rejected',         classes: 'text-slate-500 border-slate-200 bg-slate-50' },
+  contact_found:           { label: 'Contact Found',    classes: 'text-sky-600 border-sky-200 bg-sky-50'       },
+  outreach_drafted:        { label: 'Draft Ready',      classes: 'text-sky-700 border-sky-300 bg-sky-50'       },
+  contacted:               { label: 'Email 1 Sent',     classes: 'text-amber-700 border-amber-300 bg-amber-50' },
+  email2_sent:             { label: 'Email 2 Sent',     classes: 'text-amber-700 border-amber-300 bg-amber-50' },
+  scheduling_sent:         { label: 'Scheduling Sent',  classes: 'text-teal-700 border-teal-300 bg-teal-50'    },
+  replied:                 { label: 'Replied',          classes: 'text-green-700 border-green-200 bg-green-50' },
+  rate_negotiation:        { label: 'Rate Negotiation', classes: 'text-amber-700 border-amber-400 bg-amber-50' },
+  conflict_flagged:        { label: 'Conflict Flagged', classes: 'text-red-700 border-red-300 bg-red-50'       },
+  scheduled:               { label: 'Scheduled',        classes: 'text-green-700 border-green-300 bg-green-50' },
+  completed:               { label: 'Completed',        classes: 'text-navy border-navy/20 bg-navy/5'          },
+  rejected_after_outreach: { label: 'Declined',         classes: 'text-slate-500 border-slate-200 bg-slate-50' },
+};

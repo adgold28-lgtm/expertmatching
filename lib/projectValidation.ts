@@ -3,6 +3,7 @@
 // These run at the API boundary before any data reaches the store.
 
 import type { Expert, ExpertStatus, SourceLink, EvidenceItem } from '../types';
+import { EXPERT_STATUSES } from './expertPipeline';
 
 // ─── Limits ───────────────────────────────────────────────────────────────────
 
@@ -245,10 +246,7 @@ export function validateCreateProjectInput(
     return { errors };
   }
 
-  const VALID_STATUSES: ExpertStatus[] = [
-    'discovered', 'shortlisted', 'rejected', 'contact_found',
-    'outreach_drafted', 'contacted', 'replied', 'scheduled', 'completed',
-  ];
+  const VALID_STATUSES: readonly ExpertStatus[] = EXPERT_STATUSES;
 
   const experts: Array<{ expert: Expert; status?: ExpertStatus }> = [];
   for (const raw of rawExperts) {

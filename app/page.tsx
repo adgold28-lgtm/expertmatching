@@ -1,8 +1,7 @@
 import type { Metadata } from 'next';
 import Link from 'next/link';
-import { cookies } from 'next/headers';
 import NavBar from '../components/NavBar';
-import { getSessionPayload, COOKIE_NAME } from '../lib/auth';
+import { createClient } from '../lib/supabase/server';
 
 export const metadata: Metadata = {
   title: 'ExpertMatch — Expert Calls, Sourced and Billed in Hours.',
@@ -36,14 +35,12 @@ function Footer() {
 }
 
 export default async function LandingPage() {
-  const cookieStore = cookies();
-  const token = cookieStore.get(COOKIE_NAME)?.value ?? '';
   let isSignedIn = false;
-  if (token) {
-    try {
-      isSignedIn = !!(await getSessionPayload(token));
-    } catch { /* ignore */ }
-  }
+  try {
+    const supabase = createClient();
+    const { data: { user } } = await supabase.auth.getUser();
+    isSignedIn = !!user;
+  } catch { /* signed out */ }
 
   return (
     <div className="min-h-screen flex flex-col font-body" style={{ background: '#F7F9FC' }}>

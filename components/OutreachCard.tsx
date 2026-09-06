@@ -6,39 +6,22 @@ import ContactSection from './ContactSection';
 import EmailStatusBadge from './EmailStatusBadge';
 import OutreachModal from './OutreachModal';
 import { isLinkedInProfileUrl } from '../lib/domainSuggestions';
+import { STATUS_META, STAGE_META, pipelineStage, type PipelineStage } from '../lib/expertPipeline';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
 const TIMEZONES = ['ET', 'CT', 'MT', 'PT', 'GMT'] as const;
 type Timezone = (typeof TIMEZONES)[number];
 
-const STATUS_PILL: Record<string, string> = {
-  contact_found:            'text-sky-600   border-sky-200   bg-sky-50',
-  outreach_drafted:         'text-sky-700   border-sky-300   bg-sky-50',
-  contacted:                'text-amber-700 border-amber-300 bg-amber-50',
-  email2_sent:              'text-amber-700 border-amber-300 bg-amber-50',
-  replied:                  'text-amber-700 border-amber-400 bg-amber-50',
-  scheduling_sent:          'text-teal-700  border-teal-300  bg-teal-50',
-  scheduled:                'text-green-700 border-green-200 bg-green-50',
-  completed:                'text-navy      border-navy/20   bg-navy/5',
-  rate_negotiation:         'text-amber-700 border-amber-400 bg-amber-50',
-  conflict_flagged:         'text-red-700   border-red-300   bg-red-50',
-  rejected_after_outreach:  'text-slate-500 border-slate-200 bg-slate-50',
-};
-
-const STATUS_LABEL: Record<string, string> = {
-  contact_found:            'Contact Found',
-  outreach_drafted:         'Draft Ready',
-  contacted:                'Email 1 Sent',
-  email2_sent:              'Email 2 Sent',
-  replied:                  'Replied',
-  scheduling_sent:          'Scheduling Sent',
-  scheduled:                'Scheduled',
-  completed:                'Completed',
-  rate_negotiation:         'Rate Negotiation',
-  conflict_flagged:         'Conflict Flagged',
-  rejected_after_outreach:  'Declined',
-};
+// A second pill appears only when the stage says something the status pill
+// does not: 'Replied' alone hides the intent (interested vs needs a look), and
+// a completed engagement that is invoiced or paid is billed. For every other
+// stage — including rate_negotiation / conflict_flagged, whose status pills
+// already read as needing attention — it would duplicate, so it is suppressed.
+function badgeStage(stage: PipelineStage, status: string): boolean {
+  if (stage === 'replied_yes' || stage === 'billed') return true;
+  return stage === 'needs_attention' && status === 'replied';
+}
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -200,7 +183,12 @@ export default function OutreachCard({
   const [completeRateError,   setCompleteRateError]  = useState('');
 
   const status          = projectExpert.status as ExpertStatus;
-  const statusPillClass = STATUS_PILL[status] ?? 'text-muted border-frame';
+  // Fallback guards against a status persisted before it existed in STATUS_META.
+  const statusMeta      = STATUS_META[status] ?? { label: status, classes: 'text-muted border-frame' };
+  const statusPillClass = statusMeta.classes;
+
+  const stage     = pipelineStage(projectExpert);
+  const stageMeta = badgeStage(stage, status) ? STAGE_META[stage] : null;
 
   const linkedInLinks = (expert.source_links ?? []).filter(
     l => l.type === 'LinkedIn' && isLinkedInProfileUrl(l.url),
@@ -439,12 +427,22 @@ export default function OutreachCard({
             )}
             <p className="text-[11px] text-muted truncate mt-0.5">{expert.title} · {expert.company}</p>
           </div>
-          <span
-            className={`shrink-0 text-[9px] uppercase tracking-widest border font-medium px-2 py-0.5 ${statusPillClass}`}
-            style={{ letterSpacing: '0.12em' }}
-          >
-            {STATUS_LABEL[status] ?? status}
-          </span>
+          <div className="shrink-0 flex items-center justify-end gap-1.5 flex-wrap">
+            <span
+              className={`shrink-0 text-[9px] uppercase tracking-widest border font-medium px-2 py-0.5 ${statusPillClass}`}
+              style={{ letterSpacing: '0.12em' }}
+            >
+              {statusMeta.label}
+            </span>
+            {stageMeta && (
+              <span
+                className={`shrink-0 text-[9px] uppercase tracking-widest border font-medium px-2 py-0.5 ${stageMeta.classes}`}
+                style={{ letterSpacing: '0.12em' }}
+              >
+                {stageMeta.label}
+              </span>
+            )}
+          </div>
         </div>
       </div>
 

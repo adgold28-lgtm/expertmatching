@@ -3,14 +3,12 @@ import { addExpertsToProject, getProjectForUser } from '../../../../../lib/proje
 import { guardMutatingRequest } from '../../../../../lib/projectsGuard';
 import { getSessionUser } from '../../../../../lib/auth';
 import { validateProjectExpert, MAX_EXPERTS_PER_PROJECT } from '../../../../../lib/projectValidation';
+import { EXPERT_STATUSES } from '../../../../../lib/expertPipeline';
 import type { ExpertStatus } from '../../../../../types';
 
 const ID_RE = /^[a-f0-9]{24}$/;
 
-const VALID_STATUSES = new Set<ExpertStatus>([
-  'discovered', 'shortlisted', 'rejected', 'contact_found',
-  'outreach_drafted', 'contacted', 'replied', 'scheduled', 'completed',
-]);
+const VALID_STATUSES = new Set<ExpertStatus>(EXPERT_STATUSES);
 
 export async function POST(
   request: NextRequest,

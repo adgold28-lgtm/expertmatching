@@ -447,7 +447,10 @@ briefType options:
     const { value: resp, retries } = await callWithRetry(
       () => client.messages.create({
         model:      'claude-haiku-4-5',
-        max_tokens: 1800,
+        // The VCI JSON regularly exceeds 1800 tokens (8+ mustSearchTerms,
+        // 5+ pools, labels) — 1800 caused mid-JSON truncation and silent
+        // vciAvailable:false degradation.
+        max_tokens: 4000,
         messages:   [{ role: 'user', content: prompt }],
       }),
       1,

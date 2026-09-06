@@ -89,15 +89,13 @@ export async function POST(request: NextRequest): Promise<Response> {
 
   try {
     // ── 7. Create pending user ───────────────────────────────────────────────
-    const inviteExpiresAt = Date.now() + 24 * 60 * 60 * 1000;
+    // Provisions the auth account (random password — replaced by the invite
+    // set-password flow), profile, and pending firm membership.
     await upsertUser(email, {
-      firmDomain:           domain,
-      firmName:             firm.name,
-      role:                 'user',
-      status:               'pending',
-      passwordHash:         '',
-      createdAt:            Date.now(),
-      inviteTokenExpiresAt: inviteExpiresAt,
+      firmDomain: domain,
+      firmName:   firm.name,
+      role:       'user',
+      status:     'pending',
     });
 
     // ── 8. Generate invite token ─────────────────────────────────────────────

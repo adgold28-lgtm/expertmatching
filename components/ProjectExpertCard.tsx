@@ -4,42 +4,7 @@ import { useState, useEffect, useRef } from 'react';
 import type { ProjectExpert, ExpertStatus, RejectionReason } from '../types';
 import { classifySeniority, TIER_PRICING } from '../lib/seniorityClassifier';
 import ExpertCard from './ExpertCard';
-
-// ─── Display metadata ─────────────────────────────────────────────────────────
-
-const STATUS_LABEL: Record<ExpertStatus, string> = {
-  discovered:               'Discovered',
-  shortlisted:              'Shortlisted',
-  rejected:                 'Rejected',
-  contact_found:            'Contact Found',
-  outreach_drafted:         'Draft Ready',
-  contacted:                'Email 1 Sent',
-  email2_sent:              'Email 2 Sent',
-  replied:                  'Replied',
-  scheduling_sent:          'Scheduling Sent',
-  scheduled:                'Scheduled',
-  completed:                'Completed',
-  rate_negotiation:         'Rate Negotiation',
-  conflict_flagged:         'Conflict Flagged',
-  rejected_after_outreach:  'Declined',
-};
-
-const STATUS_CLASS: Record<ExpertStatus, string> = {
-  discovered:               'text-muted border-frame',
-  shortlisted:              'text-amber-700 border-amber-300 bg-amber-50',
-  rejected:                 'text-red-600 border-red-200 bg-red-50',
-  contact_found:            'text-sky-600 border-sky-200 bg-sky-50',
-  outreach_drafted:         'text-sky-600 border-sky-200 bg-sky-50',
-  contacted:                'text-sky-700 border-sky-300 bg-sky-50',
-  email2_sent:              'text-amber-700 border-amber-300 bg-amber-50',
-  replied:                  'text-green-700 border-green-200 bg-green-50',
-  scheduling_sent:          'text-teal-700 border-teal-300 bg-teal-50',
-  scheduled:                'text-green-700 border-green-200 bg-green-50',
-  completed:                'text-navy border-navy/20 bg-navy/5',
-  rate_negotiation:         'text-amber-700 border-amber-400 bg-amber-50',
-  conflict_flagged:         'text-red-700 border-red-300 bg-red-50',
-  rejected_after_outreach:  'text-slate-500 border-slate-200 bg-slate-50',
-};
+import { STATUS_META, EXPERT_STATUSES } from '../lib/expertPipeline';
 
 const REJECTION_REASONS: Array<{ value: RejectionReason; label: string }> = [
   { value: 'too_generic',             label: 'Too Generic'              },
@@ -58,10 +23,11 @@ const REJECTION_REASONS: Array<{ value: RejectionReason; label: string }> = [
 // Reasons that warrant a follow-up notes field
 const REASONS_WITH_NOTES = new Set<RejectionReason>(['other', 'better_option_available', 'conflict_risk']);
 
-const ALL_STATUSES: ExpertStatus[] = [
-  'discovered', 'shortlisted', 'rejected', 'contact_found',
-  'outreach_drafted', 'contacted', 'replied', 'scheduled', 'completed',
-];
+// Full status list, in pipeline order. Derived so the controlled <select> always
+// contains the expert's current status — mid-pipeline states (email2_sent,
+// scheduling_sent, rate_negotiation, …) were previously missing and rendered
+// the select with no matching option.
+const ALL_STATUSES: readonly ExpertStatus[] = EXPERT_STATUSES;
 
 // ─── Props ────────────────────────────────────────────────────────────────────
 
@@ -292,8 +258,8 @@ export default function ProjectExpertCard({ projectExpert, projectId, query, onU
         {status !== 'discovered' && status !== 'shortlisted' && status !== 'rejected' && (
           <div className="space-y-1.5">
             <div className="flex items-center gap-2">
-            <span className={`text-[10px] px-2 py-0.5 border font-medium uppercase tracking-wider shrink-0 ${STATUS_CLASS[status]}`}>
-              {STATUS_LABEL[status]}
+            <span className={`text-[10px] px-2 py-0.5 border font-medium uppercase tracking-wider shrink-0 ${STATUS_META[status].classes}`}>
+              {STATUS_META[status].label}
             </span>
             <select
               value={status}
@@ -302,7 +268,7 @@ export default function ProjectExpertCard({ projectExpert, projectId, query, onU
               className="text-[10px] uppercase tracking-widest border border-frame bg-cream text-muted px-2 py-1 focus:outline-none focus:border-navy transition-colors disabled:opacity-50 flex-1"
             >
               {ALL_STATUSES.map(s => (
-                <option key={s} value={s}>{STATUS_LABEL[s]}</option>
+                <option key={s} value={s}>{STATUS_META[s].label}</option>
               ))}
             </select>
             </div>
