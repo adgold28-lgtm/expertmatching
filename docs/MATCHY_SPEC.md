@@ -34,10 +34,11 @@ A client bookmarks an expert from their matches. From that moment Matchy — Exp
 ## Pricing rule (must be explicit everywhere)
 
 ExpertMatch takes **30%**. Two numbers exist per engagement:
-- `clientRate` — what the client pays. Shown to the client everywhere (cards, decision cards, receipts) with "includes ExpertMatch fee." Tier defaults $400 / $600 / $800 are **opening positions**.
-- `expertRate = round(clientRate × 0.70)` — what the expert is offered and paid. Shown only to the expert and to staff.
+- `expertRate` — what the expert is offered and paid. Shown only to the expert and to staff. Tier defaults (founder, 2026-09-06) are **opening offers to the expert**: Mid $400 / Senior $650 / Executive $800. These replace the current `TIER_PRICING` expert numbers ($280 / $420 / $560).
+- `clientRate = ceil(expertRate / 0.70 / 50) × 50` — what the client pays, rounded **up** to the next $50 (so $400 → $600, $650 → $950, $800 → $1,150). The rounding remainder is ExpertMatch margin; the effective take is 30–33%. Shown to the client everywhere (cards, decision cards, receipts) with "includes ExpertMatch fee." Opening client rates after rounding: $600 / $950 / $1,150.
+- `clientRateMin` / `clientRateMax` — set by the client per project (in client-rate terms). Matchy negotiates only inside this band; tiers are rough estimates, the band is the rule.
 
-Rules: the intro never mentions money; the follow-up asks the expert about `expertRate`; negotiation cards show the client `clientRate` (with the implied expert number visible only to staff); auto-billing charges `clientRate` (fixing the current code, which charges `expertRate`); payouts transfer `expertRate`. When an expert counters, Matchy converts: "Scott wants $650/hr → that's $929/hr for you; accept, or offer $600 ($857 to you)?"
+Rules: the intro never mentions money; the follow-up asks the expert about `expertRate`; negotiation cards show the client `clientRate` (with the implied expert number visible only to staff); auto-billing charges `clientRate` (fixing the current code, which charges `expertRate`); payouts transfer `expertRate`. When an expert counters, Matchy converts: "Scott wants $650/hr → that's $950/hr for you; accept, or offer $600 ($850 to you)?"
 
 ## Matchy's jobs (priority order)
 
@@ -92,14 +93,15 @@ Rules: the intro never mentions money; the follow-up asks the expert about `expe
 - Money is never in the intro; the follow-up asks, never asserts; the two rates never share a message.
 - Matchy never free-writes to an expert without a human-approved draft or a template.
 
-## Open questions for the founder
+## Founder answers (2026-09-06)
 
-1. **Firm type wording** in the intro: "a private equity firm" / "a consulting firm" / "a corporate strategy team" — is that the right level of disclosure, or more vague ("an investment firm")?
-2. **Review switch default** for a brand-new client: auto-send (faster) or review-first (safer) for their first project?
-3. **Rate floor/ceiling per tier** for negotiation cards — e.g. Executive $600–$1,000 client-side — so Matchy's suggestions stay in bounds. Give me the three ranges.
-4. **Minimum call length** billed (e.g. 30 min) — currently per-minute from minute one.
-5. **Who is "the client" on a shared dashboard** — any collaborator can send to experts, or only the project owner (collaborators read-only)?
-6. **Digest cadence** — real-time nudge + morning digest, or digest only at first?
+1. **Firm type wording** — one word for type plus one for relative size, e.g. "a mid-size PE firm", "a boutique consulting firm", "a large law firm", "a family office". Needs `firmType` + `firmSize` on the organization (does not exist yet; capture at access request / org setup, admin-editable).
+3. **Rates** — no fixed ranges per tier. Tier defaults are opening *expert* offers ($400 / $650 / $800); the client sets the min/max they are willing to pay per project and Matchy stays inside it. See Pricing rule.
+4. **Minimum billable call** — 15 minutes. Calls shorter than 15 min bill as 15; per-minute above that.
+6. **Digest cadence** — no digest in Phase 1. Matchy updates the thread and pipeline in real time when a reply arrives; a digest is a Phase 3 nicety.
+
+2. **Review switch default** — auto-send. Bookmarking *is* the consent: the client knows a bookmark starts outreach, it costs them nothing, and the switch stays one click away. Bookmarking may also unlock slightly more expert detail than the sourcing card shows (decide the exact fields in Phase 1).
+5. **Shared dashboard** — already built (`project_collaborators`, owner-only add, RLS-tested), so keep it. Phase 1 rule: only the project owner (or staff) can send to experts; collaborators are read-only. Not a build target.
 
 ## Risks
 
