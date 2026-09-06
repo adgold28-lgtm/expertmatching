@@ -1,6 +1,6 @@
 .env.local
 .next/
-node_modules/
+node_modules
 .vercel
 audit-export*/
 audit-export*.zip
