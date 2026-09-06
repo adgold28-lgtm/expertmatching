@@ -7,6 +7,16 @@ Last updated: 2026-09-06
       billing; smoke 16/16; deployed e4817b1). Stripe seat Price v2 is created
       lazily on first org billing setup (test mode). Migration 20260902 was
       already applied in prod.
+- [ ] FULL WEBSITE AUDIT — release gate before the first client and before the
+      YC application (founder, 2026-09-06). Second pass of docs/COPY_AUDIT.md
+      run AFTER Matchy Phase 1 lands (and again after Phase 2): every public
+      page, every in-app screen, every email, every empty/error state. Two
+      questions per string: (1) is it still true of the product as shipped?
+      (2) does a first-time PE associate need it, or is it noise/confusing?
+      Anything failing either question is rewritten or cut in the same pass —
+      no "later". Also verify in a real browser at expertmatch.fit as a
+      throwaway non-admin user, not just in code. Founder rules: no machinery
+      talk, verbs not chat, honest claims only.
 - [ ] Terms of Service + Privacy Policy + Contact pages and footer links
       (docs/COPY_AUDIT.md item 10). Needed before any client signs up — the site
       takes cards and stores deal-adjacent research with no policy anywhere.
