@@ -88,7 +88,7 @@ export default function PricingPage() {
           className="font-display text-cream mb-4"
           style={{ fontSize: 'clamp(2rem, 4vw, 3rem)', fontWeight: 500 }}
         >
-          Per seat. No markups.
+          Per seat. One rate, shown up front.
         </h1>
         <p className="text-cream/50 text-sm leading-relaxed mx-auto" style={{ maxWidth: '480px', fontWeight: 300 }}>
           Billed monthly per active seat — every seat at your team&apos;s volume tier.

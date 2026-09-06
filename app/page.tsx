@@ -6,7 +6,7 @@ import { SEAT_TIERS, formatUsdFromCents } from '../lib/pricing';
 
 export const metadata: Metadata = {
   title: 'ExpertMatch — Expert Calls, Sourced and Billed in Hours.',
-  description: 'ExpertMatch replaces traditional expert networks for PE firms, hedge funds, and strategy consultants. AI-sourced practitioners, direct outreach, per-minute billing. No account managers, no markups.',
+  description: 'ExpertMatch replaces traditional expert networks for PE firms, hedge funds, and strategy consultants. AI-sourced practitioners, direct outreach, per-minute billing. No account managers, no hidden fees.',
 };
 
 const GOLD = '#C6A75E';
@@ -107,7 +107,7 @@ export default async function LandingPage() {
           {[
             { stat: '< 2 hours',    label: 'Brief to expert shortlist' },
             { stat: 'Per minute',   label: 'Pay for time used, not a flat hourly rate' },
-            { stat: 'No contracts', label: 'No minimums. No account managers.' },
+            { stat: 'No contracts', label: 'Month to month. No account managers.' },
           ].map(({ stat, label }) => (
             <div key={stat}>
               <p
