@@ -140,7 +140,7 @@ async function main(): Promise<void> {
     check('expert added (shortlisted, no address)', true);
 
     // ── bookmark ───────────────────────────────────────────────────────────
-    const bm = await req(owner, 'POST', `/api/projects/${projectId}/experts/${expertId}/bookmark`);
+    const bm = await req(owner, 'POST', `/api/projects/${projectId}/experts/${expertId}/bookmark`, {});
     const bmBody = await json(bm);
     const pe = bmBody?.projectExpert;
     check('bookmark 200', bm.status === 200, `status ${bm.status} ${JSON.stringify(bmBody)?.slice(0, 160)}`);
@@ -149,9 +149,9 @@ async function main(): Promise<void> {
     check('clientRate seeded (COO → executive → $1,600)', pe?.clientRate === 1600, `clientRate ${pe?.clientRate}`);
     check('expertRate hidden from client', pe?.expertRate === undefined, `expertRate ${pe?.expertRate}`);
     check('contactEmail hidden from client', pe?.contactEmail === undefined);
-    const bm2 = await req(owner, 'POST', `/api/projects/${projectId}/experts/${expertId}/bookmark`);
+    const bm2 = await req(owner, 'POST', `/api/projects/${projectId}/experts/${expertId}/bookmark`, {});
     check('second bookmark 409', bm2.status === 409, `status ${bm2.status}`);
-    const collabBm = await req(collab, 'POST', `/api/projects/${projectId}/experts/${expertId}/bookmark`);
+    const collabBm = await req(collab, 'POST', `/api/projects/${projectId}/experts/${expertId}/bookmark`, {});
     check('non-member bookmark 404', collabBm.status === 404, `status ${collabBm.status}`);
 
     // events (service role) — bookmarked + contact_not_found, no PII in payload
@@ -185,7 +185,7 @@ async function main(): Promise<void> {
     const collabSend = await req(collab, 'POST', `/api/projects/${projectId}/experts/${expertId}/messages`, { text: 'Tuesday 2pm works.' });
     const collabSendBody = await json(collabSend);
     check('collaborator POST → 403 read_only', collabSend.status === 403 && collabSendBody?.error === 'read_only', `status ${collabSend.status} ${collabSendBody?.error ?? ''}`);
-    const collabBm2 = await req(collab, 'POST', `/api/projects/${projectId}/experts/${expertId}/unbookmark`);
+    const collabBm2 = await req(collab, 'POST', `/api/projects/${projectId}/experts/${expertId}/unbookmark`, {});
     check('collaborator unbookmark → 403', collabBm2.status === 403, `status ${collabBm2.status}`);
 
     // RLS direct: owner JWT can read conversation_messages (0 rows) but never engagement_events
@@ -205,7 +205,7 @@ async function main(): Promise<void> {
     }
 
     // ── unbookmark ─────────────────────────────────────────────────────────
-    const ub = await req(owner, 'POST', `/api/projects/${projectId}/experts/${expertId}/unbookmark`);
+    const ub = await req(owner, 'POST', `/api/projects/${projectId}/experts/${expertId}/unbookmark`, {});
     const ubBody = await json(ub);
     check('unbookmark 200 → shortlisted', ub.status === 200 && (ubBody?.projectExpert?.status ?? ubBody?.status) === 'shortlisted', `status ${ub.status} ${(ubBody?.projectExpert?.status ?? ubBody?.status)}`);
 

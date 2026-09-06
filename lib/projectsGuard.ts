@@ -96,8 +96,14 @@ async function readLimitedJson(
   if (Buffer.byteLength(text, 'utf8') > MAX_BODY_BYTES) {
     return Response.json({ error: 'payload_too_large' }, { status: 413 });
   }
+  // An empty body on a bodiless action (bookmark, approve, send) is fine.
+  if (text.trim() === '') return {};
   try {
-    return JSON.parse(text) as Record<string, unknown>;
+    const parsed: unknown = JSON.parse(text);
+    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      return Response.json({ error: 'invalid_json' }, { status: 400 });
+    }
+    return parsed as Record<string, unknown>;
   } catch {
     return Response.json({ error: 'invalid_json' }, { status: 400 });
   }
