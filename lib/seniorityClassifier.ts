@@ -3,9 +3,11 @@ import type { SeniorityTier, TierPricing } from '../types';
 export type { SeniorityTier, TierPricing };
 
 export const TIER_PRICING: Record<SeniorityTier, TierPricing> = {
-  executive: { tier: 'executive', label: 'Executive',  callRate: 800, expertRate: 560, platformFee: 240 },
-  senior:    { tier: 'senior',    label: 'Senior',     callRate: 600, expertRate: 420, platformFee: 180 },
-  mid:       { tier: 'mid',       label: 'Mid-Level',  callRate: 400, expertRate: 280, platformFee: 120 },
+  // Founder, 2026-09-06: expertRate is the opening offer to the expert;
+  // callRate (what the client pays) = expertRate / 0.5 rounded up to $50.
+  executive: { tier: 'executive', label: 'Executive',  callRate: 1600, expertRate: 800, platformFee: 800 },
+  senior:    { tier: 'senior',    label: 'Senior',     callRate: 1300, expertRate: 650, platformFee: 650 },
+  mid:       { tier: 'mid',       label: 'Mid-Level',  callRate:  800, expertRate: 400, platformFee: 400 },
 };
 
 const EXECUTIVE_KEYWORDS = [

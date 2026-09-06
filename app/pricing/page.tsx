@@ -1,11 +1,12 @@
 import type { Metadata } from 'next';
 import Link from 'next/link';
 import NavBar from '../../components/NavBar';
-import { SEAT_TIERS, formatUsdFromCents } from '../../lib/pricing';
+import { SEAT_TIERS, formatUsdFromCents, MIN_BILLABLE_MINUTES } from '../../lib/pricing';
+import { TIER_PRICING } from '../../lib/seniorityClassifier';
 
 export const metadata: Metadata = {
   title: 'Pricing — ExpertMatch',
-  description: 'Per-seat monthly pricing with volume tiers. Per-minute billing on calls. No minimums, no contracts.',
+  description: 'Per-seat monthly pricing with volume tiers. Calls billed by the minute after a 15-minute minimum. No contracts.',
 };
 
 const GOLD = '#C6A75E';
@@ -33,23 +34,24 @@ function Footer() {
 // Stripe actually charges.
 const SEAT_ROWS = SEAT_TIERS.map(tier => ({
   range: tier.maxSeats === null ? `${tier.minSeats}+ seats` : `${tier.minSeats}–${tier.maxSeats} seats`,
-  price: `${formatUsdFromCents(tier.unitPriceCents)}/seat/mo`,
+  price: tier.contactSales ? 'Talk to us' : `${formatUsdFromCents(tier.unitPriceCents)}/seat/mo`,
   note:
-    tier.maxSeats === null
-      ? 'Enterprise teams — volume rate on every seat'
+    tier.contactSales
+      ? 'Larger teams — custom terms and onboarding'
       : `Every seat billed at ${formatUsdFromCents(tier.unitPriceCents)} once your team reaches this range`,
 }));
 
+// Rates come from lib/seniorityClassifier.ts so the page matches what is charged.
 const CALL_TIERS = [
-  { tier: 'Mid-Level',           rate: '$400/hr', desc: 'Directors, VPs, Senior Managers' },
-  { tier: 'Senior',              rate: '$600/hr', desc: 'C-1 level: SVPs, Partners, MDs' },
-  { tier: 'Executive / C-Suite', rate: '$800/hr', desc: 'CEOs, CFOs, Board members' },
+  { tier: 'Mid-Level',           rate: `$${TIER_PRICING.mid.callRate.toLocaleString('en-US')}/hr`,       desc: 'Directors, VPs, Senior Managers' },
+  { tier: 'Senior',              rate: `$${TIER_PRICING.senior.callRate.toLocaleString('en-US')}/hr`,    desc: 'C-1 level: SVPs, Partners, MDs' },
+  { tier: 'Executive / C-Suite', rate: `$${TIER_PRICING.executive.callRate.toLocaleString('en-US')}/hr`, desc: 'CEOs, CFOs, Board members' },
 ];
 
 const FAQS = [
   {
     q: 'How does per-seat pricing work?',
-    a: 'You pay monthly for each active seat. Your total team size selects a tier, and every seat is billed at that tier — reaching 10 seats moves all 10 to the lower rate, not just the tenth.',
+    a: 'You pay monthly for each active seat. Your total team size selects a tier, and every seat is billed at that tier — reaching 6 seats moves all 6 to the lower rate, not just the sixth.',
   },
   {
     q: 'What happens when I add or remove someone?',
@@ -57,7 +59,7 @@ const FAQS = [
   },
   {
     q: 'Are expert calls included in the seat price?',
-    a: 'No. Seats cover the platform — sourcing, outreach, scheduling and billing. Calls are billed per minute at the rates above, so you only pay for the expert time you actually use.',
+    a: `No. Seats cover the platform — sourcing, outreach, scheduling and billing. Calls are billed by the minute at the rates above, with a ${MIN_BILLABLE_MINUTES}-minute minimum per call. The rate you see includes the ExpertMatch fee.`,
   },
   {
     q: 'How do experts get paid?',
@@ -131,7 +133,7 @@ export default function PricingPage() {
           </div>
 
           <p className="text-[11px] text-muted mt-3 text-center" style={{ fontWeight: 300 }}>
-            Seats include AI sourcing, outreach on your behalf, scheduling, and per-minute call billing.
+            Seats include AI sourcing, outreach on your behalf, scheduling, and call billing.
           </p>
 
           <div className="text-center mt-8">
@@ -156,7 +158,7 @@ export default function PricingPage() {
             Per-Call Rates
           </p>
           <p className="text-center text-muted text-sm mb-8" style={{ fontWeight: 300 }}>
-            Calls are billed by the minute at these rates, on top of your seats.
+            Calls are billed by the minute at these rates, on top of your seats, with a {MIN_BILLABLE_MINUTES}-minute minimum. Rates are opening positions and include the ExpertMatch fee.
           </p>
           <div className="border border-frame overflow-hidden">
             <table className="w-full text-sm border-collapse">

@@ -6,6 +6,7 @@
 // Meeting IDs and durations are safe to log.
 
 import { createHmac, timingSafeEqual } from 'crypto';
+import { callChargeDollars } from '../../../../lib/pricing';
 import { NextRequest, NextResponse } from 'next/server';
 import { getProject, listProjects, updateExpertStatus } from '../../../../lib/projectStore';
 
@@ -104,9 +105,10 @@ export async function POST(request: NextRequest) {
 
       console.log('[zoom] meeting-ended', { meetingId, durationMin: actualDurationMin });
 
-      // Auto-invoice if rate is set — amount computed from stored expertRate, never from webhook payload
+      // Auto-invoice if rate is set — amount computed from the stored expertRate
+      // (client rate × billable minutes, lib/pricing.ts), never from webhook payload
       if (pe?.expertRate) {
-        const invoiceAmount = Math.round((pe.expertRate * actualDurationMin) / 60);
+        const invoiceAmount = callChargeDollars(pe.expertRate, actualDurationMin);
         try {
           const { createAndSendInvoice } = await import('../../../../lib/createAndSendInvoice');
           await createAndSendInvoice(projectId, expertId, invoiceAmount, actualDurationMin);

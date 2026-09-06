@@ -96,7 +96,7 @@ export default function ExpertCard({ expert, query, index = 0, quickActions, hid
                 {tier === 'executive' ? 'Executive' : tier === 'senior' ? 'Senior' : 'Mid-Level'}
               </div>
               <div className="text-[9px] text-muted mt-0.5 cursor-help" title={RATE_DISCLAIMER}>
-                ${pricing.callRate}/call
+                ${pricing.callRate.toLocaleString('en-US')}/hr
               </div>
             </div>
           </div>

@@ -268,7 +268,7 @@ export default function BillingStep({ complete, orgName, onComplete, onContinue 
         {showSetUpState ? 'Billing' : 'Add Your Firm’s Payment Method'}
       </h2>
       <p className="mb-2 leading-relaxed" style={{ color: MUTED, fontSize: '14px', fontWeight: 300 }}>
-        One card covers your whole firm: expert calls billed by the minute — no call, no charge —
+        One card covers your whole firm: expert calls billed by the minute with a 15-minute minimum — no call, no charge —
         and the monthly per-seat subscription for your team’s accounts. This step is required.
       </p>
       {seatLine && (

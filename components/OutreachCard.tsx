@@ -1,6 +1,7 @@
 'use client';
 
 import { useState } from 'react';
+import { callChargeDollars } from '../lib/pricing';
 import type { ProjectExpert, ExpertStatus } from '../types';
 import ContactSection from './ContactSection';
 import EmailStatusBadge from './EmailStatusBadge';
@@ -372,7 +373,7 @@ export default function OutreachCard({
     }
     const rate = projectExpert.expertRate;
     if (!rate) { setCompleteError('Expert rate is required.'); return; }
-    const invoiceAmount = Math.round((rate * dur) / 60);
+    const invoiceAmount = callChargeDollars(rate, dur); // client rate × billable minutes (15-min minimum)
     setCompleteSubmitting(true);
     try {
       const res = await fetch(`/api/projects/${projectId}/experts/${expert.id}/complete`, {

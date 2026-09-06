@@ -24,6 +24,9 @@ export interface SeatTier {
   maxSeats:       number | null;
   /** Monthly price per seat, in whole USD cents. */
   unitPriceCents: number;
+  /** Marketing shows "Talk to us" instead of a price; Stripe still bills
+   *  unitPriceCents as the fallback until custom terms are agreed. */
+  contactSales?:  boolean;
 }
 
 /**
@@ -31,18 +34,18 @@ export interface SeatTier {
  * the unit price of the tier that the org's active-seat count falls into.
  */
 export const SEAT_TIERS: readonly SeatTier[] = [
-  { minSeats: 1,   maxSeats: 9,    unitPriceCents: 100_00 },
-  { minSeats: 10,  maxSeats: 24,   unitPriceCents:  90_00 },
-  { minSeats: 25,  maxSeats: 49,   unitPriceCents:  85_00 },
-  { minSeats: 50,  maxSeats: 99,   unitPriceCents:  75_00 },
-  { minSeats: 100, maxSeats: 149,  unitPriceCents:  70_00 },
-  { minSeats: 150, maxSeats: null, unitPriceCents:  60_00 },
+  { minSeats: 1,  maxSeats: 5,    unitPriceCents: 250_00 },
+  { minSeats: 6,  maxSeats: 20,   unitPriceCents: 200_00 },
+  { minSeats: 21, maxSeats: null, unitPriceCents: 200_00, contactSales: true },
 ] as const;
+
+/** Seat count at and above which the site says "Talk to us". */
+export const CONTACT_SALES_FROM_SEATS = 21;
 
 /** Stable identifier of the Stripe Price that encodes SEAT_TIERS. Bump the
  *  suffix whenever the tiers change so a new Price is created and old
  *  subscriptions keep their contracted rate until migrated. */
-export const SEAT_PRICE_LOOKUP_KEY = 'expertmatch_seat_monthly_v1';
+export const SEAT_PRICE_LOOKUP_KEY = 'expertmatch_seat_monthly_v2';
 export const SEAT_PRODUCT_NAME     = 'ExpertMatch Seat';
 export const SEAT_CURRENCY         = 'usd';
 
@@ -98,9 +101,50 @@ export function stripeVolumeTiers(): Array<{ up_to: number | 'inf'; unit_amount:
 // ─── Expert call split ────────────────────────────────────────────────────────
 
 /** Share of a paid call that goes to the expert. */
-export const EXPERT_SHARE   = 0.70;
+export const EXPERT_SHARE   = 0.50;
 /** Share of a paid call that ExpertMatch keeps. */
-export const PLATFORM_SHARE = 0.30;
+export const PLATFORM_SHARE = 0.50;
+/** Calls shorter than this are billed as this many minutes. */
+export const MIN_BILLABLE_MINUTES = 15;
+
+/** Billable minutes for a call: at least MIN_BILLABLE_MINUTES, whole minutes. */
+export function billableMinutes(durationMinutes: number): number {
+  const m = Number.isFinite(durationMinutes) && durationMinutes > 0 ? Math.ceil(durationMinutes) : 0;
+  return m === 0 ? 0 : Math.max(MIN_BILLABLE_MINUTES, m);
+}
+
+/** Rounding granularity for the client-facing hourly rate. */
+export const CLIENT_RATE_ROUNDING_USD = 50;
+
+/**
+ * What the client pays per hour for an expert whose hourly offer is
+ * `expertRate`: expertRate / EXPERT_SHARE, rounded UP to the next $50.
+ * $400 → $800, $650 → $1,300, $800 → $1,600, $675 → $1,350.
+ */
+export function clientRateFor(expertRate: number): number {
+  if (!Number.isFinite(expertRate) || expertRate <= 0) return 0;
+  return Math.ceil(expertRate / EXPERT_SHARE / CLIENT_RATE_ROUNDING_USD) * CLIENT_RATE_ROUNDING_USD;
+}
+
+/**
+ * Whole-dollar amount charged to the client for a call: the client rate
+ * pro-rated over the billable minutes (15-minute minimum).
+ */
+export function callChargeDollars(expertRate: number, durationMinutes: number): number {
+  const minutes = billableMinutes(durationMinutes);
+  if (minutes === 0) return 0;
+  return Math.round((clientRateFor(expertRate) * minutes) / 60);
+}
+
+/**
+ * Whole-dollar payout to the expert for a call: the rate the expert accepted,
+ * pro-rated over the same billable minutes the client was charged for.
+ */
+export function expertPayoutDollars(expertRate: number, durationMinutes: number): number {
+  const minutes = billableMinutes(durationMinutes);
+  if (minutes === 0 || !Number.isFinite(expertRate) || expertRate <= 0) return 0;
+  return Math.round((expertRate * minutes) / 60);
+}
 
 export interface CallSplitCents {
   grossCents:    number;

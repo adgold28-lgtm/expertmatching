@@ -5,10 +5,10 @@
 //
 // The payout amount is ALWAYS recomputed server-side from the stored
 // expertRate and duration. A webhook payload is never trusted for money:
-//   gross  = round(expertRate × (actualDurationMin ?? callDurationMin) / 60)
-//   payout = splitCallAmountCents(gross × 100).expertCents   (EXPERT_SHARE)
-// The split lives in lib/pricing.ts — the expert's share and the platform's
-// remainder always sum exactly to the gross, with no rounding leak.
+//   payout = expertPayoutDollars(expertRate, actualDurationMin ?? callDurationMin)
+//          = the hourly offer the expert accepted × billable minutes (15-min
+//            minimum), lib/pricing.ts. The client was charged clientRateFor(
+//            expertRate) over the same minutes; ExpertMatch keeps the difference.
 //
 // Behaviour:
 //   1. Load the ProjectExpert; skip silently if there is no contact email.
@@ -32,7 +32,7 @@ import {
   transferExpertPayout,
 } from './stripeConnect';
 import { generateAvailabilityToken } from './availabilityToken';
-import { splitCallAmountCents, formatUsdFromCents } from './pricing';
+import { expertPayoutDollars, formatUsdFromCents } from './pricing';
 
 // ─── Expert payout email ──────────────────────────────────────────────────────
 
@@ -153,12 +153,9 @@ export async function runExpertPayout(projectId: string, expertId: string): Prom
     // Compute payout server-side — NEVER trust webhook amount
     const rate        = pe.expertRate ?? 0;
     const durationMin = pe.actualDurationMin ?? pe.callDurationMin ?? 0;
-    const grossAmount = rate > 0 && durationMin > 0
-      ? Math.round((rate * durationMin) / 60)
-      : (pe.invoiceAmount ?? 0);
-    // Work in cents: EXPERT_SHARE of the gross, with the platform keeping the
-    // remainder so the two parts sum exactly (lib/pricing.ts).
-    const expertAmountCents = splitCallAmountCents(Math.round(grossAmount * 100)).expertCents;
+    // The expert is paid the rate they accepted over the billable minutes
+    // (lib/pricing.ts) — never a share of what the client was charged.
+    const expertAmountCents = Math.round(expertPayoutDollars(rate, durationMin) * 100);
 
     // Check if expert has a Connect account and onboarding is complete
     const connectAccountId = pe.stripeConnectAccountId

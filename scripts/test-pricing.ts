@@ -20,6 +20,10 @@ import {
   monthlySeatTotalCents,
   nextSeatTier,
   stripeVolumeTiers,
+  billableMinutes,
+  clientRateFor,
+  callChargeDollars,
+  expertPayoutDollars,
   splitCallAmountCents,
   formatUsdFromCents,
 } from '../lib/pricing';
@@ -50,19 +54,12 @@ section('seat unit price at every tier boundary');
 
 const UNIT_PRICE_CASES: Array<[seats: number, cents: number]> = [
   [0,    0],       // no seats, no charge
-  [1,    100_00],
-  [9,    100_00],
-  [10,    90_00],
-  [24,    90_00],
-  [25,    85_00],
-  [49,    85_00],
-  [50,    75_00],
-  [99,    75_00],
-  [100,   70_00],
-  [149,   70_00],
-  [150,   60_00],
-  [151,   60_00],
-  [1000,  60_00],
+  [1,    250_00],
+  [5,    250_00],
+  [6,    200_00],
+  [20,   200_00],
+  [21,   200_00],      // "talk to us" tier bills the fallback rate until custom terms
+  [1000, 200_00],
 ];
 
 for (const [seats, cents] of UNIT_PRICE_CASES) {
@@ -88,19 +85,12 @@ section('monthly totals (volume, not graduated)');
 
 const TOTAL_CASES: Array<[seats: number, cents: number]> = [
   [0,      0],
-  [1,      100_00],
-  [9,      900_00],
-  [10,     900_00],      // 10 × $90 — the same bill as 9 × $100
-  [24,   2_160_00],
-  [25,   2_125_00],      // crossing to $85 lowers the bill despite +1 seat
-  [49,   4_165_00],
-  [50,   3_750_00],
-  [99,   7_425_00],
-  [100,  7_000_00],
-  [149, 10_430_00],
-  [150,  9_000_00],
-  [151,  9_060_00],
-  [1000, 60_000_00],
+  [1,        250_00],
+  [5,      1_250_00],
+  [6,      1_200_00],      // 6 × $200 — cheaper than 5 × $250
+  [20,     4_000_00],
+  [21,     4_200_00],
+  [1000, 200_000_00],
 ];
 
 for (const [seats, cents] of TOTAL_CASES) {
@@ -116,7 +106,7 @@ for (const [seats] of TOTAL_CASES) {
 
 // Adding a seat at each tier's first index must never raise the bill.
 for (const tier of SEAT_TIERS) {
-  if (tier.minSeats === 1) continue;
+  if (tier.minSeats === 1 || tier.contactSales) continue;
   const before = monthlySeatTotalCents(tier.minSeats - 1);
   const after  = monthlySeatTotalCents(tier.minSeats);
   check(`crossing into the ${tier.minSeats}+ tier never raises the bill`, after <= before,
@@ -139,23 +129,20 @@ eq('normalizeSeatCount(42)',       normalizeSeatCount(42),       42);
 section('nextSeatTier');
 
 eq('nextSeatTier(0).minSeats',   nextSeatTier(0)?.minSeats,   1);
-eq('nextSeatTier(1).minSeats',   nextSeatTier(1)?.minSeats,   10);
-eq('nextSeatTier(9).minSeats',   nextSeatTier(9)?.minSeats,   10);
-eq('nextSeatTier(10).minSeats',  nextSeatTier(10)?.minSeats,  25);
-eq('nextSeatTier(24).minSeats',  nextSeatTier(24)?.minSeats,  25);
-eq('nextSeatTier(25).minSeats',  nextSeatTier(25)?.minSeats,  50);
-eq('nextSeatTier(99).minSeats',  nextSeatTier(99)?.minSeats,  100);
-eq('nextSeatTier(100).minSeats', nextSeatTier(100)?.minSeats, 150);
-eq('nextSeatTier(149).minSeats', nextSeatTier(149)?.minSeats, 150);
-eq('nextSeatTier(150) is null',  nextSeatTier(150),           null);
+eq('nextSeatTier(1).minSeats',   nextSeatTier(1)?.minSeats,   6);
+eq('nextSeatTier(5).minSeats',   nextSeatTier(5)?.minSeats,   6);
+eq('nextSeatTier(6).minSeats',   nextSeatTier(6)?.minSeats,   21);
+eq('nextSeatTier(20).minSeats',  nextSeatTier(20)?.minSeats,  21);
+eq('nextSeatTier(21) is null',   nextSeatTier(21),            null);
 eq('nextSeatTier(1000) is null', nextSeatTier(1000),          null);
 
-// The next tier must always be cheaper per seat than the current one.
-for (const seats of [1, 9, 10, 24, 25, 49, 50, 99, 100, 149]) {
+// The next priced tier must be cheaper per seat than the current one.
+for (const seats of [1, 5]) {
   const next = nextSeatTier(seats);
   check(`nextSeatTier(${seats}) is cheaper per seat`,
     !!next && next.unitPriceCents < seatUnitPriceCents(seats));
 }
+check('the top tier is the "talk to us" tier', SEAT_TIERS[SEAT_TIERS.length - 1]?.contactSales === true);
 
 // ── stripeVolumeTiers ────────────────────────────────────────────────────────
 
@@ -186,28 +173,28 @@ for (const [i, tier] of tiers.entries()) {
 }
 
 // Constants the Stripe Price is created with.
-eq('SEAT_PRICE_LOOKUP_KEY', SEAT_PRICE_LOOKUP_KEY, 'expertmatch_seat_monthly_v1');
+eq('SEAT_PRICE_LOOKUP_KEY', SEAT_PRICE_LOOKUP_KEY, 'expertmatch_seat_monthly_v2');
 eq('SEAT_PRODUCT_NAME',     SEAT_PRODUCT_NAME,     'ExpertMatch Seat');
 eq('SEAT_CURRENCY',         SEAT_CURRENCY,         'usd');
 
 // ── splitCallAmountCents ─────────────────────────────────────────────────────
 
-section('splitCallAmountCents (70/30, exact)');
+section('splitCallAmountCents (50/50, exact)');
 
 eq('EXPERT_SHARE + PLATFORM_SHARE === 1', Math.round((EXPERT_SHARE + PLATFORM_SHARE) * 100), 100);
 
 const SPLIT_CASES: Array<[gross: number, expert: number]> = [
   [0,        0],
-  [1,        1],       // round(0.7) = 1; platform keeps 0
-  [10,       7],
-  [50,      35],
-  [99,      69],       // round(69.3)
-  [100,     70],
-  [333,    233],       // round(233.1)
-  [1_000,  700],
-  [12_345, 8_642],     // round(8641.5) → 8642
-  [100_00, 70_00],
-  [750_00, 525_00],
+  [1,        1],       // round(0.5) = 1; platform keeps 0
+  [10,       5],
+  [50,      25],
+  [99,      50],       // round(49.5)
+  [100,     50],
+  [333,    167],       // round(166.5)
+  [1_000,  500],
+  [12_345, 6_173],     // round(6172.5) → 6173
+  [100_00, 50_00],
+  [750_00, 375_00],
 ];
 
 for (const [gross, expert] of SPLIT_CASES) {
@@ -254,8 +241,48 @@ eq('formatUsdFromCents(6000)',     formatUsdFromCents(60_00),    '$60');
 eq('formatUsdFromCents(6_000_000)', formatUsdFromCents(60_000_00), '$60,000');
 
 // The seat prices as the onboarding step renders them.
-eq('per-seat label at 1 seat',   formatUsdFromCents(seatUnitPriceCents(1)),   '$100');
-eq('per-seat label at 150 seats', formatUsdFromCents(seatUnitPriceCents(150)), '$60');
+eq('per-seat label at 1 seat',   formatUsdFromCents(seatUnitPriceCents(1)),   '$250');
+eq('per-seat label at 20 seats', formatUsdFromCents(seatUnitPriceCents(20)),  '$200');
+
+// ── billableMinutes ──────────────────────────────────────────────────────────
+
+section('billableMinutes (15-minute minimum)');
+
+eq('billableMinutes(0)',    billableMinutes(0),    0);
+eq('billableMinutes(1)',    billableMinutes(1),    15);
+eq('billableMinutes(14.2)', billableMinutes(14.2), 15);
+eq('billableMinutes(15)',   billableMinutes(15),   15);
+eq('billableMinutes(15.1)', billableMinutes(15.1), 16);
+eq('billableMinutes(47)',   billableMinutes(47),   47);
+eq('billableMinutes(NaN)',  billableMinutes(Number.NaN), 0);
+eq('billableMinutes(-5)',   billableMinutes(-5),   0);
+
+// ── clientRateFor / callChargeDollars / expertPayoutDollars ─────────────────
+
+section('client rate (expert offer / 0.5, rounded up to $50)');
+
+eq('clientRateFor(400)',  clientRateFor(400),  800);
+eq('clientRateFor(650)',  clientRateFor(650),  1300);
+eq('clientRateFor(800)',  clientRateFor(800),  1600);
+eq('clientRateFor(675)',  clientRateFor(675),  1350);
+eq('clientRateFor(660)',  clientRateFor(660),  1350);   // 1320 → up to 1350
+eq('clientRateFor(0)',    clientRateFor(0),    0);
+eq('clientRateFor(NaN)',  clientRateFor(Number.NaN), 0);
+
+section('call charge and payout over billable minutes');
+
+eq('callChargeDollars(650, 60)',   callChargeDollars(650, 60),   1300);
+eq('callChargeDollars(650, 30)',   callChargeDollars(650, 30),   650);
+eq('callChargeDollars(650, 10)',   callChargeDollars(650, 10),   325);   // billed as 15 min
+eq('callChargeDollars(800, 47)',   callChargeDollars(800, 47),   1253);  // round(1600 × 47 / 60)
+eq('callChargeDollars(400, 0)',    callChargeDollars(400, 0),    0);
+eq('expertPayoutDollars(650, 60)', expertPayoutDollars(650, 60), 650);
+eq('expertPayoutDollars(650, 10)', expertPayoutDollars(650, 10), 163);   // round(650 × 15 / 60)
+eq('expertPayoutDollars(0, 60)',   expertPayoutDollars(0, 60),   0);
+for (const [rate, min] of [[400, 60], [650, 47], [800, 10], [675, 90]] as const) {
+  check(`charge(${rate}, ${min}) ≥ payout(${rate}, ${min})`,
+    callChargeDollars(rate, min) >= expertPayoutDollars(rate, min));
+}
 
 // ── Result ───────────────────────────────────────────────────────────────────
 

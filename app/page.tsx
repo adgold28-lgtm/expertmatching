@@ -204,7 +204,7 @@ export default async function LandingPage() {
                   ['Outreach',           'Handled for you',           'Not offered'],
                   ['Scheduling',         'Handled for you',           'Manual back-and-forth'],
                   ['Billing',            'Per-minute, instant',       'Invoice + 30-day net'],
-                  ['Per-call markup',    'None',                      '3–10× expert rate'],
+                  ['Per-call pricing',   'One rate, shown up front',  'Opaque markup, 3–10× expert rate'],
                   ['Sourcing evidence',  'Full evidence trail',       'Opaque'],
                 ].map(([cap, em, trad], i) => (
                   <tr
@@ -236,7 +236,7 @@ export default async function LandingPage() {
           </p>
           <p className="text-center text-muted text-sm mb-10 mx-auto" style={{ fontWeight: 300, maxWidth: '520px' }}>
             Billed monthly per active seat; every seat is billed at the tier your team size
-            falls into. Add or remove seats any time, prorated. Calls are billed by the minute.
+            falls into. Add or remove seats any time, prorated. Calls are billed by the minute after a 15-minute minimum.
           </p>
 
           <div className="border border-frame overflow-x-auto bg-white">
@@ -264,7 +264,7 @@ export default async function LandingPage() {
                         : `${tier.minSeats}–${tier.maxSeats} seats`}
                     </td>
                     <td className="px-5 py-3 text-right text-[13px] font-semibold whitespace-nowrap" style={{ color: GOLD }}>
-                      {formatUsdFromCents(tier.unitPriceCents)}
+                      {tier.contactSales ? 'Talk to us' : formatUsdFromCents(tier.unitPriceCents)}
                     </td>
                   </tr>
                 ))}

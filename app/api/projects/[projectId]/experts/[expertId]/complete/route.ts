@@ -6,6 +6,7 @@
 // Amounts are safe to log.
 
 import { NextRequest, NextResponse } from 'next/server';
+import { callChargeDollars } from '../../../../../../../lib/pricing';
 import { routeAuthGuard, getSessionUser } from '../../../../../../../lib/auth';
 import { getProjectForUser, updateExpertStatus } from '../../../../../../../lib/projectStore';
 import { createAndSendInvoice } from '../../../../../../../lib/createAndSendInvoice';
@@ -71,7 +72,9 @@ export async function POST(
   }
 
   // 5. Cross-check invoice amount (server-authoritative)
-  const serverAmount = Math.round((pe.expertRate * callDurationMin) / 60);
+  //    The client is charged the CLIENT rate (expert offer / EXPERT_SHARE, rounded
+  //    up to $50) over the billable minutes (15-minute minimum) — lib/pricing.ts.
+  const serverAmount = callChargeDollars(pe.expertRate, callDurationMin);
   if (Math.abs(serverAmount - invoiceAmount) > 1) {
     return NextResponse.json({ error: 'invoice_amount_mismatch' }, { status: 400 });
   }
