@@ -11,11 +11,17 @@
 // which runs the same lib/outreachSteps.ts implementation. This endpoint stays
 // QStash-only so a browser can never drive a scheduled step.
 //
+// RETIRED, Matchy Phase 1 (docs/MATCHY_SPEC.md, "Phasing"): the timed cadence
+// is gone. lib/emailSequence.scheduleNextEmail no longer publishes anything, so
+// nothing new arrives here. The route stays live only to DRAIN jobs QStash had
+// already accepted before the change: an email2 or email3 delivery is
+// acknowledged with 200 and NOTHING IS SENT, which stops QStash retrying it
+// while guaranteeing no expert receives a follow-up nobody asked for.
+//
 // Steps:
-//   email2 → send conflict/rate check → status: email2_sent
-//   email3 → send scheduling link → status: scheduling_sent
-//   email1 is accepted for QStash-queued retries, but is normally started by
-//   the session-authed route above.
+//   email2 → acknowledged, not sent (retired)
+//   email3 → acknowledged, not sent (retired)
+//   email1 is still executed, for a queued retry of a human-clicked send.
 
 import { NextRequest, NextResponse } from 'next/server';
 import { Receiver } from '@upstash/qstash';
@@ -64,6 +70,15 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
   const { projectId, expertId, step, token } = job;
   if (!projectId || !expertId || !step) {
     return NextResponse.json({ error: 'missing_fields' }, { status: 400 });
+  }
+
+  // ── 3a. Retired steps: acknowledge and do nothing ────────────────────────
+  // 200 rather than an error so QStash marks the job delivered and stops
+  // retrying. Matchy answers replies on the thread instead of on a timer.
+  if (step === 'email2' || step === 'email3') {
+    console.log('[email-sequence/trigger] cadence retired — acknowledged without sending',
+      JSON.stringify({ step }));
+    return NextResponse.json({ ok: true, skipped: 'cadence_retired' });
   }
 
   // ── 4. Execute the step (shared with the session-authed start route) ─────

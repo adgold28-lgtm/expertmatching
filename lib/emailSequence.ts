@@ -1,4 +1,12 @@
-// Automated 3-email outreach sequence via QStash.
+// The legacy 3-email outreach sequence.
+//
+// RETIRED IN PART, Matchy Phase 1: SCHEDULING is gone. scheduleNextEmail() is
+// a no-op and /api/email-sequence/trigger acknowledges email2/email3 without
+// sending them, so no expert receives a timed follow-up any more. The senders
+// below are kept because the trigger route still needs to compile and because
+// email1 is still reachable from the legacy "Send Email 1" button; the
+// bookmark path uses lib/matchyTemplates.ts instead. A later part of Phase 1
+// removes what is left.
 //
 // Email 1 — interest check, plain text, no firm name, max 100 words.
 // Email 2 — conflict check + rate confirmation, no firm name, max 120 words.
@@ -50,32 +58,25 @@ function getFromAddress(): string {
 
 // ─── QStash scheduling ────────────────────────────────────────────────────────
 
+/**
+ * RETIRED — Matchy Phase 1 (docs/MATCHY_SPEC.md, "Phasing"). This used to
+ * publish a delayed QStash job that fired email2 (conflict + rate) and email3
+ * (scheduling link) at the expert on a timer.
+ *
+ * Matchy replaces the cadence: a reply is read, summarized and answered on the
+ * thread, and the follow-up goes out because the expert said yes, not because
+ * a clock ran out. So this is now a NO-OP. It is kept, rather than deleted,
+ * because callers exist that a later part of Phase 1 will rewrite
+ * (app/api/inbound-email), and a function that quietly does nothing is a
+ * smaller change than a half-migrated call site.
+ *
+ * Nothing is published, nothing throws, and one line says so. The QStash
+ * trigger route stays live to drain jobs that were already queued before this
+ * shipped.
+ */
 export async function scheduleNextEmail(job: SequenceJob): Promise<void> {
-  const token = process.env.QSTASH_TOKEN;
-  if (!token) throw new Error('[emailSequence] QSTASH_TOKEN not configured');
-
-  const baseUrl = process.env.NEXT_PUBLIC_BASE_URL ?? 'https://expertmatch.fit';
-  const endpoint = `${baseUrl}/api/email-sequence/trigger`;
-
-  // Random 5-12 minute delay
-  const delaySeconds = Math.floor(Math.random() * 8 + 5) * 60;
-
-  const res = await fetch('https://qstash.upstash.io/v2/publish/' + encodeURIComponent(endpoint), {
-    method: 'POST',
-    headers: {
-      'Authorization': `Bearer ${token}`,
-      'Content-Type':  'application/json',
-      'Upstash-Delay': `${delaySeconds}s`,
-    },
-    body: JSON.stringify(job),
-  });
-
-  if (!res.ok) {
-    const text = await res.text().catch(() => '');
-    throw new Error(`[emailSequence] QStash publish failed: ${res.status} ${text.slice(0, 200)}`);
-  }
-
-  console.log('[emailSequence] scheduled next step', { step: job.step, delaySeconds });
+  console.log('[emailSequence] cadence retired — not scheduling',
+    JSON.stringify({ step: job.step }));
 }
 
 // ─── Email generation ─────────────────────────────────────────────────────────
@@ -232,12 +233,28 @@ function parseEmailResponse(text: string): { subject: string; body: string } {
 
 // ─── Send via Resend ──────────────────────────────────────────────────────────
 
+export interface SendSequenceEmailOptions {
+  /**
+   * Set when `body` ALREADY ends with the CAN-SPAM footer, so this function
+   * does not append a second one. lib/matchyTemplates.ts builds complete
+   * messages, footer included; the legacy generateEmailN prompts return a bare
+   * body and rely on the append below.
+   */
+  footerIncluded?: boolean;
+  /**
+   * HTML alternative. When given, the message goes out multipart. The legacy
+   * cadence is deliberately plain text and passes nothing.
+   */
+  html?: string;
+}
+
 export async function sendSequenceEmail(
   to:         string,
   subject:    string,
   body:       string,
   replyToken: string,
   fromName:   string,
+  options:    SendSequenceEmailOptions = {},
 ): Promise<void> {
   if (process.env.DISABLE_EMAILS === 'true') {
     console.log('[emailSequence] suppressed (DISABLE_EMAILS=true)');
@@ -249,16 +266,19 @@ export async function sendSequenceEmail(
   const resend  = getResend();
 
   // CAN-SPAM footer: postal address (when configured) plus a per-recipient
-  // opt-out link. Text only — these are deliberately plain-text emails, so we
-  // append the text variant rather than promoting them to multipart.
-  const footer = buildOutreachFooter(to);
+  // opt-out link. Appended here only when the caller has not already built it
+  // in — two opt-out links in one email is worse than none.
+  const text = options.footerIncluded
+    ? body
+    : `${body}${buildOutreachFooter(to).text}`;
 
   const { error } = await resend.emails.send({
     from,
     to,
     replyTo,
     subject,
-    text: `${body}${footer.text}`,
+    text,
+    ...(options.html ? { html: options.html } : {}),
   });
 
   if (error) {

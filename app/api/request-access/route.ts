@@ -3,15 +3,35 @@ import { Resend } from 'resend';
 import { createHmac } from 'crypto';
 import { getServiceRoleClient } from '../../../lib/supabase/admin';
 import { getUpstashClient } from '../../../lib/upstashRedis';
-import { isApprovedDomain } from '../../../lib/firmStore';
+import { isApprovedDomain, upsertFirm } from '../../../lib/firmStore';
 import { provisionAccountInvite, splitFullName } from '../../../lib/accountProvisioning';
+import type { FirmTypeValue, FirmSizeValue } from '../../../lib/supabase/database.types';
 
 interface AccessRequest {
   name:        string;
   firm:        string;
   email:       string;
   useCase:     string;
+  firmType:    FirmTypeValue | null;
+  firmSize:    FirmSizeValue | null;
   submittedAt: number;
+}
+
+// Matchy needs one type word and one size word to describe a client to an
+// expert without naming them ("a mid-size PE firm"). Both are optional on the
+// form: an unanswered question falls back to "an investment firm" rather than
+// blocking the request.
+const FIRM_TYPES = new Set<string>([
+  'pe_firm', 'family_office', 'consulting_firm', 'law_firm',
+  'hedge_fund', 'corporate', 'other',
+]);
+const FIRM_SIZES = new Set<string>(['boutique', 'mid_size', 'large']);
+
+function readFirmType(value: unknown): FirmTypeValue | null {
+  return typeof value === 'string' && FIRM_TYPES.has(value) ? value as FirmTypeValue : null;
+}
+function readFirmSize(value: unknown): FirmSizeValue | null {
+  return typeof value === 'string' && FIRM_SIZES.has(value) ? value as FirmSizeValue : null;
 }
 
 function escapeHtml(s: string): string {
@@ -69,26 +89,26 @@ export async function POST(request: NextRequest) {
   try {
     body = await request.json();
   } catch {
-    return Response.json({ error: 'Invalid JSON' }, { status: 400 });
+    return Response.json({ error: 'invalid_json', message: 'We could not read that submission. Please try again.' }, { status: 400 });
   }
 
   if (typeof body !== 'object' || body === null) {
-    return Response.json({ error: 'Invalid request body' }, { status: 400 });
+    return Response.json({ error: 'invalid_body', message: 'We could not read that submission. Please try again.' }, { status: 400 });
   }
 
-  const { name, firm, email, useCase } = body as Record<string, unknown>;
+  const { name, firm, email, useCase, firmType, firmSize } = body as Record<string, unknown>;
 
   if (typeof name !== 'string' || !name.trim()) {
-    return Response.json({ error: 'Name is required' }, { status: 400 });
+    return Response.json({ error: 'name_required', message: 'Add your name.' }, { status: 400 });
   }
   if (typeof firm !== 'string' || !firm.trim()) {
-    return Response.json({ error: 'Firm name is required' }, { status: 400 });
+    return Response.json({ error: 'firm_required', message: 'Add your firm name.' }, { status: 400 });
   }
   if (typeof email !== 'string' || !email.trim() || !email.includes('@')) {
-    return Response.json({ error: 'Valid email is required' }, { status: 400 });
+    return Response.json({ error: 'email_invalid', message: 'Add a valid work email address.' }, { status: 400 });
   }
   if (typeof useCase !== 'string' || !useCase.trim()) {
-    return Response.json({ error: 'Use case is required' }, { status: 400 });
+    return Response.json({ error: 'use_case_required', message: 'Tell us what you are researching.' }, { status: 400 });
   }
 
   const record: AccessRequest = {
@@ -96,6 +116,8 @@ export async function POST(request: NextRequest) {
     firm:        firm.trim().slice(0, 200),
     email:       email.trim().toLowerCase().slice(0, 200),
     useCase:     useCase.trim().slice(0, 2000),
+    firmType:    readFirmType(firmType),
+    firmSize:    readFirmSize(firmSize),
     submittedAt: Date.now(),
   };
 
@@ -106,7 +128,7 @@ export async function POST(request: NextRequest) {
           ?? 'unknown';
   if (await isRateLimited(ip, record.email)) {
     return Response.json(
-      { error: 'Too many requests. Please try again later.' },
+      { error: 'rate_limited', message: 'That is a few too many requests. Please try again a little later.' },
       { status: 429, headers: { 'Retry-After': String(RATE_WINDOW_MS / 1000) } },
     );
   }
@@ -134,7 +156,17 @@ export async function POST(request: NextRequest) {
         email:        record.email,
         organization: { domain, name: record.firm },
       });
-      if (result.ok) return Response.json({ ok: true });
+      if (result.ok) {
+        // The organization already exists, so there is no approval step to
+        // carry these to — write them now. Never overwrites with a blank.
+        if (record.firmType || record.firmSize) {
+          await upsertFirm(domain, {
+            ...(record.firmType ? { firmType: record.firmType } : {}),
+            ...(record.firmSize ? { firmSize: record.firmSize } : {}),
+          }).catch(() => { /* the invite already went out; this is not worth failing on */ });
+        }
+        return Response.json({ ok: true });
+      }
     }
 
     // Anything we cannot auto-provision (single-word name, existing account,
@@ -160,6 +192,8 @@ export async function POST(request: NextRequest) {
         name:             record.name,
         firm_name:        record.firm,
         use_case:         record.useCase,
+        firm_type:        record.firmType,
+        firm_size:        record.firmSize,
       });
     }
   } catch {

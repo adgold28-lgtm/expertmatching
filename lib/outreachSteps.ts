@@ -1,13 +1,18 @@
-// One step of the outreach email sequence, shared by both entry points:
+// One step of the outreach email sequence, shared by every entry point:
 //
+//   POST /api/projects/:projectId/experts/:expertId/bookmark
+//        — session-authed, Matchy's 'intro' step (the new template)
 //   POST /api/projects/:projectId/experts/:expertId/outreach/start
-//        — session-authed, human-clicked, email1 only
+//        — session-authed, human-clicked, the legacy email1
 //   POST /api/email-sequence/trigger
-//        — QStash-signed, email2 and any future scheduled step
+//        — QStash-signed; email2/email3 scheduling is retired, so this now
+//          only drains in-flight jobs
 //
-// Both call runSequenceStep() so there is exactly one implementation of "send
-// this step and advance the status". The routes own authentication and the
-// pre-send policy checks; this module owns the send itself.
+// All of them call runSequenceStep() so there is exactly one implementation of
+// "send this step and advance the status": one place that resolves the reply
+// token, indexes it in Redis for inbound lookup, sends through Resend and
+// writes the resulting status. The routes own authentication and the pre-send
+// policy checks; this module owns the send itself.
 //
 // Never logs: expert name, expert email, project name, token, email content.
 
@@ -20,17 +25,39 @@ import {
   sendSequenceEmail,
   type EmailStep,
 } from './emailSequence';
+import { buildIntroEmail, deriveTopic, descriptorFragmentFrom } from './matchyTemplates';
+import type { FirmTypeValue, FirmSizeValue } from './supabase/database.types';
 import { generateAvailabilityToken } from './availabilityToken';
 import { generateOutreachToken } from './outreachToken';
 import { getUpstashClient } from './upstashRedis';
 
 const REPLY_TOKEN_TTL_S = 90 * 24 * 60 * 60;
 
+/**
+ * Matchy's intro replaces the legacy `email1` for anything that starts from a
+ * bookmark. It is not part of the retired 3-email cadence, so it is not an
+ * `EmailStep` and can never be scheduled by QStash.
+ */
+export type OutreachStep = EmailStep | 'intro';
+
 export interface SequenceStepInput {
   projectId: string;
   expertId:  string;
-  step:      EmailStep;
-  token:     string;   // may be empty for email1 — one is generated
+  step:      OutreachStep;
+  token:     string;   // may be empty for email1/intro — one is generated
+  /**
+   * 'intro' only. How Matchy names the client to the expert, from
+   * organizations.firm_type / firm_size. Absent falls back to
+   * "an investment firm".
+   */
+  firmType?: FirmTypeValue | null;
+  firmSize?: FirmSizeValue | null;
+  /**
+   * 'intro' only. The project's "review first" switch. When true nothing is
+   * sent: the intro is written to outreachSubject/outreachDraft and the status
+   * becomes 'outreach_drafted' for the client to approve.
+   */
+  draftOnly?: boolean;
 }
 
 export type SequenceStepError =
@@ -64,12 +91,72 @@ export async function runSequenceStep(input: SequenceStepInput): Promise<Sequenc
   const expertEmail = pe.contactEmail;
   if (!expertEmail) return { ok: false, error: 'no_contact_email', status: 422 };
 
-  const rate = pe.expertRate;
-  if (!rate || rate <= 0) return { ok: false, error: 'expert_rate_not_set', status: 422 };
+  // The legacy cadence quotes a number, so it fails closed on a missing rate.
+  // Matchy's intro never mentions money, so it does not need one — but the
+  // bookmark route seeds the rate from the tier before calling anyway.
+  const rate = pe.expertRate ?? 0;
+  if (step !== 'intro' && rate <= 0) {
+    return { ok: false, error: 'expert_rate_not_set', status: 422 };
+  }
 
   const query = project.researchQuestion;
 
   try {
+    // ── Matchy's intro (docs/MATCHY_SPEC.md workflow step 3) ────────────────
+    // Anonymized, no money, no client name — see lib/matchyTemplates.ts. It
+    // reuses the same token, Redis index and status write as email1, so an
+    // expert reply lands on the thread exactly the way it always has.
+    if (step === 'intro') {
+      const activeToken = token || generateOutreachToken(projectId, expertId).token;
+
+      const email = buildIntroEmail({
+        firmType:           input.firmType ?? null,
+        firmSize:           input.firmSize ?? null,
+        topic:              deriveTopic(project),
+        descriptorFragment: descriptorFragmentFrom(pe.expert.anonymizedDescriptor),
+        expertFirstName:    pe.expert.name,
+        recipientEmail:     expertEmail,
+      });
+
+      // Review-first: write the draft and stop. Nothing leaves the building.
+      if (input.draftOnly) {
+        const drafted = await updateExpertStatus(projectId, expertId, {
+          status:          'outreach_drafted',
+          outreachSubject: email.subject,
+          outreachDraft:   email.text,
+          outreachToken:   activeToken,
+        });
+        return { ok: true, project: drafted };
+      }
+
+      // buildIntroEmail returns a complete message, CAN-SPAM footer included,
+      // so the sender must not append a second one.
+      await sendSequenceEmail(expertEmail, email.subject, email.text, activeToken, 'intro', {
+        footerIncluded: true,
+        html:           email.html,
+      });
+
+      const redis = getUpstashClient();
+      if (redis) {
+        await redis.set(
+          `reply-token:${activeToken}`,
+          JSON.stringify({ projectId, expertId }),
+          { ex: REPLY_TOKEN_TTL_S },
+        );
+      }
+
+      const updated = await updateExpertStatus(projectId, expertId, {
+        status:          'contacted',
+        outreachStep:    'email1',
+        outreachSubject: email.subject,
+        outreachDraft:   email.text,
+        email1SentAt:    Date.now(),
+        contactedAt:     pe.contactedAt ?? Date.now(),
+        outreachToken:   activeToken,
+      });
+      return { ok: true, project: updated };
+    }
+
     if (step === 'email1') {
       // Generate a fresh outreach reply token when the caller has none yet.
       const activeToken = token || generateOutreachToken(projectId, expertId).token;

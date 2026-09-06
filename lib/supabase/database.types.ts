@@ -5,6 +5,7 @@
 //   supabase/migrations/20260901000000_onboarding_billing_calendar.sql
 //   supabase/migrations/20260906000000_outreach_suppressions.sql
 //   supabase/migrations/20260902000000_org_billing_and_rls_hardening.sql
+//   supabase/migrations/20260907000000_matchy_phase1.sql
 //
 // Keep this file in sync with those migrations. (Once the Supabase CLI is
 // wired up you can regenerate with: `supabase gen types typescript --linked`.)
@@ -14,8 +15,9 @@
 //                     access_requests
 //   project-scoped -> projects, project_members, project_experts
 //   service-role   -> access_requests, user_calendar_connections,
-//                     outreach_suppressions
+//                     outreach_suppressions, engagement_events
 //                     organization_billing
+//   project-read   -> conversation_messages (members read; writes service-role)
 // Project data is reachable only via project ownership or an explicit
 // project_members row — never org-wide.
 
@@ -26,6 +28,42 @@ export type Json =
   | null
   | { [key: string]: Json | undefined }
   | Json[];
+
+/**
+ * organizations.firm_type / access_requests.firm_type — the check-constrained
+ * values from 20260907000000_matchy_phase1.sql. lib/matchyTemplates.ts maps
+ * these to the one type word Matchy says to an expert.
+ */
+export type FirmTypeValue =
+  | 'pe_firm'
+  | 'family_office'
+  | 'consulting_firm'
+  | 'law_firm'
+  | 'hedge_fund'
+  | 'corporate'
+  | 'other';
+
+/** organizations.firm_size / access_requests.firm_size — the size word. */
+export type FirmSizeValue = 'boutique' | 'mid_size' | 'large';
+
+/** engagement_events.type — every Matchy action or observation worth keeping. */
+export type EngagementEventType =
+  | 'bookmarked'
+  | 'contact_found'
+  | 'contact_not_found'
+  | 'intro_sent'
+  | 'reply_received'
+  | 'intent_classified'
+  | 'rate_offered'
+  | 'rate_countered'
+  | 'rate_agreed'
+  | 'conflict_flagged'
+  | 'times_proposed'
+  | 'scheduled'
+  | 'completed'
+  | 'charged'
+  | 'rejected'
+  | 'client_ready';
 
 export interface Database {
   public: {
@@ -38,6 +76,9 @@ export interface Database {
           plan: 'starter' | 'growth' | 'enterprise';
           seat_limit: number;
           status: 'active' | 'disabled';
+          // How Matchy names this client to an expert without identifying it.
+          firm_type: FirmTypeValue | null;
+          firm_size: FirmSizeValue | null;
           created_at: string;
           updated_at: string;
         };
@@ -48,6 +89,8 @@ export interface Database {
           plan?: 'starter' | 'growth' | 'enterprise';
           seat_limit?: number;
           status?: 'active' | 'disabled';
+          firm_type?: FirmTypeValue | null;
+          firm_size?: FirmSizeValue | null;
           created_at?: string;
           updated_at?: string;
         };
@@ -58,6 +101,8 @@ export interface Database {
           plan?: 'starter' | 'growth' | 'enterprise';
           seat_limit?: number;
           status?: 'active' | 'disabled';
+          firm_type?: FirmTypeValue | null;
+          firm_size?: FirmSizeValue | null;
           created_at?: string;
           updated_at?: string;
         };
@@ -147,6 +192,9 @@ export interface Database {
           name: string | null;
           firm_name: string | null;
           use_case: string | null;
+          // Captured on the public form; copied onto the organization at approval.
+          firm_type: FirmTypeValue | null;
+          firm_size: FirmSizeValue | null;
           organization_id: string | null;
           status: 'requested' | 'approved' | 'rejected';
           reviewed_by: string | null;
@@ -161,6 +209,8 @@ export interface Database {
           name?: string | null;
           firm_name?: string | null;
           use_case?: string | null;
+          firm_type?: FirmTypeValue | null;
+          firm_size?: FirmSizeValue | null;
           organization_id?: string | null;
           status?: 'requested' | 'approved' | 'rejected';
           reviewed_by?: string | null;
@@ -175,6 +225,8 @@ export interface Database {
           name?: string | null;
           firm_name?: string | null;
           use_case?: string | null;
+          firm_type?: FirmTypeValue | null;
+          firm_size?: FirmSizeValue | null;
           organization_id?: string | null;
           status?: 'requested' | 'approved' | 'rejected';
           reviewed_by?: string | null;
@@ -192,6 +244,10 @@ export interface Database {
           research_question: string;
           status: 'active' | 'archived';
           brief: Json;
+          // Matchy: per-project send switch and the CLIENT-side rate band.
+          review_first: boolean;
+          client_rate_min: number | null;
+          client_rate_max: number | null;
           created_at: string;
           updated_at: string;
         };
@@ -203,6 +259,9 @@ export interface Database {
           research_question?: string;
           status?: 'active' | 'archived';
           brief?: Json;
+          review_first?: boolean;
+          client_rate_min?: number | null;
+          client_rate_max?: number | null;
           created_at?: string;
           updated_at?: string;
         };
@@ -214,6 +273,9 @@ export interface Database {
           research_question?: string;
           status?: 'active' | 'archived';
           brief?: Json;
+          review_first?: boolean;
+          client_rate_min?: number | null;
+          client_rate_max?: number | null;
           created_at?: string;
           updated_at?: string;
         };
@@ -390,6 +452,86 @@ export interface Database {
         };
         Relationships: [];
       };
+      // Project members READ via has_project_access; every write is
+      // service-role only. body_raw holds AES-256-GCM ciphertext (see
+      // lib/encryption.ts) — never plaintext.
+      conversation_messages: {
+        Row: {
+          id: string;
+          project_id: string;
+          expert_id: string;
+          direction: 'inbound' | 'outbound';
+          author: 'client' | 'expert' | 'matchy';
+          body_raw: string | null;
+          body_clean: string | null;
+          summary: string | null;
+          intent: string | null;
+          screen_result: Json | null;
+          resend_message_id: string | null;
+          created_at: string;
+        };
+        Insert: {
+          id?: string;
+          project_id: string;
+          expert_id: string;
+          direction: 'inbound' | 'outbound';
+          author: 'client' | 'expert' | 'matchy';
+          body_raw?: string | null;
+          body_clean?: string | null;
+          summary?: string | null;
+          intent?: string | null;
+          screen_result?: Json | null;
+          resend_message_id?: string | null;
+          created_at?: string;
+        };
+        Update: {
+          id?: string;
+          project_id?: string;
+          expert_id?: string;
+          direction?: 'inbound' | 'outbound';
+          author?: 'client' | 'expert' | 'matchy';
+          body_raw?: string | null;
+          body_clean?: string | null;
+          summary?: string | null;
+          intent?: string | null;
+          screen_result?: Json | null;
+          resend_message_id?: string | null;
+          created_at?: string;
+        };
+        Relationships: [];
+      };
+      // Service-role only (RLS enabled, no authenticated policies).
+      // payload carries numbers, booleans and short enum strings — never PII.
+      engagement_events: {
+        Row: {
+          id: string;
+          project_id: string;
+          expert_id: string;
+          org_id: string | null;
+          type: EngagementEventType;
+          payload: Json;
+          created_at: string;
+        };
+        Insert: {
+          id?: string;
+          project_id: string;
+          expert_id: string;
+          org_id?: string | null;
+          type: EngagementEventType;
+          payload?: Json;
+          created_at?: string;
+        };
+        Update: {
+          id?: string;
+          project_id?: string;
+          expert_id?: string;
+          org_id?: string | null;
+          type?: EngagementEventType;
+          payload?: Json;
+          created_at?: string;
+        };
+        Relationships: [];
+      };
     };
     Views: Record<string, never>;
     Functions: {
@@ -425,3 +567,5 @@ export type ProjectExpertRow = Database['public']['Tables']['project_experts']['
 export type UserCalendarConnectionRow = Database['public']['Tables']['user_calendar_connections']['Row'];
 export type OutreachSuppressionRow = Database['public']['Tables']['outreach_suppressions']['Row'];
 export type OrganizationBillingRow = Database['public']['Tables']['organization_billing']['Row'];
+export type ConversationMessageRow = Database['public']['Tables']['conversation_messages']['Row'];
+export type EngagementEventRow = Database['public']['Tables']['engagement_events']['Row'];

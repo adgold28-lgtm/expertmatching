@@ -2,6 +2,7 @@ import { NextRequest } from 'next/server';
 import { adminGuard, getSessionUser } from '../../../../lib/auth';
 import { getServiceRoleClient } from '../../../../lib/supabase/admin';
 import { upsertFirm, type FirmPlan } from '../../../../lib/firmStore';
+import type { FirmTypeValue, FirmSizeValue } from '../../../../lib/supabase/database.types';
 import { provisionAccountInvite, splitFullName, sanitizeName } from '../../../../lib/accountProvisioning';
 
 // Wire shape consumed by app/admin/requests/page.tsx — kept stable.
@@ -10,6 +11,10 @@ interface AccessRequest {
   firm:        string;
   email:       string;
   useCase:     string;
+  // Matchy's firm phrase, as submitted. Shown for context; applied to the
+  // organization on approval.
+  firmType:    FirmTypeValue | null;
+  firmSize:    FirmSizeValue | null;
   submittedAt: number;
 }
 
@@ -36,6 +41,8 @@ export async function GET(request: NextRequest): Promise<Response> {
       firm:        r.firm_name ?? '',
       email:       r.email,
       useCase:     r.use_case ?? '',
+      firmType:    r.firm_type ?? null,
+      firmSize:    r.firm_size ?? null,
       submittedAt: Date.parse(r.created_at) || 0,
     }));
     return Response.json({ requests });
@@ -89,7 +96,7 @@ export async function POST(request: NextRequest): Promise<Response> {
   // ── Recover the submission for the requester's name + firm ──────────────────
   const { data: pending } = await db
     .from('access_requests')
-    .select('name, firm_name')
+    .select('name, firm_name, firm_type, firm_size')
     .eq('kind', 'access')
     .eq('email', email)
     .eq('status', 'requested')
@@ -136,6 +143,18 @@ export async function POST(request: NextRequest): Promise<Response> {
 
   if (!result.ok) {
     return Response.json({ error: result.error, message: result.message }, { status: result.status });
+  }
+
+  // Carry the requester's two firm answers onto the organization now that it
+  // definitely exists. This is what lets Matchy say "a mid-size PE firm" in an
+  // intro instead of falling back to "an investment firm".
+  const firmType = (pending?.firm_type ?? null) as FirmTypeValue | null;
+  const firmSize = (pending?.firm_size ?? null) as FirmSizeValue | null;
+  if (firmType || firmSize) {
+    await upsertFirm(domain, {
+      ...(firmType ? { firmType } : {}),
+      ...(firmSize ? { firmSize } : {}),
+    }).catch(() => { /* the account is provisioned; the firm phrase is editable later */ });
   }
 
   await db.from('access_requests')

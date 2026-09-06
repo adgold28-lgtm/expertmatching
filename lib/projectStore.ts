@@ -181,6 +181,10 @@ export interface UpdateProjectInput {
   clientCalendlyUrl?: string;
   // Stripe
   stripeCustomerId?: string | null;
+  // Matchy (promoted columns — projects.review_first / client_rate_min / client_rate_max)
+  reviewFirst?:   boolean;
+  clientRateMin?: number | null;
+  clientRateMax?: number | null;
   // Server-side expert sourcing job status (unpromoted — rides in projects.brief)
   sourcingStatus?:      'running' | 'completed' | 'failed' | null;
   sourcingStartedAt?:   number | null;
@@ -381,6 +385,11 @@ class InMemoryProjectStore implements ProjectStore {
 const PROMOTED_PROJECT_KEYS = new Set([
   'id', 'name', 'researchQuestion', 'createdAt', 'updatedAt',
   'experts', 'ownerEmail', 'collaborators', 'firmDomain',
+  // Matchy Phase 1 — real columns as of 20260907000000_matchy_phase1.sql.
+  // Keeping them out of `brief` means one home for each value, so a SQL
+  // report and the app can never disagree about whether a project is on
+  // review-first or what band it negotiates in.
+  'reviewFirst', 'clientRateMin', 'clientRateMax',
 ]);
 
 // ProjectExpert fields promoted to real columns; everything else in `data`.
@@ -445,6 +454,9 @@ function rowToProject(row: ProjectRow, experts: ProjectExpert[], ctx: ProjectCon
     createdAt:        toMs(row.created_at),
     updatedAt:        toMs(row.updated_at),
     experts,
+    reviewFirst:      row.review_first ?? false,
+    clientRateMin:    row.client_rate_min,
+    clientRateMax:    row.client_rate_max,
     ownerEmail:       ctx.ownerEmail,
     collaborators:    ctx.collaborators,
     firmDomain:       ctx.firmDomain,
@@ -656,6 +668,9 @@ class SupabaseProjectStore implements ProjectStore {
       .update({
         name:              project.name,
         research_question: project.researchQuestion,
+        review_first:      project.reviewFirst ?? false,
+        client_rate_min:   project.clientRateMin ?? null,
+        client_rate_max:   project.clientRateMax ?? null,
         brief:             projectToBrief(project) as Database['public']['Tables']['projects']['Update']['brief'],
       })
       .eq('id', project.id)
@@ -739,13 +754,25 @@ class SupabaseProjectStore implements ProjectStore {
   async updateProjectFields(id: string, input: UpdateProjectInput): Promise<Project> {
     const row = await this.getRow(id);
     if (!row) throw new Error(`Project not found: ${id}`);
+
+    // Promoted fields go to their own columns; everything else merges into the
+    // brief document. A key must never be written to both.
     const brief = { ...(row.brief as Record<string, unknown> ?? {}) };
     for (const [k, v] of Object.entries(input)) {
-      if (v !== undefined) brief[k] = v;
+      if (v === undefined || PROMOTED_PROJECT_KEYS.has(k)) continue;
+      brief[k] = v;
     }
+
+    const patch: Database['public']['Tables']['projects']['Update'] = {
+      brief: brief as Database['public']['Tables']['projects']['Update']['brief'],
+      ...(input.reviewFirst   !== undefined ? { review_first:    input.reviewFirst }          : {}),
+      ...(input.clientRateMin !== undefined ? { client_rate_min: input.clientRateMin ?? null } : {}),
+      ...(input.clientRateMax !== undefined ? { client_rate_max: input.clientRateMax ?? null } : {}),
+    };
+
     const { data: updated, error } = await this.db
       .from('projects')
-      .update({ brief: brief as Database['public']['Tables']['projects']['Update']['brief'] })
+      .update(patch)
       .eq('id', id)
       .select()
       .single();

@@ -11,6 +11,8 @@ export default function RequestAccessForm() {
   const [firm,    setFirm]    = useState('');
   const [email,   setEmail]   = useState('');
   const [useCase, setUseCase] = useState('');
+  const [firmType, setFirmType] = useState('');
+  const [firmSize, setFirmSize] = useState('');
   const [loading, setLoading] = useState(false);
   const [error,   setError]   = useState('');
   const [success, setSuccess] = useState(false);
@@ -26,11 +28,20 @@ export default function RequestAccessForm() {
       const res = await fetch('/api/request-access', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name: name.trim(), firm: firm.trim(), email: email.trim(), useCase: useCase.trim() }),
+        body: JSON.stringify({
+          name:    name.trim(),
+          firm:    firm.trim(),
+          email:   email.trim(),
+          useCase: useCase.trim(),
+          firmType,
+          firmSize,
+        }),
       });
-      const data = await res.json();
+      const data = (await res.json()) as { ok?: boolean; message?: string };
       if (!res.ok || !data.ok) {
-        throw new Error(data.error ?? 'Something went wrong. Please try again.');
+        // The API returns { error: <machine code>, message: <human copy> }.
+        // Only `message` is ever shown — never the raw code.
+        throw new Error(data.message ?? 'Something went wrong. Please try again.');
       }
       setSuccess(true);
     } catch (err) {
@@ -133,6 +144,56 @@ export default function RequestAccessForm() {
                 />
               </div>
 
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div>
+                  <label
+                    htmlFor="firmType"
+                    className="block text-[10px] uppercase tracking-widest text-muted font-medium mb-1.5"
+                    style={{ letterSpacing: '0.18em' }}
+                  >
+                    Firm Type
+                  </label>
+                  <select
+                    id="firmType"
+                    value={firmType}
+                    onChange={e => setFirmType(e.target.value)}
+                    className="w-full px-3.5 py-2.5 text-sm text-ink border border-frame bg-cream focus:outline-none focus:border-navy transition-colors"
+                    style={{ fontFamily: 'var(--font-libre-franklin)', fontWeight: 300 }}
+                  >
+                    <option value="">Select</option>
+                    <option value="family_office">Family office</option>
+                    <option value="pe_firm">PE firm</option>
+                    <option value="consulting_firm">Consulting firm</option>
+                    <option value="law_firm">Law firm</option>
+                    <option value="hedge_fund">Hedge fund</option>
+                    <option value="corporate">Corporate</option>
+                    <option value="other">Other</option>
+                  </select>
+                </div>
+
+                <div>
+                  <label
+                    htmlFor="firmSize"
+                    className="block text-[10px] uppercase tracking-widest text-muted font-medium mb-1.5"
+                    style={{ letterSpacing: '0.18em' }}
+                  >
+                    Firm Size
+                  </label>
+                  <select
+                    id="firmSize"
+                    value={firmSize}
+                    onChange={e => setFirmSize(e.target.value)}
+                    className="w-full px-3.5 py-2.5 text-sm text-ink border border-frame bg-cream focus:outline-none focus:border-navy transition-colors"
+                    style={{ fontFamily: 'var(--font-libre-franklin)', fontWeight: 300 }}
+                  >
+                    <option value="">Select</option>
+                    <option value="boutique">Boutique</option>
+                    <option value="mid_size">Mid-size</option>
+                    <option value="large">Large</option>
+                  </select>
+                </div>
+              </div>
+
               <div>
                 <label
                   htmlFor="email"
@@ -189,6 +250,14 @@ export default function RequestAccessForm() {
               </button>
 
             </form>
+
+            <p className="mt-4 text-center text-[11px] text-muted leading-relaxed" style={{ fontWeight: 300 }}>
+              We&apos;ll only use this to contact you about access. See our{' '}
+              <Link href="/privacy" className="text-navy hover:underline" style={{ fontWeight: 400 }}>
+                Privacy Policy
+              </Link>
+              .
+            </p>
 
             <p className="mt-5 text-center text-[11px] text-muted" style={{ fontWeight: 300 }}>
               Already have an account?{' '}

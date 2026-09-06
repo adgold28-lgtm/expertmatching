@@ -16,7 +16,7 @@
  */
 
 import type { Expert, ProjectExpert, ExpertStatus } from '../types';
-import { redactExpertForViewer, redactProjectForViewer } from '../lib/redactExpert';
+import { redactExpertForViewer, redactProjectForViewer, isIdentityRevealed } from '../lib/redactExpert';
 import { toInitialForm } from '../lib/nameValidation';
 
 // ─── Assertions ───────────────────────────────────────────────────────────────
@@ -78,6 +78,15 @@ function projectExpertAt(status: ExpertStatus): ProjectExpert {
     emailVerificationStatus: 'verified',
     emailProvider:           'snov',
     contactStatus:           'reached',
+    contactCandidates:       [{
+      email:              'scott@bayviewvet.example',
+      source:             'snov',
+      verificationStatus: 'verified',
+      confidence:         'high',
+      bounced:            false,
+    }],
+    expertRate:              650,
+    clientRate:              1300,
     screeningNotes:          'Strong on ops, weak on M&A pricing.',
     rejectionNotes:          'n/a',
     outreachToken:           'tok_secret',
@@ -127,6 +136,12 @@ check('category kept',                 ce.category === 'Operator');
 check('valueChainLabel kept',          ce.valueChainLabel === 'Veterinary services');
 
 check('contactEmail absent',            contacted.contactEmail            === undefined);
+check('contactCandidates absent — every discovered address is staff-only',
+      contacted.contactCandidates === undefined);
+check('expertRate absent — the expert-side number never reaches a client',
+      contacted.expertRate === undefined);
+check('clientRate KEPT — what the client pays is client-facing',
+      contacted.clientRate === 1300);
 check('emailVerificationStatus absent', contacted.emailVerificationStatus === undefined);
 check('emailProvider absent',           contacted.emailProvider           === undefined);
 check('contactStatus absent',           contacted.contactStatus           === undefined);
@@ -148,6 +163,11 @@ check('company restored',      scheduled.expert.company === 'Bayview Veterinary 
 check('source_links restored', scheduled.expert.source_links.length === 2);
 check('contactEmail STILL absent — the platform keeps the contact path',
       scheduled.contactEmail === undefined);
+check('contactCandidates STILL absent after the reveal',
+      scheduled.contactCandidates === undefined);
+check('expertRate STILL absent after the reveal — the two rates never share an audience',
+      scheduled.expertRate === undefined);
+check('clientRate still shown after the reveal', scheduled.clientRate === 1300);
 
 // ─── Declines never reveal ────────────────────────────────────────────────────
 
@@ -156,6 +176,16 @@ for (const status of ['rejected', 'rejected_after_outreach'] as const) {
   const declined = redactExpertForViewer(projectExpertAt(status), { role: 'user' });
   check(`${status} stays initialed`, declined.expert.name === 'Scott S.');
 }
+
+// ─── bookmarked: saved, but nothing revealed ──────────────────────────────────
+
+console.log("\nrole 'user', status 'bookmarked' — saved but still anonymized");
+const bookmarked = redactExpertForViewer(projectExpertAt('bookmarked'), { role: 'user' });
+check('bookmarked stays initialed',      bookmarked.expert.name === 'Scott S.');
+check('bookmarked identity not revealed', !isIdentityRevealed('bookmarked'));
+check('bookmarked contactEmail absent',  bookmarked.contactEmail === undefined);
+check('bookmarked expertRate absent',    bookmarked.expertRate === undefined);
+check('bookmarked clientRate kept',      bookmarked.clientRate === 1300);
 
 // ─── admin: untouched ─────────────────────────────────────────────────────────
 
@@ -166,6 +196,8 @@ for (const status of ['contacted', 'scheduled', 'rejected'] as const) {
   check(`${status}: same object reference`, asAdmin === source);
   check(`${status}: name intact`,           asAdmin.expert.name === 'Scott Smithers');
   check(`${status}: contactEmail intact`,   asAdmin.contactEmail === 'scott@bayviewvet.example');
+  check(`${status}: expertRate intact`,     asAdmin.expertRate === 650);
+  check(`${status}: contactCandidates intact`, asAdmin.contactCandidates?.length === 1);
 }
 
 // ─── Project level ────────────────────────────────────────────────────────────

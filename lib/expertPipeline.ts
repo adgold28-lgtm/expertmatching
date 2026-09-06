@@ -23,13 +23,20 @@ import type { ProjectExpert, ExpertStatus } from '../types';
 // ─── Status universe ──────────────────────────────────────────────────────────
 
 /**
- * Every valid ExpertStatus — all 14 members of the union, in pipeline order so
+ * Every valid ExpertStatus — all 15 members of the union, in pipeline order so
  * consumers can render them directly. API allowlists and UI selectors build
  * from this rather than repeating the literals.
+ *
+ * ORDER IS LOAD-BEARING: lib/redactExpert.ts reveals an expert's identity at
+ * and after the index of 'scheduled', so a new status must be inserted at the
+ * point in the funnel where it actually sits. 'bookmarked' goes before
+ * 'contact_found' — the client has saved the expert, Matchy has not yet found
+ * an address, and nothing about the identity is revealed.
  */
 export const EXPERT_STATUSES: readonly ExpertStatus[] = [
   'discovered',
   'shortlisted',
+  'bookmarked',
   'contact_found',
   'outreach_drafted',
   'contacted',
@@ -108,7 +115,9 @@ export function pipelineStage(pe: ProjectExpert): PipelineStage {
 
   if (OUTREACH_SENT_STATUSES.has(status)) return 'outreach_sent';
 
-  // discovered, shortlisted, contact_found, outreach_drafted
+  // discovered, shortlisted, bookmarked, contact_found, outreach_drafted.
+  // 'bookmarked' is pre-outreach on purpose: the client has saved the expert
+  // and Matchy is looking for an address, but nothing has been sent yet.
   return 'pre_outreach';
 }
 
@@ -128,6 +137,7 @@ export const STAGE_META: Record<PipelineStage, { label: string; classes: string 
 export const STATUS_META: Record<ExpertStatus, { label: string; classes: string }> = {
   discovered:              { label: 'Discovered',       classes: 'text-muted border-frame'                     },
   shortlisted:             { label: 'Shortlisted',      classes: 'text-amber-700 border-amber-300 bg-amber-50' },
+  bookmarked:              { label: 'Bookmarked',       classes: 'text-sky-700 border-sky-300 bg-sky-50'       },
   rejected:                { label: 'Rejected',         classes: 'text-slate-500 border-slate-200 bg-slate-50' },
   contact_found:           { label: 'Contact Found',    classes: 'text-sky-600 border-sky-200 bg-sky-50'       },
   outreach_drafted:        { label: 'Draft Ready',      classes: 'text-sky-700 border-sky-300 bg-sky-50'       },

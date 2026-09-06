@@ -104,6 +104,20 @@ export interface EnrichedEmail {
   provider: ActiveProviderName; // always a real provider — 'none' is never on a found email
 }
 
+/**
+ * One address Matchy found for an expert during contact discovery, with how it
+ * was found and whether mail to it has bounced. STAFF-ONLY: stripped from every
+ * client-facing response by lib/redactExpert.ts. Matchy sends to at most one of
+ * these; a bounce moves it to the next candidate.
+ */
+export interface ContactCandidate {
+  email:              string;
+  source:             ContactProviderName | 'manual' | 'public_page';
+  verificationStatus: ContactStatus;
+  confidence:         'high' | 'medium' | 'low';
+  bounced:            boolean;
+}
+
 // ─── Contact path discovery ────────────────────────────────────────────────────
 //
 // SuggestedDomain is the canonical type for both heuristic and resolver-found
@@ -144,6 +158,9 @@ export interface ContactPathSuggestion {
 export type ExpertStatus =
   | 'discovered'
   | 'shortlisted'
+  // Matchy: the client saved this expert and outreach starts. Conceptually
+  // after 'shortlisted' — see lib/expertPipeline.ts for the derived stage.
+  | 'bookmarked'
   | 'rejected'
   | 'contact_found'
   | 'outreach_drafted'
@@ -235,6 +252,9 @@ export interface ProjectExpert {
   emailCheckedAt?: number;  // unix ms when last lookup was performed
   contactStatus?: string;   // legacy free-text field; kept for backward compat
   contactedAt?: number;     // unix ms timestamp when status first became 'contacted'
+  // Every address discovery turned up, best-first. Staff-only — never sent to
+  // a client (lib/redactExpert.ts strips it).
+  contactCandidates?: ContactCandidate[] | null;
   // Contact path discovery (resolver results — never passed to email providers)
   suggestedDomains?: SuggestedDomain[];
   publicContactEmails?: PublicContactEmail[];
@@ -287,8 +307,11 @@ export interface ProjectExpert {
   counterRateProposed?:  number;
   conflictNote?:         string;
   // Billing / Stripe
-  clientRate?:           number | null;  // hourly rate billed to client (margin included)
-  expertRate?:           number | null;  // hourly rate paid to expert (clientRate * 0.70)
+  // The two numbers of the engagement — see lib/pricing.ts, the only place
+  // that converts between them. clientRate is client-facing everywhere;
+  // expertRate is expert- and staff-only and never reaches a client.
+  clientRate?:           number | null;  // hourly rate billed to the client, incl. the ExpertMatch fee
+  expertRate?:           number | null;  // hourly rate offered to / paid the expert; clientRateFor() derives clientRate
   callDurationMin?:      number | null;  // actual call duration in minutes, set at completion
   invoiceAmount?:        number | null;  // computed: rate * duration / 60
   stripePaymentLinkId?:  string | null;
@@ -356,7 +379,16 @@ export interface Project {
   // New brief fields (simplified two-field brief)
   expertType?: string;              // "who do you want to talk to"
   // Outreach mode — 'review' (default) queues outreach for approval; 'auto' sends immediately
+  // Legacy 3-email cadence switch. Matchy uses `reviewFirst` below instead.
   outreachMode?: 'auto' | 'review';
+  // ── Matchy (projects.review_first / client_rate_min / client_rate_max) ─────
+  // false (the default) means bookmarking an expert sends the intro straight
+  // away; true means Matchy drafts it and waits for the client.
+  reviewFirst?: boolean;
+  // The CLIENT-side hourly band Matchy negotiates inside, in whole dollars.
+  // Null/absent = no bound; tier defaults apply.
+  clientRateMin?: number | null;
+  clientRateMax?: number | null;
   // Server-side expert sourcing job — survives navigation and refresh.
   // Written by POST /api/projects/[id]/source-experts and its worker.
   sourcingStatus?:      'running' | 'completed' | 'failed' | null;

@@ -28,6 +28,85 @@ function scheduleAnonymizationBackfill(projectId: string): void {
   });
 }
 
+// ─── Matchy project settings ──────────────────────────────────────────────────
+
+/** Client-side hourly rates are set in $50 steps and never below $100. */
+const RATE_STEP = 50;
+const RATE_FLOOR = 100;
+
+function isValidClientRate(value: unknown): value is number {
+  return typeof value === 'number'
+    && Number.isFinite(value)
+    && Number.isInteger(value)
+    && value >= RATE_FLOOR
+    && value % RATE_STEP === 0;
+}
+
+interface MatchySettingsPatch {
+  reviewFirst?:   boolean;
+  clientRateMin?: number | null;
+  clientRateMax?: number | null;
+}
+
+/**
+ * Reads the three Matchy fields off a PUT/PATCH body. Returns `touched` so the
+ * caller only enforces owner-or-admin when one of them is actually being
+ * changed, and validates the band against whatever the project already has —
+ * raising just the floor still has to end up <= the existing ceiling.
+ */
+function validateMatchySettings(
+  body: Record<string, unknown>,
+  project: { clientRateMin?: number | null; clientRateMax?: number | null },
+): { patch: MatchySettingsPatch; touched: boolean } | { error: Response } {
+  const patch: MatchySettingsPatch = {};
+  let touched = false;
+
+  if ('reviewFirst' in body) {
+    if (typeof body.reviewFirst !== 'boolean') {
+      return { error: Response.json({ error: 'invalid_review_first', field: 'reviewFirst' }, { status: 400 }) };
+    }
+    patch.reviewFirst = body.reviewFirst;
+    touched = true;
+  }
+
+  for (const field of ['clientRateMin', 'clientRateMax'] as const) {
+    if (!(field in body)) continue;
+    const value = body[field];
+    if (value === null) {
+      patch[field] = null;
+      touched = true;
+      continue;
+    }
+    if (!isValidClientRate(value)) {
+      return {
+        error: Response.json(
+          {
+            error:   `invalid_${field === 'clientRateMin' ? 'client_rate_min' : 'client_rate_max'}`,
+            field,
+            message: `Rates are whole dollars, at least $${RATE_FLOOR}, in $${RATE_STEP} steps.`,
+          },
+          { status: 400 },
+        ),
+      };
+    }
+    patch[field] = value;
+    touched = true;
+  }
+
+  const min = patch.clientRateMin !== undefined ? patch.clientRateMin : project.clientRateMin ?? null;
+  const max = patch.clientRateMax !== undefined ? patch.clientRateMax : project.clientRateMax ?? null;
+  if (min !== null && max !== null && min > max) {
+    return {
+      error: Response.json(
+        { error: 'invalid_client_rate_band', message: 'The lowest rate has to be at or below the highest.' },
+        { status: 400 },
+      ),
+    };
+  }
+
+  return { patch, touched };
+}
+
 export async function GET(
   request: NextRequest,
   { params }: { params: { projectId: string } },
@@ -75,8 +154,23 @@ export async function PUT(
     const project = await getProjectForUser(params.projectId, email, role);
     if (!project) return Response.json({ error: 'not_found' }, { status: 404 });
 
+    // ── Matchy project settings ──────────────────────────────────────────────
+    // The review-first switch and the client-rate band decide what Matchy
+    // sends and what it may agree to on the client's behalf, so only the
+    // project owner (or staff) may change them. Collaborators are read-only on
+    // outreach decisions (docs/MATCHY_SPEC.md, founder answer 5).
+    const matchySettings = validateMatchySettings(body, project);
+    if ('error' in matchySettings) return matchySettings.error;
+    if (matchySettings.touched && role !== 'admin' && project.ownerEmail !== email) {
+      return Response.json(
+        { error: 'forbidden', message: 'Only the project owner can change outreach settings.' },
+        { status: 403 },
+      );
+    }
+
     const updated = await updateProject({
       ...project,
+      ...matchySettings.patch,
       ...(typeof body.name  === 'string' && { name:  sanitizeText(body.name,  LIMITS.projectName) || project.name }),
       // Client scheduling fields — stored as-is (validated by request-client-availability route)
       ...('clientEmail' in body && { clientEmail: typeof body.clientEmail === 'string' ? body.clientEmail.trim() || null : null }),

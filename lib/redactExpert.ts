@@ -59,13 +59,21 @@ function omitKeys<T extends object>(obj: T, keys: readonly (keyof T)[]): T {
 
 /**
  * ProjectExpert fields a non-admin must never receive, at any status:
- * outreach plumbing (the contact path itself), staff-only assessments, and
- * every credential/token. `userNotes` are the client's own notes — kept.
- * `zoomJoinUrl` and `stripePaymentLinkUrl` are client-facing — kept.
+ * outreach plumbing (the contact path itself), the expert-side rate,
+ * staff-only assessments, and every credential/token. `userNotes` are the
+ * client's own notes — kept. `clientRate`, `zoomJoinUrl` and
+ * `stripePaymentLinkUrl` are client-facing — kept.
+ *
+ * Note on `expert.tierPricing`: it stays, and it carries the TIER DEFAULT
+ * opening offer, not this engagement's number. The 50/50 split is published
+ * on the pricing page and clientRate is shown "includes ExpertMatch fee", so
+ * the default is derivable either way. What must not leak is the negotiated
+ * `expertRate` above — that is the expert's own counter.
  */
 const INTERNAL_PROJECT_EXPERT_KEYS: readonly (keyof ProjectExpert)[] = [
   // Contact path — the whole point of the platform is that clients don't get this
   'contactEmail',
+  'contactCandidates',
   'emailVerificationStatus',
   'emailProvider',
   'emailCheckedAt',
@@ -74,6 +82,12 @@ const INTERNAL_PROJECT_EXPERT_KEYS: readonly (keyof ProjectExpert)[] = [
   'publicContactEmails',
   'selectedDomain',
   'selectedContactPathType',
+  // The expert-side rate. Per docs/MATCHY_SPEC.md "Pricing rule", the two
+  // numbers of an engagement never share an audience: the client sees
+  // `clientRate` (kept below), the expert and staff see `expertRate`. It is
+  // stripped at every status, including after the identity reveal — what we
+  // pay the expert stays between us and the expert.
+  'expertRate',
   // Staff-only assessment and drafting
   'rejectionNotes',
   'screeningNotes',

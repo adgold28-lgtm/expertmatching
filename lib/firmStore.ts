@@ -21,12 +21,19 @@ import {
   syncAppMetadata,
   deleteSupabaseUser,
 } from './supabase/admin';
-import type { OrganizationRow, ProfileRow, OrganizationMemberRow } from './supabase/database.types';
+import type {
+  OrganizationRow,
+  ProfileRow,
+  OrganizationMemberRow,
+  FirmTypeValue,
+  FirmSizeValue,
+} from './supabase/database.types';
 import { Resend } from 'resend';
 
 // ─── Types ─────────────────────────────────────────────────────────────────────
 
 export type FirmPlan   = 'starter' | 'growth' | 'enterprise';
+export type { FirmTypeValue, FirmSizeValue };
 export type FirmStatus = 'active' | 'disabled';
 export type UserStatus = 'active' | 'pending' | 'disabled';
 export type OrgRole    = 'org_admin' | 'org_member';
@@ -46,6 +53,14 @@ export interface FirmRecord {
    * Plans no longer imply a cap — organizations are billed per active seat.
    */
   seatLimit: number | null;
+  /**
+   * How Matchy describes this client to an expert without naming them: one
+   * type word and one size word, e.g. "a mid-size PE firm". Captured on the
+   * access request and applied at approval. Null falls back to
+   * "an investment firm" (lib/matchyTemplates.firmPhrase).
+   */
+  firmType: FirmTypeValue | null;
+  firmSize: FirmSizeValue | null;
 }
 
 export interface UserRecord {
@@ -119,6 +134,8 @@ function toFirmRecord(row: OrganizationRow): FirmRecord {
     status:    row.status,
     createdAt: toMs(row.created_at),
     seatLimit: cap >= UNLIMITED_SEATS || cap <= 0 ? null : cap,
+    firmType:  row.firm_type ?? null,
+    firmSize:  row.firm_size ?? null,
   };
 }
 
@@ -237,9 +254,12 @@ export async function upsertFirm(
         };
 
   const patch = {
-    ...(fields.name   !== undefined ? { name:   fields.name }   : {}),
-    ...(fields.plan   !== undefined ? { plan:   fields.plan }   : {}),
-    ...(fields.status !== undefined ? { status: fields.status } : {}),
+    ...(fields.name     !== undefined ? { name:      fields.name }            : {}),
+    ...(fields.plan     !== undefined ? { plan:      fields.plan }            : {}),
+    ...(fields.status   !== undefined ? { status:    fields.status }          : {}),
+    // Matchy firm phrase. Passing null clears it back to the generic wording.
+    ...(fields.firmType !== undefined ? { firm_type: fields.firmType ?? null } : {}),
+    ...(fields.firmSize !== undefined ? { firm_size: fields.firmSize ?? null } : {}),
     ...seatLimitPatch,
   };
 
