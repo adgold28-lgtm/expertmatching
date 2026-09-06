@@ -1,7 +1,7 @@
 import { NextRequest } from 'next/server';
 import { adminGuard, getSessionUser } from '../../../../lib/auth';
 import { getServiceRoleClient } from '../../../../lib/supabase/admin';
-import { upsertFirm, type FirmPlan } from '../../../../lib/firmStore';
+import { upsertFirm } from '../../../../lib/firmStore';
 import type { FirmTypeValue, FirmSizeValue } from '../../../../lib/supabase/database.types';
 import { provisionAccountInvite, splitFullName, sanitizeName } from '../../../../lib/accountProvisioning';
 
@@ -17,8 +17,6 @@ interface AccessRequest {
   firmSize:    FirmSizeValue | null;
   submittedAt: number;
 }
-
-const VALID_PLANS = new Set<FirmPlan>(['starter', 'growth', 'enterprise']);
 
 export async function GET(request: NextRequest): Promise<Response> {
   const err = await adminGuard(request);
@@ -51,7 +49,7 @@ export async function GET(request: NextRequest): Promise<Response> {
   }
 }
 
-// POST { action: 'approve' | 'reject', email, plan?, firstName?, lastName?, firmName? }
+// POST { action: 'approve' | 'reject', email, firstName?, lastName?, firmName? }
 //
 // Approval creates the account through provisionAccountInvite: the requester's
 // submitted name is split into first / last and their firm name becomes the
@@ -120,15 +118,12 @@ export async function POST(request: NextRequest): Promise<Response> {
   const domain = email.split('@')[1]?.toLowerCase() ?? '';
   if (!domain) return Response.json({ error: 'invalid_email' }, { status: 400 });
 
-  // Plan is descriptive only — seats are billed per active seat, not by plan.
-  const rawPlan = typeof b.plan === 'string' ? b.plan : '';
-  if (rawPlan && VALID_PLANS.has(rawPlan as FirmPlan)) {
-    await upsertFirm(domain, {
-      name:   firmName || domain,
-      plan:   rawPlan as FirmPlan,
-      status: 'active',
-    }).catch(() => { /* provisioning creates the organization if this failed */ });
-  }
+  // Organizations are billed per active seat (lib/pricing.ts); there is no
+  // plan to choose. Apply the admin's corrected firm name before provisioning.
+  await upsertFirm(domain, {
+    name:   firmName || domain,
+    status: 'active',
+  }).catch(() => { /* provisioning creates the organization if this failed */ });
 
   const session = await getSessionUser(request);
 

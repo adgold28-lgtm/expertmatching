@@ -33,7 +33,6 @@ import { getFromAddress } from './mailFrom';
 
 // ─── Types ─────────────────────────────────────────────────────────────────────
 
-export type FirmPlan   = 'starter' | 'growth' | 'enterprise';
 export type { FirmTypeValue, FirmSizeValue };
 export type FirmStatus = 'active' | 'disabled';
 export type UserStatus = 'active' | 'pending' | 'disabled';
@@ -46,7 +45,6 @@ export interface FirmRecord {
   id:        string;     // organizations.id (uuid) — the organization id used for billing
   domain:    string;     // lowercase
   name:      string;
-  plan:      FirmPlan;
   status:    FirmStatus;
   createdAt: number;
   /**
@@ -131,7 +129,6 @@ function toFirmRecord(row: OrganizationRow): FirmRecord {
     id:        row.id,
     domain:    row.domain ?? '',
     name:      row.name,
-    plan:      row.plan,
     status:    row.status,
     createdAt: toMs(row.created_at),
     seatLimit: cap >= UNLIMITED_SEATS || cap <= 0 ? null : cap,
@@ -256,7 +253,6 @@ export async function upsertFirm(
 
   const patch = {
     ...(fields.name     !== undefined ? { name:      fields.name }            : {}),
-    ...(fields.plan     !== undefined ? { plan:      fields.plan }            : {}),
     ...(fields.status   !== undefined ? { status:    fields.status }          : {}),
     // Matchy firm phrase. Passing null clears it back to the generic wording.
     ...(fields.firmType !== undefined ? { firm_type: fields.firmType ?? null } : {}),

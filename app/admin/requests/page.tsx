@@ -6,15 +6,20 @@ import { formatUsdFromCents } from '../../../lib/pricing';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
-type FirmPlan   = 'starter' | 'growth' | 'enterprise';
 type FirmStatus = 'active' | 'disabled';
 type UserStatus = 'active' | 'pending' | 'disabled';
 
+interface FirmBilling {
+  complete:            boolean;         // card on file + subscription created
+  subscriptionStatus:  string | null;   // Stripe mirror
+  seatQuantitySynced:  number | null;   // last seat quantity pushed to Stripe
+  billingEmail:        string | null;
+}
+
 interface FirmInfo {
   id:                     string;
-  domain:                 string;
+  domain:                 string | null;   // some orgs have no domain
   name:                   string;
-  plan:                   FirmPlan;
   status:                 FirmStatus;
   createdAt:              number;
   seatUsed:               number;
@@ -22,6 +27,7 @@ interface FirmInfo {
   seatLimit:              number | null;   // null = unlimited
   seatUnitPriceCents:     number;
   monthlySeatTotalCents:  number;
+  billing:                FirmBilling;
 }
 
 interface UserInfo {
@@ -54,15 +60,7 @@ interface SeatRequest {
   firmName?:  string;
 }
 
-// ─── Constants + helpers ──────────────────────────────────────────────────────
-
-const PLAN_LABELS: Record<FirmPlan, string> = {
-  starter:    'Starter',
-  growth:     'Growth',
-  enterprise: 'Enterprise',
-};
-
-const PLAN_OPTIONS = Object.entries(PLAN_LABELS) as [FirmPlan, string][];
+// ─── Helpers ──────────────────────────────────────────────────────────────────
 
 function formatDate(ts: number): string {
   if (!ts) return '—';
@@ -78,9 +76,99 @@ function splitName(fullName: string): { first: string; last: string } {
   return { first: parts[0], last: parts.slice(1).join(' ') };
 }
 
+function pluralSeats(n: number): string {
+  return `${n} seat${n === 1 ? '' : 's'}`;
+}
+
+/** "3 seats · $250/seat · $750/mo · cap 10 · 2 pending" */
 function seatSummaryLine(firm: FirmInfo): string {
-  const cap = firm.seatLimit === null ? 'no cap' : `cap ${firm.seatLimit}`;
-  return `${firm.seatUsed} seat${firm.seatUsed === 1 ? '' : 's'} · ${formatUsdFromCents(firm.seatUnitPriceCents)}/seat · ${formatUsdFromCents(firm.monthlySeatTotalCents)}/mo · ${cap}`;
+  const parts = [
+    pluralSeats(firm.seatUsed),
+    `${formatUsdFromCents(firm.seatUnitPriceCents)}/seat`,
+    `${formatUsdFromCents(firm.monthlySeatTotalCents)}/mo`,
+  ];
+  if (firm.seatLimit !== null)  parts.push(`cap ${firm.seatLimit}`);
+  if (firm.seatPending > 0)     parts.push(`${firm.seatPending} pending`);
+  return parts.join(' · ');
+}
+
+// ─── Billing line ─────────────────────────────────────────────────────────────
+
+type BillingTone = 'ink' | 'muted' | 'warn';
+
+interface BillingLineParts {
+  text:     string;
+  tone:     BillingTone;
+  warning?: string;
+}
+
+const LIVE_STATUSES     = ['active', 'trialing'];
+const PAST_DUE_STATUSES = ['past_due', 'unpaid'];
+const DEAD_STATUSES     = ['canceled', 'incomplete', 'incomplete_expired'];
+
+function statusLabel(status: string): string {
+  return status.replace(/_/g, ' ');
+}
+
+/** "5 seats synced" — with " (app has 6)" appended when Stripe has drifted. */
+function syncedSegment(billing: FirmBilling, seatUsed: number): string {
+  if (billing.seatQuantitySynced === null) return 'seat count not yet synced';
+  const base = `${pluralSeats(billing.seatQuantitySynced)} synced`;
+  return billing.seatQuantitySynced === seatUsed ? base : `${base} (app has ${seatUsed})`;
+}
+
+function autoBillingText(billing: FirmBilling, seatUsed: number, status: string): string {
+  return `Auto-billing on · Stripe subscription ${statusLabel(status)} · ${syncedSegment(billing, seatUsed)}`;
+}
+
+function billingLineParts(firm: FirmInfo): BillingLineParts {
+  const { billing } = firm;
+
+  if (!billing.complete) {
+    return {
+      text: "Billing not set up — the first member adds the firm's card during onboarding",
+      tone: 'muted',
+    };
+  }
+
+  const status = billing.subscriptionStatus;
+
+  if (status === null) {
+    return { text: 'Card on file · subscription pending', tone: 'muted' };
+  }
+  if (LIVE_STATUSES.includes(status)) {
+    return { text: autoBillingText(billing, firm.seatUsed, status), tone: 'ink' };
+  }
+  if (PAST_DUE_STATUSES.includes(status)) {
+    return {
+      text:    autoBillingText(billing, firm.seatUsed, status),
+      tone:    'ink',
+      warning: 'Payment past due',
+    };
+  }
+  if (DEAD_STATUSES.includes(status)) {
+    return { text: `Subscription ${statusLabel(status)} — no active billing`, tone: 'warn' };
+  }
+  return { text: `Subscription ${statusLabel(status)}`, tone: 'muted' };
+}
+
+const TONE_CLASS: Record<BillingTone, string> = {
+  ink:   'text-ink',
+  muted: 'text-muted',
+  warn:  'text-red-600',
+};
+
+function BillingLine({ firm, showEmail = false }: { firm: FirmInfo; showEmail?: boolean }) {
+  const parts = billingLineParts(firm);
+  const email = showEmail ? firm.billing.billingEmail : null;
+
+  return (
+    <span className={TONE_CLASS[parts.tone]}>
+      {parts.text}
+      {email ? ` · billed to ${email}` : ''}
+      {parts.warning ? <span className="text-red-600 font-medium">{` · ${parts.warning}`}</span> : null}
+    </span>
+  );
 }
 
 async function readError(res: Response): Promise<string> {
@@ -97,6 +185,8 @@ const INPUT_CLASS =
 const LABEL_CLASS = 'block text-[10px] uppercase tracking-widest text-muted mb-1.5';
 const ACTION_CLASS =
   'text-[10px] uppercase tracking-widest text-muted hover:text-navy border border-frame hover:border-navy px-2.5 py-1 transition-colors disabled:opacity-40 shrink-0';
+const DANGER_CLASS =
+  'text-[10px] uppercase tracking-widest text-muted hover:text-red-600 border border-frame hover:border-red-300 px-2.5 py-1 transition-colors disabled:opacity-40 shrink-0';
 
 // ─── Section divider ──────────────────────────────────────────────────────────
 
@@ -122,14 +212,15 @@ function AccessRequestCard({ req, onDone }: { req: AccessRequest; onDone: () => 
   const [firstName, setFirstName] = useState(prefill.first);
   const [lastName,  setLastName]  = useState(prefill.last);
   const [firmName,  setFirmName]  = useState(req.firm);
-  const [plan,      setPlan]      = useState<FirmPlan>('starter');
   const [loading,   setLoading]   = useState(false);
   const [status,    setStatus]    = useState<'idle' | 'approved' | 'rejected'>('idle');
+  const [warnMsg,   setWarnMsg]   = useState('');
   const [errMsg,    setErrMsg]    = useState('');
 
   async function act(action: 'approve' | 'reject') {
     setLoading(true);
     setErrMsg('');
+    setWarnMsg('');
     try {
       const res = await fetch('/api/admin/requests', {
         method:  'POST',
@@ -137,15 +228,28 @@ function AccessRequestCard({ req, onDone }: { req: AccessRequest; onDone: () => 
         body:    JSON.stringify({
           action,
           email: req.email,
-          plan,
           firstName: firstName.trim(),
           lastName:  lastName.trim(),
           firmName:  firmName.trim(),
         }),
       });
       if (!res.ok) throw new Error(await readError(res));
+
+      let warning = '';
+      if (action === 'approve') {
+        const data = await res.json().catch(() => ({})) as { emailSent?: boolean; warning?: string };
+        warning =
+          data.warning ??
+          (data.emailSent === false ? 'Invite created, but the email could not be delivered.' : '');
+      }
+
       setStatus(action === 'approve' ? 'approved' : 'rejected');
-      setTimeout(onDone, 800);
+      if (warning) {
+        // Surface it and let the founder dismiss — do not quietly refresh it away.
+        setWarnMsg(warning);
+      } else {
+        setTimeout(onDone, 800);
+      }
     } catch (e) {
       setErrMsg(e instanceof Error ? e.message : 'Something went wrong');
     } finally {
@@ -155,10 +259,22 @@ function AccessRequestCard({ req, onDone }: { req: AccessRequest; onDone: () => 
 
   if (status !== 'idle') {
     return (
-      <div className="border border-frame bg-cream px-5 py-4">
+      <div className="border border-frame bg-cream px-5 py-4 space-y-2">
         <span className="text-[10px] uppercase tracking-widest text-muted" style={{ letterSpacing: '0.14em' }}>
           {status === 'approved' ? '✓ Invite sent' : 'Rejected'}
         </span>
+        {warnMsg && (
+          <div className="flex flex-col sm:flex-row sm:items-center gap-2">
+            <p className="text-[11px] text-amber-600 flex-1">{warnMsg}</p>
+            <button
+              onClick={onDone}
+              className={ACTION_CLASS}
+              style={{ letterSpacing: '0.1em' }}
+            >
+              Dismiss
+            </button>
+          </div>
+        )}
       </div>
     );
   }
@@ -218,22 +334,9 @@ function AccessRequestCard({ req, onDone }: { req: AccessRequest; onDone: () => 
         </div>
 
         <div className="flex flex-wrap items-center gap-3">
-          <div className="flex items-center gap-2">
-            <label className="text-[10px] uppercase tracking-widest text-muted" style={{ letterSpacing: '0.12em' }}>
-              Plan
-            </label>
-            <select
-              value={plan}
-              onChange={e => setPlan(e.target.value as FirmPlan)}
-              disabled={loading}
-              className="text-xs border border-frame bg-cream px-2 py-1.5 text-navy focus:outline-none focus:border-navy"
-            >
-              {PLAN_OPTIONS.map(([val, label]) => (
-                <option key={val} value={val}>{label}</option>
-              ))}
-            </select>
-          </div>
-
+          <p className="text-[10px] text-muted flex-1 min-w-[180px]" style={{ fontWeight: 300 }}>
+            The organization is billed per active seat once the first member adds a card.
+          </p>
           <div className="flex items-center gap-2 sm:ml-auto">
             <button
               onClick={() => act('reject')}
@@ -432,8 +535,10 @@ function UserRow({ user, onUpdated }: { user: UserInfo; onUpdated: () => void })
 // ─── Organization panel (expanded) ────────────────────────────────────────────
 
 function FirmPanel({ firm, onClose }: { firm: FirmInfo; onClose: () => void }) {
+  const domain = firm.domain;
+
   const [users,       setUsers]       = useState<UserInfo[]>([]);
-  const [usersLoad,   setUsersLoad]   = useState(true);
+  const [usersLoad,   setUsersLoad]   = useState(domain !== null);
   const [usersErr,    setUsersErr]    = useState('');
   const [firstName,   setFirstName]   = useState('');
   const [lastName,    setLastName]    = useState('');
@@ -443,9 +548,14 @@ function FirmPanel({ firm, onClose }: { firm: FirmInfo; onClose: () => void }) {
   const [inviteOk,    setInviteOk]    = useState('');
 
   const loadUsers = useCallback(() => {
+    if (domain === null) {
+      setUsers([]);
+      setUsersLoad(false);
+      return;
+    }
     setUsersLoad(true);
     setUsersErr('');
-    fetch(`/api/admin/users?domain=${encodeURIComponent(firm.domain)}`)
+    fetch(`/api/admin/users?domain=${encodeURIComponent(domain)}`)
       .then(async (r) => {
         if (!r.ok) throw new Error(await readError(r));
         return r.json() as Promise<{ users?: UserInfo[] }>;
@@ -453,13 +563,13 @@ function FirmPanel({ firm, onClose }: { firm: FirmInfo; onClose: () => void }) {
       .then(d => setUsers(d.users ?? []))
       .catch((e: unknown) => setUsersErr(e instanceof Error ? e.message : 'Failed to load members'))
       .finally(() => setUsersLoad(false));
-  }, [firm.domain]);
+  }, [domain]);
 
   useEffect(() => { loadUsers(); }, [loadUsers]);
 
   async function sendInvite(e: React.FormEvent) {
     e.preventDefault();
-    if (inviting) return;
+    if (inviting || domain === null) return;
     setInviting(true);
     setInviteErr('');
     setInviteOk('');
@@ -471,7 +581,7 @@ function FirmPanel({ firm, onClose }: { firm: FirmInfo; onClose: () => void }) {
           firstName:    firstName.trim(),
           lastName:     lastName.trim(),
           email:        inviteEmail.trim(),
-          organization: { domain: firm.domain, name: firm.name },
+          organization: { domain, name: firm.name },
         }),
       });
       if (!res.ok) throw new Error(await readError(res));
@@ -498,7 +608,10 @@ function FirmPanel({ firm, onClose }: { firm: FirmInfo; onClose: () => void }) {
         <div className="min-w-0">
           <p className="text-sm font-semibold text-navy truncate">{firm.name}</p>
           <p className="text-xs text-muted truncate">
-            {firm.domain} · {PLAN_LABELS[firm.plan]} · {seatSummaryLine(firm)}
+            {domain ?? '—'} · {seatSummaryLine(firm)}
+          </p>
+          <p className="text-xs truncate mt-0.5">
+            <BillingLine firm={firm} showEmail />
           </p>
         </div>
         <button
@@ -515,7 +628,11 @@ function FirmPanel({ firm, onClose }: { firm: FirmInfo; onClose: () => void }) {
           Members
         </p>
 
-        {usersLoad ? (
+        {domain === null ? (
+          <p className="text-xs text-muted">
+            This organization has no domain, so members cannot be listed or invited here.
+          </p>
+        ) : usersLoad ? (
           <div className="space-y-2">
             {[1, 2].map(i => (
               <div key={i} className="border border-frame bg-cream px-4 py-3">
@@ -545,52 +662,57 @@ function FirmPanel({ firm, onClose }: { firm: FirmInfo; onClose: () => void }) {
         )}
 
         {/* Invite member */}
-        <form onSubmit={sendInvite} className="pt-2 space-y-3">
-          <p className="text-[10px] uppercase tracking-widest text-muted" style={{ letterSpacing: '0.16em' }}>
-            Invite member
-          </p>
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-            <input
-              type="text"
-              value={firstName}
-              onChange={e => { setFirstName(e.target.value); setInviteOk(''); setInviteErr(''); }}
-              placeholder="First name"
-              maxLength={100}
-              disabled={inviting}
-              className={INPUT_CLASS}
-              aria-label="First name"
-            />
-            <input
-              type="text"
-              value={lastName}
-              onChange={e => { setLastName(e.target.value); setInviteOk(''); setInviteErr(''); }}
-              placeholder="Last name"
-              maxLength={100}
-              disabled={inviting}
-              className={INPUT_CLASS}
-              aria-label="Last name"
-            />
-            <input
-              type="email"
-              value={inviteEmail}
-              onChange={e => { setInviteEmail(e.target.value); setInviteOk(''); setInviteErr(''); }}
-              placeholder={`user@${firm.domain}`}
-              disabled={inviting}
-              className={INPUT_CLASS}
-              aria-label="Email"
-            />
-          </div>
-          <button
-            type="submit"
-            disabled={inviting || !firstName.trim() || !lastName.trim() || !inviteEmail.trim()}
-            className="text-[10px] uppercase tracking-widest px-4 py-2.5 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-            style={{ background: '#0B1F3B', color: '#C6A75E', letterSpacing: '0.14em' }}
-          >
-            {inviting ? 'Sending…' : 'Send invite'}
-          </button>
-          {inviteErr && <p className="text-[11px] text-red-600">{inviteErr}</p>}
-          {inviteOk  && <p className="text-[11px] text-green-700">{inviteOk}</p>}
-        </form>
+        {domain !== null && (
+          <form onSubmit={sendInvite} className="pt-2 space-y-3">
+            <p className="text-[10px] uppercase tracking-widest text-muted" style={{ letterSpacing: '0.16em' }}>
+              Invite member
+            </p>
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+              <input
+                type="text"
+                value={firstName}
+                onChange={e => { setFirstName(e.target.value); setInviteOk(''); setInviteErr(''); }}
+                placeholder="First name"
+                maxLength={100}
+                disabled={inviting}
+                className={INPUT_CLASS}
+                aria-label="First name"
+              />
+              <input
+                type="text"
+                value={lastName}
+                onChange={e => { setLastName(e.target.value); setInviteOk(''); setInviteErr(''); }}
+                placeholder="Last name"
+                maxLength={100}
+                disabled={inviting}
+                className={INPUT_CLASS}
+                aria-label="Last name"
+              />
+              <input
+                type="email"
+                value={inviteEmail}
+                onChange={e => { setInviteEmail(e.target.value); setInviteOk(''); setInviteErr(''); }}
+                placeholder={`user@${domain}`}
+                disabled={inviting}
+                className={INPUT_CLASS}
+                aria-label="Email"
+              />
+            </div>
+            <p className="text-[10px] text-muted" style={{ fontWeight: 300 }}>
+              Each accepted invite adds a billed seat to this organization.
+            </p>
+            <button
+              type="submit"
+              disabled={inviting || !firstName.trim() || !lastName.trim() || !inviteEmail.trim()}
+              className="text-[10px] uppercase tracking-widest px-4 py-2.5 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+              style={{ background: '#0B1F3B', color: '#C6A75E', letterSpacing: '0.14em' }}
+            >
+              {inviting ? 'Sending…' : 'Send invite'}
+            </button>
+            {inviteErr && <p className="text-[11px] text-red-600">{inviteErr}</p>}
+            {inviteOk  && <p className="text-[11px] text-green-700">{inviteOk}</p>}
+          </form>
+        )}
       </div>
     </div>
   );
@@ -599,21 +721,34 @@ function FirmPanel({ firm, onClose }: { firm: FirmInfo; onClose: () => void }) {
 // ─── Organization row ─────────────────────────────────────────────────────────
 
 function FirmRow({ firm, onUpdated }: { firm: FirmInfo; onUpdated: () => void }) {
-  const [expanded, setExpanded] = useState(false);
-  const [editing,  setEditing]  = useState(false);
-  const [plan,     setPlan]     = useState<FirmPlan>(firm.plan);
-  const [capInput, setCapInput] = useState(firm.seatLimit === null ? '' : String(firm.seatLimit));
-  const [loading,  setLoading]  = useState(false);
-  const [errMsg,   setErrMsg]   = useState('');
+  const [expanded,      setExpanded]      = useState(false);
+  const [editing,       setEditing]       = useState(false);
+  const [confirmRemove, setConfirmRemove] = useState(false);
+  const [capInput,      setCapInput]      = useState(firm.seatLimit === null ? '' : String(firm.seatLimit));
+  const [loading,       setLoading]       = useState(false);
+  const [errMsg,        setErrMsg]        = useState('');
+
+  // A background refresh must not leave stale values in the open editor.
+  useEffect(() => {
+    setCapInput(firm.seatLimit === null ? '' : String(firm.seatLimit));
+    setEditing(false);
+    setConfirmRemove(false);
+    setErrMsg('');
+  }, [firm.id, firm.name, firm.seatLimit]);
+
+  // The firms API is addressed by domain, so domain-less orgs are read-only here.
+  const domain    = firm.domain;
+  const canManage = domain !== null;
 
   async function save(seatLimit: number | null) {
+    if (domain === null) return;
     setLoading(true);
     setErrMsg('');
     try {
       const res = await fetch('/api/admin/firms', {
         method:  'POST',
         headers: { 'Content-Type': 'application/json' },
-        body:    JSON.stringify({ domain: firm.domain, name: firm.name, plan, seatLimit }),
+        body:    JSON.stringify({ domain, name: firm.name, seatLimit }),
       });
       if (!res.ok) throw new Error(await readError(res));
       setEditing(false);
@@ -637,16 +772,17 @@ function FirmRow({ firm, onUpdated }: { firm: FirmInfo; onUpdated: () => void })
   }
 
   async function remove() {
-    if (!confirm(`Remove ${firm.domain}? Members keep their accounts but lose the organization record.`)) return;
+    if (domain === null) return;
     setLoading(true);
     setErrMsg('');
     try {
       const res = await fetch('/api/admin/firms', {
         method:  'DELETE',
         headers: { 'Content-Type': 'application/json' },
-        body:    JSON.stringify({ domain: firm.domain }),
+        body:    JSON.stringify({ domain }),
       });
       if (!res.ok) throw new Error(await readError(res));
+      setConfirmRemove(false);
       onUpdated();
     } catch (e) {
       setErrMsg(e instanceof Error ? e.message : 'Something went wrong');
@@ -661,56 +797,60 @@ function FirmRow({ firm, onUpdated }: { firm: FirmInfo; onUpdated: () => void })
           <button onClick={() => setExpanded(v => !v)} className="flex-1 text-left min-w-0">
             <p className="text-xs text-navy font-medium truncate">{firm.name}</p>
             <p className="text-[10px] text-muted truncate">
-              {firm.domain} · {PLAN_LABELS[firm.plan]} · {seatSummaryLine(firm)}
-              {firm.seatPending > 0 ? ` · ${firm.seatPending} pending` : ''}
+              {domain ?? '—'} · {seatSummaryLine(firm)}
+            </p>
+            <p className="text-[10px] truncate mt-0.5">
+              <BillingLine firm={firm} />
             </p>
           </button>
 
           {editing ? (
-            <div className="flex flex-wrap items-center gap-2">
-              <select
-                value={plan}
-                onChange={e => setPlan(e.target.value as FirmPlan)}
-                disabled={loading}
-                className="text-xs border border-frame bg-white px-2 py-1 focus:outline-none focus:border-navy"
-                aria-label="Plan"
-              >
-                {PLAN_OPTIONS.map(([val, label]) => (
-                  <option key={val} value={val}>{label}</option>
-                ))}
-              </select>
-              <input
-                type="number"
-                min={1}
-                value={capInput}
-                onChange={e => setCapInput(e.target.value)}
-                placeholder="Seat cap (blank = unlimited)"
-                disabled={loading}
-                className="text-xs border border-frame bg-white px-2 py-1 w-44 focus:outline-none focus:border-navy"
-                aria-label="Seat cap"
-              />
-              <button
-                onClick={handleSave}
-                disabled={loading}
-                className="text-[10px] uppercase tracking-widest text-navy border border-navy px-2.5 py-1 transition-colors disabled:opacity-40"
-                style={{ letterSpacing: '0.1em' }}
-              >
-                {loading ? '…' : 'Save'}
-              </button>
-              <button
-                onClick={() => {
-                  setEditing(false);
-                  setPlan(firm.plan);
-                  setCapInput(firm.seatLimit === null ? '' : String(firm.seatLimit));
-                  setErrMsg('');
-                }}
-                className="text-[10px] text-muted hover:text-navy transition-colors"
-              >
-                Cancel
-              </button>
+            <div className="w-full sm:w-auto flex flex-col sm:flex-row sm:items-end gap-2 sm:shrink-0">
+              <div className="w-full sm:w-48">
+                <label
+                  className={LABEL_CLASS}
+                  style={{ letterSpacing: '0.12em' }}
+                  htmlFor={`seat-cap-${firm.id}`}
+                >
+                  Seat cap (optional)
+                </label>
+                <input
+                  id={`seat-cap-${firm.id}`}
+                  type="number"
+                  min={1}
+                  value={capInput}
+                  onChange={e => setCapInput(e.target.value)}
+                  placeholder="Unlimited"
+                  disabled={loading}
+                  className="w-full text-xs border border-frame bg-white px-2 py-1.5 focus:outline-none focus:border-navy"
+                />
+                <p className="text-[10px] text-muted mt-1 leading-relaxed" style={{ fontWeight: 300 }}>
+                  Blocks new invites above this number. Billing is per active seat regardless.
+                </p>
+              </div>
+              <div className="flex items-center gap-2 pb-0.5">
+                <button
+                  onClick={handleSave}
+                  disabled={loading}
+                  className="text-[10px] uppercase tracking-widest text-navy border border-navy px-2.5 py-1 transition-colors disabled:opacity-40"
+                  style={{ letterSpacing: '0.1em' }}
+                >
+                  {loading ? '…' : 'Save'}
+                </button>
+                <button
+                  onClick={() => {
+                    setEditing(false);
+                    setCapInput(firm.seatLimit === null ? '' : String(firm.seatLimit));
+                    setErrMsg('');
+                  }}
+                  className="text-[10px] text-muted hover:text-navy transition-colors"
+                >
+                  Cancel
+                </button>
+              </div>
             </div>
           ) : (
-            <div className="flex flex-wrap items-center gap-2 shrink-0">
+            <div className="flex flex-wrap items-center gap-2 sm:shrink-0">
               <button
                 onClick={() => setExpanded(v => !v)}
                 className={ACTION_CLASS}
@@ -719,23 +859,52 @@ function FirmRow({ firm, onUpdated }: { firm: FirmInfo; onUpdated: () => void })
                 {expanded ? 'Collapse' : 'Manage'}
               </button>
               <button
-                onClick={() => setEditing(true)}
+                onClick={() => { setConfirmRemove(false); setEditing(true); }}
+                disabled={!canManage}
+                title={canManage ? undefined : 'This organization has no domain and cannot be edited here.'}
                 className={ACTION_CLASS}
                 style={{ letterSpacing: '0.1em' }}
               >
-                Plan + cap
+                Save
               </button>
-              <button
-                onClick={remove}
-                disabled={loading}
-                className="text-[10px] uppercase tracking-widest text-muted hover:text-red-600 border border-frame hover:border-red-300 px-2.5 py-1 transition-colors disabled:opacity-40 shrink-0"
-                style={{ letterSpacing: '0.1em' }}
-              >
-                Remove
-              </button>
+              {confirmRemove ? (
+                <>
+                  <button
+                    onClick={remove}
+                    disabled={loading}
+                    className="text-[10px] uppercase tracking-widest text-red-600 border border-red-300 px-2.5 py-1 transition-colors disabled:opacity-40 shrink-0"
+                    style={{ letterSpacing: '0.1em' }}
+                  >
+                    {loading ? '…' : 'Confirm remove'}
+                  </button>
+                  <button
+                    onClick={() => setConfirmRemove(false)}
+                    disabled={loading}
+                    className="text-[10px] text-muted hover:text-navy transition-colors disabled:opacity-40"
+                  >
+                    Cancel
+                  </button>
+                </>
+              ) : (
+                <button
+                  onClick={() => setConfirmRemove(true)}
+                  disabled={loading || !canManage}
+                  title={canManage ? undefined : 'This organization has no domain and cannot be removed here.'}
+                  className={DANGER_CLASS}
+                  style={{ letterSpacing: '0.1em' }}
+                >
+                  Remove
+                </button>
+              )}
             </div>
           )}
         </div>
+
+        {confirmRemove && !editing && (
+          <p className="text-[10px] text-muted px-4 pb-3 leading-relaxed" style={{ fontWeight: 300 }}>
+            Members keep their accounts but lose the organization record for {domain ?? firm.name}.
+          </p>
+        )}
         {errMsg && <p className="text-[10px] text-red-600 px-4 pb-3">{errMsg}</p>}
       </div>
 
@@ -753,7 +922,6 @@ export default function AdminRequestsPage() {
   const [firmsErr,  setFirmsErr]  = useState('');
   const [newDomain, setNewDomain] = useState('');
   const [newName,   setNewName]   = useState('');
-  const [addPlan,   setAddPlan]   = useState<FirmPlan>('starter');
   const [addCap,    setAddCap]    = useState('');
   const [adding,    setAdding]    = useState(false);
   const [addErr,    setAddErr]    = useState('');
@@ -808,9 +976,9 @@ export default function AdminRequestsPage() {
   }, []);
 
   useEffect(() => {
-    loadFirms();
     loadRequests();
     loadSeatRequests();
+    loadFirms();
   }, [loadFirms, loadRequests, loadSeatRequests]);
 
   async function addFirm(e: React.FormEvent) {
@@ -837,7 +1005,6 @@ export default function AdminRequestsPage() {
         body:    JSON.stringify({
           domain: newDomain.trim(),
           name:   newName.trim(),
-          plan:   addPlan,
           seatLimit,
         }),
       });
@@ -870,7 +1037,7 @@ export default function AdminRequestsPage() {
               className="text-[10px] uppercase tracking-widest text-gold/80"
               style={{ letterSpacing: '0.18em' }}
             >
-              Organizations
+              Requests
             </span>
             <Link
               href="/admin/users"
@@ -885,115 +1052,7 @@ export default function AdminRequestsPage() {
 
       <main className="flex-1 max-w-4xl w-full mx-auto px-6 sm:px-10 py-10 space-y-14">
 
-        {/* ── Section 1: Organizations ── */}
-        <section>
-          <SectionHeader title="Organizations" />
-
-          <p className="text-[11px] text-muted mb-4 leading-relaxed" style={{ fontWeight: 300 }}>
-            Every organization is billed per active seat at its volume tier. A seat cap is optional —
-            leave it blank for unlimited.
-          </p>
-
-          {firmsLoad ? (
-            <div className="space-y-2">
-              {[1, 2].map(i => (
-                <div key={i} className="border border-frame bg-cream px-4 py-3">
-                  <div className="h-3.5 w-1/3 bg-frame rounded animate-pulse mb-1.5" />
-                  <div className="h-2.5 w-1/2 bg-frame rounded animate-pulse" />
-                </div>
-              ))}
-            </div>
-          ) : firmsErr ? (
-            <div className="border border-red-200 bg-red-50 px-4 py-3">
-              <p className="text-xs text-red-600">{firmsErr}</p>
-              <button
-                onClick={loadFirms}
-                className="mt-2 text-[10px] uppercase tracking-widest text-red-500 hover:text-red-700"
-                style={{ letterSpacing: '0.12em' }}
-              >
-                Retry
-              </button>
-            </div>
-          ) : firms.length === 0 ? (
-            <p className="text-sm text-muted mb-4">No organizations yet.</p>
-          ) : (
-            <div className="space-y-2 mb-6">
-              {firms.map(f => (
-                <FirmRow key={f.domain} firm={f} onUpdated={loadFirms} />
-              ))}
-            </div>
-          )}
-
-          {/* Add organization */}
-          <form onSubmit={addFirm} className="mt-4 space-y-3">
-            <p className="text-[10px] uppercase tracking-widest text-muted" style={{ letterSpacing: '0.16em' }}>
-              Add organization
-            </p>
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
-              <div>
-                <label className={LABEL_CLASS} style={{ letterSpacing: '0.14em' }}>Domain</label>
-                <input
-                  type="text"
-                  value={newDomain}
-                  onChange={e => { setNewDomain(e.target.value); setAddErr(''); }}
-                  placeholder="blackstone.com"
-                  disabled={adding}
-                  className={INPUT_CLASS}
-                />
-              </div>
-              <div>
-                <label className={LABEL_CLASS} style={{ letterSpacing: '0.14em' }}>Name</label>
-                <input
-                  type="text"
-                  value={newName}
-                  onChange={e => { setNewName(e.target.value); setAddErr(''); }}
-                  placeholder="Blackstone"
-                  maxLength={100}
-                  disabled={adding}
-                  className={INPUT_CLASS}
-                />
-              </div>
-              <div>
-                <label className={LABEL_CLASS} style={{ letterSpacing: '0.14em' }}>Plan</label>
-                <select
-                  value={addPlan}
-                  onChange={e => setAddPlan(e.target.value as FirmPlan)}
-                  disabled={adding}
-                  className="w-full border border-frame bg-cream px-3 py-2.5 text-xs text-ink focus:outline-none focus:border-navy"
-                >
-                  {PLAN_OPTIONS.map(([val, label]) => (
-                    <option key={val} value={val}>{label}</option>
-                  ))}
-                </select>
-              </div>
-              <div>
-                <label className={LABEL_CLASS} style={{ letterSpacing: '0.14em' }}>Seat cap (optional)</label>
-                <input
-                  type="number"
-                  min={1}
-                  value={addCap}
-                  onChange={e => { setAddCap(e.target.value); setAddErr(''); }}
-                  placeholder="Unlimited"
-                  disabled={adding}
-                  className={INPUT_CLASS}
-                />
-              </div>
-            </div>
-            <div className="flex flex-wrap items-center gap-4">
-              <button
-                type="submit"
-                disabled={!newDomain.trim() || !newName.trim() || adding}
-                className="text-[10px] uppercase tracking-widest px-4 py-2.5 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-                style={{ background: '#0B1F3B', color: '#C6A75E', letterSpacing: '0.14em' }}
-              >
-                {adding ? 'Adding…' : 'Add organization'}
-              </button>
-              {addErr && <p className="text-[11px] text-red-600">{addErr}</p>}
-            </div>
-          </form>
-        </section>
-
-        {/* ── Section 2: Pending Access Requests ── */}
+        {/* ── Section 1: Pending access requests ── */}
         <section>
           <SectionHeader title="Pending Requests" />
 
@@ -1028,7 +1087,7 @@ export default function AdminRequestsPage() {
           )}
         </section>
 
-        {/* ── Section 3: Seat Requests ── */}
+        {/* ── Section 2: Seat requests ── */}
         <section>
           <SectionHeader title="Seat Requests" />
 
@@ -1060,6 +1119,108 @@ export default function AdminRequestsPage() {
               ))}
             </div>
           )}
+        </section>
+
+        {/* ── Section 3: Organizations ── */}
+        <section>
+          <SectionHeader title="Organizations" />
+
+          <p className="text-[11px] text-muted mb-4 leading-relaxed" style={{ fontWeight: 300 }}>
+            Every organization is billed per active seat at its volume tier. The subscription is created
+            automatically when the first member adds a card during onboarding.
+          </p>
+
+          {firmsLoad ? (
+            <div className="space-y-2">
+              {[1, 2].map(i => (
+                <div key={i} className="border border-frame bg-cream px-4 py-3">
+                  <div className="h-3.5 w-1/3 bg-frame rounded animate-pulse mb-1.5" />
+                  <div className="h-2.5 w-1/2 bg-frame rounded animate-pulse" />
+                </div>
+              ))}
+            </div>
+          ) : firmsErr ? (
+            <div className="border border-red-200 bg-red-50 px-4 py-3">
+              <p className="text-xs text-red-600">{firmsErr}</p>
+              <button
+                onClick={loadFirms}
+                className="mt-2 text-[10px] uppercase tracking-widest text-red-500 hover:text-red-700"
+                style={{ letterSpacing: '0.12em' }}
+              >
+                Retry
+              </button>
+            </div>
+          ) : firms.length === 0 ? (
+            <p className="text-sm text-muted">No organizations yet.</p>
+          ) : (
+            <div className="space-y-2">
+              {firms.map(f => (
+                <FirmRow key={f.id} firm={f} onUpdated={loadFirms} />
+              ))}
+            </div>
+          )}
+        </section>
+
+        {/* ── Section 4: Add organization ── */}
+        <section>
+          <SectionHeader title="Add Organization" />
+
+          <form onSubmit={addFirm} className="space-y-3">
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+              <div>
+                <label className={LABEL_CLASS} style={{ letterSpacing: '0.14em' }} htmlFor="new-firm-domain">Domain</label>
+                <input
+                  id="new-firm-domain"
+                  type="text"
+                  value={newDomain}
+                  onChange={e => { setNewDomain(e.target.value); setAddErr(''); }}
+                  placeholder="blackstone.com"
+                  disabled={adding}
+                  className={INPUT_CLASS}
+                />
+              </div>
+              <div>
+                <label className={LABEL_CLASS} style={{ letterSpacing: '0.14em' }} htmlFor="new-firm-name">Name</label>
+                <input
+                  id="new-firm-name"
+                  type="text"
+                  value={newName}
+                  onChange={e => { setNewName(e.target.value); setAddErr(''); }}
+                  placeholder="Blackstone"
+                  maxLength={100}
+                  disabled={adding}
+                  className={INPUT_CLASS}
+                />
+              </div>
+              <div>
+                <label className={LABEL_CLASS} style={{ letterSpacing: '0.14em' }} htmlFor="new-firm-cap">Seat cap (optional)</label>
+                <input
+                  id="new-firm-cap"
+                  type="number"
+                  min={1}
+                  value={addCap}
+                  onChange={e => { setAddCap(e.target.value); setAddErr(''); }}
+                  placeholder="Unlimited"
+                  disabled={adding}
+                  className={INPUT_CLASS}
+                />
+                <p className="text-[10px] text-muted mt-1 leading-relaxed" style={{ fontWeight: 300 }}>
+                  Blocks new invites above this number. Billing is per active seat regardless.
+                </p>
+              </div>
+            </div>
+            <div className="flex flex-wrap items-center gap-4">
+              <button
+                type="submit"
+                disabled={!newDomain.trim() || !newName.trim() || adding}
+                className="text-[10px] uppercase tracking-widest px-4 py-2.5 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                style={{ background: '#0B1F3B', color: '#C6A75E', letterSpacing: '0.14em' }}
+              >
+                {adding ? 'Adding…' : 'Add organization'}
+              </button>
+              {addErr && <p className="text-[11px] text-red-600">{addErr}</p>}
+            </div>
+          </form>
         </section>
 
       </main>

@@ -1,19 +1,39 @@
 import { NextRequest } from 'next/server';
 import { adminGuard } from '../../../../lib/auth';
 import { seatUnitPriceCents, monthlySeatTotalCents } from '../../../../lib/pricing';
-import { syncOrgSeatQuantity } from '../../../../lib/orgBilling';
+import { syncOrgSeatQuantity, getOrgBillingRow } from '../../../../lib/orgBilling';
 import {
   listFirms,
   upsertFirm,
   deleteFirm,
   listUsersForFirm,
   getFirm,
-  type FirmPlan,
 } from '../../../../lib/firmStore';
 
-const VALID_PLANS = new Set<FirmPlan>(['starter', 'growth', 'enterprise']);
+// What the admin page shows about an organization's auto-billing. Mirrors
+// organization_billing (service-role only), never Stripe directly.
+interface FirmBillingView {
+  /** Card on file and a Stripe subscription created at onboarding. */
+  complete:           boolean;
+  /** Stripe subscription status mirror, or null before one exists. */
+  subscriptionStatus: string | null;
+  /** Seat quantity last pushed to Stripe, or null if never synced. */
+  seatQuantitySynced: number | null;
+  billingEmail:       string | null;
+}
 
-// GET — every organization with its seat usage and monthly seat spend.
+async function billingViewFor(organizationId: string): Promise<FirmBillingView> {
+  const row = await getOrgBillingRow(organizationId);
+  return {
+    complete:           row?.billing_complete === true,
+    subscriptionStatus: row?.subscription_status ?? null,
+    seatQuantitySynced: row?.seat_quantity_synced ?? null,
+    billingEmail:       row?.billing_email ?? null,
+  };
+}
+
+// GET — every organization with its seat usage, monthly seat spend and
+// auto-billing state.
 export async function GET(request: NextRequest): Promise<Response> {
   const err = await adminGuard(request);
   if (err) return err;
@@ -23,7 +43,10 @@ export async function GET(request: NextRequest): Promise<Response> {
 
     const enriched = await Promise.all(
       firms.map(async (firm) => {
-        const members     = await listUsersForFirm(firm.domain);
+        const [members, billing] = await Promise.all([
+          listUsersForFirm(firm.domain),
+          billingViewFor(firm.id),
+        ]);
         const seatUsed    = members.filter(m => m.status === 'active').length;
         const seatPending = members.filter(m => m.status === 'pending').length;
         return {
@@ -33,6 +56,7 @@ export async function GET(request: NextRequest): Promise<Response> {
           seatLimit:             firm.seatLimit,   // null = unlimited
           seatUnitPriceCents:    seatUnitPriceCents(seatUsed),
           monthlySeatTotalCents: monthlySeatTotalCents(seatUsed),
+          billing,
         };
       }),
     );
@@ -44,7 +68,7 @@ export async function GET(request: NextRequest): Promise<Response> {
   }
 }
 
-// POST { domain, name, plan?, seatLimit? } — create or update an organization.
+// POST { domain, name, seatLimit? } — create or update an organization.
 // seatLimit is an OPTIONAL platform-admin cap: null clears it (unlimited).
 // Omitting the key entirely leaves any existing cap unchanged.
 export async function POST(request: NextRequest): Promise<Response> {
@@ -59,7 +83,6 @@ export async function POST(request: NextRequest): Promise<Response> {
   const b      = (body ?? {}) as Record<string, unknown>;
   const domain = typeof b.domain === 'string' ? b.domain.trim().toLowerCase() : '';
   const name   = typeof b.name   === 'string' ? b.name.trim()                 : '';
-  const plan   = typeof b.plan   === 'string' ? b.plan                        : 'starter';
 
   if (!domain || domain.length < 3 || !domain.includes('.')) {
     return Response.json(
@@ -72,9 +95,6 @@ export async function POST(request: NextRequest): Promise<Response> {
       { error: 'organization_name_required', message: 'Organization name is required.' },
       { status: 400 },
     );
-  }
-  if (!VALID_PLANS.has(plan as FirmPlan)) {
-    return Response.json({ error: 'invalid_plan' }, { status: 400 });
   }
 
   // Distinguish "not provided" (leave as-is) from null / '' (clear the cap).
@@ -101,7 +121,6 @@ export async function POST(request: NextRequest): Promise<Response> {
   try {
     await upsertFirm(domain, {
       name,
-      plan:   plan as FirmPlan,
       status: 'active',
       ...(seatLimit !== undefined ? { seatLimit } : {}),
     });
