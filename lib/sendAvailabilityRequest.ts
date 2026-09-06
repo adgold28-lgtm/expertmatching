@@ -12,6 +12,7 @@ import { Resend } from 'resend';
 import type { IcsEvent } from './generateIcs';
 import { generateIcsBuffer } from './generateIcs';
 import { buildOutreachFooter } from './outreachFooter';
+import { getFromAddress } from './mailFrom';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -160,8 +161,7 @@ export async function sendInviteEmail(
     return;
   }
 
-  const from = process.env.OUTREACH_FROM_EMAIL;
-  if (!from) throw new Error('[sendInviteEmail] OUTREACH_FROM_EMAIL not configured');
+  const from = getFromAddress();
 
   const firstName = (inviteeFirstName ?? '').trim() || (email.split('@')[0] ?? email);
 
@@ -250,8 +250,7 @@ export async function sendAvailabilityRequest(params: AvailabilityRequestParams)
     return;
   }
 
-  const from = process.env.OUTREACH_FROM_EMAIL;
-  if (!from) throw new Error('[sendAvailabilityRequest] OUTREACH_FROM_EMAIL not configured');
+  const from = getFromAddress();
 
   const resend  = getResend();
   const subject = `Scheduling Request — ${params.projectName}`;
@@ -293,8 +292,7 @@ export async function sendConfirmationEmail(
     return;
   }
 
-  const from = process.env.OUTREACH_FROM_EMAIL;
-  if (!from) throw new Error('[sendConfirmationEmail] OUTREACH_FROM_EMAIL not configured');
+  const from = getFromAddress();
 
   const resend = getResend();
 

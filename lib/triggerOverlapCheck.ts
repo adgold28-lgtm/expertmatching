@@ -14,6 +14,7 @@ import { generateIcs }          from './generateIcs';
 import { sendConfirmationEmail } from './sendAvailabilityRequest';
 import type { AvailabilitySlot } from '../types';
 import { randomBytes }          from 'crypto';
+import { getFromAddress, bareAddress } from './mailFrom';
 
 // ─── Timezone extraction ──────────────────────────────────────────────────────
 
@@ -186,9 +187,7 @@ export async function triggerOverlapCheck(
             project.clientEmail,
           ].filter((e): e is string => typeof e === 'string' && e.trim().length > 0);
 
-          const organizer = process.env.OUTREACH_FROM_EMAIL?.match(/<(.+)>/)?.[1]
-            ?? process.env.OUTREACH_FROM_EMAIL
-            ?? 'asher@expertmatch.fit';
+          const organizer = bareAddress(getFromAddress());
 
           // ── IDENTITY REVEAL BOUNDARY ──
           // This runs when the expert reaches 'scheduled', which is exactly the

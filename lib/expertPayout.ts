@@ -33,6 +33,7 @@ import {
 } from './stripeConnect';
 import { generateAvailabilityToken } from './availabilityToken';
 import { expertPayoutDollars, formatUsdFromCents } from './pricing';
+import { getFromAddress } from './mailFrom';
 
 // ─── Expert payout email ──────────────────────────────────────────────────────
 
@@ -46,8 +47,8 @@ export async function sendPayoutOnboardingEmail(
   if (process.env.DISABLE_EMAILS === 'true') return;
 
   const resendKey = process.env.RESEND_API_KEY;
-  const fromAddr  = process.env.OUTREACH_FROM_EMAIL;
-  if (!resendKey || !fromAddr) return;
+  const fromAddr  = getFromAddress();
+  if (!resendKey) return;
 
   const resend = new Resend(resendKey);
   // Cents in, formatted dollars out — a 70% split is rarely a whole dollar.

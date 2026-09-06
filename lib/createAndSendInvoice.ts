@@ -26,6 +26,7 @@ import { Resend } from 'resend';
 import { getStripe } from './stripe';
 import { getProject, updateExpertStatus, updateProjectFields } from './projectStore';
 import { chargeSavedCard } from './chargeSavedCard';
+import { getFromAddress } from './mailFrom';
 
 // ─── Email HTML/text builders (shared with complete route) ────────────────────
 
@@ -203,8 +204,8 @@ async function sendClientEmail(params: SendEmailParams): Promise<void> {
   if (process.env.DISABLE_EMAILS === 'true') return;
 
   const resendKey = process.env.RESEND_API_KEY;
-  const fromAddr  = process.env.OUTREACH_FROM_EMAIL;
-  if (!resendKey || !fromAddr || !params.to) return;
+  const fromAddr  = getFromAddress();
+  if (!resendKey || !params.to) return;
 
   const resend = new Resend(resendKey);
   await resend.emails.send({

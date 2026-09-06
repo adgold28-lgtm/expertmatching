@@ -6,6 +6,7 @@ import { getUpstashClient } from '../../../lib/upstashRedis';
 import { isApprovedDomain, upsertFirm } from '../../../lib/firmStore';
 import { provisionAccountInvite, splitFullName } from '../../../lib/accountProvisioning';
 import type { FirmTypeValue, FirmSizeValue } from '../../../lib/supabase/database.types';
+import { getFromAddress } from '../../../lib/mailFrom';
 
 interface AccessRequest {
   name:        string;
@@ -200,13 +201,13 @@ export async function POST(request: NextRequest) {
     // Storage failure must not fail the request — the admin email below still lands.
   }
 
-  // Notify admin — non-blocking
+  // Notify admin. Awaited: on Vercel a floating promise can be cut off when
+  // the response returns, and a failed notification must at least be logged.
   if (process.env.DISABLE_EMAILS !== 'true') {
     const resend = getResend();
-    const from   = process.env.OUTREACH_FROM_EMAIL;
-    if (resend && from) {
-      resend.emails.send({
-        from,
+    if (resend) {
+      const { error } = await resend.emails.send({
+        from:    getFromAddress(),
         to:      ADMIN_NOTIFY_EMAILS,
         subject: `New access request: ${record.name} — ${record.firm}`,
         html: `<p><strong>Name:</strong> ${escapeHtml(record.name)}</p>
@@ -215,7 +216,12 @@ export async function POST(request: NextRequest) {
 <p><strong>Research focus:</strong></p>
 <p style="white-space:pre-wrap;">${escapeHtml(record.useCase)}</p>`,
         text: `Name: ${record.name}\nFirm: ${record.firm}\nEmail: ${record.email}\n\nResearch focus:\n${record.useCase}`,
-      }).catch(() => {});
+      }).catch((err: unknown) => ({ error: err instanceof Error ? err : new Error('send_failed') }));
+      if (error) {
+        console.error('[request-access] admin notification failed', {
+          reason: ('message' in error ? String(error.message) : 'unknown').slice(0, 120),
+        });
+      }
     }
   }
 

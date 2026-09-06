@@ -29,6 +29,7 @@ import type {
   FirmSizeValue,
 } from './supabase/database.types';
 import { Resend } from 'resend';
+import { getFromAddress } from './mailFrom';
 
 // ─── Types ─────────────────────────────────────────────────────────────────────
 
@@ -747,8 +748,8 @@ export async function sendSeatLimitNotification(params: SeatLimitNotificationPar
     if (process.env.DISABLE_EMAILS === 'true') return;
 
     const adminEmail = process.env.ADMIN_NOTIFICATION_EMAIL;
-    const from       = process.env.OUTREACH_FROM_EMAIL;
-    if (!adminEmail || !from) return;
+    const from       = getFromAddress();
+    if (!adminEmail) return;
 
     const resend = getAdminResend();
     if (!resend) return;

@@ -28,6 +28,7 @@ import { Resend } from 'resend';
 import type { Expert } from '../types';
 import { openai } from './openai';
 import { buildOutreachFooter } from './outreachFooter';
+import { getFromAddress } from './mailFrom';
 
 export type EmailStep = 'email1' | 'email2' | 'email3';
 
@@ -50,11 +51,6 @@ function getResend(): Resend {
   return _resend;
 }
 
-function getFromAddress(): string {
-  const from = process.env.OUTREACH_FROM_EMAIL;
-  if (!from) throw new Error('[emailSequence] OUTREACH_FROM_EMAIL not configured');
-  return from;
-}
 
 // ─── QStash scheduling ────────────────────────────────────────────────────────
 
