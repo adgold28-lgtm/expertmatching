@@ -8,6 +8,7 @@
 //
 // Required env vars (production):
 //   QSTASH_TOKEN                  — publish the job
+//   QSTASH_URL                    — the account's regional QStash endpoint
 //   QSTASH_CURRENT_SIGNING_KEY / QSTASH_NEXT_SIGNING_KEY — verify it at the worker
 //   NEXT_PUBLIC_BASE_URL or NEXT_PUBLIC_APP_URL — where QStash calls back
 // Without QSTASH_TOKEN (local dev) the caller runs the job in-process instead.
@@ -49,8 +50,13 @@ export async function publishSourcingJob(job: SourcingJob): Promise<void> {
     ?? 'https://expertmatch.fit';
   const endpoint = `${baseUrl}/api/jobs/source-experts`;
 
+  // QStash accounts are region-pinned: the global host rejects a token from
+  // another region (404 "user not found in this region"), so publish through
+  // the account's own endpoint from QSTASH_URL and only fall back to global.
+  const qstashHost = (process.env.QSTASH_URL ?? 'https://qstash.upstash.io').replace(/\/+$/, '');
+
   // No delay — sourcing should start immediately.
-  const res = await fetch('https://qstash.upstash.io/v2/publish/' + encodeURIComponent(endpoint), {
+  const res = await fetch(`${qstashHost}/v2/publish/` + encodeURIComponent(endpoint), {
     method:  'POST',
     headers: {
       'Authorization': `Bearer ${token}`,
