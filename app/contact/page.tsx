@@ -47,7 +47,7 @@ export default function ContactPage() {
                 Email
               </p>
               <p className="font-display text-navy" style={{ fontSize: '1.25rem', fontWeight: 500 }}>
-                [CONFIRM: contact email]
+                ashergoldsteinbusiness@gmail.com
               </p>
               <p className="text-[13px] text-muted leading-relaxed mt-2" style={{ fontWeight: 300 }}>
                 Sales questions, billing questions, privacy and data requests, and anything an expert
@@ -60,7 +60,7 @@ export default function ContactPage() {
                 Post
               </p>
               <p className="text-[14px] text-ink leading-relaxed" style={{ fontWeight: 400 }}>
-                [CONFIRM: postal address — same value as OUTREACH_POSTAL_ADDRESS]
+                4502 Mayflower Hill, Waterville, ME 04901
               </p>
               <p className="text-[13px] text-muted leading-relaxed mt-2" style={{ fontWeight: 300 }}>
                 This is the address that appears at the bottom of every email we send.

@@ -154,13 +154,13 @@ export default function TermsPage() {
               have on file automatically.</strong> You do not receive an invoice to approve first.
               You must keep a valid payment method on your account; if a charge fails we may pause
               your account until it is settled. If you think a charge is wrong, tell us within{' '}
-              [CONFIRM: billing dispute window — 30 days is typical] and we will review the call
+              30 days and we will review the call
               record with you.
             </p>
             <p>
-              Amounts are in US dollars and exclusive of any taxes that apply to you.
-              [CONFIRM: sales-tax / VAT treatment — whether ExpertMatch collects tax or the client
-              self-assesses.]
+              Amounts are in US dollars and exclusive of any taxes that apply to you. Where we are
+              required to collect sales tax or VAT we will add it to the charge; otherwise you are
+              responsible for any tax due on your side.
             </p>
           </Section>
 
@@ -184,8 +184,8 @@ export default function TermsPage() {
               contact information. Identity is revealed to both sides once a call is on the calendar.
             </p>
             <p>
-              While your account is open, and for [CONFIRM: circumvention period — 12 months is the
-              expert-network norm] afterwards, you agree not to:
+              While your account is open, and for 12 months
+              afterwards, you agree not to:
             </p>
             <ul className="list-disc pl-5 space-y-1.5">
               <li>contact an expert we introduced outside the platform, or arrange to;</li>
@@ -242,8 +242,8 @@ export default function TermsPage() {
               </li>
             </ul>
             <p>
-              Do not record a call without the express consent of everyone on it.
-              [CONFIRM: whether ExpertMatch will offer recording at all, and under what consent flow.]
+              ExpertMatch does not record calls and does not offer recording. Do not record a call
+              yourself without the express consent of everyone on it.
             </p>
           </Section>
 
@@ -296,8 +296,7 @@ export default function TermsPage() {
             </p>
             <p>
               Our total liability for any claim relating to the service is capped at the amount you
-              paid ExpertMatch in the [CONFIRM: liability cap window — 12 months preceding the claim
-              is standard] before the event giving rise to it.
+              paid ExpertMatch in the 12 months before the event giving rise to it.
             </p>
             <p>
               Nothing here limits liability that cannot be limited by law, including for fraud.
@@ -320,10 +319,6 @@ export default function TermsPage() {
               <strong className="font-medium text-ink">[Governing law: State]</strong>, and both
               parties consent to that jurisdiction.
             </p>
-            <p>
-              [CONFIRM: arbitration — whether disputes go to binding arbitration instead of court,
-              and if so under which rules and in which city.]
-            </p>
           </Section>
 
           <Section n="14" title="Changes to these terms">
@@ -338,9 +333,8 @@ export default function TermsPage() {
           <Section n="15" title="Contact">
             <p>
               Questions about these terms go to{' '}
-              <strong className="font-medium text-ink">[CONFIRM: contact email]</strong>, or by post
-              to <strong className="font-medium text-ink">[CONFIRM: postal address — same value as
-              OUTREACH_POSTAL_ADDRESS]</strong>.
+              <strong className="font-medium text-ink">ashergoldsteinbusiness@gmail.com</strong>, or by post
+              to <strong className="font-medium text-ink">4502 Mayflower Hill, Waterville, ME 04901</strong>.
             </p>
             <p>
               How we handle personal data is described in our{' '}

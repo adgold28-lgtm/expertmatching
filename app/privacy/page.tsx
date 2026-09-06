@@ -11,19 +11,19 @@ import MarketingFooter from '../../components/MarketingFooter';
 //
 // Verified vendor map — the founder should confirm the public naming:
 //
-//   [CONFIRM: contact-discovery vendors are named generically as "professional
+//   [DECIDED 2026-09-06: contact-discovery vendors are named generically as "professional
 //    contact data providers" in section 05. The actual vendors in the code are
 //    Hunter.io (lib/contactProviders/hunter.ts) and Snov.io
 //    (lib/contactProviders/snov.ts). Some jurisdictions (and most enterprise
 //    DPAs) expect named subprocessors — decide whether to list them by name
 //    here or in a separate subprocessor page.]
 //
-//   [CONFIRM: web search and page-retrieval vendors are likewise named
+//   [DECIDED 2026-09-06: web search and page-retrieval vendors are likewise named
 //    generically as "web search and retrieval providers". The actual vendors
 //    are Exa (lib/searchProviders/exa.ts), Tavily (lib/searchProviders/tavily.ts)
 //    and ScrapingBee (lib/searchProviders/scrapingbee.ts).]
 //
-//   [CONFIRM: whether to publish a standalone subprocessor list with a
+//   [DECIDED 2026-09-06: no standalone subprocessor list yet — revisit when a client's IT asks; a
 //    change-notification commitment — PE and law-firm IT diligence usually
 //    asks for one.]
 
@@ -302,8 +302,7 @@ export default function PrivacyPage() {
             <ul className="list-disc pl-5 space-y-1.5">
               <li>
                 <strong className="font-medium text-ink">Account and organization records</strong> — for as
-                long as the account is open, then [CONFIRM: retention after account closure — 12 months
-                is a common default] before deletion.
+                long as the account is open, then 12 months before deletion.
               </li>
               <li>
                 <strong className="font-medium text-ink">Briefs, projects, and messages</strong> — for the
@@ -317,8 +316,8 @@ export default function PrivacyPage() {
               <li>
                 <strong className="font-medium text-ink">Expert records</strong> — kept while the
                 engagement is live and afterwards as part of the call and payment record.
-                [CONFIRM: retention for expert candidates who never replied — deleting these after a
-                fixed window, e.g. 24 months, is the defensible choice.]
+                Candidates we contacted who never replied are deleted 24 months after the last
+                message.
               </li>
               <li>
                 <strong className="font-medium text-ink">Opt-out list</strong> — kept indefinitely. This is
@@ -342,8 +341,6 @@ export default function PrivacyPage() {
             <p>
               We do not currently hold a SOC 2 report or any other third-party security
               certification, and we will not claim one until we do.
-              [CONFIRM: whether to state a target date for SOC 2, given that PE and law-firm IT
-              diligence asks for it early.]
             </p>
           </Section>
 
@@ -372,8 +369,8 @@ export default function PrivacyPage() {
             </p>
             <p>
               Send the request to{' '}
-              <strong className="font-medium text-ink">[CONFIRM: contact email]</strong>. We will
-              respond within [CONFIRM: response window — 30 days meets both GDPR and CCPA]. We may
+              <strong className="font-medium text-ink">ashergoldsteinbusiness@gmail.com</strong>. We will
+              respond within 30 days. We may
               need to verify who you are first, particularly for a deletion request.
             </p>
             <p>
@@ -395,9 +392,7 @@ export default function PrivacyPage() {
             <p>
               ExpertMatch and the companies in section 05 are based in the United States, and data is
               processed there. If you are in the UK or EU, your data will be transferred to the US.
-              [CONFIRM: transfer mechanism for UK/EU clients and experts — standard contractual
-              clauses with each processor is the usual answer; worth settling before selling into
-              London.]
+              Transfers from the UK or EU rely on standard contractual clauses with each processor.
             </p>
           </Section>
 
@@ -415,9 +410,8 @@ export default function PrivacyPage() {
             </p>
             <p>
               Privacy questions, rights requests, and complaints go to{' '}
-              <strong className="font-medium text-ink">[CONFIRM: contact email]</strong>, or by post to{' '}
-              <strong className="font-medium text-ink">[CONFIRM: postal address — same value as
-              OUTREACH_POSTAL_ADDRESS]</strong>.
+              <strong className="font-medium text-ink">ashergoldsteinbusiness@gmail.com</strong>, or by post to{' '}
+              <strong className="font-medium text-ink">4502 Mayflower Hill, Waterville, ME 04901</strong>.
             </p>
           </Section>
 
