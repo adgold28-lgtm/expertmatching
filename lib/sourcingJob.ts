@@ -50,10 +50,11 @@ export async function publishSourcingJob(job: SourcingJob): Promise<void> {
     ?? 'https://expertmatch.fit';
   const endpoint = `${baseUrl}/api/jobs/source-experts`;
 
-  // QStash accounts are region-pinned: the global host rejects a token from
-  // another region (404 "user not found in this region"), so publish through
-  // the account's own endpoint from QSTASH_URL and only fall back to global.
-  const qstashHost = (process.env.QSTASH_URL ?? 'https://qstash.upstash.io').replace(/\/+$/, '');
+  // QStash accounts are region-pinned: the global host now answers 404
+  // "user not found in this region" for this account's token, so publish
+  // through the account's own endpoint. QSTASH_URL wins; the fallback is the
+  // region this account lives in, which is what QSTASH_URL holds locally.
+  const qstashHost = (process.env.QSTASH_URL ?? 'https://qstash-us-east-1.upstash.io').replace(/\/+$/, '');
 
   // The destination goes in the path verbatim — QStash rejects a
   // percent-encoded URL ("endpoint has invalid scheme").
