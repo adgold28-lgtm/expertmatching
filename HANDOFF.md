@@ -11,7 +11,9 @@ Open Claude Code in `/Users/ashergoldstein/Projects/expertmatch` and say:
 
 Working pattern that has worked: Fable plans and writes agent briefs; Opus subagents (general-purpose, model `opus`) build in parallel when files are disjoint (tell each agent exactly which paths it may not touch, and NOT to commit); the lead commits by path, verifies, pushes. Verify with `npx tsc --noEmit`, `npm run build:local` (real `next build` with Google Fonts mocked — tsc alone missed a Next route-export error once), the scripts below, and the two production E2E scripts.
 
-**Founder actions still open:** 24 `[CONFIRM: …]` placeholders in `app/terms/page.tsx`, `app/privacy/page.tsx`, `app/contact/page.tsx` (`grep -rn CONFIRM app/terms app/privacy app/contact`) — legal entity, governing law, contact email, postal address, retention windows. Live Stripe keys + live webhook before real money.
+**Founder actions still open:** (1) form a legal entity (Delaware C corp via Stripe Atlas if YC is the plan) and then fill the last two legal placeholders — `app/terms/page.tsx` line ~88 (entity name) and the two `[Governing law: State]` tokens in section 13 (`grep -rn 'CONFIRM\|Governing law' app/terms`); every other placeholder was filled on 2026-09-06 (contact ashergoldsteinbusiness@gmail.com, postal 4502 Mayflower Hill, Waterville, ME 04901, 30-day disputes, 12-month non-circumvention, no recording, 12-month liability cap, courts not arbitration, 12/24-month retention, SCCs). (2) Live Stripe keys + live webhook before real money. (3) A Claude Code "suggested task" chip about adding `followup_sent` to the Outreach grid is STALE — it was done in part 3; dismiss it.
+
+**Plain-English snapshot for outsiders / YC prep:** `docs/STATE_OF_THE_UNION.md` (2026-09-06).
 
 ## Matchy Phase 1 (live 2026-09-06)
 
