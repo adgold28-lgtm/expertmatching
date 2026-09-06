@@ -48,7 +48,7 @@ const ID_RE        = /^[a-f0-9]{24}$/;
 const EXPERT_ID_RE = /^[a-zA-Z0-9\-_]+$/;
 
 /** Longest message a client may send in one go. */
-export const MAX_MESSAGE_CHARS = 4000;
+const MAX_MESSAGE_CHARS = 4000; // not exported: Next rejects non-handler exports from route files
 
 // ─── Shared context ───────────────────────────────────────────────────────────
 

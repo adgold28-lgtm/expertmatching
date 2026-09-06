@@ -6,7 +6,8 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "security": "bash scripts/security-scan.sh"
+    "security": "bash scripts/security-scan.sh",
+    "build:local": "NEXT_FONT_GOOGLE_MOCKED_RESPONSES=$PWD/scripts/font-mocks.js next build"
   },
   "dependencies": {
     "@ai-sdk/anthropic": "^3.0.75",
