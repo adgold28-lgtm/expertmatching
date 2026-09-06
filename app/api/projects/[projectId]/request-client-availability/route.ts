@@ -116,6 +116,7 @@ export async function POST(
   try {
     await sendAvailabilityRequest({
       toEmail:          clientEmail,
+      recipient:        'client',     // no opt-out footer for the paying client
       expertName:       clientName,   // reused for greeting
       projectName:      project.name,
       availabilityLink: link,

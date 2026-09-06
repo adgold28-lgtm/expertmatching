@@ -576,15 +576,11 @@ function sourcingView(project: Project | null): SourcingView {
   return project.sourcingStatus === 'failed' ? 'failed' : 'idle';
 }
 
+// No machinery narration and no capability claims we can't back — one honest
+// line, rotated with a second so the loader still reads as alive.
 const SOURCING_MESSAGES = [
-  'Scanning 1B+ professional profiles...',
-  'Cross-referencing industry experience...',
-  "Surfacing the people who've actually done this...",
-  'Filtering out the LinkedIn influencers...',
-  'Ranking by relevance, not just keywords...',
-  'Almost there — quality over speed...',
-  'Checking seniority and recency...',
-  'Building your shortlist...',
+  "Finding people who've actually done this — usually a few minutes.",
+  'Still working — we only surface people with direct, verifiable experience.',
 ];
 
 function RotatingLoadingMessage() {

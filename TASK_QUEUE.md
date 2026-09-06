@@ -2,7 +2,18 @@
 Last updated: 2026-09-06
 
 ## NOW (blocking or broken)
-- [ ] Merge per-seat billing branch `origin/claude/multi-account-rls-billing-imi3la`
+- [x] Per-seat billing branch merged to main + new pricing — DONE 2026-09-06
+      (\$250/\$200/talk-to-us seats, 50% call take, 15-min minimum, client-rate
+      billing; smoke 16/16; deployed e4817b1). Stripe seat Price v2 is created
+      lazily on first org billing setup (test mode). Migration 20260902 was
+      already applied in prod.
+- [ ] Terms of Service + Privacy Policy + Contact pages and footer links
+      (docs/COPY_AUDIT.md item 10). Needed before any client signs up — the site
+      takes cards and stores deal-adjacent research with no policy anywhere.
+- [ ] Copy audit rewrites (docs/COPY_AUDIT.md — 102 REWRITE rows). Workspace
+      vocabulary (Brief→Source→Outreach→Screen→Deliver, "shortlist", Email 1/2/3)
+      is replaced by Matchy Phase 1; do the marketing-page rows before then.
+- [x] Merge per-seat billing branch `origin/claude/multi-account-rls-billing-imi3la`
       into main BEFORE Matchy Phase 1 (both touch billing code). Diverged
       2026-09-01 (57 files); dry-run merge conflicts in HANDOFF.md,
       TASK_QUEUE.md, collaborators route, request-access route,

@@ -33,7 +33,7 @@ function checkKillSwitch(): Response | null {
       {
         error:   'service_unavailable',
         reason:  'projects_disabled',
-        message: 'Projects are disabled. Set PROJECTS_ENABLED=false to disable.',
+        message: 'Projects are temporarily unavailable. Please try again shortly.',
       },
       { status: 503 },
     );

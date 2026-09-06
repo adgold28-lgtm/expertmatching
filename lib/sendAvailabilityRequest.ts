@@ -16,6 +16,9 @@ import { buildOutreachFooter } from './outreachFooter';
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 export interface AvailabilityRequestParams {
+  /** Who receives it. 'client' skips the CAN-SPAM opt-out footer — a paying
+   *  client must never be able to add themselves to the do-not-contact list. */
+  recipient?:       'expert' | 'client';
   toEmail:          string;   // expert's email address — never logged
   expertName:       string;   // used in greeting — never logged
   projectName:      string;   // used in subject — never logged
@@ -254,8 +257,11 @@ export async function sendAvailabilityRequest(params: AvailabilityRequestParams)
   const subject = `Scheduling Request — ${params.projectName}`;
 
   // CAN-SPAM footer: postal address (when configured) plus a per-recipient
-  // opt-out link — this email reaches the expert.
-  const footer = buildOutreachFooter(params.toEmail);
+  // opt-out link — only when this email reaches an expert. A client copy gets
+  // no opt-out link (it would enrol them in the global do-not-contact list).
+  const footer = params.recipient === 'client'
+    ? { html: '', text: '' }
+    : buildOutreachFooter(params.toEmail);
 
   const { error } = await resend.emails.send({
     from,

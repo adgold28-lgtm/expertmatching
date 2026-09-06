@@ -34,6 +34,19 @@ const PUBLIC_PREFIXES = [
 // Paths where authenticated + fully-onboarded users get bounced to the app.
 const APP_REDIRECT_PATHS = new Set(['/', '/login']);
 
+// Internal tools: platform admins only. Non-admins get a 404 (not a 403) so the
+// routes' existence is not confirmed, and every response is marked noindex.
+const ADMIN_ONLY_PREFIXES = [
+  '/demo-readiness',
+  '/rank-experts',
+  '/screen-expert',
+  '/api/rank-experts',
+  '/api/demo-readiness',
+  '/api/screen-expert',
+];
+const isAdminOnly = (pathname: string): boolean =>
+  ADMIN_ONLY_PREFIXES.some(p => pathname === p || pathname.startsWith(p + '/'));
+
 export async function middleware(request: NextRequest): Promise<NextResponse> {
   const { pathname } = request.nextUrl;
 
@@ -52,11 +65,23 @@ export async function middleware(request: NextRequest): Promise<NextResponse> {
     const meta = user.app_metadata as {
       status?:              string;
       onboarding_complete?: boolean;
+      role?:                string;
     };
 
     // Disabled accounts are kicked to login.
     if (meta.status === 'disabled') {
       return NextResponse.redirect(new URL('/login', request.url));
+    }
+
+    // Internal tools are admin-only and never indexed.
+    if (isAdminOnly(pathname)) {
+      if (meta.role !== 'admin') {
+        return pathname.startsWith('/api/')
+          ? NextResponse.json({ error: 'not_found' }, { status: 404 })
+          : new NextResponse(null, { status: 404 });
+      }
+      response.headers.set('X-Robots-Tag', 'noindex, nofollow');
+      return response;
     }
 
     // Onboarding gate — new users must finish onboarding before the app.
@@ -84,6 +109,13 @@ export async function middleware(request: NextRequest): Promise<NextResponse> {
 
   // No session — public pages pass, everything else goes to login.
   if (PUBLIC_PATHS.has(pathname)) return response;
+
+  // Internal tools never reveal themselves to anonymous traffic.
+  if (isAdminOnly(pathname)) {
+    return pathname.startsWith('/api/')
+      ? NextResponse.json({ error: 'not_found' }, { status: 404 })
+      : new NextResponse(null, { status: 404 });
+  }
 
   if (pathname.startsWith('/api/')) {
     return NextResponse.json({ error: 'unauthorized' }, { status: 401 });

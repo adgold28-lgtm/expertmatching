@@ -1103,7 +1103,7 @@ function RankExpertsPageInner() {
             </div>
 
             <p className="mt-4 text-[10px] uppercase tracking-widest text-muted text-center" style={{ letterSpacing: '0.18em' }}>
-              Deterministic scoring by category · AI rationale by Claude Opus · Click any row to expand
+              Scored automatically · Click any row to expand
             </p>
           </section>
         )}
