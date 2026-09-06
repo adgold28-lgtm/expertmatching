@@ -55,8 +55,10 @@ export async function publishSourcingJob(job: SourcingJob): Promise<void> {
   // the account's own endpoint from QSTASH_URL and only fall back to global.
   const qstashHost = (process.env.QSTASH_URL ?? 'https://qstash.upstash.io').replace(/\/+$/, '');
 
+  // The destination goes in the path verbatim — QStash rejects a
+  // percent-encoded URL ("endpoint has invalid scheme").
   // No delay — sourcing should start immediately.
-  const res = await fetch(`${qstashHost}/v2/publish/` + encodeURIComponent(endpoint), {
+  const res = await fetch(`${qstashHost}/v2/publish/${endpoint}`, {
     method:  'POST',
     headers: {
       'Authorization': `Bearer ${token}`,
