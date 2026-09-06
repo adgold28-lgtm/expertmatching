@@ -147,6 +147,12 @@ export interface UpdateProjectInput {
   clientCalendlyUrl?: string;
   // Stripe
   stripeCustomerId?: string | null;
+  // Server-side expert sourcing job status (unpromoted — rides in projects.brief)
+  sourcingStatus?:      'running' | 'completed' | 'failed' | null;
+  sourcingStartedAt?:   number | null;
+  sourcingError?:       string | null;
+  sourcingAdjacent?:    Expert[] | null;
+  sourcingLimitedPool?: boolean | null;
 }
 
 // ─── Utilities ────────────────────────────────────────────────────────────────

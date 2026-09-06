@@ -23,6 +23,10 @@ function escapeHtml(s: string): string {
     .replace(/'/g,  '&#39;');
 }
 
+// Admin recipients for access-request notifications. Both addresses are
+// notified so a request is never missed if one inbox is unattended.
+const ADMIN_NOTIFY_EMAILS = ['adgold28@colby.edu', 'ashergoldsteinbusiness@gmail.com'];
+
 let _resend: Resend | null = null;
 
 function getResend(): Resend | null {
@@ -128,7 +132,7 @@ export async function POST(request: NextRequest) {
     if (resend && from) {
       resend.emails.send({
         from,
-        to:      'asher@expertmatch.fit',
+        to:      ADMIN_NOTIFY_EMAILS,
         subject: `New access request: ${record.name} — ${record.firm}`,
         html: `<p><strong>Name:</strong> ${escapeHtml(record.name)}</p>
 <p><strong>Firm:</strong> ${escapeHtml(record.firm)}</p>

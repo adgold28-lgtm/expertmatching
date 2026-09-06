@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useRef, useState, Suspense } from 'react';
 import Link from 'next/link';
 import { useParams, useRouter, useSearchParams } from 'next/navigation';
-import type { Project, ProjectExpert, ExpertStatus, Expert, ExpertResponse, SeniorityTier } from '../../../types';
+import type { Project, ProjectExpert, ExpertStatus, Expert, SeniorityTier } from '../../../types';
 import { classifySeniority } from '../../../lib/seniorityClassifier';
 import ProjectExpertCard from '../../../components/ProjectExpertCard';
 import { downloadProjectBriefPdf } from '../../../lib/exportBrief';
@@ -283,19 +283,24 @@ function BriefSection({
   onStepChange,
   onExport,
   onDeleteStart,
-  onExpertsSourced,
+  onStartSourcing,
+  sourcingActive,
+  sourcingError,
 }: {
   project: Project;
   onSave: (updates: Partial<Project>) => void;
   onStepChange: (step: WorkflowStep) => void;
   onExport: () => void;
   onDeleteStart: () => void;
-  onExpertsSourced: (experts: import('../../../types').ProjectExpert[]) => void;
+  /** Starts the server-side run. Resolves to an error message, or null on success. */
+  onStartSourcing: (overrides: { businessProblem?: string; expertType?: string }) => Promise<string | null>;
+  sourcingActive: boolean;
+  sourcingError:  string | null;
 }) {
   const [businessProblem, setBusinessProblem] = useState(project.researchQuestion ?? '');
   const [expertType,      setExpertType]      = useState(project.expertType ?? '');
   const [saving,          setSaving]          = useState(false);
-  const [sourcing,        setSourcing]        = useState(false);
+  const [starting,        setStarting]        = useState(false);
   const [sourceError,     setSourceError]     = useState('');
   const [parsing,         setParsing]         = useState(false);
   const [parseError,      setParseError]      = useState('');
@@ -373,9 +378,12 @@ function BriefSection({
     }
   }
 
+  // Kicks off the server-side sourcing run. The run itself survives navigation
+  // and refresh — progress is reflected by project.sourcingStatus, polled by the
+  // page, so this only has to save the brief and hand the job over.
   async function handleSourceExperts() {
-    if (sourcing) return;
-    setSourcing(true);
+    if (starting || sourcingActive) return;
+    setStarting(true);
     setSourceError('');
     try {
       const saveRes = await fetch(`/api/projects/${project.id}`, {
@@ -393,60 +401,21 @@ function BriefSection({
         if (saved.project) onSave(saved.project);
       }
 
-      const briefContext = buildBriefContext({
-        ...project,
-        researchQuestion: businessProblem || project.researchQuestion,
-        expertType:       expertType      || project.expertType,
+      const startErr = await onStartSourcing({
+        businessProblem: businessProblem || project.researchQuestion || undefined,
+        expertType:      expertType      || project.expertType      || undefined,
       });
-
-      const effectiveQuery = businessProblem || project.researchQuestion;
-      const res = await fetch('/api/generate-experts', {
-        method:  'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body:    JSON.stringify({
-          query:        effectiveQuery,
-          geography:    project.geography || 'any',
-          seniority:    project.seniority || 'any',
-          briefContext: Object.keys(briefContext).length > 0 ? briefContext : undefined,
-        }),
-      });
-      const data = await res.json() as ExpertResponse & { error?: string; message?: string };
-      if (data.error) {
-        const friendly = data.error === 'expert_generation_parse_failed'
-          ? 'Expert generation failed while formatting results. Please try again or simplify the brief.'
-          : (data.message ?? data.error);
-        throw new Error(friendly);
+      if (startErr) {
+        setSourceError(startErr);
+        return;
       }
 
-      const experts: Expert[] = (data.experts ?? []).map((e: Expert, i: number) => ({
-        ...e,
-        id:           e.id || `src-${i}`,
-        source_links: e.source_links ?? [],
-      }));
-
-      if (experts.length === 0) {
-        throw new Error('No experts found. Try broadening the brief or adjusting the research question.');
-      }
-
-      // Save experts to the project
-      const patchRes = await fetch(`/api/projects/${project.id}/experts`, {
-        method:  'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body:    JSON.stringify({ experts: experts.map(expert => ({ expert, status: 'discovered' })) }),
-      });
-      const patchData = await patchRes.json() as { project?: { experts: import('../../../types').ProjectExpert[] }; error?: string };
-      if (!patchRes.ok) throw new Error(patchData.error ?? 'Failed to save experts.');
-
-      if (patchData.project?.experts) {
-        onExpertsSourced(patchData.project.experts);
-      }
-
-      // Switch to Source tab
+      // Switch to Source tab — the run continues in the background either way.
       onStepChange('source');
     } catch (err) {
       setSourceError(err instanceof Error ? err.message : 'Sourcing failed. Please try again.');
     } finally {
-      setSourcing(false);
+      setStarting(false);
     }
   }
 
@@ -525,11 +494,11 @@ function BriefSection({
           </button>
           <button
             onClick={handleSourceExperts}
-            disabled={sourcing}
+            disabled={starting || sourcingActive}
             className="flex items-center gap-2.5 text-[10px] uppercase tracking-widest px-5 py-2.5 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
             style={{ background: '#C6A75E', color: '#0B1F3B', letterSpacing: '0.14em', minHeight: '40px' }}
           >
-            {sourcing ? (
+            {starting || sourcingActive ? (
               <>
                 <span className="inline-block w-3 h-3 border border-[#0B1F3B] border-t-transparent rounded-full animate-spin shrink-0" />
                 Sourcing experts…
@@ -540,10 +509,11 @@ function BriefSection({
           </button>
         </div>
         <p className="text-[10px] text-muted" style={{ fontWeight: 300 }}>
-          Complete Brief saves and moves to Source. Source Experts saves and runs AI discovery immediately.
+          Complete Brief saves and moves to Source. Source Experts saves and runs AI discovery in the background —
+          you can keep working, or close the tab and come back.
         </p>
-        {sourceError && (
-          <p className="text-xs text-red-600 border border-red-200 bg-red-50 px-3 py-2">{sourceError}</p>
+        {(sourceError || sourcingError) && (
+          <p className="text-xs text-red-600 border border-red-200 bg-red-50 px-3 py-2">{sourceError || sourcingError}</p>
         )}
       </div>
 
@@ -566,31 +536,27 @@ function BriefSection({
 
 // ─── Source panel ─────────────────────────────────────────────────────────────
 
-function buildBriefContext(project: Project): Record<string, unknown> {
-  const bc: Record<string, unknown> = {};
-  if (project.industry?.trim())    bc.industry    = project.industry.trim();
-  if (project.expertType?.trim())  bc.expertType  = project.expertType.trim();
-  if (project.geography?.trim() && project.geography !== 'any') bc.geography = project.geography.trim();
-  if (project.seniority?.trim() && project.seniority !== 'any') bc.seniority = project.seniority.trim();
-  return bc;
-}
-
-// Build anonymized rejection reason counts for the sourcing feedback loop.
-// ONLY reason codes are counted — no expert names, notes, or any other PII.
-// Returns undefined if there are no rejections (avoids polluting the payload).
-function buildRejectionFeedback(project: Project): Record<string, number> | undefined {
-  const rejected = project.experts.filter(pe => pe.status === 'rejected' && pe.rejectionReason);
-  if (rejected.length === 0) return undefined;
-  const counts: Record<string, number> = {};
-  for (const pe of rejected) {
-    if (pe.rejectionReason) counts[pe.rejectionReason] = (counts[pe.rejectionReason] ?? 0) + 1;
-  }
-  return counts;
-}
+// Brief context and rejection feedback are now assembled server-side by
+// lib/sourcingJob.ts, so the browser no longer builds a generation payload.
 
 // Count how many brief context fields have content
 function briefContextDepth(project: Project): number {
   return [project.researchQuestion, project.expertType].filter(v => v?.trim()).length;
+}
+
+// A server-side sourcing run still marked 'running' after this long is treated
+// as dead (worker crash, deploy mid-run). Mirrors SOURCING_STALE_MS in
+// lib/sourcingJob.ts, which is what the API enforces.
+const SOURCING_STALE_MS = 15 * 60 * 1000;
+
+type SourcingView = 'idle' | 'running' | 'stale' | 'failed';
+
+function sourcingView(project: Project | null): SourcingView {
+  if (!project) return 'idle';
+  if (project.sourcingStatus === 'running') {
+    return Date.now() - (project.sourcingStartedAt ?? 0) >= SOURCING_STALE_MS ? 'stale' : 'running';
+  }
+  return project.sourcingStatus === 'failed' ? 'failed' : 'idle';
 }
 
 const SOURCING_MESSAGES = [
@@ -631,73 +597,52 @@ function SourcePanel({
   project,
   existingExpertIds,
   onExpertsAdded,
+  onStartSourcing,
+  sourcingActive,
+  sourcingStale,
+  sourcingError,
 }: {
   project: Project;
   existingExpertIds: Set<string>;
   onExpertsAdded: (experts: ProjectExpert[]) => void;
+  /** Starts the server-side run. Resolves to an error message, or null on success. */
+  onStartSourcing: (overrides: { businessProblem?: string; expertType?: string }) => Promise<string | null>;
+  sourcingActive: boolean;
+  sourcingStale:  boolean;
+  sourcingError:  string | null;
 }) {
-  const [stage,       setStage]       = useState<'idle' | 'loading' | 'results' | 'error'>('idle');
-  const [results,     setResults]     = useState<Expert[]>([]);
+  const [starting,    setStarting]    = useState(false);
   const [addedIds,    setAddedIds]    = useState<Set<string>>(new Set());
   const [addingId,    setAddingId]    = useState<string | null>(null);
   const [addingAll,   setAddingAll]   = useState(false);
-  const [srcError,    setSrcError]    = useState('');
-  const [adjacentResults, setAdjacentResults] = useState<Expert[]>([]);
-  const [limitedPool,     setLimitedPool]     = useState(false);
+  const [startError,  setStartError]  = useState('');
   const depth = briefContextDepth(project);
 
+  // Core experts are persisted by the worker straight into the discovery pool
+  // below. Adjacent candidates are held on the project for manual selection.
+  const adjacentResults: Expert[] = project.sourcingAdjacent ?? [];
+  const limitedPool = project.sourcingLimitedPool === true;
+
+  const srcError = startError || (sourcingStale ? 'Sourcing timed out — try again.' : sourcingError) || '';
+
+  const stage: 'idle' | 'loading' | 'results' | 'error' =
+    starting || sourcingActive ? 'loading'
+    : srcError                 ? 'error'
+    : project.sourcingStatus === 'completed' ? 'results'
+    : 'idle';
+
+  // Hands the run to the server. It keeps going across tab flips and refreshes;
+  // the page polls project.sourcingStatus until it lands.
   async function runSourcing() {
-    setStage('loading');
-    setSrcError('');
-    setResults([]);
-    setAdjacentResults([]);
-    setLimitedPool(false);
+    if (starting || sourcingActive) return;
+    setStarting(true);
+    setStartError('');
     setAddedIds(new Set());
     try {
-      const briefContext       = buildBriefContext(project);
-      const rejectionFeedback  = buildRejectionFeedback(project);
-      // Merge rejection feedback into briefContext if present.
-      // Only reason-code counts are sent — no expert names or notes.
-      if (rejectionFeedback) briefContext.rejectionFeedback = rejectionFeedback;
-      const res = await fetch('/api/generate-experts', {
-        method:  'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          query:    project.researchQuestion,
-          geography: project.geography || 'any',
-          seniority: project.seniority || 'any',
-          briefContext: Object.keys(briefContext).length > 0 ? briefContext : undefined,
-        }),
-      });
-      const data = await res.json() as ExpertResponse & { error?: string; message?: string };
-      if (data.error) {
-        const friendly = data.error === 'expert_generation_parse_failed'
-          ? 'Expert generation failed while formatting results. Please try again or simplify the brief.'
-          : (data.message ?? data.error);
-        throw new Error(friendly);
-      }
-      const experts: Expert[] = (data.experts ?? []).map((e: Expert, i: number) => ({
-        ...e,
-        id: e.id || `src-${i}`,
-        source_links: e.source_links ?? [],
-      }));
-      const adjacent: Expert[] = (data.adjacent_experts ?? []).map((e: Expert) => ({
-        ...e,
-        // Preserve the API-assigned id; fall back to a name+company slug so the
-        // "✓ Added" state (keyed on expert.id) survives within this session.
-        id: e.id || `adj-${(e.name + e.company).toLowerCase().replace(/[^a-z0-9]/g, '-').slice(0, 40)}`,
-        source_links: e.source_links ?? [],
-      }));
-      setResults(experts);
-      setAdjacentResults(adjacent);
-      setLimitedPool(data.limited_pool ?? false);
-      setStage(experts.length > 0 || adjacent.length > 0 ? 'results' : 'error');
-      if (experts.length === 0 && adjacent.length === 0) {
-        setSrcError('No experts found. Try broadening the brief or adjusting the research question.');
-      }
-    } catch (err) {
-      setSrcError(err instanceof Error ? err.message : 'Expert sourcing failed. Please try again.');
-      setStage('error');
+      const err = await onStartSourcing({});
+      if (err) setStartError(err);
+    } finally {
+      setStarting(false);
     }
   }
 
@@ -724,7 +669,7 @@ function SourcePanel({
   }
 
   async function addAll() {
-    const toAdd = results.filter(e => !existingExpertIds.has(e.id) && !addedIds.has(e.id));
+    const toAdd = adjacentResults.filter(e => !existingExpertIds.has(e.id) && !addedIds.has(e.id));
     if (toAdd.length === 0 || addingAll) return;
     setAddingAll(true);
     try {
@@ -746,7 +691,9 @@ function SourcePanel({
   }
 
   const alreadyInProject = (id: string) => existingExpertIds.has(id) || addedIds.has(id);
-  const pendingCount = results.filter(e => !alreadyInProject(e.id)).length;
+  const pendingCount = adjacentResults.filter(e => !alreadyInProject(e.id)).length;
+  // Core experts sourced by the last completed run, already in the pool below.
+  const sourcedCoreCount = project.experts.filter(pe => pe.status === 'discovered').length;
 
   return (
     <div className="border border-frame bg-cream">
@@ -797,11 +744,14 @@ function SourcePanel({
         </div>
       )}
 
-      {/* Loading */}
+      {/* Loading — the run is server-side, so leaving this tab is safe */}
       {stage === 'loading' && (
         <div className="px-5 py-10 flex flex-col items-center gap-4 text-sm text-muted">
           <span className="inline-block w-4 h-4 border border-navy border-t-transparent rounded-full animate-spin shrink-0" />
           <RotatingLoadingMessage />
+          <p className="text-[10px] text-muted/70 text-center max-w-xs leading-relaxed">
+            This runs on our servers and takes a few minutes. You can switch tabs, close this page, and come back.
+          </p>
         </div>
       )}
 
@@ -811,7 +761,7 @@ function SourcePanel({
       )}
 
       {/* Results */}
-      {stage === 'results' && (results.length > 0 || adjacentResults.length > 0) && (
+      {stage === 'results' && (
         <div>
           {/* Limited pool notice */}
           {limitedPool && (
@@ -824,69 +774,34 @@ function SourcePanel({
               </p>
             </div>
           )}
-          {/* Core expert count / Add All */}
-          {results.length > 0 && (
+          {/* Core experts — persisted straight into the discovery pool below */}
+          <div className="px-5 py-3 border-b border-frame/60">
+            <p className="text-[10px] text-muted">
+              {sourcedCoreCount > 0
+                ? `${sourcedCoreCount} core expert${sourcedCoreCount !== 1 ? 's' : ''} in the discovery pool below.`
+                : 'No core experts from the last run.'}
+              {adjacentResults.length > 0 && ' Adjacent perspectives are listed below — add the ones worth pursuing.'}
+            </p>
+          </div>
+          {/* Adjacent count / Add All */}
+          {adjacentResults.length > 0 && pendingCount > 0 && (
             <div className="px-5 py-3 border-b border-frame/60 flex items-center justify-between gap-4">
               <p className="text-[10px] text-muted">
-                {results.length} core expert{results.length !== 1 ? 's' : ''} sourced
-                {pendingCount > 0 && ` · ${pendingCount} not yet added`}
+                {pendingCount} adjacent candidate{pendingCount !== 1 ? 's' : ''} not yet added
               </p>
-              {pendingCount > 0 && (
-                <button
-                  onClick={addAll}
-                  disabled={addingAll}
-                  className="text-[10px] uppercase tracking-widest text-navy border border-navy/30 hover:border-navy px-3 py-1 transition-colors disabled:opacity-40"
-                  style={{ letterSpacing: '0.12em' }}
-                >
-                  {addingAll ? 'Adding…' : `Add All (${pendingCount})`}
-                </button>
-              )}
-            </div>
-          )}
-          {/* Core experts list */}
-          {results.length > 0 && (
-            <div className="divide-y divide-frame/60">
-              {results.map(expert => {
-                const inProject = alreadyInProject(expert.id);
-                const isAdding  = addingId === expert.id;
-                const scoreColor = expert.relevance_score >= 80 ? 'text-green-700' : expert.relevance_score >= 60 ? 'text-amber-700' : 'text-muted';
-                return (
-                  <div key={expert.id} className="px-5 py-3.5 flex items-start gap-3">
-                    <div className={`shrink-0 font-display text-base font-semibold w-8 text-right ${scoreColor}`}>
-                      {expert.relevance_score > 0 ? expert.relevance_score : '—'}
-                    </div>
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-center gap-2 flex-wrap">
-                        <p className="text-sm font-semibold text-navy">{expert.name}</p>
-                        <span className="text-[10px] text-muted border border-frame px-1.5 py-0.5">
-                          {expert.valueChainLabel ?? expert.category}
-                        </span>
-                      </div>
-                      <p className="text-xs text-muted mt-0.5">{expert.title} · {expert.company}</p>
-                      {expert.justification && (
-                        <p className="text-[11px] text-muted/80 mt-1 leading-relaxed line-clamp-2">{expert.justification}</p>
-                      )}
-                    </div>
-                    <button
-                      onClick={() => addExpert(expert)}
-                      disabled={inProject || isAdding}
-                      className={`shrink-0 text-[10px] uppercase tracking-widest px-3 py-1.5 border transition-colors whitespace-nowrap ${
-                        inProject
-                          ? 'border-green-200 bg-green-50 text-green-700 cursor-default'
-                          : 'border-navy/30 text-navy hover:bg-navy hover:text-cream hover:border-navy disabled:opacity-40'
-                      }`}
-                      style={{ letterSpacing: '0.1em' }}
-                    >
-                      {isAdding ? '…' : inProject ? '✓ Added' : 'Add'}
-                    </button>
-                  </div>
-                );
-              })}
+              <button
+                onClick={addAll}
+                disabled={addingAll}
+                className="text-[10px] uppercase tracking-widest text-navy border border-navy/30 hover:border-navy px-3 py-1 transition-colors disabled:opacity-40"
+                style={{ letterSpacing: '0.12em' }}
+              >
+                {addingAll ? 'Adding…' : `Add All (${pendingCount})`}
+              </button>
             </div>
           )}
           {/* Adjacent Perspectives section */}
           {adjacentResults.length > 0 && (
-            <div className={results.length > 0 ? 'border-t border-frame' : ''}>
+            <div className="border-t border-frame">
               <div className="px-5 py-3 bg-amber-50/50 border-b border-amber-100/80">
                 <p className="text-[10px] uppercase tracking-widest text-amber-700 font-semibold" style={{ letterSpacing: '0.14em' }}>
                   Adjacent Perspectives
@@ -1313,6 +1228,61 @@ function ProjectPageInner() {
     setProject(prev => prev ? { ...prev, ...updated } : prev);
   }, []);
 
+  // ── Server-side sourcing: start + poll ────────────────────────────────────
+  // The run lives on the server, so the only client state is "what does the
+  // project say right now". Re-fetching the whole project keeps experts,
+  // status, and error in sync in one shot.
+  const refreshProject = useCallback(async () => {
+    try {
+      const res = await fetch(`/api/projects/${projectId}`);
+      const d   = await res.json() as { project?: Project };
+      if (d.project) setProject(d.project);
+    } catch {
+      // Transient — the next poll retries.
+    }
+  }, [projectId]);
+
+  const startSourcing = useCallback(async (
+    overrides: { businessProblem?: string; expertType?: string },
+  ): Promise<string | null> => {
+    try {
+      const res = await fetch(`/api/projects/${projectId}/source-experts`, {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify(overrides),
+      });
+      const d = await res.json() as { ok?: boolean; error?: string; message?: string };
+
+      if (res.status === 409 || d.error === 'sourcing_already_running') {
+        // Someone (or another tab) already started it — pick up the live run.
+        await refreshProject();
+        return null;
+      }
+      if (!res.ok || !d.ok) {
+        return d.message ?? 'Could not start sourcing. Please try again.';
+      }
+
+      // Reflect 'running' immediately so the pill and polling start without
+      // waiting for a round trip.
+      setProject(prev => prev
+        ? { ...prev, sourcingStatus: 'running', sourcingStartedAt: Date.now(), sourcingError: null }
+        : prev);
+      return null;
+    } catch {
+      return 'Could not start sourcing. Please try again.';
+    }
+  }, [projectId, refreshProject]);
+
+  const view          = sourcingView(project);
+  const isSourcing    = view === 'running';
+  const sourcingStale = view === 'stale';
+
+  useEffect(() => {
+    if (!isSourcing) return;
+    const interval = setInterval(() => { void refreshProject(); }, 5000);
+    return () => clearInterval(interval);
+  }, [isSourcing, refreshProject]);
+
   if (loading) {
     return (
       <div className="min-h-screen flex items-center justify-center" style={{ background: '#F7F9FC' }}>
@@ -1395,8 +1365,32 @@ function ProjectPageInner() {
 
       {/* ── Horizontal stepper ── */}
       <div className="bg-surface border-b border-frame">
-        <div className="max-w-6xl mx-auto px-6 sm:px-10">
-          <div className="flex overflow-x-auto">
+        <div className="max-w-6xl mx-auto px-6 sm:px-10 flex items-center gap-4">
+          {/* Sourcing indicator — sits outside the scrolling step row so it
+              stays visible on every step, not just Brief. */}
+          {(isSourcing || sourcingStale) && (
+            <div className="order-2 shrink-0 ml-auto">
+              {isSourcing ? (
+                <span
+                  className="flex items-center gap-2 border border-frame bg-cream px-3 py-1.5 text-[10px] uppercase tracking-widest text-navy font-medium"
+                  style={{ letterSpacing: '0.14em' }}
+                  title="Expert sourcing is running on our servers — it continues if you leave this page."
+                >
+                  <span className="inline-block w-3 h-3 border border-navy border-t-transparent rounded-full animate-spin shrink-0" />
+                  Sourcing experts…
+                </span>
+              ) : (
+                <span
+                  className="flex items-center gap-2 border border-amber-200 bg-amber-50 px-3 py-1.5 text-[10px] uppercase tracking-widest text-amber-700 font-medium"
+                  style={{ letterSpacing: '0.14em' }}
+                  title="This run has been going for over 15 minutes — start it again."
+                >
+                  Sourcing timed out — try again
+                </span>
+              )}
+            </div>
+          )}
+          <div className="order-1 flex overflow-x-auto min-w-0">
             {STEPS.map((step, idx) => {
               const summary  = stepSummary(project, step.id);
               const isActive = activeStep === step.id;
@@ -1480,16 +1474,9 @@ function ProjectPageInner() {
             onStepChange={navigateTo}
             onExport={() => { downloadProjectBriefPdf(project); }}
             onDeleteStart={() => setShowDelete(true)}
-            onExpertsSourced={newPEs => {
-              setProject(prev => {
-                if (!prev) return prev;
-                const existingIds = new Set(prev.experts.map(pe => pe.expert.id));
-                const trulyNew = newPEs.filter(pe => !existingIds.has(pe.expert.id));
-                return trulyNew.length > 0
-                  ? { ...prev, experts: [...prev.experts, ...trulyNew] }
-                  : prev;
-              });
-            }}
+            onStartSourcing={startSourcing}
+            sourcingActive={isSourcing}
+            sourcingError={sourcingStale ? 'Sourcing timed out — try again.' : (project.sourcingError ?? null)}
           />
         )}
 
@@ -1520,6 +1507,10 @@ function ProjectPageInner() {
                     : prev;
                 });
               }}
+              onStartSourcing={startSourcing}
+              sourcingActive={isSourcing}
+              sourcingStale={sourcingStale}
+              sourcingError={project.sourcingError ?? null}
             />
 
             {/* Discovery pool */}

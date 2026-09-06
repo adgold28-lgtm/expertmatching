@@ -352,6 +352,15 @@ export interface Project {
   expertType?: string;              // "who do you want to talk to"
   // Outreach mode — 'review' (default) queues outreach for approval; 'auto' sends immediately
   outreachMode?: 'auto' | 'review';
+  // Server-side expert sourcing job — survives navigation and refresh.
+  // Written by POST /api/projects/[id]/source-experts and its worker.
+  sourcingStatus?:      'running' | 'completed' | 'failed' | null;
+  sourcingStartedAt?:   number | null;
+  sourcingError?:       string | null;   // short human message — never raw internals
+  // Adjacent (indirect-relevance) candidates from the last run. Not auto-added
+  // to the project — surfaced in the Source panel for manual selection.
+  sourcingAdjacent?:    Expert[] | null;
+  sourcingLimitedPool?: boolean | null;
   // Ownership
   ownerEmail:     string;
   collaborators:  string[];

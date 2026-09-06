@@ -41,6 +41,16 @@ Last updated: 2026-08-31
       NOTE: seed-admin.ts uses bcrypt — users created with it must be migrated via createUser.ts
 
 ## NEXT (makes the product real)
+- [x] Expert sourcing survives navigation — DONE 2026-09-06. Sourcing is now a
+      server-side job: POST /api/projects/[id]/source-experts marks the project
+      running and enqueues on QStash (falls back to an in-process detached run
+      when QSTASH_TOKEN is unset); the worker POST /api/jobs/source-experts
+      (QStash-signature-verified, added to middleware PUBLIC_PREFIXES) runs the
+      shared lib/generateExperts.ts and persists results. The project carries
+      sourcingStatus / sourcingStartedAt / sourcingError / sourcingAdjacent /
+      sourcingLimitedPool in the brief jsonb (no migration); the workspace polls
+      every 5s and shows a persistent "Sourcing experts…" pill next to the
+      stepper, resuming after refresh. Runs stuck >15 min render as timed out.
 - [ ] Expert sourcing pipeline improvements
 - [ ] Outreach generation with tone controls (formal → casual slider)
 - [x] Reply tracking: per-expert status
