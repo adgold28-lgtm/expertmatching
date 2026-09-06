@@ -1,7 +1,15 @@
 # ExpertMatch Task Queue
-Last updated: 2026-08-31
+Last updated: 2026-09-06
 
 ## NOW (blocking or broken)
+- [ ] Merge per-seat billing branch `origin/claude/multi-account-rls-billing-imi3la`
+      into main BEFORE Matchy Phase 1 (both touch billing code). Diverged
+      2026-09-01 (57 files); dry-run merge conflicts in HANDOFF.md,
+      TASK_QUEUE.md, collaborators route, request-access route,
+      database.types.ts. Then: replace lib/pricing.ts tiers with $250 (1–5) /
+      $200 (6–20) / talk-to-us (21+), create the new Stripe Price, update
+      /pricing + landing copy (drop $1,500/$3,500 plans; add 15-min minimum
+      call note), and set the call take to 50% (see docs/MATCHY_SPEC.md).
 - [x] Supabase cutover (branch: supabase-cutover) — DONE 2026-08-31.
       Migration applied to prod Supabase; admin seeded
       (ashergoldsteinbusiness@gmail.com); scripts/smoke-cutover.ts passes 16/16

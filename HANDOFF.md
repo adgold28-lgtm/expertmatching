@@ -44,4 +44,4 @@ Working pattern that has worked: Fable plans and writes agent briefs; Opus subag
 
 `docs/MATCHY_SPEC.md` draft 2 is the plan. Start by getting the founder's answers to its **Open questions** (firm-type wording, review-switch default, rate ranges per tier, minimum billable minutes, collaborator send rights, digest cadence). Then Phase 1 in order: pricing rule (clientRate/expertRate, billing charges clientRate) → `bookmarked` status + bookmark action → `conversation_messages` + `engagement_events` migrations → intro/follow-up templates with auto-send + review switch → inbound rewired → thread UI + Conversations tab → regex screen → retire Email 2/3 cadence.
 
-Founder preferences to honor: no machinery talk in Matchy's messages; verbs not chat; not a GPT wrapper; collect as much data as possible; ExpertMatch takes 30%.
+Founder preferences to honor: no machinery talk in Matchy's messages; verbs not chat; not a GPT wrapper; collect as much data as possible; ExpertMatch takes 50% of the call (raised from 30% on 2026-09-06 — see spec) plus $250/$200 per seat/month.

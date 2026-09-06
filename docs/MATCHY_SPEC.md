@@ -33,12 +33,24 @@ A client bookmarks an expert from their matches. From that moment Matchy — Exp
 
 ## Pricing rule (must be explicit everywhere)
 
-ExpertMatch takes **30%**. Two numbers exist per engagement:
+ExpertMatch takes **50%** of the call (founder, 2026-09-06; was 30%). Two numbers exist per engagement:
 - `expertRate` — what the expert is offered and paid. Shown only to the expert and to staff. Tier defaults (founder, 2026-09-06) are **opening offers to the expert**: Mid $400 / Senior $650 / Executive $800. These replace the current `TIER_PRICING` expert numbers ($280 / $420 / $560).
-- `clientRate = ceil(expertRate / 0.70 / 50) × 50` — what the client pays, rounded **up** to the next $50 (so $400 → $600, $650 → $950, $800 → $1,150). The rounding remainder is ExpertMatch margin; the effective take is 30–33%. Shown to the client everywhere (cards, decision cards, receipts) with "includes ExpertMatch fee." Opening client rates after rounding: $600 / $950 / $1,150.
+- `clientRate = ceil(expertRate / 0.50 / 50) × 50` — what the client pays, rounded **up** to the next $50. Shown to the client everywhere (cards, decision cards, receipts) with "includes ExpertMatch fee." Opening client rates: $800 / $1,300 / $1,600 (rounding only fires on odd counter-offers, e.g. expert asks $675 → client $1,350).
 - `clientRateMin` / `clientRateMax` — set by the client per project (in client-rate terms). Matchy negotiates only inside this band; tiers are rough estimates, the band is the rule.
 
-Rules: the intro never mentions money; the follow-up asks the expert about `expertRate`; negotiation cards show the client `clientRate` (with the implied expert number visible only to staff); auto-billing charges `clientRate` (fixing the current code, which charges `expertRate`); payouts transfer `expertRate`. When an expert counters, Matchy converts: "Scott wants $650/hr → that's $950/hr for you; accept, or offer $600 ($850 to you)?"
+Rules: the intro never mentions money; the follow-up asks the expert about `expertRate`; negotiation cards show the client `clientRate` (with the implied expert number visible only to staff); auto-billing charges `clientRate` (fixing the current code, which charges `expertRate`); payouts transfer `expertRate`. When an expert counters, Matchy converts: "Scott wants $650/hr → that's $1,300/hr for you; accept, or offer $600 ($1,200 to you)?"
+
+## Seat pricing (founder, 2026-09-06)
+
+Per-seat monthly subscription, every active seat billed at the tier the org's seat count falls in:
+
+| Active seats | Per seat / month |
+| --- | --- |
+| 1–5 | $250 |
+| 6–20 | $200 |
+| 21+ | Talk to us |
+
+Rationale: ~4,100 US PE firms average ~8 employees, so nearly every account is 1–10 seats; comparables (AlphaSense, Tegus) run $10k–$20k/seat/yr. The seat fee filters tire-kickers and covers sourcing; calls carry the margin. The implementation already exists on `origin/claude/multi-account-rls-billing-imi3la` (`lib/pricing.ts`, tiered Stripe Price, org-admin team page) with the old $100→$60 table — merge it and replace the table. The live `/pricing` page still shows the retired $1,500/$3,500 flat plans.
 
 ## Matchy's jobs (priority order)
 
