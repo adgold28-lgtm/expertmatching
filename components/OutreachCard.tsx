@@ -272,7 +272,8 @@ export default function OutreachCard({
     }
   }
 
-  // Trigger email1 directly (not via QStash — immediate local trigger)
+  // Start the sequence via the session-authed outreach route. /api/email-sequence/trigger
+  // is QStash-only and rejects browser calls in production.
   async function triggerEmail1() {
     if (!projectExpert.contactEmail) {
       setSequenceError('No email address on file — find the email first.');
@@ -285,35 +286,28 @@ export default function OutreachCard({
     setSequenceSending(true);
     setSequenceError('');
     try {
-      const res = await fetch('/api/email-sequence/trigger', {
-        method:  'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body:    JSON.stringify({
-          projectId,
-          expertId: expert.id,
-          step:     'email1',
-          // Token is generated server-side for email1 if not yet assigned
-          token:    projectExpert.outreachToken ?? '',
-        }),
-      });
-      const data = await res.json() as { ok?: boolean; error?: string };
+      const res = await fetch(
+        `/api/projects/${projectId}/experts/${expert.id}/outreach/start`,
+        { method: 'POST' },
+      );
+      const data = await res.json() as {
+        ok?: boolean;
+        error?: string;
+        projectExpert?: ProjectExpert;
+      };
       if (!res.ok) {
-        setSequenceError(data.error === 'no_email'
-          ? 'No email address on file.'
-          : data.error ?? 'Failed to send. Please try again.');
+        setSequenceError(
+          data.error === 'no_contact_email'        ? 'No email address on file.' :
+          data.error === 'expert_rate_not_set'     ? 'Set expert rate before sending.' :
+          data.error === 'outreach_already_started'? 'Outreach has already started for this expert.' :
+          data.error === 'contact_suppressed'      ? 'This address has opted out of outreach.' :
+          data.error === 'suppression_check_failed'? 'Could not verify the do-not-contact list. Try again shortly.' :
+          'Failed to send. Please try again.',
+        );
         return;
       }
-      // Optimistically refresh
-      const projectRes = await fetch(`/api/projects/${projectId}/experts/${expert.id}`, {
-        method:  'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body:    JSON.stringify({ email1SentAt: Date.now() }),
-      });
-      const projectData = await projectRes.json() as { project?: { experts: ProjectExpert[] } };
-      if (projectRes.ok) {
-        const updated = projectData.project?.experts.find(e => e.expert.id === expert.id);
-        if (updated) onUpdate(updated);
-      }
+      // The route returns the updated record — no follow-up write needed.
+      if (data.projectExpert) onUpdate(data.projectExpert);
     } catch {
       setSequenceError('Network error. Please try again.');
     } finally {

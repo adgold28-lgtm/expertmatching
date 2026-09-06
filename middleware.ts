@@ -22,6 +22,8 @@ const PUBLIC_PREFIXES = [
   '/signup/',                // legacy invite links redirect to /auth/set-password — kept for backward compat
   '/api/inbound-email',      // Resend inbound email webhook — verified by payload signature
   '/api/email-sequence/',    // QStash-triggered email sequence — verified by QStash signature
+  '/api/outreach/unsubscribe', // public email opt-out — gated by a signed opt-out token
+  '/outreach/unsubscribed',  // opt-out confirmation page shown to the recipient
   '/api/jobs/',              // QStash-triggered background jobs — verified by QStash signature
   '/expert-onboarding/',     // expert Stripe Connect onboarding pages
   '/api/expert-onboarding/', // expert onboarding token exchange

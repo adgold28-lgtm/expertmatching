@@ -27,7 +27,8 @@
     "react": "^18",
     "react-dom": "^18",
     "resend": "^6.12.3",
-    "stripe": "^22.1.1"
+    "stripe": "^22.1.1",
+    "svix": "^2.3.0"
   },
   "devDependencies": {
     "@types/node": "^20",

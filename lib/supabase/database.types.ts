@@ -3,6 +3,7 @@
 // Hand-authored types for the Supabase schema created in
 //   supabase/migrations/20260831000000_supabase_cutover_foundation.sql
 //   supabase/migrations/20260901000000_onboarding_billing_calendar.sql
+//   supabase/migrations/20260906000000_outreach_suppressions.sql
 //
 // Keep this file in sync with those migrations. (Once the Supabase CLI is
 // wired up you can regenerate with: `supabase gen types typescript --linked`.)
@@ -11,7 +12,8 @@
 //   org-scoped     -> organizations, profiles, organization_members,
 //                     access_requests
 //   project-scoped -> projects, project_members, project_experts
-//   service-role   -> access_requests, user_calendar_connections
+//   service-role   -> access_requests, user_calendar_connections,
+//                     outreach_suppressions
 // Project data is reachable only via project ownership or an explicit
 // project_members row — never org-wide.
 
@@ -319,6 +321,29 @@ export interface Database {
         };
         Relationships: [];
       };
+      // Service-role only (RLS enabled, no authenticated policies).
+      // Global do-not-contact list; email is normalized lowercase.
+      outreach_suppressions: {
+        Row: {
+          email: string;
+          reason: 'opt_out' | 'declined' | 'manual';
+          source_project_id: string | null;
+          created_at: string;
+        };
+        Insert: {
+          email: string;
+          reason: 'opt_out' | 'declined' | 'manual';
+          source_project_id?: string | null;
+          created_at?: string;
+        };
+        Update: {
+          email?: string;
+          reason?: 'opt_out' | 'declined' | 'manual';
+          source_project_id?: string | null;
+          created_at?: string;
+        };
+        Relationships: [];
+      };
     };
     Views: Record<string, never>;
     Functions: {
@@ -342,3 +367,4 @@ export type ProjectRow = Database['public']['Tables']['projects']['Row'];
 export type ProjectMemberRow = Database['public']['Tables']['project_members']['Row'];
 export type ProjectExpertRow = Database['public']['Tables']['project_experts']['Row'];
 export type UserCalendarConnectionRow = Database['public']['Tables']['user_calendar_connections']['Row'];
+export type OutreachSuppressionRow = Database['public']['Tables']['outreach_suppressions']['Row'];

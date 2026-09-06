@@ -5,18 +5,28 @@
 // look up the ProjectExpert, classify the reply intent, and update status.
 //
 // Security:
-//   - Verifies Resend webhook signature (HMAC-SHA256 of raw body, constant-time)
+//   - Verifies the Svix webhook signature (Resend signs with Svix: svix-id,
+//     svix-timestamp and svix-signature over "id.timestamp.body", using the
+//     base64-decoded whsec_ secret, with a 5-minute timestamp tolerance).
+//     Verification is delegated to the svix library.
 //   - Rate limited: 100 req/hr per IP
 //   - Outreach token is HMAC-signed (see lib/outreachToken.ts)
+//   - Only acts when the reply's From address matches the address we mailed
+//   - Never schedules email2 twice for the same expert
+//
+// After a verified signature the handler always answers 200 so Resend does not
+// retry replies we deliberately ignore.
 //
 // Never logs: email content, expert email, expert name, project name.
 
 import { NextRequest, NextResponse } from 'next/server';
-import { createHmac, timingSafeEqual } from 'crypto';
+import { createHmac } from 'crypto';
+import { Webhook } from 'svix';
 import { getProject, updateExpertStatus } from '../../../lib/projectStore';
 import { verifyOutreachToken } from '../../../lib/outreachToken';
 import { parseReply } from '../../../lib/replyDetection';
 import { scheduleNextEmail } from '../../../lib/emailSequence';
+import { suppress } from '../../../lib/outreachSuppressions';
 import { createRateLimiterStore } from '../../../lib/rateLimiter';
 import { getUpstashClient } from '../../../lib/upstashRedis';
 
@@ -37,32 +47,32 @@ function getClientIp(request: NextRequest): string {
   );
 }
 
-// ─── Resend webhook signature verification ────────────────────────────────────
+function pseudonymize(value: string): string {
+  const secret = process.env.LOG_HASH_SECRET ?? 'dev-fallback-secret';
+  return createHmac('sha256', secret).update(value).digest('hex').slice(0, 16);
+}
 
-function verifyResendSignature(rawBody: string, svixSignature: string): boolean {
+// ─── Resend (Svix) webhook signature verification ─────────────────────────────
+
+// Svix signs `${svix-id}.${svix-timestamp}.${body}` with the base64-decoded
+// whsec_ secret and enforces a 5-minute timestamp tolerance. verify() throws on
+// any failure — a bad signature, a missing header, or a stale timestamp.
+function verifyResendSignature(rawBody: string, request: NextRequest): boolean {
   const secret = process.env.RESEND_WEBHOOK_SECRET;
   if (!secret) return false;
 
-  // svix-signature header format: "v1,[base64]" or "v1,[base64] v1,[base64]"
-  // Extract all v1 signatures and check if any match
-  const sigs = svixSignature.split(' ').filter(s => s.startsWith('v1,'));
+  const headers = {
+    'svix-id':        request.headers.get('svix-id')        ?? '',
+    'svix-timestamp': request.headers.get('svix-timestamp') ?? '',
+    'svix-signature': request.headers.get('svix-signature') ?? '',
+  };
 
-  const expected = createHmac('sha256', secret).update(rawBody, 'utf8').digest('base64');
-  const expectedBuf = Buffer.from(expected, 'utf8');
-
-  for (const sig of sigs) {
-    const sigValue = sig.slice(3); // strip "v1,"
-    try {
-      const sigBuf = Buffer.from(sigValue, 'utf8');
-      if (sigBuf.length === expectedBuf.length && timingSafeEqual(expectedBuf, sigBuf)) {
-        return true;
-      }
-    } catch {
-      // ignore malformed sigs
-    }
+  try {
+    new Webhook(secret).verify(rawBody, headers);
+    return true;
+  } catch {
+    return false;
   }
-
-  return false;
 }
 
 // ─── Token index lookup ───────────────────────────────────────────────────────
@@ -89,6 +99,26 @@ function extractReplyToken(toAddress: string): string | null {
   return match?.[1] ?? null;
 }
 
+// ─── Extract the sender address ───────────────────────────────────────────────
+
+// Resend's inbound payload carries `from` either as a bare address, as a
+// display-name form ("Jane Doe <jane@acme.com>"), or as an object.
+function extractFromAddress(fromField: unknown): string {
+  let candidate = '';
+  if (typeof fromField === 'string') {
+    candidate = fromField;
+  } else if (Array.isArray(fromField) && fromField.length > 0) {
+    const first = fromField[0] as Record<string, unknown>;
+    candidate = typeof first?.email === 'string' ? first.email : '';
+  } else if (fromField && typeof fromField === 'object') {
+    const obj = fromField as Record<string, unknown>;
+    candidate = typeof obj.email === 'string' ? obj.email : '';
+  }
+
+  const angled = candidate.match(/<([^>]+)>/);
+  return (angled?.[1] ?? candidate).trim().toLowerCase();
+}
+
 // ─── Handler ──────────────────────────────────────────────────────────────────
 
 export async function POST(request: NextRequest): Promise<NextResponse> {
@@ -107,13 +137,15 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
   // ── 2. Read raw body ──────────────────────────────────────────────────────
   const rawBody = await request.text();
 
-  // ── 3. Verify Resend webhook signature ───────────────────────────────────
-  const svixSig = request.headers.get('svix-signature') ?? '';
+  // ── 3. Verify Resend (Svix) webhook signature ────────────────────────────
   if (process.env.RESEND_WEBHOOK_SECRET) {
-    if (!svixSig || !verifyResendSignature(rawBody, svixSig)) {
+    if (!verifyResendSignature(rawBody, request)) {
       console.warn('[inbound-email] invalid webhook signature');
       return NextResponse.json({ error: 'invalid_signature' }, { status: 400 });
     }
+  } else if (process.env.NODE_ENV === 'production') {
+    console.error('[inbound-email] RESEND_WEBHOOK_SECRET missing — rejecting');
+    return NextResponse.json({ error: 'invalid_signature' }, { status: 400 });
   }
 
   // ── 4. Parse payload ──────────────────────────────────────────────────────
@@ -172,17 +204,35 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     return NextResponse.json({ ok: true });
   }
 
-  // ── 8. Extract email body text ────────────────────────────────────────────
+  // ── 8. Sender check — only the address we mailed can move the sequence ────
+  // A forwarded thread, an assistant, or a colleague must not be able to
+  // decline, counter-rate, or advance outreach on the expert's behalf.
+  const fromAddress    = extractFromAddress(payload.from);
+  const expectedSender = pe.contactEmail?.trim().toLowerCase() ?? '';
+  if (!expectedSender || fromAddress !== expectedSender) {
+    const keyHash = pseudonymize(`${resolvedProjectId}:${resolvedExpertId}`);
+    try {
+      const store = getRlStore();
+      // 30-day counter, incremented for observability only — never gates.
+      await store.increment(`rl:inbound-from-mismatch:${keyHash}`, 30 * 24 * 60 * 60 * 1000);
+    } catch {
+      // Non-fatal — the counter is diagnostic, not a control.
+    }
+    console.warn('[inbound-email] sender does not match contact email — ignored', { keyHash });
+    return NextResponse.json({ ok: true });
+  }
+
+  // ── 9. Extract email body text ────────────────────────────────────────────
   const emailText = typeof payload.text === 'string' ? payload.text : '';
   if (!emailText.trim()) {
     console.warn('[inbound-email] empty email body');
     return NextResponse.json({ ok: true });
   }
 
-  // ── 9. Parse reply intent ─────────────────────────────────────────────────
+  // ── 10. Parse reply intent ────────────────────────────────────────────────
   const parsed = await parseReply(emailText);
 
-  // ── 10. Update status based on intent ────────────────────────────────────
+  // ── 11. Update status based on intent ────────────────────────────────────
   const now = Date.now();
 
   try {
@@ -192,13 +242,22 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
         replyDetectedAt:  now,
         replyIntent:      'interested',
       });
-      // Schedule email2
-      await scheduleNextEmail({
-        projectId: resolvedProjectId,
-        expertId:  resolvedExpertId,
-        step:      'email2',
-        token,
-      });
+
+      // Schedule email2 at most once. A second reply on the same thread must
+      // not produce a second "confirm your rate" email, and a reply arriving
+      // after the sequence moved on must not restart it.
+      if (!pe.email2SentAt && pe.status === 'contacted') {
+        await scheduleNextEmail({
+          projectId: resolvedProjectId,
+          expertId:  resolvedExpertId,
+          step:      'email2',
+          token,
+        });
+      } else {
+        console.log('[inbound-email] email2 already sent or status advanced — not scheduling', {
+          projectId: resolvedProjectId,
+        });
+      }
 
     } else if (parsed.intent === 'declined') {
       await updateExpertStatus(resolvedProjectId, resolvedExpertId, {
@@ -206,6 +265,12 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
         replyDetectedAt: now,
         replyIntent:     'declined',
       });
+      // "No" is a fact about the person, not about this project — add them to
+      // the global do-not-contact list so the next project does not cold-email
+      // them again.
+      if (pe.contactEmail) {
+        await suppress(pe.contactEmail, 'declined', resolvedProjectId);
+      }
 
     } else if (parsed.intent === 'counter_rate') {
       await updateExpertStatus(resolvedProjectId, resolvedExpertId, {

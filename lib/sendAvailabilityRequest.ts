@@ -11,6 +11,7 @@
 import { Resend } from 'resend';
 import type { IcsEvent } from './generateIcs';
 import { generateIcsBuffer } from './generateIcs';
+import { buildOutreachFooter } from './outreachFooter';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -44,7 +45,12 @@ function escapeHtml(s: string): string {
     .replace(/'/g,  '&#39;');
 }
 
-function buildEmailHtml(expertName: string, projectName: string, availabilityLink: string): string {
+function buildEmailHtml(
+  expertName:       string,
+  projectName:      string,
+  availabilityLink: string,
+  footerHtml:       string,
+): string {
   const firstName = expertName.split(' ')[0] ?? expertName;
 
   return `<!DOCTYPE html>
@@ -106,10 +112,10 @@ function buildEmailHtml(expertName: string, projectName: string, availabilityLin
           </td>
         </tr>
 
-        <!-- Footer -->
+        <!-- Footer — postal address + per-recipient opt-out (CAN-SPAM) -->
         <tr>
-          <td style="padding:16px 32px;border-top:1px solid #e2e8f0;">
-            <p style="margin:0;font-size:11px;color:#94a3b8;">Sent via ExpertMatch</p>
+          <td style="padding:0 32px 20px;">
+            ${footerHtml}
           </td>
         </tr>
 
@@ -241,12 +247,16 @@ export async function sendAvailabilityRequest(params: AvailabilityRequestParams)
   const resend  = getResend();
   const subject = `Scheduling Request — ${params.projectName}`;
 
+  // CAN-SPAM footer: postal address (when configured) plus a per-recipient
+  // opt-out link — this email reaches the expert.
+  const footer = buildOutreachFooter(params.toEmail);
+
   const { error } = await resend.emails.send({
     from,
     to:      params.toEmail,
     subject,
-    html:    buildEmailHtml(params.expertName, params.projectName, params.availabilityLink),
-    text:    buildEmailText(params.expertName, params.projectName, params.availabilityLink),
+    html:    buildEmailHtml(params.expertName, params.projectName, params.availabilityLink, footer.html),
+    text:    buildEmailText(params.expertName, params.projectName, params.availabilityLink) + footer.text,
   });
 
   if (error) {
@@ -293,7 +303,7 @@ export async function sendConfirmationEmail(
   const icsBase64  = icsBuffer.toString('base64');
   const subject    = `Your expert call is confirmed — ${formattedDate}`;
 
-  const textBody = [
+  const buildText = (footerText: string): string => [
     'Your call is confirmed.',
     '',
     `Expert: ${expertName}`,
@@ -305,9 +315,9 @@ export async function sendConfirmationEmail(
     'A calendar invitation is attached.',
     '',
     '— ExpertMatch',
-  ].join('\n');
+  ].join('\n') + footerText;
 
-  const htmlBody = `<!DOCTYPE html>
+  const buildHtml = (footerHtml: string): string => `<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
@@ -344,8 +354,8 @@ export async function sendConfirmationEmail(
           </td>
         </tr>
         <tr>
-          <td style="padding:16px 32px;border-top:1px solid #e2e8f0;">
-            <p style="margin:0;font-size:11px;color:#94a3b8;">Sent via ExpertMatch</p>
+          <td style="padding:${footerHtml ? '0 32px 20px' : '16px 32px'};${footerHtml ? '' : 'border-top:1px solid #e2e8f0;'}">
+            ${footerHtml || '<p style="margin:0;font-size:11px;color:#94a3b8;">Sent via ExpertMatch</p>'}
           </td>
         </tr>
       </table>
@@ -356,14 +366,22 @@ export async function sendConfirmationEmail(
 
   // Send to both expert and client
   const recipients = [expertEmail, clientEmail].filter(e => e.trim().length > 0);
+  const normalizedExpert = expertEmail.trim().toLowerCase();
 
   for (const to of recipients) {
+    // The opt-out footer belongs on the expert's copy only. The client is a
+    // signed-in customer receiving a transactional confirmation — offering
+    // them an outreach opt-out would suppress the wrong address.
+    const footer = to.trim().toLowerCase() === normalizedExpert
+      ? buildOutreachFooter(to)
+      : { text: '', html: '' };
+
     const { error } = await resend.emails.send({
       from,
       to,
       subject,
-      html:        htmlBody,
-      text:        textBody,
+      html:        buildHtml(footer.html),
+      text:        buildText(footer.text),
       attachments: [
         {
           filename:    'invite.ics',

@@ -11,10 +11,15 @@
 //   RESEND_API_KEY, OUTREACH_FROM_EMAIL
 //   QSTASH_TOKEN
 //   NEXT_PUBLIC_BASE_URL (defaults to https://expertmatch.fit)
+// Optional:
+//   OUTREACH_POSTAL_ADDRESS — physical address rendered in the CAN-SPAM footer.
+//                             Unset omits the address line; the opt-out link is
+//                             always present. See lib/outreachFooter.ts.
 
 import { Resend } from 'resend';
 import type { Expert } from '../types';
 import { openai } from './openai';
+import { buildOutreachFooter } from './outreachFooter';
 
 export type EmailStep = 'email1' | 'email2' | 'email3';
 
@@ -102,7 +107,8 @@ Requirements:
 - Subject line, then the email body
 - Greet by first name (${firstName})
 - Ask if they would be open to a paid consulting call ($${rate}/hr, billed per minute) about ${query}
-- One specific sentence connecting their background at ${expert.company} to the topic
+- One sentence connecting their role at ${expert.company} to the topic
+- Use only the facts provided above. Do not invent details about this person's background, work, or publications; if you lack a specific detail, keep the sentence general.
 - Soft close — no pressure
 - No firm name. No links. Plain text only.
 - Max 100 words in the body.
@@ -134,7 +140,7 @@ export async function generateEmail2(
 
   const userPrompt = `Write Email 2 in a 3-part outreach sequence to ${expert.name}, ${expert.title} at ${expert.company}.
 
-Context: They replied with interest to Email 1 about "${query}". Rate is $${rate}/hr, billed per minute.
+Context: They replied with interest to Email 1 about "${query}". The proposed rate is $${rate}/hr, billed per minute — it is not yet agreed.
 
 Requirements:
 - Subject line, then the email body
@@ -143,8 +149,8 @@ Requirements:
 - Ask three numbered questions:
   1. Do you have any conflict of interest or NDA that would prevent discussing ${query}?
   2. Are you aware of any restrictions from your current employer?
-  3. Confirm: you are available at $${rate}/hr billed per minute.
-- State the rate as confirmed fact, not a question
+  3. Would $${rate}/hr, billed per minute, work for you?
+- Use only the facts provided above. Do not invent details about this person's background, work, or publications.
 - No firm name. Plain text only.
 - Max 120 words in the body.
 
@@ -242,12 +248,17 @@ export async function sendSequenceEmail(
   const replyTo = `reply+${replyToken}@expertmatch.fit`;
   const resend  = getResend();
 
+  // CAN-SPAM footer: postal address (when configured) plus a per-recipient
+  // opt-out link. Text only — these are deliberately plain-text emails, so we
+  // append the text variant rather than promoting them to multipart.
+  const footer = buildOutreachFooter(to);
+
   const { error } = await resend.emails.send({
     from,
     to,
     replyTo,
     subject,
-    text: body,
+    text: `${body}${footer.text}`,
   });
 
   if (error) {
