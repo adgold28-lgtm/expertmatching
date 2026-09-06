@@ -3,7 +3,7 @@ Last updated: 2026-09-06
 
 ## NOW (blocking or broken)
 - [x] Per-seat billing branch merged to main + new pricing — DONE 2026-09-06
-      (\$250/\$200/talk-to-us seats, 50% call take, 15-min minimum, client-rate
+      ($250/$200/talk-to-us seats, 50% call take, 15-min minimum, client-rate
       billing; smoke 16/16; deployed e4817b1). Stripe seat Price v2 is created
       lazily on first org billing setup (test mode). Migration 20260902 was
       already applied in prod.
