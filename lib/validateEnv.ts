@@ -35,6 +35,8 @@ const REQUIRED_VARS = [
   'NEXT_PUBLIC_SUPABASE_URL',
   'NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY',
   'SUPABASE_SERVICE_ROLE_KEY',
+  // Anthropic API (expert generation)
+  'ANTRHOPICKEYREAL',
 ] as const;
 
 export function validateEnv(): void {
