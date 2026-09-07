@@ -1,8 +1,19 @@
 # ExpertMatch — Session Handoff
 
-**Written:** 2026-09-06 (evening, session 2) · **Branch:** `main` (deployed = production) · **Status:** live at expertmatch.fit; Matchy Phase 1 shipped and verified in production (`scripts/e2e-matchy.ts` all green, `scripts/smoke-cutover.ts` 16/16)
+**Written:** 2026-09-06 (late evening, session 3) · **Branch:** `main` (deployed = production) · **Status:** live at expertmatch.fit; Matchy Phase 1 shipped and verified in production (`scripts/e2e-matchy.ts` all green, `scripts/smoke-cutover.ts` 16/16)
 
 Read with `CLAUDE.md` (operating rules), `TASK_QUEUE.md` (priorities), `docs/MATCHY_SPEC.md` (next build), `docs/OUTREACH_BOT_AUDIT.md` (why Matchy replaces the outreach bot).
+
+## Session 3 (2026-09-06, late) — what changed and what is still broken
+
+Fixed and verified in production:
+- **Sourcing** never enqueued: `lib/sourcingJob.ts` published to the global QStash host (this account is region-pinned to us-east-1 → 404) with a percent-encoded destination (→ 400). Now uses `QSTASH_URL` (fallback `https://qstash-us-east-1.upstash.io`) and the raw URL. Verified with `scripts/verify-sourcing-prod.ts` (throwaway user, 14 experts in ~3 min). **Set `QSTASH_URL` in the Vercel project env** — the fallback covers it but the var should exist.
+- **All Resend mail was rejected** (403 "gmail.com is not verified"): `OUTREACH_FROM_EMAIL` was a gmail address. `lib/mailFrom.ts` now owns the From: address (uses the env value only when it is on expertmatch.fit, else `ExpertMatch <notifications@expertmatch.fit>`); every sender goes through it; the access-request notification is awaited and logged. `.env.local` updated. **Change `OUTREACH_FROM_EMAIL` in Vercel** to `ExpertMatch <notifications@expertmatch.fit>`.
+- **Admin console**: legacy `plan` removed everywhere (column stays, default 'starter'); `/api/admin/firms` returns `billing` (organization_billing mirror); page reordered requests-first with a billing line per org.
+
+**BROKEN IN PRODUCTION — founder action:** migrations `20260902000000_org_billing_and_rls_hardening.sql` and `20260906000000_outreach_suppressions.sql` were never applied (TASK_QUEUE said otherwise). `organization_billing` and `outreach_suppressions` do not exist, so **POST /api/onboarding/billing 500s and no customer can finish onboarding**, and expert opt-outs would fail. Paste both files into Studio (a combined idempotent script was handed over in the session), then verify with a service-role select. `seat_requests` has no migration at all — the seat-request feature is dead code.
+
+Full page-by-page audit (every button/input, four questions each) was delivered in the session transcript; the top items are in TASK_QUEUE "NOW".
 
 ## How to continue (for the next session)
 
