@@ -45,12 +45,12 @@ const OPTIONS: { id: CalendarProvider; label: string; blurb: string }[] = [
   {
     id:    'calendly',
     label: 'Use Calendly',
-    blurb: 'Paste your booking link. We check it for openings when a call is being scheduled.',
+    blurb: 'Paste your booking link. We’ll use it to find call times once an expert says yes.',
   },
   {
     id:    'manual',
     label: 'Enter availability manually',
-    blurb: 'Add the windows that work for you. You can update these any time.',
+    blurb: 'Add the windows that work for you. You can change these later from Settings.',
   },
 ];
 

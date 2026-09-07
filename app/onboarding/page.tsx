@@ -111,7 +111,9 @@ async function loadServerState(): Promise<ServerState | null> {
         firstName: me.firstName ?? '',
         lastName:  me.lastName  ?? '',
         title:     me.title     ?? '',
-        firmName:  me.firmName  ?? '',
+        // The firm box is read-only: prefer the organization's own name and
+        // fall back to the profile copy of it.
+        firmName:  me.firmName || me.orgName || '',
       },
     };
   } catch {
@@ -130,6 +132,7 @@ function firstIncompleteStep(calendarConnected: boolean, billingComplete: boolea
 export default function OnboardingPage() {
   const router = useRouter();
 
+  const [signingOut, setSigningOut] = useState(false);
   const [resolving, setResolving] = useState(true);
   const [loadError, setLoadError] = useState(false);
   const [step,      setStep]      = useState<Step>(1);
@@ -219,6 +222,24 @@ export default function OnboardingPage() {
     setResolving(false);
   }
 
+  /**
+   * Onboarding is a dead end without this: middleware allows an unfinished
+   * account only /onboarding and /api/auth/{me,logout}, so a user who cannot
+   * complete a step (no card, wrong account) had no way out. Hard navigation,
+   * not router.push — the session cookie is gone and the client cache must go
+   * with it.
+   */
+  async function handleSignOut(): Promise<void> {
+    if (signingOut) return;
+    setSigningOut(true);
+    try {
+      await fetch('/api/auth/logout', { method: 'POST' });
+    } catch {
+      // Signing out locally still matters — fall through to the redirect.
+    }
+    window.location.href = '/login';
+  }
+
   function handleFinish(): void {
     router.push('/app?welcome=1');
     router.refresh();
@@ -245,9 +266,22 @@ export default function OnboardingPage() {
           >
             EXPERTMATCH
           </span>
-          <span className="text-[10px] uppercase" style={{ color: GOLD, letterSpacing: '0.18em' }}>
-            Account Setup
-          </span>
+          <div className="flex items-center gap-3 sm:gap-5">
+            {/* Hidden on the narrowest screens so the wordmark and the sign-out
+                control never collide; the step indicator below says the same. */}
+            <span className="hidden sm:inline text-[10px] uppercase" style={{ color: GOLD, letterSpacing: '0.18em' }}>
+              Account Setup
+            </span>
+            <button
+              type="button"
+              onClick={() => void handleSignOut()}
+              disabled={signingOut}
+              className="text-[10px] uppercase border px-3 py-1.5 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+              style={{ letterSpacing: '0.14em', color: GOLD, borderColor: `${GOLD}40` }}
+            >
+              {signingOut ? 'Signing out…' : 'Sign out'}
+            </button>
+          </div>
         </div>
       </header>
 

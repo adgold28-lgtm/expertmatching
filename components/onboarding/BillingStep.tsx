@@ -34,6 +34,9 @@ import {
 
 type InitState = 'loading' | 'ready' | 'unavailable' | 'no_organization' | 'failed';
 
+/** Where a blocked customer can reach a human. */
+const SUPPORT_EMAIL = 'ashergoldsteinbusiness@gmail.com';
+
 interface BillingStepProps {
   complete:   boolean;
   /** Firm name from /api/auth/me, so the resumed state can name the firm. */
@@ -354,7 +357,28 @@ export default function BillingStep({ complete, orgName, onComplete, onContinue 
         >
           Continue
         </button>
-      ) : initState === 'unavailable' || initState === 'no_organization' ? null : pendingConfirmId ? (
+      ) : initState === 'unavailable' || initState === 'no_organization' ? (
+        // Neither state is the user's fault, but both used to leave the step
+        // with no button at all — and onboarding cannot be skipped. Give them
+        // the two things that can actually move it: retry, or reach a human.
+        <div className="space-y-3">
+          <button
+            type="button"
+            onClick={() => setAttempt(n => n + 1)}
+            className={BUTTON_CLASS}
+            style={{ background: NAVY, color: '#FFFFFF', letterSpacing: '0.14em' }}
+          >
+            Try again
+          </button>
+          <a
+            href={`mailto:${SUPPORT_EMAIL}?subject=${encodeURIComponent('ExpertMatch billing setup')}`}
+            className="block w-full py-3 text-[11px] uppercase font-medium text-center border border-frame transition-colors hover:bg-cream"
+            style={{ color: NAVY, letterSpacing: '0.14em' }}
+          >
+            Contact us
+          </a>
+        </div>
+      ) : pendingConfirmId ? (
         <button
           type="button"
           onClick={() => void handleRetryConfirm()}

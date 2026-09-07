@@ -16,6 +16,9 @@ export default function RequestAccessForm() {
   const [loading, setLoading] = useState(false);
   const [error,   setError]   = useState('');
   const [success, setSuccess] = useState(false);
+  // True when the firm's domain was already approved and the invite went out
+  // during this request — the inbox, not a follow-up call, is the next step.
+  const [invited, setInvited] = useState(false);
 
   const firstName = name.trim().split(' ')[0] ?? name.trim();
 
@@ -37,12 +40,13 @@ export default function RequestAccessForm() {
           firmSize,
         }),
       });
-      const data = (await res.json()) as { ok?: boolean; message?: string };
+      const data = (await res.json()) as { ok?: boolean; invited?: boolean; message?: string };
       if (!res.ok || !data.ok) {
         // The API returns { error: <machine code>, message: <human copy> }.
         // Only `message` is ever shown — never the raw code.
         throw new Error(data.message ?? 'Something went wrong. Please try again.');
       }
+      setInvited(data.invited === true);
       setSuccess(true);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Something went wrong. Please try again.');
@@ -72,7 +76,9 @@ export default function RequestAccessForm() {
               Thanks, {firstName}.
             </h1>
             <p className="text-muted text-sm leading-relaxed" style={{ fontWeight: 300 }}>
-              We received your request and will be in touch within one business day.
+              {invited
+                ? 'Your firm is already on ExpertMatch — check your inbox for your sign-in link (it expires in 24 hours).'
+                : 'We received your request and will be in touch within one business day.'}
             </p>
             <Link
               href="/"

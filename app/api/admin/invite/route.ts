@@ -2,11 +2,15 @@ import { NextRequest } from 'next/server';
 import { adminGuard, getSessionUser } from '../../../../lib/auth';
 import { provisionAccountInvite } from '../../../../lib/accountProvisioning';
 
-// POST { firstName, lastName, email, organization: { domain?, name? }, role? }
+// POST { firstName, lastName, email, organization: { domain?, name? }, role?, reinvite? }
 //
 // Platform-admin invite. All account creation goes through
 // provisionAccountInvite — first name, last name, email and organization are
 // mandatory on every path.
+//
+// `reinvite: true` re-sends a link to someone who already has an account
+// (otherwise a 409 user_exists): a pending invitee gets a fresh invitation, an
+// active member gets a password-reset link and keeps everything else.
 export async function POST(request: NextRequest): Promise<Response> {
   const err = await adminGuard(request);
   if (err) return err;
@@ -32,6 +36,7 @@ export async function POST(request: NextRequest): Promise<Response> {
     role:            b.role === 'admin' ? 'admin' : 'user',
     invitedByEmail:  session.email,
     isPlatformAdmin: true,
+    reinvite:        b.reinvite === true,
   });
 
   if (!result.ok) {
@@ -44,6 +49,9 @@ export async function POST(request: NextRequest): Promise<Response> {
     ok:        true,
     email:     result.email,
     emailSent: result.emailSent,
-    ...(result.emailSent ? {} : { warning: 'Invite created, but the email could not be delivered.' }),
+    ...(result.reinvited ? { reinvited: true } : {}),
+    ...(result.emailSent
+      ? {}
+      : { warning: `${result.reinvited ? 'Link created' : 'Invite created'}, but the email could not be delivered.` }),
   });
 }

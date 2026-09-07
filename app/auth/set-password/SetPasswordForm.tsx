@@ -8,17 +8,22 @@ export default function SetPasswordForm({
   email,
   firmName,
   firstName,
+  kind = 'invite',
 }: {
   token:      string;
   email:      string;
   firmName:   string;
   firstName?: string;
+  /** 'invite' creates the account; 'reset' only replaces the password. */
+  kind?:      'invite' | 'reset';
 }) {
   const [password,  setPassword]  = useState('');
   const [confirm,   setConfirm]   = useState('');
   const [error,     setError]     = useState<string | null>(null);
   const [loading,   setLoading]   = useState(false);
   const router = useRouter();
+
+  const isReset = kind === 'reset';
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -39,22 +44,33 @@ export default function SetPasswordForm({
         body:    JSON.stringify({ password, confirmPassword: confirm }),
       });
 
-      const data = await res.json();
+      const data = await res.json() as { ok?: boolean; signedIn?: boolean; error?: string; message?: string };
 
       if (res.ok) {
-        router.push('/onboarding');
+        // The password is set either way. When the automatic sign-in did not
+        // take, send them to /login rather than into a guarded page they would
+        // just be bounced out of.
+        if (data.signedIn === false) {
+          window.location.href = '/login?ready=1';
+          return;
+        }
+        router.push(isReset ? '/app' : '/onboarding');
         router.refresh();
         return;
       }
 
       if (data.error === 'seat_limit_reached') {
-        setError("Your firm has no free seat right now. Ask your account admin to add one — seats are billed monthly and can be added at any time.");
+        setError("Your firm has no free seat right now. Ask your account admin to add one — seats are billed monthly and can be added at any time. Your link stays valid.");
+      } else if (data.error === 'temporarily_unavailable') {
+        setError('We couldn’t check your invitation just now — try again in a minute.');
+      } else if (data.error === 'reset_used' || data.error === 'reset_invalid') {
+        setError('This reset link is no longer valid. Request a new one from the sign-in page.');
       } else if (data.error === 'invite_used') {
         setError('This invite link has already been used.');
       } else if (data.error === 'invite_expired') {
-        setError('This invitation link has expired. Contact your administrator for a new one.');
+        setError('This link has expired. Request a new one to continue.');
       } else if (data.error === 'invite_invalid') {
-        setError('This invitation is invalid or has already been used.');
+        setError('This link is invalid or has already been used.');
       } else {
         setError(data.message ?? 'Something went wrong. Please try again.');
       }
@@ -84,11 +100,11 @@ export default function SetPasswordForm({
             className="text-[10px] uppercase tracking-widest text-muted mb-1 text-center"
             style={{ letterSpacing: '0.18em' }}
           >
-            Create Your Account
+            {isReset ? 'Choose a New Password' : 'Create Your Account'}
           </p>
           {firstName && (
             <p className="text-sm font-semibold text-navy text-center mb-1">
-              Welcome, {firstName}
+              {isReset ? `Hi, ${firstName}` : `Welcome, ${firstName}`}
             </p>
           )}
           <p className="text-xs text-muted text-center mb-6" style={{ fontWeight: 300 }}>
@@ -121,7 +137,7 @@ export default function SetPasswordForm({
                 value={password}
                 onChange={e => setPassword(e.target.value)}
                 className="w-full border border-frame bg-cream px-3 py-2.5 text-sm text-ink placeholder:text-muted/50 focus:outline-none focus:border-navy transition-colors"
-                placeholder="Choose a password"
+                placeholder={isReset ? 'Choose a new password' : 'Choose a password'}
                 aria-describedby="password-rule"
                 disabled={loading}
               />
@@ -163,7 +179,9 @@ export default function SetPasswordForm({
               className="w-full bg-navy text-cream text-[11px] uppercase tracking-widest py-2.5 hover:bg-navy/90 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
               style={{ letterSpacing: '0.16em' }}
             >
-              {loading ? 'Creating account…' : 'Create Account'}
+              {loading
+                ? (isReset ? 'Saving…' : 'Creating account…')
+                : (isReset ? 'Save Password' : 'Create Account')}
             </button>
           </form>
         </div>

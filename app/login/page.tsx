@@ -1,15 +1,25 @@
 'use client';
 
-import { useState, useRef } from 'react';
+import { useState, useRef, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
+import Link from 'next/link';
 
 export default function LoginPage() {
   const [email,    setEmail]    = useState('');
   const [password, setPassword] = useState('');
   const [error,    setError]    = useState<string | null>(null);
   const [loading,  setLoading]  = useState(false);
+  const [ready,    setReady]    = useState(false);
   const emailRef = useRef<HTMLInputElement>(null);
   const router   = useRouter();
+
+  // ?ready=1 is set by the set-password flow when the password was saved but the
+  // automatic sign-in did not take. Read on mount rather than during render so
+  // the server and client markup match; only the exact value '1' counts.
+  useEffect(() => {
+    const value = new URLSearchParams(window.location.search).get('ready');
+    setReady(value === '1');
+  }, []);
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -76,6 +86,15 @@ export default function LoginPage() {
             Private Access
           </p>
 
+          {ready && (
+            <p
+              role="status"
+              className="mb-5 border border-frame bg-cream px-3 py-2.5 text-[11px] text-navy leading-relaxed"
+            >
+              Your account is ready — sign in.
+            </p>
+          )}
+
           <form onSubmit={handleSubmit} className="space-y-4">
             <div>
               <label
@@ -138,7 +157,9 @@ export default function LoginPage() {
           </form>
 
           <p className="mt-5 text-center text-[11px] text-muted leading-relaxed">
-            Forgot your password? Ask your account admin to send you a new invitation link.
+            <Link href="/auth/reset" className="text-navy hover:underline">
+              Forgot your password?
+            </Link>
           </p>
         </div>
 

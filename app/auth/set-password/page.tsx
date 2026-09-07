@@ -1,9 +1,17 @@
-import { verifySignupToken, hashToken } from '../../../lib/signupToken';
+import { verifySignupToken, hashToken, tokenRedisKey } from '../../../lib/signupToken';
 import { getUpstashClient } from '../../../lib/upstashRedis';
 import { getUser } from '../../../lib/firmStore';
 import SetPasswordForm from './SetPasswordForm';
 
-function ErrorPage({ title, body }: { title: string; body: string }) {
+function ErrorPage({
+  title,
+  body,
+  retryHref,
+}: {
+  title:      string;
+  body:       string;
+  retryHref?: string;
+}) {
   return (
     <div className="min-h-screen bg-cream flex items-center justify-center px-4">
       <div className="w-full max-w-sm text-center">
@@ -13,11 +21,23 @@ function ErrorPage({ title, body }: { title: string; body: string }) {
         <div className="bg-white border border-frame p-8 shadow-sm">
           <p className="text-sm font-semibold text-navy mb-2">{title}</p>
           <p className="text-xs text-muted leading-relaxed">{body}</p>
+          {retryHref && (
+            <a
+              href={retryHref}
+              className="mt-6 block w-full bg-navy text-cream text-[11px] uppercase tracking-widest py-2.5 hover:bg-navy/90 transition-colors"
+              style={{ letterSpacing: '0.16em' }}
+            >
+              Retry
+            </a>
+          )}
         </div>
       </div>
     </div>
   );
 }
+
+/** 'valid' — unused link · 'spent' — consumed/expired · 'unavailable' — Redis is down. */
+type TokenState = 'valid' | 'spent' | 'unavailable';
 
 export default async function SetPasswordPage({
   searchParams,
@@ -33,34 +53,56 @@ export default async function SetPasswordPage({
     if (verified.expired) {
       return (
         <ErrorPage
-          title="Invitation expired"
-          body="This invitation link has expired. Please contact your administrator for a new one."
+          title="Link expired"
+          body="This link has expired. Ask your administrator for a new invitation, or request a new reset link from the sign-in page."
         />
       );
     }
     return (
       <ErrorPage
-        title="Invalid invitation"
-        body="This invitation is invalid or has already been used."
+        title="Invalid link"
+        body="This link is invalid or has already been used."
       />
     );
   }
 
-  const { email, firmName } = verified;
-  const hash = hashToken(rawToken);
+  const { email, firmName, kind } = verified;
+  const hash     = hashToken(rawToken);
+  const redisKey = tokenRedisKey(kind, hash);
 
-  // Check Redis: token must not yet be consumed
-  let tokenValid = false;
+  // Redis: the token must not yet be consumed. A storage outage is its own
+  // state — telling someone their invitation was "already used" when we simply
+  // could not look it up sends them to their admin for nothing.
+  let tokenState: TokenState;
   try {
     const redis = getUpstashClient();
-    if (redis) {
-      const stored = await redis.get(`invite-token:${hash}`);
-      tokenValid = stored !== null;
+    if (!redis) {
+      tokenState = 'unavailable';
+    } else {
+      const stored = await redis.get(redisKey);
+      tokenState = stored !== null ? 'valid' : 'spent';
     }
-  } catch { /* treat as invalid if Redis is down */ }
+  } catch {
+    tokenState = 'unavailable';
+  }
 
-  if (!tokenValid) {
+  if (tokenState === 'unavailable') {
     return (
+      <ErrorPage
+        title="We couldn’t check your link"
+        body="We couldn’t check your invitation just now — try again in a minute. Nothing has been used up."
+        retryHref={`/auth/set-password?token=${encodeURIComponent(rawToken)}`}
+      />
+    );
+  }
+
+  if (tokenState === 'spent') {
+    return kind === 'reset' ? (
+      <ErrorPage
+        title="Reset link already used"
+        body="This password reset link has already been used or has expired. You can request a new one from the sign-in page."
+      />
+    ) : (
       <ErrorPage
         title="Invitation already used"
         body="This invitation link has already been used to create an account."
@@ -77,6 +119,7 @@ export default async function SetPasswordPage({
       email={email}
       firmName={invitee?.firmName || firmName}
       firstName={invitee?.firstName ?? ''}
+      kind={kind}
     />
   );
 }

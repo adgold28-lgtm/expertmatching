@@ -51,10 +51,14 @@ export async function GET(request: NextRequest): Promise<Response> {
   }
 }
 
-// POST { firstName, lastName, email, organization: { domain?, name? }, role? }
+// POST { firstName, lastName, email, organization: { domain?, name? }, role?, reinvite? }
 //
 // Creating a user IS sending an invite: the invitee sets their own password via
 // the tokenized link. There is no admin-sets-password path.
+//
+// `reinvite: true` re-sends that link to an address that already has an account
+// — a pending invitee gets a fresh invitation, an active member gets a
+// password-reset link. Without it an existing account is still 409 user_exists.
 export async function POST(request: NextRequest): Promise<Response> {
   const err = await adminGuard(request);
   if (err) return err;
@@ -80,6 +84,7 @@ export async function POST(request: NextRequest): Promise<Response> {
     role:            b.role === 'admin' ? 'admin' : 'user',
     invitedByEmail:  session.email,
     isPlatformAdmin: true,
+    reinvite:        b.reinvite === true,
   });
 
   if (!result.ok) {
@@ -90,7 +95,10 @@ export async function POST(request: NextRequest): Promise<Response> {
     ok:        true,
     email:     result.email,
     emailSent: result.emailSent,
-    ...(result.emailSent ? {} : { warning: 'Invite created, but the email could not be delivered.' }),
+    ...(result.reinvited ? { reinvited: true } : {}),
+    ...(result.emailSent
+      ? {}
+      : { warning: `${result.reinvited ? 'Link created' : 'Invite created'}, but the email could not be delivered.` }),
   });
 }
 

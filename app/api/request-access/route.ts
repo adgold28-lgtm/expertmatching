@@ -28,6 +28,27 @@ const FIRM_TYPES = new Set<string>([
 ]);
 const FIRM_SIZES = new Set<string>(['boutique', 'mid_size', 'large']);
 
+// Human labels for the admin notification — the raw enum values are for the
+// database, not for a person reading the email at 7am.
+const FIRM_TYPE_LABELS: Record<string, string> = {
+  pe_firm:         'PE firm',
+  family_office:   'Family office',
+  consulting_firm: 'Consulting firm',
+  law_firm:        'Law firm',
+  hedge_fund:      'Hedge fund',
+  corporate:       'Corporate',
+  other:           'Other',
+};
+const FIRM_SIZE_LABELS: Record<string, string> = {
+  boutique: 'Boutique',
+  mid_size: 'Mid-size',
+  large:    'Large',
+};
+
+function labelFor(labels: Record<string, string>, value: string | null): string {
+  return value ? labels[value] ?? value : 'Not given';
+}
+
 function readFirmType(value: unknown): FirmTypeValue | null {
   return typeof value === 'string' && FIRM_TYPES.has(value) ? value as FirmTypeValue : null;
 }
@@ -166,7 +187,11 @@ export async function POST(request: NextRequest) {
             ...(record.firmSize ? { firmSize: record.firmSize } : {}),
           }).catch(() => { /* the invite already went out; this is not worth failing on */ });
         }
-        return Response.json({ ok: true });
+        // `invited: true` lets the form say the link is already in their inbox
+        // instead of promising a follow-up that will never come. It is only
+        // reachable for a domain the platform already approved, so it reveals
+        // nothing about any individual address.
+        return Response.json({ ok: true, invited: true });
       }
     }
 
@@ -212,10 +237,21 @@ export async function POST(request: NextRequest) {
         subject: `New access request: ${record.name} — ${record.firm}`,
         html: `<p><strong>Name:</strong> ${escapeHtml(record.name)}</p>
 <p><strong>Firm:</strong> ${escapeHtml(record.firm)}</p>
+<p><strong>Firm type:</strong> ${escapeHtml(labelFor(FIRM_TYPE_LABELS, record.firmType))}</p>
+<p><strong>Firm size:</strong> ${escapeHtml(labelFor(FIRM_SIZE_LABELS, record.firmSize))}</p>
 <p><strong>Email:</strong> ${escapeHtml(record.email)}</p>
 <p><strong>Research focus:</strong></p>
 <p style="white-space:pre-wrap;">${escapeHtml(record.useCase)}</p>`,
-        text: `Name: ${record.name}\nFirm: ${record.firm}\nEmail: ${record.email}\n\nResearch focus:\n${record.useCase}`,
+        text: [
+          `Name: ${record.name}`,
+          `Firm: ${record.firm}`,
+          `Firm type: ${labelFor(FIRM_TYPE_LABELS, record.firmType)}`,
+          `Firm size: ${labelFor(FIRM_SIZE_LABELS, record.firmSize)}`,
+          `Email: ${record.email}`,
+          '',
+          'Research focus:',
+          record.useCase,
+        ].join('\n'),
       }).catch((err: unknown) => ({ error: err instanceof Error ? err : new Error('send_failed') }));
       if (error) {
         console.error('[request-access] admin notification failed', {

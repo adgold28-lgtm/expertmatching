@@ -140,6 +140,11 @@ export async function GET(request: NextRequest): Promise<Response> {
 }
 
 // ─── POST — invite a member ───────────────────────────────────────────────────
+//
+// POST { firstName, lastName, email, orgId?, reinvite? }. `reinvite: true`
+// re-sends the set-password link to a member who already has an account
+// (pending → fresh invitation, active → password reset) instead of failing with
+// user_exists; it never consumes an extra seat.
 
 export async function POST(request: NextRequest): Promise<Response> {
   const guard = await orgAdminGuard(request);
@@ -164,6 +169,10 @@ export async function POST(request: NextRequest): Promise<Response> {
     orgRole:         'org_member',
     invitedByEmail:  guard.user.email,
     isPlatformAdmin: guard.user.role === 'admin',
+    // Re-send a link to someone already on the team. provisionAccountInvite
+    // refuses when that person belongs to a different organization, so an org
+    // admin can only ever re-invite their own members.
+    reinvite:        body.reinvite === true,
   });
 
   if (!result.ok) {
@@ -176,7 +185,10 @@ export async function POST(request: NextRequest): Promise<Response> {
     ok:        true,
     email:     result.email,
     emailSent: result.emailSent,
-    ...(result.emailSent ? {} : { warning: 'Invite created, but the email could not be delivered.' }),
+    ...(result.reinvited ? { reinvited: true } : {}),
+    ...(result.emailSent
+      ? {}
+      : { warning: `${result.reinvited ? 'Link created' : 'Invite created'}, but the email could not be delivered.` }),
   });
 }
 

@@ -13,8 +13,9 @@
 // Never logs email, name, domain, organization name or tokens.
 
 import { getUpstashClient } from './upstashRedis';
-import { generateSignupToken } from './signupToken';
+import { generateSignupToken, tokenRedisKey, tokenTtlSeconds } from './signupToken';
 import { sendInviteEmail } from './sendAvailabilityRequest';
+import { sendPasswordResetEmail } from './passwordReset';
 import {
   getFirm,
   upsertFirm,
@@ -66,6 +67,16 @@ export interface ProvisionAccountInput {
    * organization's (e.g. an advisor attached to a client org). Org admins may not.
    */
   isPlatformAdmin?: boolean;
+  /**
+   * Deliberate re-send to someone who already has an account. Without it an
+   * existing active or pending user is `user_exists`, which is why an admin
+   * previously had no way to resend a lost invitation.
+   *
+   * A pending user gets a fresh invitation; an ACTIVE user keeps their account
+   * and gets a set-password (reset) link instead — their seat, membership and
+   * onboarding state are never touched, and the seat cap does not apply.
+   */
+  reinvite?: boolean;
 }
 
 export interface ProvisionSuccess {
@@ -80,6 +91,8 @@ export interface ProvisionSuccess {
   setPasswordUrl:   string;
   /** false when the invite was stored but the email could not be delivered. */
   emailSent:        boolean;
+  /** true when this re-sent a link to an existing member rather than creating one. */
+  reinvited?:       boolean;
 }
 
 export interface ProvisionFailure {
@@ -94,7 +107,6 @@ export type ProvisionResult = ProvisionSuccess | ProvisionFailure;
 // ─── Validation ───────────────────────────────────────────────────────────────
 
 const MAX_NAME_LENGTH = 100;
-const INVITE_TTL_MS   = 24 * 60 * 60 * 1000;
 
 // RFC-ish: one @, no whitespace, a dotted domain with a 2+ char TLD.
 const EMAIL_RE  = /^[^\s@]{1,64}@[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*\.[a-z]{2,}$/i;
@@ -221,10 +233,58 @@ export async function provisionAccountInvite(
 
     const organizationName = firm.name || orgNameInput || orgDomain;
 
-    // ── 4. Duplicate check ────────────────────────────────────────────────────
+    // ── 4. Duplicate check / re-invite ────────────────────────────────────────
     const existing = await getUser(email);
     if (existing && (existing.status === 'active' || existing.status === 'pending')) {
-      return fail('user_exists', 'An account with this email already exists.', 409);
+      if (!input.reinvite) {
+        return fail('user_exists', 'An account with this email already exists.', 409);
+      }
+
+      // An org admin may only re-invite their own members. A mismatch answers
+      // exactly like an ordinary duplicate so team management cannot be used to
+      // probe for accounts at other organizations.
+      if (existing.orgId && existing.orgId !== firm.id && !input.isPlatformAdmin) {
+        return fail('user_exists', 'An account with this email already exists.', 409);
+      }
+
+      // An active member keeps their account and receives a reset link; a
+      // pending one gets a fresh invitation. Either way the token carries the
+      // organization, so accepting it cannot re-home them.
+      const kind = existing.status === 'active' ? 'reset' : 'invite';
+      const { token, hash, expiry } = generateSignupToken(email, organizationName, {
+        kind,
+        orgId: firm.id,
+      });
+      await redis.set(tokenRedisKey(kind, hash), email, { ex: tokenTtlSeconds(kind, expiry) });
+
+      const setPasswordUrl = `${appUrl}/auth/set-password?token=${encodeURIComponent(token)}`;
+      const greetingName   = existing.firstName || firstName;
+
+      let emailSent = true;
+      try {
+        if (kind === 'reset') {
+          await sendPasswordResetEmail(email, setPasswordUrl, greetingName);
+        } else {
+          await sendInviteEmail(email, organizationName, setPasswordUrl, greetingName);
+        }
+      } catch {
+        // The token is stored — the link is valid, only delivery failed.
+        emailSent = false;
+        console.error('[accountProvisioning] re-invite email delivery failed');
+      }
+
+      return {
+        ok: true,
+        email,
+        firstName:          existing.firstName || firstName,
+        lastName:           existing.lastName  || lastName,
+        organizationId:     firm.id,
+        organizationName,
+        organizationDomain: orgDomain,
+        setPasswordUrl,
+        emailSent,
+        reinvited:          true,
+      };
     }
 
     // ── 5. Optional platform-admin seat cap (null = unlimited) ────────────────
@@ -270,9 +330,13 @@ export async function provisionAccountInvite(
       });
 
       // ── 8. Single-use invite token ─────────────────────────────────────────
-      const { token, hash, expiry } = generateSignupToken(email, organizationName);
-      const ttlSeconds = Math.max(60, Math.floor((expiry - Date.now()) / 1000));
-      await redis.set(`invite-token:${hash}`, email, { ex: Math.min(ttlSeconds, Math.floor(INVITE_TTL_MS / 1000)) });
+      // The organization travels inside the token: set-password uses it instead
+      // of re-deriving the org from the email domain, which used to strand a
+      // cross-domain invitee in a brand-new organization of their own.
+      const { token, hash, expiry, kind } = generateSignupToken(email, organizationName, {
+        orgId: firm.id,
+      });
+      await redis.set(tokenRedisKey(kind, hash), email, { ex: tokenTtlSeconds(kind, expiry) });
 
       const setPasswordUrl = `${appUrl}/auth/set-password?token=${encodeURIComponent(token)}`;
 

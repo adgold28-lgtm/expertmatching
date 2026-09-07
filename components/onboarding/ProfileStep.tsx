@@ -142,7 +142,9 @@ export default function ProfileStep({ seed, onComplete, onStepsIncomplete }: Pro
             className="border border-frame px-3 py-2.5 text-sm text-navy/50"
             style={{ background: 'rgba(247,249,252,0.7)' }}
           >
-            {seed.firmName || '—'}
+            {/* Read-only: the firm comes from the invitation, not this form.
+                "your firm" beats an em dash when the name has not loaded. */}
+            {seed.firmName || 'your firm'}
           </div>
         </div>
 
