@@ -1,7 +1,7 @@
 import { NextRequest } from 'next/server';
 import { adminGuard } from '../../../../lib/auth';
 import { seatUnitPriceCents, monthlySeatTotalCents } from '../../../../lib/pricing';
-import { syncOrgSeatQuantity, getOrgBillingRow } from '../../../../lib/orgBilling';
+import { syncOrgSeatQuantity, getOrgBillingRow, cancelOrgSubscription } from '../../../../lib/orgBilling';
 import {
   listFirms,
   upsertFirm,
@@ -158,8 +158,29 @@ export async function DELETE(request: NextRequest): Promise<Response> {
   }
 
   try {
+    // Stop the money first. Deleting the organization row would orphan a live
+    // Stripe subscription, so a refusal from Stripe blocks the delete outright
+    // rather than leaving a firm that no longer exists paying for seats.
+    // 'none' covers "never had a subscription" and the case where the billing
+    // table is unreadable — the delete still proceeds.
+    const firm = await getFirm(domain).catch(() => null);
+    let subscription: 'canceled' | 'none' | 'error' = 'none';
+    if (firm) {
+      const result = await cancelOrgSubscription(firm.id);
+      subscription = result.outcome;
+      if (subscription === 'error') {
+        return Response.json(
+          {
+            error:   'subscription_cancel_failed',
+            message: 'Could not cancel the Stripe subscription; the organization was not removed. Try again or cancel it in Stripe first.',
+          },
+          { status: 409 },
+        );
+      }
+    }
+
     await deleteFirm(domain);
-    return Response.json({ ok: true });
+    return Response.json({ ok: true, subscription });
   } catch {
     console.error('[admin/firms] failed to delete organization');
     return Response.json({ error: 'Failed to delete organization' }, { status: 500 });

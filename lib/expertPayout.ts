@@ -11,9 +11,14 @@
 //            expertRate) over the same minutes; ExpertMatch keeps the difference.
 //
 // Behaviour:
-//   1. Load the ProjectExpert; skip silently if there is no contact email.
+//   1. Load the ProjectExpert; skip if already paid (stripeTransferId set) or
+//      if there is no contact email.
 //   2. If the expert has a Connect account with onboarding complete → transfer.
 //   3. Otherwise → mark payout pending and email a 7-day onboarding link.
+//
+// Payouts left pending because the expert had not finished Stripe onboarding
+// are retried by retryPendingPayoutsForAccount(), called from the
+// account.updated branch of the Stripe webhook. Nothing else retries.
 //
 // Required env vars:
 //   RESEND_API_KEY        — payout onboarding email (optional; skipped if absent)
@@ -25,7 +30,9 @@
 // accountId, or transferId. Amounts, projectId and expertId are safe.
 
 import { Resend } from 'resend';
+import type { ProjectExpert } from '../types';
 import { getProject, updateExpertStatus } from './projectStore';
+import { getServiceRoleClient } from './supabase/admin';
 import {
   getConnectAccountId,
   isOnboardingComplete,
@@ -144,8 +151,19 @@ export async function runExpertPayout(projectId: string, expertId: string): Prom
     const pe          = project?.experts.find(e => e.expert.id === expertId);
     const expertEmail = pe?.contactEmail;
 
-    if (!pe || !expertEmail) {
-      if (!expertEmail) console.log('[stripe] expert-email-missing', { projectId, expertId });
+    if (!pe) return;
+
+    // Idempotency: a recorded transfer means this expert has already been paid
+    // for this call. Webhook replays and the account.updated retry sweep both
+    // land here, so a second call must be a no-op. (stripeConnect's transfer
+    // also carries a deterministic idempotency key for the racing case.)
+    if (pe.stripeTransferId) {
+      console.log('[stripe] payout-already-sent', { projectId, expertId });
+      return;
+    }
+
+    if (!expertEmail) {
+      console.log('[stripe] expert-email-missing', { projectId, expertId });
       return;
     }
 
@@ -202,6 +220,103 @@ export async function runExpertPayout(projectId: string, expertId: string): Prom
   } catch (err) {
     // Never throw — payment is already recorded
     console.error('[stripe] payout error:', err instanceof Error ? err.message.slice(0, 120) : String(err));
+  }
+}
+
+// ─── Late-onboarding retry ────────────────────────────────────────────────────
+
+/**
+ * Upper bound on the pending-payout rows one account.updated event may inspect.
+ * The set is small by construction (a row is only 'pending' between a paid call
+ * and the expert finishing Stripe onboarding), and a webhook must stay fast.
+ */
+const MAX_PENDING_ROWS = 200;
+
+/** The payout state this module records on a ProjectExpert, as stored in `data`. */
+type PayoutState = Pick<
+  ProjectExpert,
+  'stripeConnectAccountId' | 'stripeTransferId' | 'expertOnboardingStatus'
+>;
+
+/** Reads the payout fields off one project_experts `data` blob. */
+function payoutState(data: unknown): PayoutState {
+  const d = (data ?? {}) as Partial<PayoutState>;
+  return {
+    stripeConnectAccountId: d.stripeConnectAccountId,
+    stripeTransferId:       d.stripeTransferId,
+    expertOnboardingStatus: d.expertOnboardingStatus,
+  };
+}
+
+/**
+ * Pays every expert whose payout stalled on unfinished Stripe onboarding and
+ * whose Connect account is `accountId`. Called from the account.updated branch
+ * of the Stripe webhook — the only retry path in the system.
+ *
+ * Candidates are the project_experts rows whose stored payout state is
+ * `expertOnboardingStatus: 'pending'` with no `stripeTransferId` (both live in
+ * the row's `data` JSON — only `status` and `contact_email` are promoted
+ * columns, see lib/projectStore.ts). A row matches the account either because
+ * runExpertPayout already recorded `stripeConnectAccountId`, or because the
+ * expert's email maps to it in Redis (the usual case: the account is created
+ * when the expert opens the onboarding link, after the payout went pending).
+ *
+ * Never throws. Logs counts only — never an account id, email, or transfer id.
+ */
+export async function retryPendingPayoutsForAccount(
+  accountId: string,
+): Promise<{ attempted: number; paid: number }> {
+  const empty = { attempted: 0, paid: 0 };
+  if (!accountId) return empty;
+
+  try {
+    const db = getServiceRoleClient();
+    if (!db) return empty;
+
+    const { data: rows, error } = await db
+      .from('project_experts')
+      .select('project_id, expert_id, contact_email, data')
+      .filter('data->>expertOnboardingStatus', 'eq', 'pending')
+      .limit(MAX_PENDING_ROWS);
+
+    if (error) {
+      console.error('[stripe] pending-payout query failed:', error.message.slice(0, 120));
+      return empty;
+    }
+    if (!rows || rows.length === 0) return empty;
+
+    let attempted = 0;
+    let paid      = 0;
+
+    for (const row of rows) {
+      const state = payoutState(row.data);
+      if (state.stripeTransferId) continue;
+
+      let matches = state.stripeConnectAccountId === accountId;
+      if (!matches && !state.stripeConnectAccountId && row.contact_email) {
+        matches = (await getConnectAccountId(row.contact_email)) === accountId;
+      }
+      if (!matches) continue;
+
+      attempted++;
+      await runExpertPayout(row.project_id, row.expert_id);
+
+      // Ask the row whether money actually moved rather than assuming it did.
+      const { data: after } = await db
+        .from('project_experts')
+        .select('data')
+        .eq('project_id', row.project_id)
+        .eq('expert_id', row.expert_id)
+        .maybeSingle();
+      if (payoutState(after?.data).stripeTransferId) paid++;
+    }
+
+    if (attempted > 0) console.log('[stripe] payout-retry', { attempted, paid });
+    return { attempted, paid };
+  } catch (err) {
+    console.error('[stripe] payout-retry error:',
+      err instanceof Error ? err.message.slice(0, 120) : String(err));
+    return empty;
   }
 }
 

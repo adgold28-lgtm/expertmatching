@@ -107,6 +107,33 @@ function stripeErrorCode(err: unknown): string {
   return typeof code === 'string' ? code : '';
 }
 
+// ─── Pure helpers (unit-tested in scripts/test-org-billing.ts) ────────────────
+
+/**
+ * Idempotency key for the one-and-only cancellation of an org's seat
+ * subscription. Deterministic per org so a retried admin delete cannot bill a
+ * second proration invoice. Pure.
+ */
+export function orgCancelIdempotencyKey(organizationId: string): string {
+  return `org-cancel:${organizationId}`;
+}
+
+/** Stripe object ids (sub_…, cus_…, acct_…) — stripped before a reason is surfaced. */
+const STRIPE_ID_RE = /\b(?:sub|cus|acct|price|prod|si|in|pi|seti|pm|txn|tr)_[A-Za-z0-9]+/g;
+
+/**
+ * Short, id-free reason for a failed Stripe call, safe to log and to hand to an
+ * admin UI: the Stripe error code when there is one, otherwise the message with
+ * every Stripe object id redacted. Pure.
+ */
+export function stripeFailureReason(err: unknown): string {
+  const code = stripeErrorCode(err);
+  if (code) return code;
+  const msg = err instanceof Error ? err.message : String(err);
+  const clean = msg.replace(STRIPE_ID_RE, '[id]').trim();
+  return clean.length > 0 ? clean.slice(0, 120) : 'stripe_error';
+}
+
 type BillingPatch = Database['public']['Tables']['organization_billing']['Update'];
 
 /** Patches the org's billing row. Returns false (and logs) on failure. */
@@ -651,6 +678,64 @@ export async function syncOrgSeatQuantity(organizationId: string): Promise<SeatS
   } catch (err) {
     logFailure('syncOrgSeatQuantity', err);
     return { ...base, outcome: 'error' };
+  }
+}
+
+// ─── Cancellation (organization deleted) ──────────────────────────────────────
+
+/**
+ * Cancels the organization's seat subscription immediately, invoicing the
+ * unbilled usage and crediting the unused time (`prorate` + `invoice_now`).
+ * Called before an organization row is deleted, so a removed firm is never
+ * billed for another month.
+ *
+ * Outcomes:
+ *   'canceled' — Stripe no longer bills this org (including "there was nothing
+ *                left to cancel": the subscription is gone or already canceled)
+ *   'none'     — the org never had a subscription, or its billing row is
+ *                unreadable (the table is missing in production tonight, and
+ *                getOrgBillingRow degrades to null); nothing to do
+ *   'error'    — Stripe refused; the caller must NOT delete the organization
+ *
+ * Never throws.
+ */
+export async function cancelOrgSubscription(
+  organizationId: string,
+): Promise<{ outcome: 'canceled' | 'none' | 'error'; reason?: string }> {
+  if (!organizationId) return { outcome: 'none' };
+
+  try {
+    // Null when the row (or the whole table) is unreadable — see getOrgBillingRow.
+    const row = await getOrgBillingRow(organizationId);
+    const subscriptionId = row?.stripe_subscription_id;
+    if (!subscriptionId) return { outcome: 'none' };
+
+    // Already gone or already canceled: nothing to cancel, but the mirror still
+    // needs correcting. Also avoids Stripe's ambiguous error for a re-cancel.
+    const existing = await retrieveSubscription(subscriptionId);
+    if (!existing || existing.status === 'canceled' || existing.status === 'incomplete_expired') {
+      await patchBillingRow(organizationId, {
+        subscription_status:  'canceled',
+        seat_quantity_synced: 0,
+      });
+      return { outcome: 'canceled' };
+    }
+
+    await stripe.subscriptions.cancel(
+      subscriptionId,
+      { prorate: true, invoice_now: true },
+      { idempotencyKey: orgCancelIdempotencyKey(organizationId) },
+    );
+
+    await patchBillingRow(organizationId, {
+      subscription_status:  'canceled',
+      seat_quantity_synced: 0,
+    });
+    console.log('[orgBilling] seat-subscription-canceled', { organizationId });
+    return { outcome: 'canceled' };
+  } catch (err) {
+    logFailure('cancelOrgSubscription', err);
+    return { outcome: 'error', reason: stripeFailureReason(err) };
   }
 }
 

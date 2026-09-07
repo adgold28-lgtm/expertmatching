@@ -83,12 +83,19 @@ export async function transferExpertPayout(
     throw new Error(`[stripeConnect] payout too small: ${amountCents} cents`);
   }
 
-  const transfer = await stripe.transfers.create({
-    amount:      amountCents,
-    currency:    'usd',
-    destination: accountId,
-    metadata:    { projectId, expertId }, // no PII in metadata
-  });
+  // One payout per project+expert, forever: the key is deterministic, so a
+  // retried webhook (or the account.updated retry sweep) replays the original
+  // transfer instead of sending the expert's money twice. The stored
+  // stripeTransferId is the first guard; this is the one that survives a race.
+  const transfer = await stripe.transfers.create(
+    {
+      amount:      amountCents,
+      currency:    'usd',
+      destination: accountId,
+      metadata:    { projectId, expertId }, // no PII in metadata
+    },
+    { idempotencyKey: `expert-payout:${projectId}:${expertId}` },
+  );
 
   // Log only safe identifiers — never log accountId or transferId
   console.log('[stripe-connect] transfer-initiated', { expertId, projectId });

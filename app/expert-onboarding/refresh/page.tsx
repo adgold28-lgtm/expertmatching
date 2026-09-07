@@ -15,8 +15,8 @@ export default function ExpertOnboardingRefreshPage() {
         </div>
         <p className="text-sm text-ink leading-relaxed">
           Please contact us at{' '}
-          <a href="mailto:asher@expertmatch.fit" className="underline underline-offset-2 hover:text-navy transition-colors">
-            asher@expertmatch.fit
+          <a href="mailto:ashergoldsteinbusiness@gmail.com" className="underline underline-offset-2 hover:text-navy transition-colors">
+            ashergoldsteinbusiness@gmail.com
           </a>{' '}
           for a new link.
         </p>

@@ -11,6 +11,9 @@
 //   customer.subscription.deleted         → mirror status onto organization_billing
 //   invoice.payment_failed                → mirror 'past_due' for the org whose
 //                                           seat subscription the invoice bills
+//   account.updated                       → an expert finished Connect
+//                                           onboarding: retry their pending
+//                                           payouts (the only retry path)
 //
 // Both "money received" branches funnel into runExpertPayout()
 // (lib/expertPayout.ts), which recomputes the payout server-side from the
@@ -31,7 +34,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import type Stripe from 'stripe';
 import { stripe } from '../../../../lib/stripe';
 import { updateExpertStatus } from '../../../../lib/projectStore';
-import { runExpertPayout } from '../../../../lib/expertPayout';
+import { runExpertPayout, retryPendingPayoutsForAccount } from '../../../../lib/expertPayout';
 import { recordSubscriptionStatus } from '../../../../lib/orgBilling';
 
 // ─── Shared branch handlers ───────────────────────────────────────────────────
@@ -167,6 +170,23 @@ export async function POST(request: NextRequest) {
     // through payment_intent.payment_failed above.
     if (subscriptionId) {
       await recordSubscriptionStatus(subscriptionId, 'past_due');
+    }
+  }
+
+  // ── Connect account finished onboarding (expert payout) ─────────────────
+  // An expert who set up Stripe AFTER their call was billed has a payout sitting
+  // in 'pending'; nothing else ever retries it. isOnboardingComplete()
+  // (lib/stripeConnect.ts) treats details_submitted as the bar, and
+  // payouts_enabled is the stricter signal that money can actually move —
+  // either is worth a sweep, and runExpertPayout re-checks the account before
+  // transferring. Never throws; logs counts only.
+  if (event.type === 'account.updated') {
+    const account = event.data.object as Stripe.Account;
+    const ready =
+      account.payouts_enabled === true
+      || (account.details_submitted === true && account.charges_enabled === true);
+    if (ready && account.id) {
+      await retryPendingPayoutsForAccount(account.id);
     }
   }
 

@@ -14,12 +14,13 @@ export default function ExpertOnboardingReturnPage() {
           </h1>
         </div>
         <p className="text-sm text-ink leading-relaxed">
-          You will receive payment within 2 business days of your call.
+          Your account is verified. Payment for each completed call is sent to it
+          automatically, usually within two business days of the call being billed.
         </p>
         <p className="text-xs text-muted">
           If you have any questions, contact us at{' '}
-          <a href="mailto:asher@expertmatch.fit" className="underline underline-offset-2 hover:text-navy transition-colors">
-            asher@expertmatch.fit
+          <a href="mailto:ashergoldsteinbusiness@gmail.com" className="underline underline-offset-2 hover:text-navy transition-colors">
+            ashergoldsteinbusiness@gmail.com
           </a>
           .
         </p>

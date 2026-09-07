@@ -8,26 +8,8 @@
 import { createHmac, timingSafeEqual } from 'crypto';
 import { callChargeDollars } from '../../../../lib/pricing';
 import { NextRequest, NextResponse } from 'next/server';
-import { getProject, listProjects, updateExpertStatus } from '../../../../lib/projectStore';
-
-// ─── Helper: find project+expert by zoomMeetingId ────────────────────────────
-// O(n) scan — project count is small, no secondary index needed.
-
-async function findByZoomMeetingId(
-  meetingId: string,
-): Promise<{ projectId: string | null; expertId: string | null }> {
-  const summaries = await listProjects();
-  for (const summary of summaries) {
-    const project = await getProject(summary.id);
-    if (!project) continue;
-    for (const pe of project.experts) {
-      if (pe.zoomMeetingId === meetingId) {
-        return { projectId: project.id, expertId: pe.expert.id };
-      }
-    }
-  }
-  return { projectId: null, expertId: null };
-}
+import { getProject, updateExpertStatus } from '../../../../lib/projectStore';
+import { findProjectExpertByZoomMeetingId } from '../../../../lib/zoomLookup';
 
 // ─── Route handler ────────────────────────────────────────────────────────────
 
@@ -77,8 +59,9 @@ export async function POST(request: NextRequest) {
   const meetingId = String(obj?.id ?? '');
 
   if (eventType === 'meeting.started') {
-    const { projectId, expertId } = await findByZoomMeetingId(meetingId);
-    if (projectId && expertId) {
+    const match = await findProjectExpertByZoomMeetingId(meetingId);
+    if (match) {
+      const { projectId, expertId } = match;
       await updateExpertStatus(projectId, expertId, { zoomMeetingStarted: true });
       console.log('[zoom] meeting-started', { meetingId });
     }
@@ -92,8 +75,9 @@ export async function POST(request: NextRequest) {
       : Date.now();
     const actualDurationMin = Math.max(1, Math.ceil((resolvedEnd - startTs) / 60000));
 
-    const { projectId, expertId } = await findByZoomMeetingId(meetingId);
-    if (projectId && expertId) {
+    const match = await findProjectExpertByZoomMeetingId(meetingId);
+    if (match) {
+      const { projectId, expertId } = match;
       const project = await getProject(projectId);
       const pe      = project?.experts.find(e => e.expert.id === expertId);
 
