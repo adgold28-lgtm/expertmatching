@@ -14,7 +14,14 @@
 //   • Matchy's status lines are written here, not at the call sites, so the
 //     voice stays identical wherever an outcome surfaces.
 
-import type { Project, ProjectExpert } from '../types';
+import type {
+  BookingState,
+  Project,
+  ProjectExpert,
+  ProposedSlot,
+  SchedulingOutcome,
+  SchedulingState,
+} from '../types';
 
 // ─── Wire shapes ──────────────────────────────────────────────────────────────
 
@@ -58,7 +65,14 @@ export interface MessageScreenResult {
   held?:    'walkthrough' | 'disabled' | null;
 }
 
-export type MessageIntent = 'interested' | 'declined' | 'counter_rate' | 'conflict' | 'unclear';
+/**
+ * What Matchy read a message as. The last three arrive once an engagement is
+ * being scheduled or has been booked and are mirrored from types.ReplyIntent so
+ * a thread payload carrying one still types here.
+ */
+export type MessageIntent =
+  | 'interested' | 'declined' | 'counter_rate' | 'conflict' | 'unclear'
+  | 'time_chosen' | 'time_unavailable' | 'reschedule';
 
 export interface ConversationMessage {
   id:           string;
@@ -160,6 +174,8 @@ const ERROR_LINES: Record<string, string> = {
   invalid_client_rate_band: 'The lowest rate has to be at or below the highest.',
   walkthrough_mode:         'Nothing is sent in walkthrough mode. Switch the project to live first.',
   invalid_walkthrough:      "Couldn't save that setting.",
+  not_ready_to_schedule:    'Terms are not settled yet. I propose times once the rate is agreed.',
+  nothing_booked:           'There is no call to move yet.',
 };
 
 interface ApiError {
@@ -275,6 +291,46 @@ export function sendPendingMessage(
   );
 }
 
+// ─── Scheduling ───────────────────────────────────────────────────────────────
+
+export interface ProposeTimesBody {
+  /** 'initial' offers times for the first call; 'reschedule' moves a booked one. */
+  reason:       'initial' | 'reschedule';
+  /** The client's stated preference, at most 200 characters. Screened server side. */
+  preferences?: string;
+}
+
+/** The most a preference line may carry. Mirrors the API's own limit. */
+export const PREFERENCES_MAX = 200;
+
+export interface ProposeTimesResult {
+  projectExpert: ProjectExpertWithCounter;
+  outcome:       SchedulingOutcome;
+  /** True in walkthrough mode: the proposal was written and nothing was sent. */
+  held?:         boolean;
+}
+
+/**
+ * Asks Matchy to propose call times, or to move a booked call.
+ *
+ * A 422 `message_blocked` comes back with `findings` for the preference line —
+ * the caller renders them exactly as the composer does and keeps the text. A
+ * 409 is a precondition (`not_ready_to_schedule`, `nothing_booked`); both have
+ * written lines in ERROR_LINES so no code reaches the screen.
+ */
+export function proposeTimes(
+  projectId: string,
+  expertId:  string,
+  body:      ProposeTimesBody,
+): Promise<MatchyResult<ProposeTimesResult>> {
+  return request(`${expertBase(projectId, expertId)}/propose-times`, { method: 'POST', body });
+}
+
+/** The calendar file for the booked call. Any project member may download it. */
+export function bookingIcsUrl(projectId: string, expertId: string): string {
+  return `${expertBase(projectId, expertId)}/booking/ics`;
+}
+
 // ─── Project settings ─────────────────────────────────────────────────────────
 
 export interface MatchySettingsPatch {
@@ -383,4 +439,184 @@ export function isValidClientRate(value: number): boolean {
 /** "$1,300" — whole dollars, the only money format the client UI uses. */
 export function formatRate(dollars: number): string {
   return `$${Math.round(dollars).toLocaleString('en-US')}`;
+}
+
+// ─── Times ────────────────────────────────────────────────────────────────────
+//
+// Every instant Matchy stores is UTC. Every instant a client reads is in THEIR
+// browser's zone, with the zone named next to it so a proposal is never
+// ambiguous. `timeZone` is a parameter rather than a lookup so these two are
+// testable against a fixed zone instead of the machine's.
+
+const TIME_ZONE_UNSET = '';
+
+function resolveZone(timeZone?: string): string {
+  if (timeZone) return timeZone;
+  try {
+    return Intl.DateTimeFormat().resolvedOptions().timeZone || TIME_ZONE_UNSET;
+  } catch {
+    return TIME_ZONE_UNSET;
+  }
+}
+
+interface ClockParts { clock: string; period: string; zone: string }
+
+function clockParts(date: Date, timeZone: string): ClockParts | null {
+  try {
+    const parts = new Intl.DateTimeFormat('en-US', {
+      ...(timeZone && { timeZone }),
+      hour:         'numeric',
+      minute:       '2-digit',
+      hour12:       true,
+      timeZoneName: 'short',
+    }).formatToParts(date);
+
+    const at = (type: string) => parts.find(p => p.type === type)?.value ?? '';
+    const hour   = at('hour');
+    const minute = at('minute');
+    if (!hour || !minute) return null;
+    return { clock: `${hour}:${minute}`, period: at('dayPeriod'), zone: at('timeZoneName') };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * "Tue, Sep 15 · 2:00–3:00 PM EDT" — one slot, written the way a person reads
+ * a calendar. The end is optional; the shared AM/PM is printed once when both
+ * ends sit in the same half of the day. Returns '' for anything unparseable so
+ * a bad instant renders as nothing rather than "Invalid Date".
+ */
+export function formatSlot(
+  startUtc: string,
+  endUtc?:  string | null,
+  options?: { timeZone?: string },
+): string {
+  const start = new Date(startUtc);
+  if (Number.isNaN(start.getTime())) return '';
+  const zone = resolveZone(options?.timeZone);
+
+  let day: string;
+  try {
+    day = new Intl.DateTimeFormat('en-US', {
+      ...(zone && { timeZone: zone }),
+      weekday: 'short',
+      month:   'short',
+      day:     'numeric',
+    }).format(start);
+  } catch {
+    return '';
+  }
+
+  const from = clockParts(start, zone);
+  if (!from) return day;
+
+  const end = endUtc ? new Date(endUtc) : null;
+  const to  = end && !Number.isNaN(end.getTime()) ? clockParts(end, zone) : null;
+
+  const time = !to
+    ? `${from.clock}${from.period ? ` ${from.period}` : ''}`
+    : from.period === to.period
+      ? `${from.clock}–${to.clock}${to.period ? ` ${to.period}` : ''}`
+      : `${from.clock}${from.period ? ` ${from.period}` : ''}–${to.clock}${to.period ? ` ${to.period}` : ''}`;
+
+  const zoneName = (to ?? from).zone;
+  return `${day} · ${time}${zoneName ? ` ${zoneName}` : ''}`;
+}
+
+/** "EDT" — the short name of the zone the times above are written in. */
+export function viewerZoneLabel(timeZone?: string): string {
+  const zone = resolveZone(timeZone);
+  const parts = clockParts(new Date(), zone);
+  return parts?.zone || zone;
+}
+
+// ─── Matchy's scheduling voice ────────────────────────────────────────────────
+
+export interface MatchyStatusLine {
+  text: string;
+  tone: 'default' | 'quiet' | 'alert';
+  /** Where the client has to go to unblock this, when there is such a place. */
+  href?: string;
+}
+
+/** The shape schedulingLine reads. Anything with a status and the two states. */
+export interface SchedulableExpert {
+  status:      string;
+  scheduling?: SchedulingState | null;
+  booking?:    BookingState | null;
+}
+
+/** Statuses where a scheduling line would only be stale. */
+const SCHEDULING_LINE_SILENT: ReadonlySet<string> = new Set([
+  'completed', 'rejected', 'rejected_after_outreach',
+]);
+
+/**
+ * Matchy's one line about where this call stands. Null when there is nothing to
+ * say yet, and null once the call is done — a finished engagement gets its
+ * wrap-up, not "waiting on their pick".
+ *
+ * A booked call outranks whatever proposal line came before it, so a payload
+ * whose `scheduling.outcome` lags behind `status` still reads correctly.
+ */
+export function schedulingLine(
+  pe:        SchedulableExpert,
+  firstName: string,
+  options?:  { timeZone?: string },
+): MatchyStatusLine | null {
+  if (SCHEDULING_LINE_SILENT.has(pe.status)) return null;
+
+  const booking = pe.booking ?? null;
+  const outcome = pe.scheduling?.outcome ?? null;
+
+  const bookedLine = (): MatchyStatusLine => {
+    const when = booking ? formatSlot(booking.startUtc, booking.endUtc, options) : '';
+    return {
+      text: when
+        ? `Booked ${when}. The Zoom link is on this card.`
+        : `Booked a time with ${firstName}. The Zoom link is on this card.`,
+      tone: 'default',
+    };
+  };
+
+  // The call is on the calendar and nobody has asked to move it.
+  if (pe.status === 'scheduled' && booking && outcome !== 'reschedule_requested') return bookedLine();
+
+  if (!outcome) return null;
+
+  switch (outcome) {
+    case 'times_proposed': {
+      const n = pe.scheduling?.proposed.length ?? 0;
+      if (n === 0) return { text: `Sent ${firstName} a link to pick a time.`, tone: 'default' };
+      return {
+        text: `Proposed ${n} time${n === 1 ? '' : 's'} to ${firstName}. Waiting on their pick.`,
+        tone: 'default',
+      };
+    }
+    case 'link_sent':
+      return { text: `Sent ${firstName} a link to pick a time.`, tone: 'default' };
+    case 'expert_declined_times':
+      return {
+        text: `${firstName} could not make any of the times. Add more hours in Settings, or propose different ones.`,
+        tone: 'alert',
+        href: '/settings',
+      };
+    case 'booked':
+      return bookedLine();
+    case 'reschedule_requested':
+      return { text: `Finding a new time with ${firstName}.`, tone: 'default' };
+    case 'no_client_availability':
+      return {
+        text: 'I need your hours first. Connect a calendar or add weekly hours in Settings.',
+        tone: 'alert',
+        href: '/settings',
+      };
+  }
+}
+
+/** The proposals currently on the table, oldest first. Never more than three. */
+export function proposedSlotsOf(pe: SchedulableExpert): ProposedSlot[] {
+  const slots = pe.scheduling?.proposed;
+  return Array.isArray(slots) ? slots : [];
 }

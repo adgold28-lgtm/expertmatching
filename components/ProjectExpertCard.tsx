@@ -13,7 +13,9 @@ import {
   bookmarkLine,
   firstNameOf,
   formatRate,
+  formatSlot,
   matchyLineFor,
+  schedulingLine,
 } from '../lib/matchyClient';
 
 const REJECTION_REASONS: Array<{ value: RejectionReason; label: string }> = [
@@ -82,8 +84,16 @@ export default function ProjectExpertCard({
   const [matchyNote, setMatchyNote] = useState<{ text: string; tone: 'default' | 'quiet' | 'alert' } | null>(null);
   // After a poll or a fresh load the local note is empty; the server-derived
   // outcome (matchyOutcome, set by lib/redactExpert) says what Matchy did.
-  const serverNote = matchyLineFor(projectExpert, firstNameOf(expert.name));
+  // Scheduling sits later in the engagement than the bookmark, so its line wins
+  // whenever there is one — the bookmark outcome is old news by then.
+  const serverNote = schedulingLine(projectExpert, firstNameOf(expert.name))
+    ?? matchyLineFor(projectExpert, firstNameOf(expert.name));
   const shownNote  = matchyNote ?? serverNote;
+  // The one fact a booked card carries in Matches. "Open" goes to the thread,
+  // where the Zoom link and the calendar file live; there are no buttons here.
+  const bookedWhen = projectExpert.booking && projectExpert.status === 'scheduled'
+    ? formatSlot(projectExpert.booking.startUtc, projectExpert.booking.endUtc)
+    : '';
   const [bookmarking, setBookmarking] = useState(false);
 
   const firstName  = firstNameOf(expert.name);
@@ -226,6 +236,11 @@ export default function ProjectExpertCard({
             <span className="text-[9px] text-amber-700 font-medium">Agreed: {formatRate(projectExpert.agreedRate)}/hr</span>
           )}
         </div>
+
+        {/* ── The booked call, one line ── */}
+        {bookedWhen && (
+          <p className="text-[10px] text-green-700 font-medium">Call booked · {bookedWhen}</p>
+        )}
 
         {/* ── Primary actions: Bookmark / Pass ──
             Bookmarking is what starts the engagement: Matchy finds the address

@@ -16,6 +16,7 @@ import ConversationThread from './ConversationThread';
 import MatchySettingsStrip from './MatchySettingsStrip';
 import MatchyLine from './MatchyLine';
 import { isWalkthrough } from '../lib/walkthrough';
+import { firstNameOf, formatSlot, schedulingLine } from '../lib/matchyClient';
 
 // ─── Props ────────────────────────────────────────────────────────────────────
 
@@ -69,6 +70,21 @@ function writeOpened(projectId: string, map: OpenedMap): void {
   } catch {
     // Storage blocked — the dot just stays until the page reloads.
   }
+}
+
+// ─── The list's second line ───────────────────────────────────────────────────
+//
+// The pill says the stage; this says the one concrete thing about it. A booked
+// call is the time itself, which is what a client scans this list for; anything
+// else in flight gets Matchy's own line, trimmed to fit. Null when there is
+// nothing to add and the row stays as it was.
+
+function secondaryLine(pe: ProjectExpert): string | null {
+  if (pe.booking && pe.status === 'scheduled') {
+    const when = formatSlot(pe.booking.startUtc, pe.booking.endUtc);
+    if (when) return when;
+  }
+  return schedulingLine(pe, firstNameOf(pe.expert.name))?.text ?? null;
 }
 
 // ─── Component ────────────────────────────────────────────────────────────────
@@ -175,9 +191,10 @@ export default function ConversationsPanel({
           {/* ── Left: the list ── */}
           <div className="border border-frame bg-surface divide-y divide-frame max-h-[640px] overflow-y-auto">
             {threads.map(pe => {
-              const pill     = CLIENT_STATUS_META[pe.status];
-              const active   = pe.expert.id === selectedId;
-              const unread   = isUnread(pe);
+              const pill      = CLIENT_STATUS_META[pe.status];
+              const active    = pe.expert.id === selectedId;
+              const unread    = isUnread(pe);
+              const secondary = secondaryLine(pe);
               return (
                 <button
                   key={pe.expert.id}
@@ -196,10 +213,13 @@ export default function ConversationsPanel({
                       {pe.expert.name}
                     </p>
                   </div>
-                  <div className="pl-3.5 mt-1">
+                  <div className="pl-3.5 mt-1 space-y-1">
                     <span className={`inline-block text-[9px] px-1.5 py-0.5 border font-medium uppercase tracking-wider ${pill.classes}`}>
                       {pill.label}
                     </span>
+                    {secondary && (
+                      <p className="text-[10px] text-muted leading-snug line-clamp-2">{secondary}</p>
+                    )}
                   </div>
                 </button>
               );

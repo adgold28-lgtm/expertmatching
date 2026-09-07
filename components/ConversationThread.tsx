@@ -33,13 +33,22 @@ import {
   isHeld,
   firstNameOf,
   formatRate,
+  proposeTimes,
+  schedulingLine,
+  proposedSlotsOf,
+  formatSlot,
+  viewerZoneLabel,
+  bookingIcsUrl,
+  PREFERENCES_MAX,
   type ConversationMessage,
+  type MessageIntent,
   type ProjectExpertWithCounter,
   type ScreenFinding,
 } from '../lib/matchyClient';
 import MatchyLine from './MatchyLine';
 import ClientReadyCard from './ClientReadyCard';
 import { CLIENT_STATUS_META } from './matchyStatus';
+import { WALKTHROUGH_HELD_SUMMARY } from '../lib/walkthrough';
 
 // ─── Props ────────────────────────────────────────────────────────────────────
 
@@ -81,6 +90,22 @@ const FINDING_NOUN: Record<string, string> = {
 
 function findingNoun(kind: string): string {
   return FINDING_NOUN[kind] ?? kind.replace(/_/g, ' ');
+}
+
+/**
+ * The scheduling intents get a tag next to the timestamp so a client can scan
+ * the thread for the one message that moved the call. The negotiation intents
+ * stay untagged: the rate decision card already says what they mean, and a
+ * second label next to it would only repeat it.
+ */
+const INTENT_TAG: Partial<Record<MessageIntent, string>> = {
+  time_chosen:      'Picked a time',
+  time_unavailable: 'Needs other times',
+  reschedule:       'Wants to move the call',
+};
+
+function intentTag(intent: MessageIntent | null): string | null {
+  return intent ? INTENT_TAG[intent] ?? null : null;
 }
 
 function formatTime(iso: string): string {
@@ -255,6 +280,7 @@ function StaffPanel({ pe }: { pe: ProjectExpertWithCounter }) {
 function ExpertMessage({ message, expertFirstName }: { message: ConversationMessage; expertFirstName: string }) {
   const [open, setOpen] = useState(false);
   const long = isLong(message.body);
+  const tag  = intentTag(message.intent);
 
   return (
     <div className="border border-frame bg-cream">
@@ -262,7 +288,17 @@ function ExpertMessage({ message, expertFirstName }: { message: ConversationMess
         <p className="text-[10px] uppercase tracking-widest text-navy font-semibold" style={{ letterSpacing: '0.14em' }}>
           {expertFirstName}
         </p>
-        <p className="text-[10px] text-muted">{formatTime(message.createdAt)}</p>
+        <div className="flex items-center gap-2 shrink-0">
+          {tag && (
+            <span
+              className="text-[9px] uppercase tracking-widest border border-frame text-muted px-1.5 py-0.5"
+              style={{ letterSpacing: '0.12em' }}
+            >
+              {tag}
+            </span>
+          )}
+          <p className="text-[10px] text-muted">{formatTime(message.createdAt)}</p>
+        </div>
       </div>
 
       {message.summary && (
@@ -289,6 +325,16 @@ function ExpertMessage({ message, expertFirstName }: { message: ConversationMess
         </div>
       )}
     </div>
+  );
+}
+
+/** The one spinner every in-flight button wears, in the button's own colour. */
+function Spinner() {
+  return (
+    <span
+      aria-hidden
+      className="inline-block w-3 h-3 border border-current border-t-transparent rounded-full animate-spin"
+    />
   );
 }
 
@@ -400,6 +446,17 @@ export default function ConversationThread({
   // What the last rate decision did. In walkthrough it says the line was held.
   const [decisionNote, setDecisionNote] = useState('');
 
+  // ── Scheduling ──
+  // `proposeOpen` is the preferences box; it opens from either the first-time
+  // control or "Propose different times", and both post the same request.
+  const [proposing,        setProposing]        = useState(false);
+  const [proposeOpen,      setProposeOpen]      = useState(false);
+  const [preferences,      setPreferences]      = useState('');
+  const [scheduleNote,     setScheduleNote]     = useState('');
+  const [scheduleError,    setScheduleError]    = useState('');
+  const [scheduleFindings, setScheduleFindings] = useState<ScreenFinding[]>([]);
+  const [confirmMove,      setConfirmMove]      = useState(false);
+
   const [noteText,   setNoteText]   = useState(projectExpert.userNotes ?? '');
   const [noteSaving, setNoteSaving] = useState(false);
   const [noteSaved,  setNoteSaved]  = useState(false);
@@ -436,6 +493,12 @@ export default function ConversationThread({
     setFindings([]);
     setSendError('');
     setDecisionNote('');
+    setProposeOpen(false);
+    setPreferences('');
+    setScheduleNote('');
+    setScheduleError('');
+    setScheduleFindings([]);
+    setConfirmMove(false);
     setNoteText(projectExpert.userNotes ?? '');
     setNoteSaved(false);
     void load(true);
@@ -524,6 +587,50 @@ export default function ConversationThread({
     }
   }
 
+  /**
+   * Ask Matchy for times, or ask it to move a booked call.
+   *
+   * Like the rate decision, this sends an ACTION and never text: the
+   * preferences line is a hint for the slot picker, screened server side, and
+   * the email to the expert is written from a template. A 422 comes back with
+   * findings on that line and is rendered exactly as the composer renders them.
+   * In walkthrough the server answers `held` and nothing changed, so the note
+   * says so rather than claiming a proposal went out.
+   */
+  async function runProposeTimes(reason: 'initial' | 'reschedule') {
+    if (proposing) return;
+    setProposing(true);
+    setScheduleError('');
+    setScheduleFindings([]);
+    setScheduleNote('');
+
+    const hint = preferences.trim();
+    const res  = await proposeTimes(projectId, expertId, {
+      reason,
+      ...(reason === 'initial' && hint ? { preferences: hint } : {}),
+    });
+    setProposing(false);
+
+    if (!res.ok) {
+      if (res.error === 'message_blocked') { setScheduleFindings(res.findings ?? []); return; }
+      setScheduleError(res.message);
+      return;
+    }
+
+    setThreadPE(res.projectExpert);
+    onExpertUpdate(res.projectExpert);
+    setProposeOpen(false);
+    setPreferences('');
+    setConfirmMove(false);
+    setScheduleNote(
+      res.held
+        ? WALKTHROUGH_HELD_SUMMARY
+        : schedulingLine(res.projectExpert, firstName)?.text
+          ?? `Working on times with ${firstName}.`,
+    );
+    await load(false);
+  }
+
   /** Review-first: the intro is written and waiting on the client. */
   async function approveIntro() {
     setApproving(true);
@@ -610,6 +717,80 @@ export default function ConversationThread({
   // the messages endpoint would answer `thread_not_started` anyway.
   const noAddressYet = status === 'bookmarked';
 
+  // ── Scheduling ─────────────────────────────────────────────────────────────
+  // `scheduling.outcome` is the record of the last thing Matchy did about the
+  // call; `booking` is the call itself. A booking outranks the outcome, so a
+  // payload whose outcome lags behind the status still reads correctly.
+  const scheduling    = pe.scheduling ?? null;
+  const booking       = pe.booking ?? null;
+  const outcome       = scheduling?.outcome ?? null;
+  const proposals     = proposedSlotsOf(pe);
+  const scheduleLine  = schedulingLine(pe, firstName);
+  const zoneLabel     = viewerZoneLabel();
+
+  const showBooked   = booking !== null && status === 'scheduled';
+  const showProposed = !showBooked
+    && (status === 'scheduling_sent' || outcome === 'times_proposed' || outcome === 'link_sent');
+  // Terms are settled and nothing has been proposed yet — or the last attempt
+  // came back with nowhere to go, which is exactly when asking again is the fix.
+  const canOfferTimes = canSend
+    && messages.length > 0
+    && (status === 'replied' || status === 'followup_sent' || status === 'rate_negotiation')
+    && (outcome === null || outcome === 'expert_declined_times' || outcome === 'no_client_availability');
+
+  /** The preferences box plus its button. Shared by the two places that offer times. */
+  function preferencesRow(buttonLabel: string) {
+    return (
+      <div className="space-y-1.5">
+        <div className="flex flex-col sm:flex-row sm:items-center gap-2">
+          <input
+            type="text"
+            value={preferences}
+            onChange={e => setPreferences(e.target.value)}
+            maxLength={PREFERENCES_MAX}
+            disabled={proposing}
+            placeholder="Preferences (optional): mornings only, not Fridays"
+            aria-label="Preferences for the call time"
+            className="flex-1 min-w-0 px-2.5 py-2 text-[12px] border border-frame bg-cream focus:outline-none focus:border-navy text-ink disabled:opacity-50"
+          />
+          <button
+            type="button"
+            onClick={() => { void runProposeTimes('initial'); }}
+            disabled={proposing}
+            className="w-full sm:w-auto shrink-0 inline-flex items-center justify-center gap-1.5 text-[10px] uppercase tracking-widest bg-navy text-cream px-3 py-2 hover:bg-navy/90 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+            style={{ letterSpacing: '0.1em' }}
+          >
+            {proposing && <Spinner />}
+            {proposing ? 'Working…' : buttonLabel}
+          </button>
+        </div>
+        {walkthrough && (
+          <p className="text-[10px] text-muted">
+            Walkthrough mode. I work out the times and send nothing.
+          </p>
+        )}
+      </div>
+    );
+  }
+
+  /** Findings and errors from the last scheduling attempt, in the composer's style. */
+  function scheduleFeedback() {
+    return (
+      <>
+        {scheduleFindings.length > 0 && (
+          <div className="border border-amber-300 bg-amber-50 px-3 py-2 space-y-1">
+            {scheduleFindings.map((f, i) => (
+              <p key={`${f.kind}-${i}`} className="text-[11px] text-amber-800 leading-relaxed">
+                Remove: {findingNoun(f.kind)} &lsquo;{f.match}&rsquo; &middot; {f.hint}
+              </p>
+            ))}
+          </div>
+        )}
+        {scheduleError && <p className="text-[11px] text-red-600">{scheduleError}</p>}
+      </>
+    );
+  }
+
   const callMinutes = pe.actualDurationMin ?? pe.callDurationMin ?? null;
   const charged     = typeof pe.invoiceAmount === 'number' ? pe.invoiceAmount : null;
   const isCompleted = status === 'completed';
@@ -640,10 +821,12 @@ export default function ConversationThread({
       {/* ── Staff panel (admins only) ── */}
       {isAdmin && <StaffPanel pe={pe} />}
 
-      {/* ── Call + billing strip ── */}
-      {(pe.zoomJoinUrl || callMinutes != null || pe.paymentStatus) && (
+      {/* ── Call + billing strip ──
+            The Zoom link lives in the booked card once there is one; the strip
+            keeps it for every other state and keeps billing either way. */}
+      {((pe.zoomJoinUrl && !showBooked) || callMinutes != null || pe.paymentStatus) && (
         <div className="px-4 py-2 border-b border-frame bg-cream flex items-center gap-4 flex-wrap">
-          {pe.zoomJoinUrl && (
+          {pe.zoomJoinUrl && !showBooked && (
             <a
               href={pe.zoomJoinUrl}
               target="_blank"
@@ -764,6 +947,180 @@ export default function ConversationThread({
               </div>
             )}
           </div>
+        )}
+
+        {/* ── Times: offer some ──
+              Terms are settled and the call is the only thing left. The
+              preference line is a hint for the picker, not a message: the
+              server screens it and writes the email from a template. */}
+        {canOfferTimes && (
+          <div className="border border-frame bg-cream px-3.5 py-3 space-y-2">
+            <MatchyLine tone="quiet">
+              {outcome === 'expert_declined_times'
+                ? `None of the last times worked for ${firstName}. I can offer different ones.`
+                : outcome === 'no_client_availability'
+                  ? 'I need your hours first. Connect a calendar or add weekly hours in Settings, then try again.'
+                  : `Ready to book ${firstName}. I will offer up to three times from your calendar.`}
+            </MatchyLine>
+            {preferencesRow('Propose times')}
+            {scheduleFeedback()}
+          </div>
+        )}
+
+        {/* ── Times: proposed, waiting on the expert ── */}
+        {showProposed && (
+          <div className="border border-teal-300 bg-teal-50 px-3.5 py-3 space-y-2.5">
+            <MatchyLine>
+              {scheduleLine?.text ?? `Sent ${firstName} a link to pick a time.`}
+            </MatchyLine>
+
+            {proposals.length > 0 && (
+              <ul className="pl-[52px] space-y-1">
+                {proposals.map(slot => (
+                  <li key={slot.startUtc} className="text-[12px] text-ink">
+                    {formatSlot(slot.startUtc, slot.endUtc)}
+                  </li>
+                ))}
+              </ul>
+            )}
+
+            <div className="pl-[52px] space-y-0.5">
+              {proposals.length > 0 && zoneLabel && (
+                <p className="text-[10px] text-muted">Times shown in {zoneLabel}.</p>
+              )}
+              <p className="text-[10px] text-muted">Waiting on {firstName}.</p>
+            </div>
+
+            {canSend && (
+              <div className="pl-0 sm:pl-[52px] space-y-2">
+                {!proposeOpen ? (
+                  <button
+                    type="button"
+                    onClick={() => setProposeOpen(true)}
+                    className="w-full sm:w-auto text-[10px] uppercase tracking-widest text-navy border border-navy/30 hover:border-navy px-3 py-2 transition-colors"
+                    style={{ letterSpacing: '0.1em' }}
+                  >
+                    Propose different times
+                  </button>
+                ) : (
+                  <>
+                    {preferencesRow('Propose different times')}
+                    <button
+                      type="button"
+                      onClick={() => { setProposeOpen(false); setScheduleError(''); setScheduleFindings([]); }}
+                      disabled={proposing}
+                      className="text-[10px] uppercase tracking-widest text-muted hover:text-navy disabled:opacity-40 transition-colors"
+                      style={{ letterSpacing: '0.1em' }}
+                    >
+                      Cancel
+                    </button>
+                  </>
+                )}
+                {scheduleFeedback()}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* ── The booked call ── */}
+        {showBooked && booking && (
+          <div className="border border-green-300 bg-green-50 px-3.5 py-3 space-y-2.5">
+            <p
+              className="text-[10px] uppercase tracking-widest text-green-800 font-semibold"
+              style={{ letterSpacing: '0.16em' }}
+            >
+              Call booked
+            </p>
+
+            <p className="text-[13px] text-ink font-medium">
+              {formatSlot(booking.startUtc, booking.endUtc)}
+            </p>
+            {zoneLabel && <p className="text-[10px] text-muted">Times shown in {zoneLabel}.</p>}
+            {booking.rescheduledCount > 0 && (
+              <p className="text-[10px] text-muted">
+                Moved {booking.rescheduledCount} time{booking.rescheduledCount === 1 ? '' : 's'}.
+              </p>
+            )}
+
+            <div className="flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-4">
+              {pe.zoomJoinUrl && (
+                <a
+                  href={pe.zoomJoinUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-[11px] text-navy font-medium hover:underline underline-offset-2"
+                >
+                  Join the call →
+                </a>
+              )}
+              <a
+                href={bookingIcsUrl(projectId, expertId)}
+                download
+                className="text-[11px] text-navy font-medium hover:underline underline-offset-2"
+              >
+                Add to calendar
+              </a>
+            </div>
+
+            {canSend && (
+              <div className="space-y-2">
+                {outcome === 'reschedule_requested' ? (
+                  <MatchyLine tone="quiet">Finding a new time with {firstName}.</MatchyLine>
+                ) : !confirmMove ? (
+                  <button
+                    type="button"
+                    onClick={() => { setConfirmMove(true); setScheduleError(''); }}
+                    className="w-full sm:w-auto text-[10px] uppercase tracking-widest text-navy border border-navy/30 hover:border-navy px-3 py-2 transition-colors"
+                    style={{ letterSpacing: '0.1em' }}
+                  >
+                    Move the call
+                  </button>
+                ) : (
+                  <div className="space-y-2">
+                    <MatchyLine>
+                      I will ask {firstName} for a new time and send an updated invite once they pick one.
+                    </MatchyLine>
+                    <div className="flex flex-col sm:flex-row gap-2 sm:pl-[52px]">
+                      <button
+                        type="button"
+                        onClick={() => { void runProposeTimes('reschedule'); }}
+                        disabled={proposing}
+                        className="w-full sm:w-auto inline-flex items-center justify-center gap-1.5 text-[10px] uppercase tracking-widest bg-navy text-cream px-3 py-2 hover:bg-navy/90 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                        style={{ letterSpacing: '0.1em' }}
+                      >
+                        {proposing && <Spinner />}
+                        {proposing ? 'Working…' : 'Ask for a new time'}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setConfirmMove(false)}
+                        disabled={proposing}
+                        className="w-full sm:w-auto text-[10px] uppercase tracking-widest text-muted hover:text-navy border border-frame px-3 py-2 disabled:opacity-40 transition-colors"
+                        style={{ letterSpacing: '0.1em' }}
+                      >
+                        Keep this time
+                      </button>
+                    </div>
+                  </div>
+                )}
+                {scheduleFeedback()}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* ── A scheduling line that belongs to no card: nothing was sent, or
+              the owner has no hours on file for Matchy to work from. ── */}
+        {!canOfferTimes && !showProposed && !showBooked && scheduleLine && (
+          <MatchyLine variant="card" tone={scheduleLine.tone}>
+            {scheduleLine.text}
+          </MatchyLine>
+        )}
+
+        {/* The result of the last click. Suppressed when a card above already
+            says the same thing, so a success is reported once, not twice. */}
+        {scheduleNote && scheduleNote !== scheduleLine?.text && (
+          <MatchyLine tone="quiet">{scheduleNote}</MatchyLine>
         )}
 
         {decisionNote && (
