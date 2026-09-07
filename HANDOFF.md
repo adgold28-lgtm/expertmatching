@@ -1,8 +1,48 @@
 # ExpertMatch — Session Handoff
 
-**Written:** 2026-09-06 (late evening, session 3) · **Branch:** `main` (deployed = production) · **Status:** live at expertmatch.fit; Matchy Phase 1 shipped and verified in production (`scripts/e2e-matchy.ts` all green, `scripts/smoke-cutover.ts` 16/16)
+**Written:** 2026-09-07 (overnight, session 4 — in progress) · **Branch:** `main` (deployed = production) · **Status:** live at expertmatch.fit; Matchy Phase 1 shipped and verified in production (`scripts/e2e-matchy.ts` all green, `scripts/smoke-cutover.ts` 16/16)
 
 Read with `CLAUDE.md` (operating rules), `TASK_QUEUE.md` (priorities), `docs/MATCHY_SPEC.md` (next build), `docs/OUTREACH_BOT_AUDIT.md` (why Matchy replaces the outreach bot).
+
+## Session 4 (2026-09-07 overnight) — the overnight repair run. READ THIS FIRST.
+
+The founder asked for the audit's repair plan to be executed while they slept, in waves of Opus builders with detailed briefs (one builder per disjoint file set; builders never commit; the lead type-checks, builds from a clean export, commits by area, pushes `main`, then verifies in production with throwaway users). The plan itself is the artifact "ExpertMatch Repair Plan" (phases 0–5) and TASK_QUEUE "NOW".
+
+### Where it is right now
+- **Wave 1 is LIVE** (commits 53569e0 security/money, 9401d05 billing, 535c9e8 auth/onboarding, 1eb7aa6 workspace/home; docs d454f81). Verified in prod: `scripts/e2e-matchy.ts` ALL PASSED (owner gates, rate-decision, money screen, RLS), password reset flow exercised in the browser, onboarding card step works after the founder applied the two missing migrations.
+- **Wave 2 is BUILT BUT UNCOMMITTED in the working tree** (≈95 changed/new files; `npx tsc --noEmit` has zero source errors — the only output is stale `.next/types/**` stubs for deleted routes, which vanish on the next build). Every unit script passes (`test-pricing`, `test-matchy-screen`, `test-matchy-templates`, `test-matchy-classify`, `test-conversations-redaction`, `test-email-clean`, `test-signup-token`, `test-org-billing`, `test-contact-discovery`, `test-availability-windows`, `check-redaction`). Wave 2 contains four builders' work:
+  - E1 — retired flow removed: Outreach/Screen/Deliver tabs, /projects list, client-view, rank-experts, screen-expert, demo-readiness, their APIs, 7 components, email2/email3, `outreachMode`; admin-only Staff panel in `components/ConversationThread.tsx`; `GET /api/admin/env-status`.
+  - E2 — admin console merged into `app/admin/requests/page.tsx` (users page + invite route deleted; Needs Attention + Environment sections; Resend invite / Send reset link; `POST /api/admin/firms {domain, action:'sync-seats'}`); marketing copy fixes; favicon `app/icon.svg`; availability copy; expert emails no longer carry the project name.
+  - G — contact discovery on bookmark: `lib/contactDiscovery.ts` (cache → Snov → Hunter, 8 s per provider, 24 s budget), worker `POST /api/jobs/contact-discovery` (QStash-signed), bookmark returns `contact_discovery_started`; the lead added `matchyOutcome` (client-safe mirror of `contactStatus`, set in `lib/redactExpert.ts`) + `matchyLineFor` so the card shows the async result.
+  - F — `/settings` (calendar / payment method / profile; `GET /api/settings/payment-method`), weekly recurring availability (`lib/availabilityWindows.ts`, `user_calendar_connections.weekly_windows`, merged into client slots in `lib/calendarConnections.ts`), guardrails: `scripts/verify-schema.ts`, `lib/attention.ts` + `GET /api/admin/attention`, `recordSystemFailure` in `lib/engagementEvents.ts` wired into every swallowed seat-sync catch, daily `GET /api/jobs/reconcile` (Bearer `CRON_SECRET`) with `vercel.json` cron `0 6 * * *`, migration `supabase/migrations/20260907100000_availability_windows_and_indexes.sql` (weekly_windows column, `system_events` table, two project_experts expression indexes). F was cut off before reporting, so it was never reviewed line by line — its files compile and its 109-check unit script passes; review `app/api/jobs/reconcile/route.ts` and `lib/attention.ts` before trusting them.
+
+### To finish wave 2 (exact steps)
+1. `npx tsc --noEmit 2>&1 | grep -v '^\.next/'` must print nothing. Run every `scripts/test-*.ts` and `scripts/check-redaction.ts` with `npx tsx`.
+2. Build from a clean export (never in place while builders edit; never while `next dev` runs): `D=/tmp/em-build-$(date +%s); mkdir -p $D; git archive HEAD | tar -x -C $D` — for UNCOMMITTED work commit first (step 3) or use `git stash`-free approach: commit, then export. Then `ln -s /Users/ashergoldstein/Projects/expertmatch/node_modules $D/node_modules; cd $D && npm run build:local` (real `next build` with Google Fonts mocked).
+3. Commit by area with `git add <paths>` (four commits: workspace-cut, admin+copy, contact-discovery, settings+guardrails), each ending with the Co-Authored-By line.
+4. `git push origin main` (this deploys the Vercel project **expertmatching**). If the Claude Code permission classifier blocks the push, do not work around it — say so; the founder can push by hand.
+5. Poll: `gh api "repos/adgold28-lgtm/expertmatching/deployments?environment=Production&sha=<full sha>&per_page=1" --jq '.[0].statuses_url'` then that URL's `.[0].state` until `success`.
+6. Verify in prod: `SMOKE_BASE_URL=https://expertmatch.fit npx tsx scripts/e2e-matchy.ts` (throwaway users, no email) and `SMOKE_BASE_URL=https://expertmatch.fit WAIT_MS=540000 npx tsx scripts/verify-sourcing-prod.ts` (one real sourcing run). Then a browser pass as a throwaway client (see the scratch scripts pattern: create a user with app_metadata `{role:'user', status:'active', firm_domain, onboarding_complete:true}` + org + membership via service role; login re-syncs metadata from `profiles`, so the user will land on /onboarding — walk it; set `profiles.billing_complete=true` to skip the card) and as a throwaway admin (`role:'admin'`). Delete both afterwards.
+7. Hand the founder `supabase/migrations/20260907100000_availability_windows_and_indexes.sql` to paste into Studio, then `npx tsx scripts/verify-schema.ts`.
+
+### Founder actions outstanding
+- Paste migration `20260907100000` in Supabase Studio (weekly availability, system_events, indexes).
+- Stripe → Developers → Webhooks: add `account.updated` for **connected accounts** to the endpoint (late-onboarding expert payouts).
+- Vercel env (project expertmatching): `CRON_SECRET` (any long random string), `QSTASH_URL=https://qstash-us-east-1.upstash.io`, `OUTREACH_FROM_EMAIL=ExpertMatch <notifications@expertmatch.fit>`, and confirm `HUNTER_API_KEY` + `CONTACT_ENRICHMENT_ENABLED=true` exist if contact discovery should run.
+- Terms: entity name + governing law placeholders.
+
+### What is NOT done (next waves, in order)
+- Matchy Phase 2 scheduling: propose times from calendar overlap (now including weekly windows), book Zoom + ICS on confirmation, reveal both ways at `scheduled`, retire `/availability/*` + `lib/triggerOverlapCheck.ts`; enforce the rate band (`clientRateMin/Max`) at bookmark and counters (MatchySettingsStrip carries a TODO).
+- Bounce retry for contact discovery; a real `contact_discovery_*` engagement event kind (needs a migration + union change; tonight it rides on `contact_found` / `contact_not_found` with a `stage:'discovery'` payload).
+- `lib/expertPipeline.ts` `pipelineStage`/`STAGE_META` are now unused (PipelineBar deleted) — remove or reuse for the staff panel.
+- Second pass of `docs/COPY_AUDIT.md` against the live site; `docs/STATE_OF_THE_UNION.md` refresh.
+- Stale comments naming deleted components: `components/ProjectExpertCard.tsx` (~193), `lib/nameValidation.ts:2`, `lib/redactExpert.ts:120`; `.env.example` lacks `HUNTER_API_KEY`; three pre-existing `console.log` calls in `lib/sendAvailabilityRequest.ts`.
+
+### Operating notes learned tonight
+- The auto-mode permission classifier sometimes blocks long compound Bash commands (build + push + poll + e2e chained) and, occasionally, `git push`. Split commands into small steps; retry a plain `git push origin main` once; never chain destructive steps.
+- Do not `cp .env.local` into scratch dirs; the export build works without it.
+- QStash: this account is region-pinned to **us-east-1**; publish with `QSTASH_URL` and a raw (not percent-encoded) destination URL. Resend only sends from `expertmatch.fit`; `lib/mailFrom.ts` enforces it.
+- Builders must be told their exact file list and every file they must not touch; two builders editing one file loses work. When a builder edits a file outside its list it will say so in its report — read reports fully.
 
 ## Session 3 (2026-09-06, late) — what changed and what is still broken
 
