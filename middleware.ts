@@ -19,8 +19,13 @@ const PUBLIC_PATHS = new Set([
 
 // Path prefixes that bypass auth (public pages — no session required).
 const PUBLIC_PREFIXES = [
-  '/availability/',          // expert-facing availability submission page
-  '/api/availability/',      // public POST endpoint for availability submissions
+  '/schedule/',              // expert-facing time picker — gated by the signed picker token
+  '/api/schedule/',          // the picker's read/book endpoint — same token gate
+  // The Google Calendar OAuth round-trip an expert can start from the picker.
+  // The PAGES under /availability/ are gone (the picker replaced them); these
+  // two API routes keep the path only because the Google console's authorized
+  // redirect URI points at it.
+  '/api/availability/',      // GET .../[token]/google-auth and the OAuth callback
   '/api/webhooks/',          // Stripe and other provider webhooks — verified by payload signature
   '/payment/',               // public payment success/cancel pages
   '/signup/',                // legacy invite links redirect to /auth/set-password — kept for backward compat

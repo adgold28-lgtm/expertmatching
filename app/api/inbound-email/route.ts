@@ -21,6 +21,16 @@
 //   - after a verified signature the handler always answers 200, so Resend
 //     does not retry a reply we deliberately ignored.
 //
+// WHAT PHASE 2 ADDED: a SCHEDULING BRANCH that runs BEFORE the generic
+// classifier. Once an engagement is at 'scheduling_sent' or 'scheduled', the
+// five outreach intents are the wrong question — the only things a reply can
+// mean are "that one works", "none of those work", "move it", or "forget it".
+// lib/matchyScheduling.parseSchedulingReply answers exactly that, with a regex
+// fast path that costs nothing and one model call when the regex is unsure, so
+// a scheduling reply costs one call and not two. The message is still cleaned,
+// screened and stored first: the branch decides what HAPPENS, never whether the
+// reply is recorded.
+//
 // WHAT IS NEW:
 //   - IDEMPOTENCY. Resend retries on any non-2xx and on a timeout. The old
 //     handler had no dedupe at all, so a retry could re-suppress an address,
@@ -58,6 +68,15 @@ import { emitEngagementEvent } from '../../../lib/engagementEvents';
 import { isIdentityRevealed } from '../../../lib/redactExpert';
 import { buildFollowUpEmail, deriveTopic } from '../../../lib/matchyTemplates';
 import { sendSequenceEmail } from '../../../lib/emailSequence';
+import {
+  MAX_PROPOSAL_ROUNDS,
+  emptySchedulingState,
+  looksLikeReschedule,
+  parseSchedulingReply,
+  proposeTimes,
+  writeExpert,
+} from '../../../lib/matchyScheduling';
+import { bookCall, rebookCall } from '../../../lib/bookCall';
 import { isWalkthrough, WALKTHROUGH_HELD_SUMMARY } from '../../../lib/walkthrough';
 import { clientRateFor } from '../../../lib/pricing';
 import { getFirm, getUser } from '../../../lib/firmStore';
@@ -401,6 +420,14 @@ async function handleReply({ project, pe, token, rawEmail }: HandleReplyInput): 
     },
   });
 
+  // ── Scheduling branch — runs INSTEAD of the classifier ───────────────────
+  // An engagement that is waiting on a time, or already has one, is asking a
+  // narrower question than the five outreach intents can answer.
+  if (pe.status === 'scheduling_sent' || pe.status === 'scheduled') {
+    const handled = await advanceScheduling({ project, pe, context, bodyClean, storedId: stored?.id ?? null });
+    if (handled) return;
+  }
+
   // ── Classify + summarize — ONE model call ────────────────────────────────
   const read = await classifyMessage({
     text:             bodyClean,
@@ -455,6 +482,161 @@ interface AdvanceInput {
   pe:      ProjectExpert;
   context: ThreadContext;
   now:     number;
+}
+
+// ─── Scheduling ───────────────────────────────────────────────────────────────
+
+interface SchedulingInput {
+  project:   Project;
+  pe:        ProjectExpert;
+  context:   ThreadContext;
+  bodyClean: string;
+  storedId:  string | null;
+}
+
+/**
+ * A reply that arrived while a call was being scheduled, or after one was
+ * booked. Returns TRUE when it handled the reply and the generic classifier
+ * must not run.
+ *
+ * The five cases:
+ *
+ *   chosen       book it (or MOVE it, when a reschedule was already in flight,
+ *                so a rebook never creates a second meeting)
+ *   unavailable  store what they said they are free for, then propose again
+ *                while rounds remain; out of rounds, mark
+ *                'expert_declined_times' and stop guessing
+ *   reschedule   only meaningful on a booked call: ask for a new time
+ *   declined     hand back to the ordinary decline path, which suppresses the
+ *                address globally — a "no" is a fact about the person
+ *   unclear      the message is already on the thread with its summary; leave
+ *                the status alone and let a person look
+ *
+ * Never throws: any failure returns false and the classifier runs as before,
+ * which is the behaviour that existed before this branch did.
+ */
+async function advanceScheduling(input: SchedulingInput): Promise<boolean> {
+  const { project, pe, context, bodyClean, storedId } = input;
+  const projectId = project.id;
+  const expertId  = pe.expert.id;
+  const state     = pe.scheduling ?? emptySchedulingState();
+  const booked    = pe.status === 'scheduled';
+
+  try {
+    // On a BOOKED call the cheap regex answers first: "something came up" needs
+    // no model call to be understood.
+    if (booked && looksLikeReschedule(bodyClean)) {
+      await noteScheduling(storedId, 'reschedule', 'They want to move the call. Finding new times.');
+      await requestReschedule({ project, pe });
+      return true;
+    }
+
+    const read = await parseSchedulingReply({
+      text:         bodyClean,
+      proposed:     state.proposed,
+      timezoneHint: state.expertTimezone,
+    });
+
+    if (read.kind === 'declined') return false;   // the ordinary decline path
+
+    if (read.kind === 'chosen') {
+      const result = booked
+        ? await rebookCall({ projectId, expertId, startUtc: read.startUtc, by: 'expert' })
+        : await bookCall({ projectId, expertId, startUtc: read.startUtc, by: 'expert' });
+
+      if (!result.ok) {
+        console.warn('[inbound-email] booking failed', JSON.stringify({ reason: result.reason }));
+        await noteScheduling(storedId, 'time_chosen', 'They picked a time. I could not book it.');
+        return true;
+      }
+
+      await noteScheduling(storedId, 'time_chosen', 'They picked a time. Booked.');
+      return true;
+    }
+
+    if (read.kind === 'reschedule') {
+      if (!booked) return false;   // nothing to move; let the classifier read it
+      await noteScheduling(storedId, 'reschedule', 'They want to move the call. Finding new times.');
+      await requestReschedule({ project, pe });
+      return true;
+    }
+
+    if (read.kind === 'unavailable') {
+      await noteScheduling(storedId, 'time_unavailable',
+        'None of those times work. Looking for others.');
+
+      // What they said they ARE free for feeds the next round's overlap.
+      await writeExpert(projectId, expertId, {
+        replyIntent:     'time_unavailable',
+        availabilityRaw: bodyClean.slice(0, 800),
+        ...(read.windows.length > 0 ? {
+          availabilitySlots:     read.windows,
+          availabilitySubmitted: true,
+          calendarProvider:      'manual' as const,
+        } : {}),
+      });
+
+      await emitEngagementEvent({
+        projectId, expertId, orgId: context.orgId,
+        type:    'time_declined',
+        payload: { round: state.round, viaPicker: false, windows: read.windows.length },
+      });
+
+      if (state.round < MAX_PROPOSAL_ROUNDS) {
+        const fresh   = await getProject(projectId);
+        const freshPe = fresh?.experts.find(e => e.expert.id === expertId);
+        if (fresh && freshPe) {
+          await proposeTimes({ project: fresh, pe: freshPe, reason: 'initial', trigger: 'matchy' });
+          return true;
+        }
+      }
+
+      // Out of rounds. Record it and let the client take it from here; the
+      // picker link in their last email still works, so they can still write in.
+      await writeExpert(projectId, expertId, {
+        scheduling: { ...state, outcome: 'expert_declined_times' },
+      });
+      return true;
+    }
+
+    // 'unclear' — it is on the thread, with a summary. Nothing moves.
+    await noteScheduling(storedId, null, 'Replied about scheduling. Nothing I can act on yet.');
+    return true;
+  } catch (err) {
+    console.error('[inbound-email] scheduling branch failed:',
+      err instanceof Error ? err.message.slice(0, 120) : 'unknown');
+    return false;
+  }
+}
+
+/**
+ * The one-line read the client sees on the stored message. Deliberately fixed
+ * text rather than anything a model wrote: nothing here is generated, so
+ * nothing here can leak.
+ */
+async function noteScheduling(
+  storedId: string | null,
+  intent:   'time_chosen' | 'time_unavailable' | 'reschedule' | null,
+  summary:  string,
+): Promise<void> {
+  if (!storedId) return;
+  await updateMessage(storedId, { summary, ...(intent ? { intent } : {}) });
+}
+
+/**
+ * Ask the expert for a new time for a call that is already booked. The booking
+ * STAYS in place and the status stays 'scheduled' until they pick: an expert
+ * who never answers must not silently lose the call they already agreed to.
+ */
+async function requestReschedule(
+  args: { project: Project; pe: ProjectExpert },
+): Promise<void> {
+  await proposeTimes({
+    project: args.project,
+    pe:      args.pe,
+    reason:  'reschedule',
+    trigger: 'matchy',
+  });
 }
 
 async function advanceDeclined({ project, pe, context, now }: AdvanceInput): Promise<void> {
@@ -562,6 +744,32 @@ async function advanceInterested(
     replyIntent:     'interested',
     ...(read.availabilityNote ? { availability: read.availabilityNote } : {}),
   });
+
+  // THE FOLLOW-UP IS ALREADY OUT and they have come back with a yes. That is
+  // an acceptance of the standing rate: the follow-up asked "does $X work?" and
+  // nothing in the reply countered it, so the money is settled and the next
+  // thing Matchy owes them is a time. Guarded on the STATUS, not just on
+  // `followupSentAt`, so a yes arriving after the engagement moved on (already
+  // negotiating, already scheduling, already booked) falls through as before.
+  if (pe.status === 'followup_sent') {
+    await emitEngagementEvent({
+      projectId, expertId, orgId: context.orgId,
+      type:    'rate_agreed',
+      payload: {
+        expertRate: pe.expertRate ?? 0,
+        clientRate: pe.clientRate ?? 0,
+        source:     'standing_rate_accepted',
+      },
+    });
+
+    // Re-read: the status write above is not on the `pe` we were handed.
+    const fresh   = await getProject(projectId);
+    const freshPe = fresh?.experts.find(e => e.expert.id === expertId);
+    if (fresh && freshPe) {
+      await proposeTimes({ project: fresh, pe: freshPe, reason: 'initial', trigger: 'matchy' });
+    }
+    return;
+  }
 
   if (pe.followupSentAt || pe.email2SentAt) {
     console.log('[inbound-email] follow-up already sent — nothing further', { projectId });

@@ -5,7 +5,12 @@
 //   2. Exchange code for tokens (access + refresh)
 //   3. Encrypt tokens and store on ProjectExpert
 //   4. Set calendarProvider: 'google', availabilitySubmitted: true, clear oauthState
-//   5. Redirect to /availability/success?name=...
+//   5. Redirect back to the expert's own picker page, /schedule/[token]
+//
+// The state carries the raw picker token as a fourth segment (see
+// /api/availability/[token]/google-auth), inside the same HMAC, which is the
+// only reason this route can send the expert back where they came from. The
+// old three-segment state is still accepted and lands on /schedule/connected.
 //
 // Required env vars:
 //   GOOGLE_CLIENT_ID
@@ -29,7 +34,7 @@ const STATE_SECRET_ENV = 'AVAILABILITY_TOKEN_SECRET';
 function verifyState(
   stateB64: string,
   storedNonce: string,
-): { ok: false } | { ok: true; projectId: string; expertId: string } {
+): { ok: false } | { ok: true; projectId: string; expertId: string; token: string } {
   const secret = process.env[STATE_SECRET_ENV];
   if (!secret) return { ok: false };
 
@@ -55,10 +60,12 @@ function verifyState(
   if (expBuf.length !== actBuf.length) return { ok: false };
   if (!timingSafeEqual(expBuf, actBuf))  return { ok: false };
 
+  // `projectId:expertId:nonce` (legacy) or `projectId:expertId:nonce:token`.
   const parts = payload.split(':');
-  if (parts.length !== 3) return { ok: false };
+  if (parts.length !== 3 && parts.length !== 4) return { ok: false };
 
   const [projectId, expertId, nonce] = parts;
+  const token = parts[3] ?? '';
 
   // Nonce must match what we stored (prevents replay / state-swap)
   const nonceExpBuf = Buffer.from(storedNonce, 'utf8');
@@ -66,7 +73,7 @@ function verifyState(
   if (nonceExpBuf.length !== nonceActBuf.length) return { ok: false };
   if (!timingSafeEqual(nonceExpBuf, nonceActBuf)) return { ok: false };
 
-  return { ok: true, projectId, expertId };
+  return { ok: true, projectId, expertId, token };
 }
 
 interface TokenResponse {
@@ -123,8 +130,20 @@ async function fetchCalendarEmail(accessToken: string): Promise<string | null> {
 export async function GET(request: NextRequest) {
   const appUrl = process.env.NEXT_PUBLIC_APP_URL ?? request.nextUrl.origin;
 
+  /**
+   * Back to the expert's picker page when the state told us which one, and to
+   * the standing confirmation page otherwise. `token` is only ever a value we
+   * signed ourselves, so it is safe to put back in a path.
+   */
+  function schedulePage(token: string, query: string) {
+    return NextResponse.redirect(new URL(
+      token ? `/schedule/${encodeURIComponent(token)}${query}` : `/schedule/connected${query}`,
+      appUrl,
+    ));
+  }
+
   function errorRedirect(reason: string) {
-    return NextResponse.redirect(new URL(`/availability/error?reason=${reason}`, appUrl));
+    return schedulePage('', `?error=${encodeURIComponent(reason)}`);
   }
 
   // ── Env guard ────────────────────────────────────────────────────────────
@@ -183,14 +202,6 @@ export async function GET(request: NextRequest) {
     return errorRedirect('invalid_state');
   }
 
-  // ── Already submitted guard ──────────────────────────────────────────────
-  if (pe.availabilitySubmitted) {
-    const firstName = pe.expert.name.split(' ')[0] ?? '';
-    return NextResponse.redirect(
-      new URL(`/availability/success?name=${encodeURIComponent(firstName)}`, appUrl),
-    );
-  }
-
   // ── Exchange code for tokens ─────────────────────────────────────────────
   const redirectUri = `${appUrl}/api/availability/oauth/google/callback`;
 
@@ -235,9 +246,6 @@ export async function GET(request: NextRequest) {
 
   console.log('[google-callback] calendar connected', { status: 'ok' });
 
-  // ── Redirect to success ──────────────────────────────────────────────────
-  const firstName = pe.expert.name.split(' ')[0] ?? '';
-  return NextResponse.redirect(
-    new URL(`/availability/success?name=${encodeURIComponent(firstName)}`, appUrl),
-  );
+  // ── Back to the picker, which now knows their real free time ─────────────
+  return schedulePage(stateResult.token, '?connected=1');
 }

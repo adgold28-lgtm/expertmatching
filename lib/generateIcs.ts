@@ -14,6 +14,18 @@ export interface IcsEvent {
   organizer:   string;   // asher@expertmatch.fit
   attendees:   string[]; // email addresses
   uid:         string;   // unique event ID
+  /**
+   * ICS SEQUENCE. Every reschedule of the same UID increments it, which is
+   * what tells Outlook, Apple Mail and Google Calendar to MOVE the existing
+   * event rather than create a second one. Defaults to 0.
+   */
+  sequence?:   number;
+  /**
+   * ICS METHOD. 'REQUEST' invites or updates; 'CANCEL' withdraws. Defaults to
+   * 'REQUEST'. The MIME type on the attachment must carry the same value —
+   * see lib/sendAvailabilityRequest.sendBookingEmail.
+   */
+  method?:     'REQUEST' | 'CANCEL';
 }
 
 // ─── Escaping ─────────────────────────────────────────────────────────────────
@@ -58,6 +70,10 @@ export function generateIcs(event: IcsEvent): string {
   const description = escapeIcsText(event.description);
   const location   = escapeIcsText(event.location);
   const uid        = escapeIcsText(event.uid);
+  const method     = event.method === 'CANCEL' ? 'CANCEL' : 'REQUEST';
+  const sequence   = Number.isFinite(event.sequence) && (event.sequence as number) >= 0
+    ? Math.floor(event.sequence as number)
+    : 0;
 
   const attendeeLines = event.attendees
     .filter(e => e.trim().length > 0)
@@ -68,7 +84,7 @@ export function generateIcs(event: IcsEvent): string {
     'BEGIN:VCALENDAR',
     'VERSION:2.0',
     'PRODID:-//ExpertMatch//EN',
-    'METHOD:REQUEST',
+    `METHOD:${method}`,
     'BEGIN:VEVENT',
     `UID:${uid}@expertmatch.fit`,
     `DTSTAMP:${now}`,
@@ -79,8 +95,8 @@ export function generateIcs(event: IcsEvent): string {
     `LOCATION:${location}`,
     `ORGANIZER;CN=ExpertMatch:mailto:${event.organizer}`,
     attendeeLines,
-    'STATUS:CONFIRMED',
-    'SEQUENCE:0',
+    method === 'CANCEL' ? 'STATUS:CANCELLED' : 'STATUS:CONFIRMED',
+    `SEQUENCE:${sequence}`,
     'END:VEVENT',
     'END:VCALENDAR',
   ].filter(l => l.length > 0);

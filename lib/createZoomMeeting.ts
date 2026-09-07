@@ -1,7 +1,14 @@
 // lib/createZoomMeeting.ts
-// Creates a Zoom meeting via Server-to-Server OAuth.
-// Returns null on any failure — never throws.
+// Creates, moves and removes a Zoom meeting via Server-to-Server OAuth.
+//
+// Every function here returns null / false on any failure and NEVER throws: a
+// call is booked in our own database first, and a Zoom outage must degrade to
+// "no video link yet", not to a lost booking.
+//
 // Required env vars: ZOOM_ACCOUNT_ID, ZOOM_CLIENT_ID, ZOOM_CLIENT_SECRET
+//
+// Never logs: meeting topics, expert names, join URLs, tokens. Meeting ids are
+// safe (lib/zoomLookup.ts already treats them as such).
 
 import axios from 'axios';
 
@@ -65,5 +72,64 @@ export async function createZoomMeeting(
     const msg = err instanceof Error ? err.message : String(err);
     console.error('[zoom] meeting-creation-failed', msg);
     return null;
+  }
+}
+
+// ─── Move an existing meeting ─────────────────────────────────────────────────
+
+/**
+ * Repoints a booked meeting at a new start time. PATCH, not delete-and-create:
+ * the join URL and the meeting id stay the same, so the Zoom webhook
+ * (app/api/webhooks/zoom) still resolves the engagement through
+ * lib/zoomLookup.ts and the link already in someone's calendar keeps working.
+ *
+ * Returns false on any failure — the caller has already written the new time.
+ */
+export async function updateZoomMeeting(
+  meetingId:    string,
+  startTimeUtc: string,  // ISO 8601
+  durationMin:  number,
+): Promise<boolean> {
+  if (!meetingId.trim()) return false;
+  try {
+    const token = await getZoomAccessToken();
+    await axios.patch(
+      `https://api.zoom.us/v2/meetings/${encodeURIComponent(meetingId)}`,
+      {
+        start_time: startTimeUtc,
+        duration:   durationMin,
+        timezone:   'UTC',
+      },
+      { headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' } },
+    );
+    return true;
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error('[zoom] meeting-update-failed', msg);
+    return false;
+  }
+}
+
+// ─── Remove a meeting ─────────────────────────────────────────────────────────
+
+/**
+ * Deletes a meeting. Nothing in the product calls this yet — cancelling a
+ * booked call is out of scope for this phase (see lib/bookCall.ts) — but the
+ * S2S plumbing belongs with its siblings rather than in whatever route first
+ * needs it.
+ */
+export async function deleteZoomMeeting(meetingId: string): Promise<boolean> {
+  if (!meetingId.trim()) return false;
+  try {
+    const token = await getZoomAccessToken();
+    await axios.delete(
+      `https://api.zoom.us/v2/meetings/${encodeURIComponent(meetingId)}`,
+      { headers: { Authorization: `Bearer ${token}` } },
+    );
+    return true;
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error('[zoom] meeting-delete-failed', msg);
+    return false;
   }
 }

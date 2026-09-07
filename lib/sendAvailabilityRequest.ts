@@ -1,33 +1,37 @@
-// Send an availability request email to an expert.
-// Uses Resend for email delivery.
+// Transactional email that is NOT part of Matchy's outreach thread.
+//
+// Two senders live here and nothing else:
+//
+//   sendInviteEmail   — a new app user's "set up your account" link
+//   sendBookingEmail  — a booked or moved call, with the .ics attached
+//
+// WHY THESE ARE NOT lib/emailSequence.sendSequenceEmail. That chokepoint sets
+// Reply-To to the expert's reply token and cannot carry an attachment, and a
+// calendar invite is the one outbound message that has to. So the walkthrough
+// gate is re-implemented here EXPLICITLY (see sendBookingEmail): an expert copy
+// is refused outright when the project has not been switched live, exactly as
+// lib/walkthrough.ts requires, and the project is loaded by id rather than
+// taken on trust from the caller.
+//
+// The 3-part availability request flow this file used to serve is GONE. The
+// expert now picks a time on /schedule/[token] (lib/matchyScheduling.ts), so
+// sendAvailabilityRequest() and sendConfirmationEmail() and their HTML builders
+// are deleted rather than left as dead paths.
 //
 // Required env vars:
 //   RESEND_API_KEY       — API key from resend.com
-//   OUTREACH_FROM_EMAIL  — "From" address, e.g. "ExpertMatch <team@yourdomain.com>"
-//                          Domain must be verified in Resend.
+//   OUTREACH_FROM_EMAIL  — "From" address; the domain must be verified in Resend
 //
-// Never logs: expert name, email address, project name, token.
+// Never logs: expert or client name, email address, project name, token, the
+// meeting link, or the call time.
 
 import { Resend } from 'resend';
 import type { IcsEvent } from './generateIcs';
 import { generateIcsBuffer } from './generateIcs';
 import { buildOutreachFooter } from './outreachFooter';
 import { getFromAddress } from './mailFrom';
-
-// ─── Types ────────────────────────────────────────────────────────────────────
-
-export interface AvailabilityRequestParams {
-  /** Who receives it. 'client' skips the CAN-SPAM opt-out footer — a paying
-   *  client must never be able to add themselves to the do-not-contact list. */
-  recipient?:       'expert' | 'client';
-  toEmail:          string;   // expert's email address — never logged
-  expertName:       string;   // used in greeting — never logged
-  /** Kept on the call signature for the callers, but deliberately NOT put in
-   *  the email: the expert is never told which project they are being sourced
-   *  for. */
-  projectName:      string;
-  availabilityLink: string;   // full URL including token — never logged
-}
+import { getProject } from './projectStore';
+import { isWalkthrough, type HeldReason } from './walkthrough';
 
 // ─── Client (cached per process) ─────────────────────────────────────────────
 
@@ -50,103 +54,6 @@ function escapeHtml(s: string): string {
     .replace(/>/g,  '&gt;')
     .replace(/"/g,  '&quot;')
     .replace(/'/g,  '&#39;');
-}
-
-function buildEmailHtml(
-  expertName:       string,
-  availabilityLink: string,
-  footerHtml:       string,
-): string {
-  const firstName = expertName.split(' ')[0] ?? expertName;
-
-  return `<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Scheduling Request</title>
-</head>
-<body style="margin:0;padding:0;background:#f8fafc;font-family:Arial,Helvetica,sans-serif;">
-  <table width="100%" cellpadding="0" cellspacing="0" style="background:#f8fafc;padding:40px 20px;">
-    <tr><td align="center">
-      <table width="600" cellpadding="0" cellspacing="0" style="background:#ffffff;border:1px solid #e2e8f0;max-width:600px;">
-
-        <!-- Header -->
-        <tr>
-          <td style="background:#0f172a;padding:24px 32px;">
-            <span style="color:#ffffff;font-size:11px;font-weight:bold;letter-spacing:3px;">EXPERTMATCH</span>
-          </td>
-        </tr>
-
-        <!-- Body -->
-        <tr>
-          <td style="padding:32px;color:#1e293b;font-size:14px;line-height:1.7;">
-            <p style="margin:0 0 16px;">Hi ${escapeHtml(firstName)},</p>
-
-            <p style="margin:0 0 16px;">
-              Thank you for your willingness to speak with our team regarding
-              a research call.
-            </p>
-
-            <p style="margin:0 0 24px;">
-              Please use the link below to share a few times that work for you.
-              The process takes less than a minute — no account required.
-            </p>
-
-            <!-- CTA button -->
-            <table cellpadding="0" cellspacing="0" style="margin:0 0 28px;">
-              <tr>
-                <td style="background:#0d9488;padding:0;">
-                  <a href="${escapeHtml(availabilityLink)}"
-                     style="display:inline-block;padding:12px 28px;color:#ffffff;font-size:13px;font-weight:bold;text-decoration:none;letter-spacing:0.5px;">
-                    Share My Availability
-                  </a>
-                </td>
-              </tr>
-            </table>
-
-            <p style="margin:0 0 8px;font-size:12px;color:#64748b;">
-              If the button above doesn't work, copy and paste this link into your browser:
-            </p>
-            <p style="margin:0 0 24px;font-size:11px;color:#94a3b8;word-break:break-all;">
-              ${escapeHtml(availabilityLink)}
-            </p>
-
-            <p style="margin:0;font-size:12px;color:#94a3b8;">
-              This link expires in 7 days. If you have any questions, please reply to this email.
-            </p>
-          </td>
-        </tr>
-
-        <!-- Footer — postal address + per-recipient opt-out (CAN-SPAM) -->
-        <tr>
-          <td style="padding:0 32px 20px;">
-            ${footerHtml}
-          </td>
-        </tr>
-
-      </table>
-    </td></tr>
-  </table>
-</body>
-</html>`;
-}
-
-function buildEmailText(expertName: string, availabilityLink: string): string {
-  const firstName = expertName.split(' ')[0] ?? expertName;
-  return [
-    `Hi ${firstName},`,
-    '',
-    'Thank you for your willingness to speak with our team regarding a research call.',
-    '',
-    'Please use the link below to share a few times that work for you:',
-    '',
-    availabilityLink,
-    '',
-    'This link expires in 7 days.',
-    '',
-    '— ExpertMatch',
-  ].join('\n');
 }
 
 // ─── Invite email ─────────────────────────────────────────────────────────────
@@ -243,171 +150,97 @@ export async function sendInviteEmail(
   console.log('[sendInviteEmail] email sent', { status: 'ok' });
 }
 
-// ─── Availability email ───────────────────────────────────────────────────────
 
-export async function sendAvailabilityRequest(params: AvailabilityRequestParams): Promise<void> {
-  // Dev suppression — set DISABLE_EMAILS=true to skip real sends during local dev / testing
-  if (process.env.DISABLE_EMAILS === 'true') {
-    console.log('[sendAvailabilityRequest] [email] suppressed in dev mode');
-    return;
-  }
+// ─── Booking email (with the calendar invite attached) ────────────────────────
 
-  const from = getFromAddress();
-
-  const resend  = getResend();
-  const subject = 'Scheduling Request — ExpertMatch';
-
-  // CAN-SPAM footer: postal address (when configured) plus a per-recipient
-  // opt-out link — only when this email reaches an expert. A client copy gets
-  // no opt-out link (it would enrol them in the global do-not-contact list).
-  const footer = params.recipient === 'client'
-    ? { html: '', text: '' }
-    : buildOutreachFooter(params.toEmail);
-
-  const { error } = await resend.emails.send({
-    from,
-    to:      params.toEmail,
-    subject,
-    html:    buildEmailHtml(params.expertName, params.availabilityLink, footer.html),
-    text:    buildEmailText(params.expertName, params.availabilityLink) + footer.text,
-  });
-
-  if (error) {
-    throw new Error(`[sendAvailabilityRequest] Resend error: ${error.message}`);
-  }
-
-  // Audit log — no PII, no token
-  console.log('[sendAvailabilityRequest] email sent', { status: 'ok' });
+export interface SendBookingEmailOptions {
+  /**
+   * Who is reading it. 'expert' adds the CAN-SPAM opt-out footer and is
+   * REFUSED in walkthrough mode. 'client' gets neither: a paying customer must
+   * never be able to add themselves to the do-not-contact list, and a client
+   * has always been allowed to see what their own walkthrough would do.
+   */
+  recipient: 'expert' | 'client';
+  /** The project this booking belongs to. Loaded here, never trusted from the caller. */
+  projectId: string;
 }
 
-// ─── Confirmation email with .ics attachment ──────────────────────────────────
+/** Whether the invite actually went out, and why it did not. */
+export type BookingSendOutcome =
+  | { sent: true }
+  | { sent: false; held: HeldReason };
 
-export async function sendConfirmationEmail(
-  expertEmail:  string,
-  clientEmail:  string,
-  event:        IcsEvent,
-  expertName:   string,
-  clientName:   string,
-): Promise<void> {
+/**
+ * The one place a calendar invite leaves the platform.
+ *
+ * `invite.ics` rides as an attachment whose MIME method matches the ICS body's
+ * own METHOD line — Outlook silently ignores an invite where the two disagree,
+ * which is what makes a reschedule land as a MOVE rather than as a second
+ * event (lib/generateIcs.ts, SEQUENCE).
+ *
+ * Fails soft on a Resend error: the call is already booked in our database and
+ * the client can download the same invite from
+ * GET /api/projects/[projectId]/experts/[expertId]/booking/ics.
+ */
+export async function sendBookingEmail(
+  to:      string,
+  subject: string,
+  text:    string,
+  html:    string,
+  ics:     IcsEvent,
+  options: SendBookingEmailOptions,
+): Promise<BookingSendOutcome> {
   if (process.env.DISABLE_EMAILS === 'true') {
-    console.log('[sendConfirmationEmail] suppressed in dev mode');
-    return;
+    console.warn('[sendBookingEmail] suppressed (DISABLE_EMAILS=true)',
+      JSON.stringify({ recipient: options.recipient }));
+    return { sent: false, held: 'disabled' };
   }
 
-  const from = getFromAddress();
+  const address = to.trim();
+  if (!address) return { sent: false, held: 'disabled' };
 
-  const resend = getResend();
-
-  // Format the date in a readable way
-  const startDate = new Date(event.startUtc);
-  const formattedDate = startDate.toLocaleDateString('en-US', {
-    weekday: 'long',
-    month:   'long',
-    day:     'numeric',
-    year:    'numeric',
-    hour:    'numeric',
-    minute:  '2-digit',
-    timeZone: 'UTC',
-    timeZoneName: 'short',
-  });
-
-  const icsBuffer  = generateIcsBuffer(event);
-  const icsBase64  = icsBuffer.toString('base64');
-  const subject    = `Your expert call is confirmed — ${formattedDate}`;
-
-  const buildText = (footerText: string): string => [
-    'Your call is confirmed.',
-    '',
-    `Expert: ${expertName}`,
-    `Date: ${formattedDate}`,
-    'Duration: 60 minutes',
-    '',
-    `Join Zoom: ${event.location}`,
-    '',
-    'A calendar invitation is attached.',
-    '',
-    '— ExpertMatch',
-  ].join('\n') + footerText;
-
-  const buildHtml = (footerHtml: string): string => `<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-</head>
-<body style="margin:0;padding:0;background:#f8fafc;font-family:Arial,Helvetica,sans-serif;">
-  <table width="100%" cellpadding="0" cellspacing="0" style="background:#f8fafc;padding:40px 20px;">
-    <tr><td align="center">
-      <table width="600" cellpadding="0" cellspacing="0" style="background:#ffffff;border:1px solid #e2e8f0;max-width:600px;">
-        <tr>
-          <td style="background:#0f172a;padding:24px 32px;">
-            <span style="color:#ffffff;font-size:11px;font-weight:bold;letter-spacing:3px;">EXPERTMATCH</span>
-          </td>
-        </tr>
-        <tr>
-          <td style="padding:32px;color:#1e293b;font-size:14px;line-height:1.7;">
-            <p style="margin:0 0 16px;font-weight:bold;font-size:16px;">Your call is confirmed.</p>
-            <p style="margin:0 0 8px;">Expert: <strong>${escapeHtml(expertName)}</strong></p>
-            <p style="margin:0 0 8px;">Date: <strong>${escapeHtml(formattedDate)}</strong></p>
-            <p style="margin:0 0 24px;">Duration: <strong>60 minutes</strong></p>
-            <table cellpadding="0" cellspacing="0" style="margin:0 0 24px;">
-              <tr>
-                <td style="background:#0d9488;padding:0;">
-                  <a href="${escapeHtml(event.location)}"
-                     style="display:inline-block;padding:12px 28px;color:#ffffff;font-size:13px;font-weight:bold;text-decoration:none;">
-                    Join Zoom Meeting →
-                  </a>
-                </td>
-              </tr>
-            </table>
-            <p style="margin:0;font-size:12px;color:#94a3b8;">
-              A calendar invitation (.ics) is attached. Open it to add this event to your calendar.
-            </p>
-          </td>
-        </tr>
-        <tr>
-          <td style="padding:${footerHtml ? '0 32px 20px' : '16px 32px'};${footerHtml ? '' : 'border-top:1px solid #e2e8f0;'}">
-            ${footerHtml || '<p style="margin:0;font-size:11px;color:#94a3b8;">Sent via ExpertMatch</p>'}
-          </td>
-        </tr>
-      </table>
-    </td></tr>
-  </table>
-</body>
-</html>`;
-
-  // Send to both expert and client
-  const recipients = [expertEmail, clientEmail].filter(e => e.trim().length > 0);
-  const normalizedExpert = expertEmail.trim().toLowerCase();
-
-  for (const to of recipients) {
-    // The opt-out footer belongs on the expert's copy only. The client is a
-    // signed-in customer receiving a transactional confirmation — offering
-    // them an outreach opt-out would suppress the wrong address.
-    const footer = to.trim().toLowerCase() === normalizedExpert
-      ? buildOutreachFooter(to)
-      : { text: '', html: '' };
-
-    const { error } = await resend.emails.send({
-      from,
-      to,
-      subject,
-      html:        buildHtml(footer.html),
-      text:        buildText(footer.text),
-      attachments: [
-        {
-          filename:    'invite.ics',
-          content:     icsBase64,
-          contentType: 'text/calendar; charset=utf-8; method=REQUEST',
-        },
-      ],
-    });
-
-    if (error) {
-      console.error('[sendConfirmationEmail] Resend error:', error.message);
-      // Don't throw — log and continue to next recipient
+  // The walkthrough gate. It FAILS CLOSED on an expert copy: a project we
+  // cannot load is a project we cannot prove is live.
+  if (options.recipient === 'expert') {
+    const project = await getProject(options.projectId).catch(() => null);
+    if (!project || isWalkthrough(project)) {
+      console.warn('[sendBookingEmail] held (walkthrough)',
+        JSON.stringify({ recipient: options.recipient }));
+      return { sent: false, held: 'walkthrough' };
     }
   }
 
-  console.log('[sendConfirmationEmail] confirmation sent', { recipientCount: recipients.length });
+  const method      = ics.method === 'CANCEL' ? 'CANCEL' : 'REQUEST';
+  const contentType = `text/calendar; charset=utf-8; method=${method}`;
+
+  const footer = options.recipient === 'expert'
+    ? buildOutreachFooter(address)
+    : { text: '', html: '' };
+
+  try {
+    const { error } = await getResend().emails.send({
+      from:    getFromAddress(),
+      to:      address,
+      subject,
+      text:    `${text}${footer.text}`,
+      html:    `${html}${footer.html}`,
+      attachments: [{
+        filename:    'invite.ics',
+        content:     generateIcsBuffer(ics).toString('base64'),
+        contentType,
+      }],
+    });
+
+    if (error) {
+      console.error('[sendBookingEmail] Resend error:', error.message.slice(0, 120));
+      return { sent: false, held: 'disabled' };
+    }
+  } catch (err) {
+    console.error('[sendBookingEmail] send failed:',
+      err instanceof Error ? err.message.slice(0, 120) : 'unknown');
+    return { sent: false, held: 'disabled' };
+  }
+
+  console.info('[sendBookingEmail] sent', JSON.stringify({ recipient: options.recipient, status: 'ok' }));
+  return { sent: true };
 }

@@ -13,9 +13,12 @@
  *                        non-empty descriptor, contactEmail gone
  *   user + 'scheduled' → full identity restored (the reveal boundary)
  *   admin             → object untouched, at every status
+ *   scheduling state  → the picker token hash and its expiry never reach a
+ *                       client, the rest of the scheduling card does, and
+ *                       stripping the two never mutates the stored record
  */
 
-import type { Expert, ProjectExpert, ExpertStatus } from '../types';
+import type { Expert, ProjectExpert, ExpertStatus, SchedulingState, BookingState } from '../types';
 import { redactExpertForViewer, redactProjectForViewer, isIdentityRevealed } from '../lib/redactExpert';
 import { toInitialForm } from '../lib/nameValidation';
 
@@ -91,8 +94,49 @@ function projectExpertAt(status: ExpertStatus): ProjectExpert {
     rejectionNotes:          'n/a',
     outreachToken:           'tok_secret',
     calendarAccessToken:     'enc_access',
+    zoomJoinUrl:             'https://zoom.us/j/123',
+    zoomStartUrl:            'https://zoom.us/s/123?zak=secret',
+    scheduling:              schedulingState(),
+    booking:                 bookingState(),
     addedAt:                 1,
     updatedAt:               2,
+  };
+}
+
+/**
+ * Matchy Phase 2 state. `pickTokenHash` is the revocation record for a link
+ * that BOOKS A CALL — it has no reason to reach a browser, and neither does the
+ * expiry, which would tell an attacker how long a guessed token stays live.
+ */
+function schedulingState(): SchedulingState {
+  return {
+    round:           2,
+    proposed:        [{ startUtc: '2026-09-15T18:00:00Z', endUtc: '2026-09-15T19:00:00Z', durationMin: 60 }],
+    proposedAt:      1_757_000_000_000,
+    expertTimezone:  'America/Chicago',
+    preferences:     'afternoons',
+    outcome:         'times_proposed',
+    pickTokenHash:   'f'.repeat(64),
+    pickTokenExpiry: 1_757_600_000_000,
+  };
+}
+
+function bookingState(): BookingState {
+  return {
+    startUtc:         '2026-09-15T18:00:00Z',
+    endUtc:           '2026-09-15T19:00:00Z',
+    durationMin:      60,
+    zoomMeetingId:    '81234567890',
+    icsUid:           'deadbeefdeadbeefdeadbeefdeadbeef',
+    icsSequence:      1,
+    bookedAt:         1_757_000_000_000,
+    rescheduledCount: 1,
+    history:          [{
+      startUtc: '2026-09-14T18:00:00Z',
+      endUtc:   '2026-09-14T19:00:00Z',
+      movedAt:  1_757_100_000_000,
+      by:       'expert',
+    }],
   };
 }
 
@@ -186,6 +230,52 @@ check('bookmarked identity not revealed', !isIdentityRevealed('bookmarked'));
 check('bookmarked contactEmail absent',  bookmarked.contactEmail === undefined);
 check('bookmarked expertRate absent',    bookmarked.expertRate === undefined);
 check('bookmarked clientRate kept',      bookmarked.clientRate === 1300);
+
+// ─── Matchy Phase 2: scheduling and booking ───────────────────────────────────
+
+console.log("\nrole 'user', scheduling state — the picker token never crosses");
+const stored     = projectExpertAt('scheduling_sent');
+const scheduling = redactExpertForViewer(stored, { role: 'user' });
+
+check('pickTokenHash nulled',   scheduling.scheduling?.pickTokenHash   === null);
+check('pickTokenExpiry nulled', scheduling.scheduling?.pickTokenExpiry === null);
+check('round kept',             scheduling.scheduling?.round           === 2);
+check('outcome kept',           scheduling.scheduling?.outcome         === 'times_proposed');
+check('expertTimezone kept',    scheduling.scheduling?.expertTimezone  === 'America/Chicago');
+check('preferences kept',       scheduling.scheduling?.preferences     === 'afternoons');
+check('proposed times kept',    scheduling.scheduling?.proposed.length === 1);
+check('proposedAt kept',        scheduling.scheduling?.proposedAt      === 1_757_000_000_000);
+
+check('the stored record was NOT mutated — a deep copy was stripped',
+      stored.scheduling?.pickTokenHash === 'f'.repeat(64)
+   && stored.scheduling?.pickTokenExpiry === 1_757_600_000_000);
+check('the proposed array was deep copied',
+      scheduling.scheduling?.proposed[0] !== stored.scheduling?.proposed[0]);
+
+console.log("\nrole 'user', booking state — client-facing in full");
+const booked = redactExpertForViewer(projectExpertAt('scheduled'), { role: 'user' });
+check('booking kept',                  booked.booking?.startUtc === '2026-09-15T18:00:00Z');
+check('zoomMeetingId on the booking is fine — zoomJoinUrl exposes the same id',
+      booked.booking?.zoomMeetingId === '81234567890');
+check('icsSequence kept',              booked.booking?.icsSequence === 1);
+check('reschedule history kept',       booked.booking?.history.length === 1);
+check('zoomJoinUrl KEPT — the client joins the call',
+      booked.zoomJoinUrl === 'https://zoom.us/j/123');
+check('zoomStartUrl absent — the host link is staff-only',
+      booked.zoomStartUrl === undefined);
+
+console.log("\nrole 'admin', scheduling state — untouched");
+const schedulingAdmin = redactExpertForViewer(projectExpertAt('scheduling_sent'), { role: 'admin' });
+check('admin keeps pickTokenHash',   schedulingAdmin.scheduling?.pickTokenHash === 'f'.repeat(64));
+check('admin keeps pickTokenExpiry', schedulingAdmin.scheduling?.pickTokenExpiry === 1_757_600_000_000);
+
+console.log("\nan expert with no scheduling state gains no key");
+const bare = redactExpertForViewer(
+  { expert: SAMPLE_EXPERT, status: 'contacted', addedAt: 1, updatedAt: 2 },
+  { role: 'user' },
+);
+check('no scheduling key invented', !('scheduling' in bare));
+check('no booking key invented',    !('booking' in bare));
 
 // ─── admin: untouched ─────────────────────────────────────────────────────────
 

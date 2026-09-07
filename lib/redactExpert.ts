@@ -9,7 +9,7 @@
 // expert's status reaches 'scheduled' or later. Admins (ExpertMatch staff) see
 // everything, always. Raw data is always stored — this is a presentation-layer
 // filter applied at the API boundary, never in the store, because
-// server-internal callers (triggerOverlapCheck, invoicing, ICS generation,
+// server-internal callers (scheduling, invoicing, ICS generation,
 // email sequences) need the real identity.
 //
 // WHERE: every route that returns `{ project }` to the browser calls
@@ -17,7 +17,9 @@
 //
 // Pure functions — no I/O, no throwing. Unit-checked by scripts/check-redaction.ts.
 
-import type { Expert, ExpertStatus, Project, ProjectExpert, MatchyOutcome } from '../types';
+import type {
+  Expert, ExpertStatus, Project, ProjectExpert, MatchyOutcome, SchedulingState,
+} from '../types';
 import { EXPERT_STATUSES } from './expertPipeline';
 import { toInitialForm } from './nameValidation';
 import { fallbackDescriptor } from './anonymizeExpert';
@@ -206,10 +208,53 @@ function anonymizeExpert(expert: Expert): Expert {
 export function redactExpertForViewer(pe: ProjectExpert, viewer: Viewer): ProjectExpert {
   if (viewer.role === 'admin') return pe;
 
-  const stripped = { ...omitKeys(pe, INTERNAL_PROJECT_EXPERT_KEYS), ...matchyOutcomeOf(pe) };
+  const stripped = {
+    ...omitKeys(pe, INTERNAL_PROJECT_EXPERT_KEYS),
+    ...matchyOutcomeOf(pe),
+    ...redactScheduling(pe.scheduling),
+  };
   if (isIdentityRevealed(pe.status)) return stripped;
 
   return { ...stripped, expert: anonymizeExpert(pe.expert) };
+}
+
+// ─── Scheduling (Matchy Phase 2) ──────────────────────────────────────────────
+
+/**
+ * `scheduling` is client-facing almost in full: the client is meant to see the
+ * round, the times Matchy proposed, the outcome and the expert's zone — that is
+ * the whole point of the scheduling card.
+ *
+ * TWO KEYS ARE NOT. `pickTokenHash` and `pickTokenExpiry` describe the expert's
+ * private booking link (lib/matchyScheduling.ts). The hash is not a usable
+ * credential on its own, but it is the revocation record for a link that BOOKS
+ * A CALL, and the expiry tells an attacker exactly how long a guessed token
+ * would stay live. Neither has a reason to reach a browser, so neither does.
+ *
+ * A DEEP COPY, always: `scheduling` on the stored ProjectExpert is the live
+ * object the store handed us, and deleting a key from it would strip the hash
+ * out of the record itself. `booking` needs no filter — `zoomMeetingId` is the
+ * same id `zoomJoinUrl` already exposes, and `zoomStartUrl` (the host link) is
+ * stripped at the ProjectExpert level above and never rides on `booking`.
+ */
+function redactScheduling(
+  scheduling: SchedulingState | null | undefined,
+): { scheduling?: SchedulingState | null } {
+  if (scheduling === undefined) return {};
+  if (scheduling === null)      return { scheduling: null };
+
+  return {
+    scheduling: {
+      round:           scheduling.round,
+      proposed:        scheduling.proposed.map(slot => ({ ...slot })),
+      proposedAt:      scheduling.proposedAt,
+      expertTimezone:  scheduling.expertTimezone,
+      preferences:     scheduling.preferences,
+      outcome:         scheduling.outcome,
+      pickTokenHash:   null,
+      pickTokenExpiry: null,
+    },
+  };
 }
 
 const MATCHY_OUTCOMES: ReadonlySet<string> = new Set<MatchyOutcome>([

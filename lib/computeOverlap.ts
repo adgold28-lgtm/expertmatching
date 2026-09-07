@@ -14,7 +14,12 @@ const TZ_MAP: Record<string, string> = {
   GMT: 'Europe/London',    UTC: 'UTC',
 };
 
-function resolveTimezone(tz: string): string {
+/**
+ * Normalizes an abbreviation ("ET", "PT") or a passthrough IANA name into an
+ * IANA zone. Exported because lib/matchyScheduling.ts resolves the same zones
+ * when it turns the owner's calendar into UTC ranges: one table, not two.
+ */
+export function resolveTimezone(tz: string): string {
   return TZ_MAP[tz.toUpperCase()] ?? tz;
 }
 
@@ -37,7 +42,7 @@ function parseTimeString(t: string): { h: number; m: number } | null {
  * Given a local wall-clock time (year, month 1-based, day, h, min) in tzIana,
  * return the corresponding UTC Date. Uses Intl to find the offset.
  */
-function localToUtc(
+export function localToUtc(
   year: number, month: number, day: number,
   h: number, min: number,
   tzIana: string,
@@ -86,7 +91,15 @@ function nextOccurrenceOfDay(targetDay: string): { year: number; month: number; 
 
 // ─── Slot → UTC range ─────────────────────────────────────────────────────────
 
-function slotToUtcRange(
+/**
+ * One AvailabilitySlot resolved to an absolute UTC range, or null when it does
+ * not describe one (unparseable times, no date and no weekday, an end at or
+ * before the start).
+ *
+ * Exported for lib/matchyScheduling.ts, which cuts these ranges into concrete
+ * 60-minute proposals. The slot → UTC rule lives here and nowhere else.
+ */
+export function slotToUtcRange(
   slot: AvailabilitySlot,
   tzIana: string,
 ): { start: Date; end: Date } | null {
@@ -167,7 +180,7 @@ function scoreSlot(
 
 // ─── Format helper ────────────────────────────────────────────────────────────
 
-function formatInTimezone(utcDate: Date, tzIana: string): string {
+export function formatInTimezone(utcDate: Date, tzIana: string): string {
   return new Intl.DateTimeFormat('en-US', {
     timeZone:    tzIana,
     weekday:     'short',
@@ -181,7 +194,8 @@ function formatInTimezone(utcDate: Date, tzIana: string): string {
 
 // ─── Timezone extraction helper ───────────────────────────────────────────────
 
-function extractTimezone(slots: AvailabilitySlot[]): string {
+/** The first zone any slot in the list names, resolved to IANA. 'UTC' when none. */
+export function extractTimezone(slots: AvailabilitySlot[]): string {
   const tz = slots.find(s => s.timezone)?.timezone ?? 'UTC';
   return resolveTimezone(tz);
 }

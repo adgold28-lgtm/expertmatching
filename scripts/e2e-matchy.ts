@@ -11,6 +11,15 @@
 // (one live, one walkthrough), one expert each. Never touches the founder's
 // account.
 //
+// SCHEDULING (Matchy Phase 2) is split across the two projects on purpose. The
+// LIVE project proves the refusals — a collaborator gets 403, a thread that has
+// not started gets 422, an owner with no linked calendar gets
+// `no_client_availability` and NOTHING is sent, and an unbooked engagement has
+// no .ics to download. Only then does the WALKTHROUGH project get a calendar
+// connection and prove the happy path, because that is the one that would
+// otherwise put mail in a stranger's inbox: there, the send is held, the status
+// does not move, and the picker token hash never reaches the response.
+//
 // TWO PROJECTS, ON PURPOSE. Every project now starts in WALKTHROUGH mode
 // (lib/walkthrough.ts) unless it explicitly asks to be live, so the main run
 // creates its project with `walkthrough: false` and every existing assertion
@@ -329,6 +338,9 @@ async function main(): Promise<void> {
       check('owner anon sign-in for RLS checks', false);
     }
 
+    // ── scheduling: every path on the LIVE project that sends nothing ─────
+    await runLiveSchedulingChecks(owner, collab, projectId, expertId);
+
     // ── walkthrough mode: a second project that may not send anything ──────
     await runWalkthroughChecks(owner, cleanup);
 
@@ -420,6 +432,11 @@ async function runWalkthroughChecks(owner: Jar, cleanup: Array<() => Promise<voi
     accept.status === 200 && acceptBody?.held === true, `status ${accept.status} held ${acceptBody?.held}`);
   check('walkthrough: the money still moved ($650 → $1,300)',
     acceptBody?.projectExpert?.clientRate === 1300, `clientRate ${acceptBody?.projectExpert?.clientRate}`);
+  // Accepting a rate makes Matchy promise a time, and it keeps the promise
+  // immediately. The owner has no calendar yet, so the honest answer is that
+  // there is nothing to propose from, and nothing was sent.
+  check('walkthrough: accept also tried to schedule',
+    acceptBody?.scheduling === 'no_client_availability', `scheduling ${acceptBody?.scheduling}`);
 
   const thread    = await json(await req(owner, 'GET', `/api/projects/${wId}/experts/${wExpertId}/messages`));
   const lastMatchy = (thread?.messages ?? []).filter((m: any) => m.author === 'matchy').slice(-1)[0];
@@ -453,6 +470,9 @@ async function runWalkthroughChecks(owner: Jar, cleanup: Array<() => Promise<voi
   check('walkthrough: outreach/approve → 409 walkthrough_mode',
     approve.status === 409 && approveBody?.error === 'walkthrough_mode', `status ${approve.status} ${approveBody?.error ?? ''}`);
 
+  // ── scheduling, held: the one path that would otherwise send mail ───────
+  await runHeldSchedulingChecks(owner, wId, wExpertId);
+
   // Going live lands on review-first unless the owner says otherwise.
   const live     = await req(owner, 'PATCH', `/api/projects/${wId}`, { walkthrough: false });
   const liveBody = await json(live);
@@ -474,6 +494,155 @@ async function runWalkthroughChecks(owner: Jar, cleanup: Array<() => Promise<voi
 
   // Take the address back off, so nothing downstream could ever write to it.
   await updateExpertStatus(wId, wExpertId, { contactEmail: '', outreachToken: '' });
+}
+
+/**
+ * Scheduling on the LIVE project. Everything here is a path that sends NOTHING,
+ * which is why it is safe to run against a real deployment: the refusals, and
+ * the honest "you have not linked a calendar" answer.
+ *
+ * The address seeded below is on the throwaway .example firm domain, which
+ * cannot resolve. It is removed again at the end of this function, so nothing
+ * downstream could ever write to it.
+ */
+async function runLiveSchedulingChecks(
+  owner: Jar, collab: Jar, projectId: string, expertId: string,
+): Promise<void> {
+  const path = `/api/projects/${projectId}/experts/${expertId}/propose-times`;
+
+  // No thread yet: this expert never had an address (contact discovery found
+  // none), so there is nowhere to propose to.
+  const noThread     = await req(owner, 'POST', path, {});
+  const noThreadBody = await json(noThread);
+  check('scheduling: propose-times before a thread → 422 thread_not_started',
+    noThread.status === 422 && noThreadBody?.error === 'thread_not_started',
+    `status ${noThread.status} ${noThreadBody?.error ?? ''}`);
+
+  const collabPropose = await req(collab, 'POST', path, {});
+  check('scheduling: collaborator propose-times → 403',
+    collabPropose.status === 403, `status ${collabPropose.status}`);
+
+  // Give it a thread, the way the outreach path would.
+  const { updateExpertStatus } = await import('../lib/projectStore');
+  await updateExpertStatus(projectId, expertId, {
+    status:        'followup_sent',
+    contactEmail:  `expert@${FIRM_DOMAIN}`,
+    outreachToken: `e2e-live-${RUN}-token`,
+  });
+
+  // The owner of this throwaway org has never linked a calendar, so there is
+  // nothing to propose FROM. Nothing is sent and the status does not move.
+  const noCal     = await req(owner, 'POST', path, {});
+  const noCalBody = await json(noCal);
+  check('scheduling: no linked calendar → 200 no_client_availability',
+    noCal.status === 200 && noCalBody?.outcome === 'no_client_availability',
+    `status ${noCal.status} outcome ${noCalBody?.outcome}`);
+  check('scheduling: no email was sent, so nothing is held either',
+    noCalBody?.held === undefined, `held ${noCalBody?.held}`);
+  check('scheduling: the status did not move',
+    noCalBody?.projectExpert?.status === 'followup_sent',
+    `status ${noCalBody?.projectExpert?.status}`);
+  check('scheduling: the response never carries the picker token hash',
+    noCalBody?.projectExpert?.scheduling?.pickTokenHash == null,
+    JSON.stringify(noCalBody?.projectExpert?.scheduling)?.slice(0, 120));
+
+  // A reschedule needs something booked.
+  const nothingBooked = await req(owner, 'POST', path, { reason: 'reschedule' });
+  check('scheduling: reschedule with nothing booked → 409 nothing_booked',
+    nothingBooked.status === 409 && (await json(nothingBooked))?.error === 'nothing_booked',
+    `status ${nothingBooked.status}`);
+
+  // A preference that leaks contact details is refused before it is stored.
+  const leaky = await req(owner, 'POST', path, { preferences: 'call me on 415-555-0132 instead' });
+  check('scheduling: a preference that leaks a phone number → 422 message_blocked',
+    leaky.status === 422 && (await json(leaky))?.error === 'message_blocked',
+    `status ${leaky.status}`);
+
+  // Nothing is booked, so there is no invite to download.
+  const ics = await req(owner, 'GET', `/api/projects/${projectId}/experts/${expertId}/booking/ics`);
+  check('scheduling: booking ics with nothing booked → 404',
+    ics.status === 404, `status ${ics.status}`);
+
+  const icsIntruder = await req(collab, 'GET', `/api/projects/${projectId}/experts/${expertId}/booking/ics`);
+  check('scheduling: a collaborator may read the invite route (404, not 403)',
+    icsIntruder.status === 404, `status ${icsIntruder.status}`);
+
+  // Take the address back off before anything else runs.
+  await updateExpertStatus(projectId, expertId, { contactEmail: '', outreachToken: '' });
+}
+
+/**
+ * The happy path, on the WALKTHROUGH project, which is the only place it is
+ * safe: lib/emailSequence refuses the send, so the proposal is written to the
+ * thread and never mailed.
+ *
+ * The owner gets a MANUAL calendar connection (weekly windows, Monday to Friday
+ * 09:00 to 17:00 in America/New_York), which is the simplest connection that
+ * produces real availability with no provider call.
+ */
+async function runHeldSchedulingChecks(owner: Jar, wId: string, wExpertId: string): Promise<void> {
+  const { upsertCalendarConnection, deleteCalendarConnection } = await import('../lib/calendarConnections');
+
+  const linked = await upsertCalendarConnection(OWNER_EMAIL, {
+    provider: 'manual',
+    timezone: 'America/New_York',
+    weeklyWindows: [1, 2, 3, 4, 5].map(dayOfWeek => ({
+      dayOfWeek, from: '09:00', to: '17:00', timezone: 'America/New_York',
+    })),
+  });
+  check('scheduling: owner calendar connection seeded', linked);
+  if (!linked) return;
+
+  try {
+    const path = `/api/projects/${wId}/experts/${wExpertId}/propose-times`;
+    const res  = await req(owner, 'POST', path, { preferences: 'afternoons work best' });
+    const body = await json(res);
+
+    check('scheduling: propose-times → 200 times_proposed',
+      res.status === 200 && body?.outcome === 'times_proposed',
+      `status ${res.status} outcome ${body?.outcome}`);
+    check('scheduling: walkthrough held the send',
+      body?.held === true, `held ${body?.held}`);
+    check('scheduling: a held proposal does NOT advance the status',
+      body?.projectExpert?.status !== 'scheduling_sent',
+      `status ${body?.projectExpert?.status}`);
+    check('scheduling: the picker token hash never reaches the client',
+      body?.projectExpert?.scheduling?.pickTokenHash == null,
+      JSON.stringify(body?.projectExpert?.scheduling)?.slice(0, 160));
+    check('scheduling: the token expiry never reaches the client',
+      body?.projectExpert?.scheduling?.pickTokenExpiry == null);
+    check('scheduling: the screened preference was stored',
+      body?.projectExpert?.scheduling?.preferences === 'afternoons work best',
+      `preferences ${JSON.stringify(body?.projectExpert?.scheduling?.preferences)}`);
+
+    // The proposal itself is on the thread, held, so the client can read what
+    // would have gone out.
+    const thread = await json(await req(owner, 'GET', `/api/projects/${wId}/experts/${wExpertId}/messages`));
+    const last   = (thread?.messages ?? []).filter((m: any) => m.author === 'matchy').slice(-1)[0];
+    check("scheduling: the proposal is stored held === 'walkthrough'",
+      last?.held === 'walkthrough', `held ${JSON.stringify(last?.held)}`);
+    check('scheduling: the held proposal quotes no money',
+      typeof last?.body === 'string' && !last.body.includes('$'),
+      String(last?.body ?? '').slice(0, 120));
+    check('scheduling: the held proposal has no em dash',
+      typeof last?.body === 'string' && !last.body.includes('\u2014'));
+
+    // The proposal round is recorded as an event, with no PII in the payload.
+    const { data: events } = await db.from('engagement_events')
+      .select('type, payload').eq('project_id', wId).eq('type', 'times_proposed');
+    check('scheduling: times_proposed emitted',
+      (events ?? []).length >= 1, `${(events ?? []).length} rows`);
+    const payloads = JSON.stringify((events ?? []).map((e: any) => e.payload));
+    check('scheduling: the event payload carries no name or address',
+      !/Robin|Walkthrough|@/.test(payloads), payloads.slice(0, 160));
+
+    // Nothing was booked, so there is still no invite.
+    const ics = await req(owner, 'GET', `/api/projects/${wId}/experts/${wExpertId}/booking/ics`);
+    check('scheduling: a held proposal books nothing',
+      ics.status === 404, `status ${ics.status}`);
+  } finally {
+    await deleteCalendarConnection(OWNER_EMAIL).catch(() => undefined);
+  }
 }
 
 main();

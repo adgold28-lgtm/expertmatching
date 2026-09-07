@@ -28,11 +28,20 @@
 // line is written to the thread marked `held: 'walkthrough'` so the client can
 // read what would have gone to the expert. The response carries `held: true`.
 //
-// STATUS IS NOT TOUCHED. There is no "rate agreed" status in
-// lib/expertPipeline.ts and this is not the place to invent one: an engagement
-// advances when the expert replies (POST /api/inbound-email classifies it), and
-// until then 'rate_negotiation' is exactly where this sits. What changes here
-// is the money and the outstanding counter.
+// STATUS IS NOT TOUCHED BY THE DECISION ITSELF. There is no "rate agreed"
+// status in lib/expertPipeline.ts and this is not the place to invent one. What
+// changes here is the money and the outstanding counter.
+//
+// ON ACCEPT, THOUGH, MATCHY KEEPS ITS PROMISE. The accept template already says
+// "Next I will find a time that suits you both", so an accept immediately calls
+// lib/matchyScheduling.proposeTimes: the owner's calendar is read, up to three
+// times go out with a picker link, and the status becomes 'scheduling_sent'.
+// The outcome rides back on the response as `scheduling` so the card can render
+// what happened, including 'no_client_availability' when the owner has never
+// linked a calendar. A COUNTER promises nothing and schedules nothing.
+//
+// In walkthrough the scheduling send is held exactly like the accept line: the
+// proposal email is written to the thread and the status does not move.
 //
 // NO ADDRESS EVER LEAVES THIS ROUTE, and the response goes through
 // redactExpertForViewer, so a client never receives `expertRate`.
@@ -51,7 +60,9 @@ import { emitEngagementEvent } from '../../../../../../../lib/engagementEvents';
 import { redactExpertForViewer } from '../../../../../../../lib/redactExpert';
 import { getFirm } from '../../../../../../../lib/firmStore';
 import { isWalkthrough, WALKTHROUGH_HELD_SUMMARY } from '../../../../../../../lib/walkthrough';
+import { proposeTimes } from '../../../../../../../lib/matchyScheduling';
 import type { EngagementEventType } from '../../../../../../../lib/engagementEvents';
+import type { SchedulingOutcome } from '../../../../../../../types';
 
 const ID_RE        = /^[a-f0-9]{24}$/;
 const EXPERT_ID_RE = /^[a-zA-Z0-9\-_]+$/;
@@ -131,7 +142,7 @@ export async function POST(
       clientCounterRate: null,
     });
 
-    const current = updated.experts.find(e => e.expert.id === params.expertId) ?? pe;
+    let current = updated.experts.find(e => e.expert.id === params.expertId) ?? pe;
 
     // 8. The thread copy. `maskCurrency` in lib/conversations takes the amount
     //    back out on the way to a client's screen — this body is written for
@@ -165,9 +176,24 @@ export async function POST(
       },
     });
 
+    // 10. The promise the accept line just made. Only on accept, and only when
+    //     there is a thread to propose on: proposeTimes answers `null` rather
+    //     than throwing when there is not.
+    let scheduling: SchedulingOutcome | null = null;
+    if (action === 'accept') {
+      const result = await proposeTimes({
+        project: updated, pe: current, reason: 'initial', trigger: 'matchy',
+      });
+      scheduling = result.outcome;
+      if (result.outcome) {
+        current = result.project.experts.find(e => e.expert.id === params.expertId) ?? current;
+      }
+    }
+
     return NextResponse.json({
       ok:            true,
       projectExpert: redactExpertForViewer(current, { role }),
+      ...(scheduling && { scheduling }),
       ...(held && { held: true }),
     });
   } catch (err) {
