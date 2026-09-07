@@ -189,6 +189,18 @@ export async function bookCall(input: BookCallInput): Promise<BookCallResult> {
   const pe = project.experts.find(e => e.expert.id === expertId);
   if (!pe) return { ok: false, reason: 'not_found' };
 
+  // ONE CALL, EVER. Callers decide book-vs-move from the ProjectExpert they
+  // loaded, which can be stale: the expert can answer the email with a pick
+  // and tap the picker in the same minute. Whatever the caller thought, a
+  // booking that already exists on the fresh row is MOVED, never duplicated —
+  // a second createZoomMeeting here would be a second meeting on the calendar.
+  if (pe.booking) {
+    if (toMs(pe.booking.startUtc) === startMs) {
+      return { ok: true, booking: pe.booking, joinUrl: pe.zoomJoinUrl ?? null, project };
+    }
+    return rebookCall({ projectId, expertId, startUtc: input.startUtc, by });
+  }
+
   const startUtc = new Date(startMs).toISOString();
   const endUtc   = new Date(startMs + durationMin * 60_000).toISOString();
 

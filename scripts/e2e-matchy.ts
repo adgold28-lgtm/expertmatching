@@ -28,6 +28,7 @@
 // sends nothing, a client reply stored as held, and 409 on both send routes.
 
 import * as dotenv from 'dotenv';
+import { generateOutreachToken } from '../lib/outreachToken';
 import * as path from 'path';
 const ROOT = path.resolve(__dirname, '..');
 dotenv.config({ path: path.join(ROOT, '.env.local') });
@@ -300,7 +301,7 @@ async function main(): Promise<void> {
     // again immediately below.
     await updateExpertStatus(projectId, expertId, {
       contactEmail:  `expert@${FIRM_DOMAIN}`,
-      outreachToken: `e2e-${RUN}-token`,
+      outreachToken: generateOutreachToken(projectId, expertId).token,
     });
 
     const typedRate = await req(owner, 'POST', `/api/projects/${projectId}/experts/${expertId}/messages`, { text: 'can you do $1,300/hr' });
@@ -421,7 +422,7 @@ async function runWalkthroughChecks(owner: Jar, cleanup: Array<() => Promise<voi
   await updateExpertStatus(wId, wExpertId, {
     status:            'rate_negotiation',
     contactEmail:      `expert@${FIRM_DOMAIN}`,
-    outreachToken:     `e2e-walk-${RUN}-token`,
+    outreachToken:     generateOutreachToken(wId, wExpertId).token,
     expertCounterRate: 650,
     clientCounterRate: 1300,
   });
@@ -527,7 +528,7 @@ async function runLiveSchedulingChecks(
   await updateExpertStatus(projectId, expertId, {
     status:        'followup_sent',
     contactEmail:  `expert@${FIRM_DOMAIN}`,
-    outreachToken: `e2e-live-${RUN}-token`,
+    outreachToken: generateOutreachToken(projectId, expertId).token,
   });
 
   // The owner of this throwaway org has never linked a calendar, so there is
@@ -567,8 +568,9 @@ async function runLiveSchedulingChecks(
   check('scheduling: a collaborator may read the invite route (404, not 403)',
     icsIntruder.status === 404, `status ${icsIntruder.status}`);
 
-  // Take the address back off before anything else runs.
-  await updateExpertStatus(projectId, expertId, { contactEmail: '', outreachToken: '' });
+  // Take the address back off before anything else runs, and put the status
+  // back where the seed found it so the unbookmark check at the end still holds.
+  await updateExpertStatus(projectId, expertId, { contactEmail: '', outreachToken: '', status: 'bookmarked' });
 }
 
 /**

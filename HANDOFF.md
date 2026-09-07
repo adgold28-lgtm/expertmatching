@@ -1,8 +1,52 @@
 # ExpertMatch — Session Handoff
 
-**Written:** 2026-09-07 (overnight, session 4 — in progress) · **Branch:** `main` (deployed = production) · **Status:** live at expertmatch.fit; Matchy Phase 1 shipped and verified in production (`scripts/e2e-matchy.ts` all green, `scripts/smoke-cutover.ts` 16/16)
+**Written:** 2026-09-07 (session 5) · **Branch:** `main` (deployed = production) · **Status:** live at expertmatch.fit; walkthrough mode + Matchy Phase 2 (scheduling, nudges) shipped; `scripts/e2e-matchy.ts` green in prod
 
-Read with `CLAUDE.md` (operating rules), `TASK_QUEUE.md` (priorities), `docs/MATCHY_SPEC.md` (next build), `docs/OUTREACH_BOT_AUDIT.md` (why Matchy replaces the outreach bot).
+Read with `CLAUDE.md` (operating rules), `TASK_QUEUE.md` (priorities), `docs/MATCHY_SPEC.md` (the contract), `docs/OUTREACH_BOT_AUDIT.md` (why Matchy replaces the outreach bot).
+
+## Session 5 (2026-09-07, daytime) — walkthrough mode + Matchy Phase 2. READ THIS FIRST.
+
+The founder asked for two things, in order: (1) a hard stop so no real expert is ever emailed by accident, and (2) Matchy Phase 2 — both calendars, an expert-side "pick a time" page, emails back when a time does or does not work, a way to move the call, and 8am follow-up nudges (random 0–60 min, max 4 business days, one line, never the same) with a hard cap on LLM-written text (1–2 sentences).
+
+### Walkthrough mode (commit 6938846, LIVE, e2e verified in prod)
+- `projects.brief.walkthrough` (unpromoted jsonb key, NO migration). `undefined` = walkthrough; only explicit `false` = live. Every existing project became walkthrough on deploy. `lib/walkthrough.ts` → `isWalkthrough(project)`.
+- Enforced at the chokepoint: `lib/emailSequence.sendSequenceEmail` resolves the project from the reply token (fails closed on an unverifiable token), returns `{ sent: true } | { sent: false, held: 'walkthrough' | 'disabled' }`. Every caller reads it. Booking emails (with .ics) go through `sendBookingEmail` in `lib/sendAvailabilityRequest.ts`, which re-implements the same gate for the expert copy.
+- In walkthrough: bookmark never starts contact discovery (`walkthrough_held` outcome when there is no address; drafts the intro when there is); rate-decision / client reply / propose-times write the line to the thread with `held: 'walkthrough'` (not pending, never sendable); send / approve routes answer 409 `walkthrough_mode`. Money fields still move so a practice run leaves the real state.
+- UI: new-project modal offers Walkthrough (default) / Live; workspace header pill WALKTHROUGH; settings strip "Mode" row with a two-step Go live confirm (lands on `reviewFirst: true` unless the same PATCH says otherwise); held messages tagged in the thread.
+- Tests: `scripts/test-walkthrough.ts` (43); e2e-matchy runs the whole flow on a live project AND a walkthrough project.
+
+### Sender identity (commit 2e3b496)
+`lib/senderIdentity.ts`: `OUTREACH_SIGNATURE` signs every Matchy body; with `OUTREACH_FROM_EMAIL` (must be on expertmatch.fit, lib/mailFrom.ts) the founder can send as themselves with two env vars. Recommended: `OUTREACH_FROM_EMAIL="Asher Goldstein <asher@expertmatch.fit>"`, `OUTREACH_SIGNATURE="Asher"`. Unset = Phase 1 behaviour.
+
+### Matchy Phase 2 — scheduling (commit a9504a6)
+- `lib/matchyScheduling.ts`: `proposeTimes({ project, pe, reason: 'initial'|'reschedule', trigger, preferences })` — up to 3 × 60-min slots from `getClientSlotsForUser(ownerEmail)` (business hours in the owner's zone, weekdays, ≥24h lead, spread across days, regex preferences like "mornings", "not Fridays"), intersected with the expert's windows when known; emails via `lib/schedulingTemplates.ts` (every body ≤ 2 sentences + slot list + picker link, passes `enforceBrevity`); status → `scheduling_sent`; `pe.scheduling` (SchedulingState in types.ts) + event `times_proposed`. `parseSchedulingReply` = regex fast path + one gpt-4o-mini call (fenced like matchyClassify) → chosen / unavailable / reschedule / declined / unclear. `MAX_PROPOSAL_ROUNDS = 3`.
+- `lib/bookCall.ts`: `bookCall` (Zoom create, `pe.booking` BookingState, legacy zoom fields kept for the webhook, status `scheduled`, ICS to both, event `scheduled`) and `rebookCall` (Zoom PATCH, same ICS UID with SEQUENCE+1, history, event `rescheduled`). `lib/createZoomMeeting.ts` gained update/delete; `lib/generateIcs.ts` gained `sequence`/`method`.
+- Triggers: rate-decision accept → proposeTimes; inbound `interested` at `followup_sent` → `rate_agreed` + proposeTimes; inbound at `scheduling_sent` → parse → book / re-propose / `expert_declined_times` after round 3; inbound at `scheduled` with reschedule intent → re-propose (`reschedule_requested`) → next pick rebooks. Client: `POST .../propose-times { reason, preferences }` (owner only), "Move the call" in the thread, `GET .../booking/ics`.
+- Expert picker: public `/schedule/[token]` (token = `generateAvailabilityToken`, hash in `scheduling.pickTokenHash`, 7 days) → `GET/POST /api/schedule/[token]` (pick / unavailable + free text / Google via the existing `/api/availability/[token]/google-auth` route, whose OAuth state now carries the picker token; the Google console redirect URI is unchanged). Returns no client identity, firm, project name or rate. A walkthrough proposal stores NO pickTokenHash, so the previewed link is inert.
+- Retired: `/availability/*` pages + POST route, `AvailabilityForm`, `lib/triggerOverlapCheck.ts`, `sendAvailabilityRequest()`/`sendConfirmationEmail()`. `lib/availabilityToken.ts` stays (expert-onboarding link uses it).
+- `lib/redactExpert.ts` strips `scheduling.pickTokenHash/pickTokenExpiry` for non-admins (deep copy); the rest of `scheduling`/`booking` is client-facing.
+
+### Matchy Phase 2 — nudges (commit 6f7ee1a)
+- `lib/nudges.ts` (pure) + `lib/qstashPublish.ts` + cron `GET /api/jobs/schedule-nudges` (Bearer `CRON_SECRET`, vercel.json `0 5 * * *`) + worker `POST /api/jobs/send-nudge` (QStash-signed, `Upstash-Retries: 0`).
+- Waiting = last thread message is outbound (matchy/client, not pending/held) and status ∈ contacted (stage intro) / followup_sent, rate_negotiation (terms) / scheduling_sent (times). Planner queues one job per engagement per business day at 08:00 in `getCalendarConnection(ownerEmail).timezone ?? America/New_York` + random 0–3600 s. Worker re-validates everything (walkthrough, stage, waitingSince, day, cap 4, suppression) before sending. Ten distinct lines per stage, `linesUsed` never repeats. `NUDGE_LLM_VARIATION=true` enables a 60-token rephrase that must pass `lib/matchyBrevity.enforceBrevity` (2 sentences, ≤160 chars, no money/links/em dashes/markdown) else the pool line is used. Event `nudge_sent`.
+- `lib/matchyBrevity.ts` is the general cap for LLM text that could reach an expert — use it on anything new.
+
+### Thread UI (commit 93c87d1)
+`components/ConversationThread.tsx`: propose-times control (+ preferences), proposed-times card in the viewer's zone, booked card (Zoom, ICS download, Move the call with confirm), intent tags. `lib/matchyClient.ts`: `proposeTimes`, `schedulingLine`, `formatSlot`, `bookingIcsUrl`.
+
+### Migrations / env for the founder
+- Paste `supabase/migrations/20260907300000_matchy_phase2_events.sql` (adds `nudge_sent`, `rescheduled`, `time_declined` to the events check constraint; dropped with a warning until then).
+- Vercel env: `CRON_SECRET` (nudge planner + reconcile refuse without it), optionally `OUTREACH_SIGNATURE` + `OUTREACH_FROM_EMAIL`, `NUDGE_LLM_VARIATION=false` (default off), plus the session-4 list (`QSTASH_URL`, `HUNTER_API_KEY`, `CONTACT_ENRICHMENT_ENABLED`).
+- Zoom S2S app needs `meeting:write` (update/delete) — already implied by create.
+
+### Not verified in a browser yet
+The new-project modal, the WALKTHROUGH pill, the Go-live confirm, the thread's scheduling cards, and `/schedule/[token]` (mobile + desktop) were built to the design language and type-check, but only the APIs were exercised in prod (e2e). Do a throwaway-user browser pass next (pattern below).
+
+### Known gaps / next
+- A round-3 proposal can repeat a round-1 slot (no `proposedBefore` field; exclusion uses current proposals + booking history).
+- Nudge times are in the OWNER's zone (the expert's zone is unknown until they use the picker or reply with one).
+- `clientRateMin/Max` still not enforced at bookmark/counter (MatchySettingsStrip TODO).
+- Cancel a booking (Zoom delete exists, no route). Bounce retry for contact discovery. Second pass of `docs/COPY_AUDIT.md`. `docs/STATE_OF_THE_UNION.md` refresh.
 
 ## Session 4 (2026-09-07 overnight) — the overnight repair run. READ THIS FIRST.
 
