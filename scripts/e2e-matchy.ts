@@ -149,8 +149,14 @@ async function main(): Promise<void> {
     check('clientRate seeded (COO → executive → $1,600)', pe?.clientRate === 1600, `clientRate ${pe?.clientRate}`);
     check('expertRate hidden from client', pe?.expertRate === undefined, `expertRate ${pe?.expertRate}`);
     check('contactEmail hidden from client', pe?.contactEmail === undefined);
+    // Bookmarking again is the retry when the first attempt found no address,
+    // so it succeeds and reports the same outcome rather than 409ing. Anything
+    // past 'bookmarked' is the case that still 409s.
     const bm2 = await req(owner, 'POST', `/api/projects/${projectId}/experts/${expertId}/bookmark`, {});
-    check('second bookmark 409', bm2.status === 409, `status ${bm2.status}`);
+    const bm2Body = await json(bm2);
+    check('second bookmark retries the address lookup',
+      bm2.status === 200 && bm2Body?.outcome === 'contact_not_found',
+      `status ${bm2.status} outcome ${bm2Body?.outcome}`);
     const collabBm = await req(collab, 'POST', `/api/projects/${projectId}/experts/${expertId}/bookmark`, {});
     check('non-member bookmark 404', collabBm.status === 404, `status ${collabBm.status}`);
 
@@ -187,6 +193,107 @@ async function main(): Promise<void> {
     check('collaborator POST → 403 read_only', collabSend.status === 403 && collabSendBody?.error === 'read_only', `status ${collabSend.status} ${collabSendBody?.error ?? ''}`);
     const collabBm2 = await req(collab, 'POST', `/api/projects/${projectId}/experts/${expertId}/unbookmark`, {});
     check('collaborator unbookmark → 403', collabBm2.status === 403, `status ${collabBm2.status}`);
+
+    // ── collaborator: every owner-only action ──────────────────────────────
+    // A shared project is read-only (docs/MATCHY_SPEC.md, founder answer 5).
+    // The collaborator is a member by now, so these are 403 and not 404 — the
+    // owner check runs after the access check, never before it.
+    const collabComplete = await req(collab, 'POST', `/api/projects/${projectId}/experts/${expertId}/complete`, { callDurationMin: 45, invoiceAmount: 1200 });
+    check('collaborator POST complete → 403', collabComplete.status === 403, `status ${collabComplete.status}`);
+
+    const collabDelete = await req(collab, 'DELETE', `/api/projects/${projectId}/experts/${expertId}`);
+    check('collaborator DELETE expert → 403', collabDelete.status === 403, `status ${collabDelete.status}`);
+
+    const collabStatus = await req(collab, 'PUT', `/api/projects/${projectId}/experts/${expertId}`, { status: 'rejected' });
+    check('collaborator PUT status → 403', collabStatus.status === 403, `status ${collabStatus.status}`);
+
+    const collabNote = await req(collab, 'PUT', `/api/projects/${projectId}/experts/${expertId}`, { note: 'Reader note.' });
+    check('collaborator PUT note → 200', collabNote.status === 200, `status ${collabNote.status}`);
+
+    const collabSource = await req(collab, 'POST', `/api/projects/${projectId}/source-experts`, {});
+    check('collaborator POST source-experts → 403', collabSource.status === 403, `status ${collabSource.status}`);
+
+    // ── rate decision: the client-side number never leaves the platform ────
+    // Seed a counter the way inbound-email would — through the store, so this
+    // never has to know how project_experts packs its columns.
+    const { updateExpertStatus } = await import('../lib/projectStore');
+    const seeded = await updateExpertStatus(projectId, expertId, {
+      status:            'rate_negotiation',
+      expertCounterRate: 650,
+      clientCounterRate: 1300,
+    });
+    check('counter seeded on the engagement',
+      seeded.experts.find(e => e.expert.id === expertId)?.expertCounterRate === 650);
+
+    const collabRate = await req(collab, 'POST', `/api/projects/${projectId}/experts/${expertId}/rate-decision`, { action: 'accept' });
+    check('collaborator POST rate-decision → 403', collabRate.status === 403, `status ${collabRate.status}`);
+
+    const accept = await req(owner, 'POST', `/api/projects/${projectId}/experts/${expertId}/rate-decision`, { action: 'accept' });
+    const acceptBody = await json(accept);
+    check('owner POST rate-decision accept → 200', accept.status === 200, `status ${accept.status} ${JSON.stringify(acceptBody)?.slice(0, 160)}`);
+    check('rate-decision response carries no expertRate',
+      acceptBody?.projectExpert && acceptBody.projectExpert.expertRate === undefined,
+      `expertRate ${acceptBody?.projectExpert?.expertRate}`);
+    check('rate-decision response carries no expertCounterRate',
+      acceptBody?.projectExpert?.expertCounterRate === undefined);
+    check('accepted counter became the client rate ($650 → $1,300)',
+      acceptBody?.projectExpert?.clientRate === 1300, `clientRate ${acceptBody?.projectExpert?.clientRate}`);
+
+    // The stored outbound line carries the EXPERT number and nothing else. Read
+    // it service-role: the thread API masks every amount out of a Matchy
+    // message on the way to a client's screen (lib/conversations), so the
+    // client-facing read below asserts the absence, not the presence.
+    const { data: outbound } = await db.from('conversation_messages')
+      .select('author, direction, body_clean')
+      .eq('project_id', projectId).eq('expert_id', expertId)
+      .order('created_at', { ascending: false }).limit(1).maybeSingle();
+    const row = outbound as { author?: string; direction?: string; body_clean?: string | null } | null;
+    const outboundBody = row?.body_clean ?? '';
+    check('rate-decision wrote an outbound Matchy message',
+      row?.author === 'matchy' && row?.direction === 'outbound',
+      `author ${row?.author}`);
+    check('outbound line quotes the EXPERT number ($650)', outboundBody.includes('$650'), outboundBody.slice(0, 120));
+    check('outbound line never quotes the CLIENT number ($1,300)',
+      !outboundBody.includes('$1,300') && !outboundBody.includes('$1300'), outboundBody.slice(0, 120));
+
+    const afterThread = await req(owner, 'GET', `/api/projects/${projectId}/experts/${expertId}/messages`);
+    const afterBody = await json(afterThread);
+    const newest = (afterBody?.messages ?? []).slice(-1)[0];
+    check('owner reads the new outbound message', newest?.author === 'matchy', `author ${newest?.author}`);
+    check('the client is shown no dollar amount at all',
+      typeof newest?.body === 'string' && !/\$\s?\d/.test(newest.body), String(newest?.body).slice(0, 120));
+
+    // The composer backstop: a client typing a rate is blocked, not relayed.
+    //
+    // The messages route answers `thread_not_started` before it screens
+    // anything, so this needs an address on the record to reach the screen at
+    // all. STILL NO EMAIL IS POSSIBLE: the screen runs before the send and this
+    // message is blocked, and the address is on a reserved `.example` domain
+    // that cannot resolve even if it were attempted. Both fields are cleared
+    // again immediately below.
+    await updateExpertStatus(projectId, expertId, {
+      contactEmail:  `expert@${FIRM_DOMAIN}`,
+      outreachToken: `e2e-${RUN}-token`,
+    });
+
+    const typedRate = await req(owner, 'POST', `/api/projects/${projectId}/experts/${expertId}/messages`, { text: 'can you do $1,300/hr' });
+    const typedRateBody = await json(typedRate);
+    check('owner POST messages with a typed rate → 422 message_blocked',
+      typedRate.status === 422 && typedRateBody?.error === 'message_blocked',
+      `status ${typedRate.status} ${typedRateBody?.error ?? ''}`);
+    check('the blocked finding is the money rule',
+      Array.isArray(typedRateBody?.findings)
+        && (typedRateBody.findings as Array<{ kind?: string }>).some(f => f.kind === 'money'),
+      JSON.stringify(typedRateBody?.findings)?.slice(0, 160));
+
+    // Put the engagement back where the rest of the script expects it, and take
+    // the address off again so nothing downstream can write to anybody.
+    await updateExpertStatus(projectId, expertId, {
+      status:        'bookmarked',
+      contactEmail:  '',
+      outreachToken: '',
+    });
+    await db.from('conversation_messages').delete().eq('project_id', projectId);
 
     // RLS direct: owner JWT can read conversation_messages (0 rows) but never engagement_events
     const anon = createClient(process.env.NEXT_PUBLIC_SUPABASE_URL!, process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY!, { auth: { persistSession: false } });

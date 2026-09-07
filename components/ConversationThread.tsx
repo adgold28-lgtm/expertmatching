@@ -10,6 +10,12 @@
 //     the summary alone when it does not.
 //   • No email addresses, no providers, no email numbering. An expert message
 //     is Matchy's summary with the cleaned body beneath it.
+//   • The Accept / Offer buttons send an ACTION, never text. They used to post
+//     "Yes — $1,300/hr works." to the messages endpoint, which emails the body
+//     verbatim — so the expert received the number that includes our fee. They
+//     now post { action } to .../rate-decision, and the server writes the
+//     outbound line from a template carrying only the expert-side figure. The
+//     labels stay in client dollars, which is what the client is agreeing to.
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { ProjectExpert } from '../types';
@@ -55,6 +61,7 @@ const FINDING_NOUN: Record<string, string> = {
   expert_real_name:    'name',
   client_real_name:    'name',
   off_platform_phrase: 'phrase',
+  money:               'rate',
 };
 
 function findingNoun(kind: string): string {
@@ -281,6 +288,45 @@ export default function ConversationThread({
     await load(false);
   }
 
+  /**
+   * Accept the expert's counter, or hold at the standing rate.
+   *
+   * Nothing the client typed goes anywhere: the button sends the decision and
+   * the server writes the expert-facing line from a template with the
+   * expert-side number in it. 403 (a collaborator) and 409 (nothing to accept)
+   * come back with a written message and land on the same error line a blocked
+   * send uses.
+   */
+  async function decideRate(action: 'accept' | 'counter') {
+    if (sending) return;
+    setSending(true);
+    setFindings([]);
+    setSendError('');
+    try {
+      const res = await fetch(`/api/projects/${projectId}/experts/${expertId}/rate-decision`, {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({ action }),
+      });
+      const data = await res.json().catch(() => null) as
+        { message?: string; projectExpert?: ProjectExpertWithCounter } | null;
+
+      if (!res.ok) {
+        setSendError(data?.message ?? 'Something went wrong. Try again.');
+        return;
+      }
+      if (data?.projectExpert) {
+        setThreadPE(data.projectExpert);
+        onExpertUpdate(data.projectExpert);
+      }
+      await load(false);
+    } catch {
+      setSendError("Couldn't reach the server. Try again.");
+    } finally {
+      setSending(false);
+    }
+  }
+
   /** Review-first: the intro is written and waiting on the client. */
   async function approveIntro() {
     setApproving(true);
@@ -358,6 +404,15 @@ export default function ConversationThread({
 
   // ── Wrap-up numbers ────────────────────────────────────────────────────────
 
+  // ── No address yet ─────────────────────────────────────────────────────────
+  // A client never sees `contactEmail` (it is stripped by redactExpertForViewer),
+  // so the status is the tell: bookmark only leaves an expert on 'bookmarked'
+  // when it could not write to them — no address found, suppressed, or the
+  // check was unavailable. An address moves them to contact_found /
+  // outreach_drafted / contacted. There is nothing to reply to until then, and
+  // the messages endpoint would answer `thread_not_started` anyway.
+  const noAddressYet = status === 'bookmarked';
+
   const callMinutes = pe.actualDurationMin ?? pe.callDurationMin ?? null;
   const charged     = typeof pe.invoiceAmount === 'number' ? pe.invoiceAmount : null;
   const isCompleted = status === 'completed';
@@ -426,7 +481,7 @@ export default function ConversationThread({
         {!loading && !loadError && messages.length === 0 && (
           <MatchyLine variant="card" tone="quiet">
             {status === 'bookmarked'
-              ? `Working on an address for ${firstName}.`
+              ? `No address on file for ${firstName} yet. Bookmark again to retry, or pass.`
               : `Nothing from ${firstName} yet. I'll put their reply here.`}
           </MatchyLine>
         )}
@@ -479,7 +534,7 @@ export default function ConversationThread({
               <div className="flex items-center gap-2 flex-wrap pl-[52px]">
                 <button
                   type="button"
-                  onClick={() => { void send(`Yes — ${formatRate(counterRate)}/hr works.`, false); }}
+                  onClick={() => { void decideRate('accept'); }}
                   disabled={sending}
                   className="text-[10px] uppercase tracking-widest bg-navy text-cream px-3 py-1.5 hover:bg-navy/90 disabled:opacity-40 transition-colors"
                   style={{ letterSpacing: '0.1em' }}
@@ -489,7 +544,7 @@ export default function ConversationThread({
                 {canCounter && standingRate !== null && (
                   <button
                     type="button"
-                    onClick={() => { void send(`Could you do ${formatRate(standingRate)}/hr?`, false); }}
+                    onClick={() => { void decideRate('counter'); }}
                     disabled={sending}
                     className="text-[10px] uppercase tracking-widest text-navy border border-navy/30 hover:border-navy px-3 py-1.5 disabled:opacity-40 transition-colors"
                     style={{ letterSpacing: '0.1em' }}
@@ -549,10 +604,18 @@ export default function ConversationThread({
               value={draft}
               onChange={e => setDraft(e.target.value)}
               rows={3}
-              placeholder={`Write to ${firstName} — I'll relay it.`}
-              disabled={sending}
+              placeholder={noAddressYet
+                ? `Nothing to reply to yet.`
+                : `Write to ${firstName} — I'll relay it.`}
+              disabled={sending || noAddressYet}
               className="w-full px-2.5 py-2 text-[12px] border border-frame bg-cream focus:outline-none focus:border-navy text-ink resize-none disabled:opacity-50"
             />
+
+            {noAddressYet && (
+              <p className="text-[11px] text-muted">
+                No address on file yet — I&apos;ll open this up as soon as there is one.
+              </p>
+            )}
 
             {findings.length > 0 && (
               <div className="border border-amber-300 bg-amber-50 px-3 py-2 space-y-1">
@@ -573,7 +636,7 @@ export default function ConversationThread({
               <button
                 type="button"
                 onClick={() => { void send(draft, true); }}
-                disabled={sending || !draft.trim()}
+                disabled={sending || noAddressYet || !draft.trim()}
                 className="shrink-0 text-[10px] uppercase tracking-widest bg-navy text-cream px-4 py-2 hover:bg-navy/90 disabled:opacity-40 transition-colors"
                 style={{ letterSpacing: '0.12em' }}
               >

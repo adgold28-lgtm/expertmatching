@@ -873,8 +873,7 @@ export interface GenerateExpertsResult {
 }
 
 // ─── Core generation ─────────────────────────────────────────────────────────
-// Shared by POST /api/generate-experts (client-driven, synchronous) and the
-// background sourcing worker (POST /api/jobs/source-experts). Expected
+// Used by the background sourcing worker (POST /api/jobs/source-experts). Expected
 // failures throw GenerateExpertsError; callers map code + status.
 
 export async function generateExperts(input: GenerateExpertsInput): Promise<GenerateExpertsResult> {

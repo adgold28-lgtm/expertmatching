@@ -10,12 +10,14 @@
 // Responses:
 //   200 { ok: true, status: 'running' }
 //   409 { error: 'sourcing_already_running' }  — a run started < 15 min ago
+//   403 { error: 'forbidden' }                 — a collaborator, not the owner
 //   404 { error: 'project_not_found' }         — also for inaccessible projects
 //
 // NEVER log: project names, research questions, or brief content.
 
 import { NextRequest, NextResponse } from 'next/server';
 import { routeAuthGuard, getSessionUser } from '../../../../../lib/auth';
+import { requireProjectOwner } from '../../../../../lib/projectsGuard';
 import { getProjectForUser, updateProjectFields } from '../../../../../lib/projectStore';
 import {
   isQStashConfigured,
@@ -61,6 +63,12 @@ export async function POST(
   if (!project) {
     return NextResponse.json({ error: 'project_not_found' }, { status: 404 });
   }
+
+  // 4b. A sourcing run costs real provider spend and rewrites the project's
+  //     candidate list, so only the owner (or staff) may start one.
+  //     Collaborators are read-only (docs/MATCHY_SPEC.md, founder answer 5).
+  const ownerErr = requireProjectOwner(project, { email, role });
+  if (ownerErr) return ownerErr as NextResponse;
 
   // 5. One live run per project. A run older than SOURCING_STALE_MS is
   //    considered dead (worker crash, deploy mid-run) and may be replaced.

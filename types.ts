@@ -427,6 +427,8 @@ export interface ProjectSummary {
   researchQuestion: string;
   expertCount: number;
   shortlistedCount: number;
+  /** Experts per status — drives the stage pill on /app (lib/expertPipeline.summaryStage). */
+  stageCounts?: Partial<Record<ExpertStatus, number>>;
   createdAt: number;
   updatedAt: number;
   ownerEmail:    string;

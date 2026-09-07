@@ -2,12 +2,19 @@
 // Marks an expert engagement complete, creates a Stripe payment link, and
 // emails an invoice to the client.
 //
+// WHO MAY: the project owner or a platform admin. This is the call that charges
+// the saved card, so a collaborator — who is read-only by product decision
+// (docs/MATCHY_SPEC.md, founder answer 5) — must not be able to reach it. The
+// owner check runs AFTER getProjectForUser so an inaccessible project still
+// 404s rather than confirming it exists.
+//
 // NEVER log: expert names, client names, emails, or card details.
 // Amounts are safe to log.
 
 import { NextRequest, NextResponse } from 'next/server';
 import { callChargeDollars } from '../../../../../../../lib/pricing';
 import { routeAuthGuard, getSessionUser } from '../../../../../../../lib/auth';
+import { requireProjectOwner } from '../../../../../../../lib/projectsGuard';
 import { getProjectForUser, updateExpertStatus } from '../../../../../../../lib/projectStore';
 import { createAndSendInvoice } from '../../../../../../../lib/createAndSendInvoice';
 
@@ -65,6 +72,10 @@ export async function POST(
   if (!pe) {
     return NextResponse.json({ error: 'expert_not_found' }, { status: 404 });
   }
+
+  // 3b. Only the owner (or staff) may bill a call. Collaborators read.
+  const ownerErr = requireProjectOwner(project, { email, role });
+  if (ownerErr) return ownerErr as NextResponse;
 
   // 4. Check expertRate is set
   if (!pe.expertRate) {

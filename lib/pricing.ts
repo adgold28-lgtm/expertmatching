@@ -127,6 +127,22 @@ export function clientRateFor(expertRate: number): number {
 }
 
 /**
+ * The EXPERT-side number implied by a client-facing rate: the inverse of
+ * `clientRateFor`, up to the $50 rounding that function applies.
+ *
+ * Used when the client offers their standing rate back to an expert who has
+ * countered: the client sees `clientRate`, the expert must be told the number
+ * we would actually pay them, and the two never share a message
+ * (docs/MATCHY_SPEC.md, "Pricing rule"). Rounds DOWN, so the offer we quote is
+ * never more than the split allows — `clientRateFor(expertRateFor(x)) <= x`
+ * for every rate on the $50 grid.
+ */
+export function expertRateFor(clientRate: number): number {
+  if (!Number.isFinite(clientRate) || clientRate <= 0) return 0;
+  return Math.floor(clientRate * EXPERT_SHARE);
+}
+
+/**
  * Whole-dollar amount charged to the client for a call: the client rate
  * pro-rated over the billable minutes (15-minute minimum).
  */

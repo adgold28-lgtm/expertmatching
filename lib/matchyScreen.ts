@@ -12,6 +12,10 @@
 //   4. the phrasings people use to arrange it — "let's connect directly",
 //      "my direct line", "off platform", "reach me at", "here's my cell"
 //
+// Plus one rule that is about money rather than identity: a client must not
+// type a rate at an expert, because every number a client has seen is the
+// client-side one. See MONEY_PATTERNS.
+//
 // SHAPE OF THE CONTRACT
 //   - `screenMessage` NEVER mutates the text. It reports; the sender fixes.
 //     Over-blocking is the known risk, so the findings say exactly what was
@@ -36,7 +40,8 @@ export type ScreenFindingKind =
   | 'client_firm_name'
   | 'expert_real_name'
   | 'client_real_name'
-  | 'off_platform_phrase';
+  | 'off_platform_phrase'
+  | 'money';
 
 export interface ScreenFinding {
   kind: ScreenFindingKind;
@@ -81,6 +86,7 @@ const HINTS: Record<ScreenFindingKind, string> = {
   expert_real_name:    'Remove the name. Identities are exchanged when the call is booked.',
   client_real_name:    'Remove the name. Identities are exchanged when the call is booked.',
   off_platform_phrase: 'Take out the offer to move the conversation elsewhere. Keep it in this thread.',
+  money:               'Rates go through Matchy — use the Accept / Offer buttons instead of typing a number.',
 };
 
 // ─── Patterns ─────────────────────────────────────────────────────────────────
@@ -134,6 +140,30 @@ const OFF_PLATFORM_PATTERNS: RegExp[] = [
   /\bwork\s+together\s+directly\b/gi,
   /\bwithout\s+(the\s+)?(platform|intermediary|middle\s?man)\b/gi,
   /\bmy\s+personal\s+(email|number|cell|phone)\b/gi,
+];
+
+/**
+ * Money, in a message a CLIENT is sending to an expert.
+ *
+ * WHY THIS IS A BLOCK AND NOT A WARNING: a client only ever sees CLIENT-side
+ * dollars, so any number they type is the number that includes our fee. Typing
+ * it at the expert would hand over both halves of the split and blow up the
+ * negotiation (docs/MATCHY_SPEC.md, "Pricing rule": the two numbers never share
+ * a message). The client has Accept / Offer buttons that send the correct
+ * expert-side figure through POST .../rate-decision; this is the backstop for
+ * the composer.
+ *
+ * ONE DIRECTION ONLY. An expert stating their own rate is the whole point of
+ * the reply, so `expert_to_client` is untouched.
+ *
+ * The hourly pattern requires the unit to sit against the number, so an
+ * ordinary fact keeps working: "3.4 visits per hour" has a word in between and
+ * does not match, "1300 per hour" does.
+ */
+const MONEY_PATTERNS: RegExp[] = [
+  /\$?\s?\d[\d,]*(?:\.\d{1,2})?\s*(?:\/\s*(?:hr|hour|hourly)\b|per\s+hour\b|an\s+hour\b)/gi,
+  /\$\s?\d[\d,]*(?:\.\d{2})?/g,
+  /\b(?:usd|us\$)\s?\d[\d,]*(?:\.\d{2})?\b/gi,
 ];
 
 // ─── False-positive guards for the phone matcher ──────────────────────────────
@@ -275,6 +305,19 @@ export function screenMessage(input: ScreenInput): ScreenResult {
   }
   for (const m of Array.from(text.matchAll(SPELLED_PHONE_RE))) push(findings, seen, 'phone', m[0]);
 
+  // ── Money, client → expert only ──────────────────────────────────────────
+  // The hourly form is checked first so "$1,300/hr" is reported once, as the
+  // whole amount, rather than twice as an amount and a rate.
+  if (input.direction === 'client_to_expert') {
+    for (const pattern of MONEY_PATTERNS) {
+      for (const m of Array.from(text.matchAll(pattern))) {
+        const hit = m[0].trim();
+        if (findings.some(f => f.kind === 'money' && f.match.includes(hit))) continue;
+        push(findings, seen, 'money', hit);
+      }
+    }
+  }
+
   // ── "Let's take this elsewhere" ──────────────────────────────────────────
   for (const pattern of OFF_PLATFORM_PATTERNS) {
     for (const m of Array.from(text.matchAll(pattern))) push(findings, seen, 'off_platform_phrase', m[0]);
@@ -317,6 +360,11 @@ export function screenMessage(input: ScreenInput): ScreenResult {
  * `off_platform_phrase` is deliberately absent — "let's connect directly" is a
  * thing the expert said, not an identifier, and the client is better off
  * reading it than reading a hole.
+ *
+ * `money` is absent for a different reason: it is a rule about what a CLIENT
+ * may send, not an identifier that must not be read. Masking on it would gut
+ * Matchy's own rate summaries, which quote numbers on purpose (`maskCurrency`
+ * is the function that handles those, per viewer).
  */
 export const MASKABLE_FINDING_KINDS: readonly ScreenFindingKind[] = [
   'phone',

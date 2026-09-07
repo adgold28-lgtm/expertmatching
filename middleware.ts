@@ -7,6 +7,7 @@ const PUBLIC_PATHS = new Set([
   '/login',
   '/api/auth/login',
   '/api/auth/logout',
+  '/api/auth/reset',
   '/',
   '/pricing',
   '/request-access',
@@ -39,7 +40,12 @@ const APP_REDIRECT_PATHS = new Set(['/', '/login']);
 
 // Internal tools: platform admins only. Non-admins get a 404 (not a 403) so the
 // routes' existence is not confirmed, and every response is marked noindex.
+// The whole admin console sits behind this too. The API routes under
+// /api/admin already run adminGuard themselves; this is defence in depth, and
+// it turns a 403 into a 404 so the console's existence is never confirmed.
 const ADMIN_ONLY_PREFIXES = [
+  '/admin',
+  '/api/admin',
   '/demo-readiness',
   '/rank-experts',
   '/screen-expert',

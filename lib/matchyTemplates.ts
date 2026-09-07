@@ -1,4 +1,5 @@
-// Matchy's two outbound templates — the intro and the follow-up.
+// Matchy's outbound templates — the intro, the follow-up, and the two one-line
+// replies that settle a rate.
 //
 // These are TEMPLATES, not prompts. Matchy never free-writes to an expert
 // (docs/MATCHY_SPEC.md, "Decisions taken"), so both emails are assembled from
@@ -22,6 +23,13 @@
 //     - quotes the EXPERT-side number, because it is going to the expert. The
 //       client-side number never appears in the same message (lib/pricing.ts
 //       is the only place the two convert).
+//
+//   Rate accepted / rate counter (sent when the client presses a button)
+//     - same rule: EXPERT-side number only, one line, then it stops
+//
+// The two email builders return { subject, text, html }; the two rate lines
+// return a bare body, because they go out as a reply on an existing thread and
+// the sender supplies the subject and the footer.
 //
 // Both bodies stay under 120 words and both carry the CAN-SPAM footer from
 // lib/outreachFooter.ts.
@@ -366,4 +374,40 @@ export function buildFollowUpEmail(input: FollowUpEmailInput): MatchyEmail {
     text:    `${body}${footer.text}`,
     html:    toHtml(body, footer.html),
   };
+}
+
+// ─── Rate decision ────────────────────────────────────────────────────────────
+
+export interface RateDecisionInput {
+  /** The expert's first name, for the greeting. */
+  firstName:  string;
+  /** EXPERT-side hourly rate in whole dollars. NEVER the client number. */
+  expertRate: number;
+}
+
+/**
+ * The two lines Matchy sends an expert once the client has decided on a rate.
+ *
+ * THE RULE THESE EXIST TO ENFORCE (docs/MATCHY_SPEC.md, "Pricing rule"): the
+ * client's number and the expert's number never share a message. The client
+ * presses Accept or Offer on a card showing CLIENT-side dollars; what leaves
+ * the platform is one of these templates, carrying only `expertRate`. Nothing
+ * the client typed is relayed, so there is no path for the client-side figure
+ * to reach an expert's inbox.
+ *
+ * Bodies only — POST .../rate-decision builds the subject from the thread and
+ * lib/emailSequence appends the CAN-SPAM footer. No em dashes (house rule for
+ * outbound mail), no contractions, one dry line and then it stops.
+ */
+export function rateAcceptedTemplate(input: RateDecisionInput): string {
+  const name = firstNameOf(input.firstName);
+  const rate = Math.max(0, Math.round(input.expertRate));
+  return `Thanks, ${name}. $${rate}/hr works. Next I will find a time that suits you both.`;
+}
+
+/** The counter: the client is holding at their standing rate. Asked, not told. */
+export function rateCounterTemplate(input: RateDecisionInput): string {
+  const name = firstNameOf(input.firstName);
+  const rate = Math.max(0, Math.round(input.expertRate));
+  return `Thanks, ${name}. Could you do $${rate}/hr? If so I will get a time on the calendar.`;
 }

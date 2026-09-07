@@ -15,6 +15,7 @@ import type { Expert, Project, ProjectExpert, ProjectSummary, ExpertStatus, Reje
 import { getServiceRoleClient } from './supabase/admin';
 import type { Database, ProjectRow, ProjectExpertRow } from './supabase/database.types';
 import type { SupabaseClient } from '@supabase/supabase-js';
+import { clientRateFor } from './pricing';
 
 // ─── Collaborator organization rule ───────────────────────────────────────────
 
@@ -207,6 +208,13 @@ function generateProjectId(): string {
   return randomBytes(12).toString('hex');
 }
 
+/** Experts per status, for the stage pill on /app. */
+function countByStatus(statuses: readonly ExpertStatus[]): Partial<Record<ExpertStatus, number>> {
+  const out: Partial<Record<ExpertStatus, number>> = {};
+  for (const st of statuses) out[st] = (out[st] ?? 0) + 1;
+  return out;
+}
+
 function toSummary(p: Project): ProjectSummary {
   return {
     id:               p.id,
@@ -214,6 +222,7 @@ function toSummary(p: Project): ProjectSummary {
     researchQuestion: p.researchQuestion,
     expertCount:      p.experts.length,
     shortlistedCount: p.experts.filter(e => e.status === 'shortlisted').length,
+    stageCounts:      countByStatus(p.experts.map(e => e.status)),
     createdAt:        p.createdAt,
     updatedAt:        p.updatedAt,
     ownerEmail:       p.ownerEmail,
@@ -601,11 +610,13 @@ class SupabaseProjectStore implements ProjectStore {
     ]));
     const emailById = await this.emailsByProfileIds(profileIds);
 
-    const counts = new Map<string, { total: number; shortlisted: number }>();
+    const counts = new Map<string, { total: number; shortlisted: number; byStatus: Partial<Record<ExpertStatus, number>> }>();
     for (const e of expertRows ?? []) {
-      const c = counts.get(e.project_id) ?? { total: 0, shortlisted: 0 };
+      const c = counts.get(e.project_id) ?? { total: 0, shortlisted: 0, byStatus: {} };
       c.total += 1;
       if (e.status === 'shortlisted') c.shortlisted += 1;
+      const st = e.status as ExpertStatus;
+      c.byStatus[st] = (c.byStatus[st] ?? 0) + 1;
       counts.set(e.project_id, c);
     }
 
@@ -620,7 +631,7 @@ class SupabaseProjectStore implements ProjectStore {
 
     return rows
       .map(r => {
-        const c = counts.get(r.id) ?? { total: 0, shortlisted: 0 };
+        const c = counts.get(r.id) ?? { total: 0, shortlisted: 0, byStatus: {} };
         const ownerEmail = emailById.get(r.owner_id) ?? '';
         return {
           id:               r.id,
@@ -628,6 +639,7 @@ class SupabaseProjectStore implements ProjectStore {
           researchQuestion: r.research_question,
           expertCount:      c.total,
           shortlistedCount: c.shortlisted,
+          stageCounts:      c.byStatus,
           createdAt:        toMs(r.created_at),
           updatedAt:        toMs(r.updated_at),
           ownerEmail,
@@ -922,6 +934,23 @@ export function updateExpertStatus(
   input: UpdateExpertInput,
 ): Promise<Project> {
   return getProjectStore().updateExpertStatus(id, expertId, input);
+}
+
+/**
+ * The two rate fields, always written together.
+ *
+ * `clientRate` is DERIVED from `expertRate` (lib/pricing.clientRateFor) and
+ * must never drift from it: a write that moves one and leaves the other is how
+ * a client ends up billed at the old number after a negotiation. Every caller
+ * that sets `expertRate` spreads this into its updateExpertStatus input rather
+ * than assigning the field directly.
+ *
+ *   updateExpertStatus(id, expertId, { ...rateFieldsFor(650) })
+ *   → { expertRate: 650, clientRate: 1300 }
+ */
+export function rateFieldsFor(expertRate: number): { expertRate: number; clientRate: number } {
+  const rounded = Math.round(expertRate);
+  return { expertRate: rounded, clientRate: clientRateFor(rounded) };
 }
 
 export function updateProjectFields(id: string, input: UpdateProjectInput): Promise<Project> {

@@ -96,6 +96,22 @@ blocks('skip the platform',      'We could skip the platform and save the fee.',
 blocks('work together directly', 'Perhaps we work together directly going forward.', 'off_platform_phrase');
 blocks('my personal email',      'Use my personal email for the documents.', 'off_platform_phrase');
 
+// ─── Blocks: money, client → expert only ─────────────────────────────────────
+
+section('rates the client must not type at an expert');
+
+blocks('a dollar rate',      'Yes — $1,300/hr works.',                  'money');
+blocks('a dollar amount',    'We can pay $1,300 for the hour.',         'money');
+blocks('a bare hourly rate', 'Could you do 1300 per hour?',             'money');
+blocks('an hourly with /hr', 'Our number is 1,300/hr, all in.',         'money');
+blocks('an hour phrasing',   'We are at 1300 an hour for this tier.',   'money');
+blocks('a USD amount',       'The budget is USD 1300 for the call.',    'money');
+
+// The expert stating their own rate is the entire point of their reply, so the
+// other direction is untouched.
+passes('the expert states a rate',    'I would need $650/hr for this.', 'expert_to_client');
+passes('the expert states an hourly', 'My rate is 650 per hour.',       'expert_to_client');
+
 // ─── Blocks: identities pre-reveal ───────────────────────────────────────────
 
 section('identities before the reveal');
@@ -135,9 +151,15 @@ check('BLOCK phone still blocked after the reveal',
 
 section('false-positive guards');
 
-passes('a rate',                 'We compensate experts at $650/hr, billed per minute.');
-passes('a large rate',           'The client pays $1,300/hr for this tier.');
+// Money is checked expert→client here on purpose: client→expert is blocked by
+// the `money` rule above, and what these two guard is the PHONE matcher — a
+// rate must never be mistaken for a phone number in either direction.
+passes('a rate',                 'We compensate experts at $650/hr, billed per minute.', 'expert_to_client');
+passes('a large rate',           'The client pays $1,300/hr for this tier.', 'expert_to_client');
 passes('a quarter',              'What changed in Q3 and Q4 of last year?');
+passes('a quarter and a year',   'How did volumes move through Q3 2026?');
+passes('a margin percentage',    'They were running a 10% margin by then.');
+passes('a bare clock time',      'Does 2pm suit?');
 passes('a year',                 'Volumes fell sharply in 2024 and recovered in 2026.');
 passes('a plain time',           'Would Tuesday 2pm work for you?');
 passes('a time with a colon',    'Tuesday 2:00pm ET or Thursday 4:00pm ET.');

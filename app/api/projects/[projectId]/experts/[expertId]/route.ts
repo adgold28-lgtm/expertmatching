@@ -1,6 +1,32 @@
+// PUT | PATCH  — update one expert on a project
+// DELETE       — remove one expert from a project
+//
+// WHO MAY WHAT (docs/MATCHY_SPEC.md, founder answer 5: a shared project is
+// read-only for collaborators, and only the owner or staff acts on an expert):
+//
+//   open to any project member — the notes a reader keeps for themselves, and
+//   the reason they think an expert is wrong:
+//       note, userNotes, rejectionReason, rejectionNotes, rejectedAt
+//
+//   OWNER OR ADMIN ONLY (see OWNER_ONLY_FIELDS) — anything that moves the
+//   engagement or touches money:
+//       status, screeningStatus, expertRate, expertCounterRate,
+//       callDurationMin, invoiceAmount, paymentStatus, paidAt,
+//       stripePaymentLinkId, stripePaymentLinkUrl, stripePaymentIntentId
+//
+//   DELETE is owner-or-admin outright — removing an expert throws away the
+//   whole engagement.
+//
+// The owner check always runs AFTER getProjectForUser, so a project the caller
+// cannot reach still answers 404 and never confirms that it exists.
+//
+// MONEY: `expertRate` is never written on its own. projectStore.rateFieldsFor
+// derives `clientRate` from it in the same write, so the number the client is
+// billed can never drift from the number the expert accepted.
+
 import { NextRequest } from 'next/server';
-import { updateExpertStatus, addExpertNote, removeExpertFromProject, getProjectForUser } from '../../../../../../lib/projectStore';
-import { guardMutatingRequest, guardReadRequest } from '../../../../../../lib/projectsGuard';
+import { updateExpertStatus, addExpertNote, removeExpertFromProject, getProjectForUser, rateFieldsFor } from '../../../../../../lib/projectStore';
+import { guardMutatingRequest, requireProjectOwner } from '../../../../../../lib/projectsGuard';
 import { getSessionUser } from '../../../../../../lib/auth';
 import { sanitizeText, LIMITS } from '../../../../../../lib/projectValidation';
 import { EXPERT_STATUSES } from '../../../../../../lib/expertPipeline';
@@ -35,6 +61,36 @@ const VALID_EMAIL_VERIFICATION_STATUSES = new Set<ContactStatus>([
 ]);
 const VALID_EMAIL_PROVIDERS = new Set(['hunter', 'snov', 'none']);
 
+/**
+ * Body keys only the project owner (or a platform admin) may send: the
+ * engagement's stage, the screening verdict, and every field that decides what
+ * anyone gets charged or paid. A collaborator sending one of these gets 403;
+ * a body without any of them is a note or a rejection reason and goes through.
+ */
+// Fields a COLLABORATOR may write. Everything else on this route is owner or
+// platform-admin only: contact details, drafts, availability, screening
+// material and every money field move the engagement or steer outreach.
+const COLLABORATOR_FIELDS: ReadonlySet<string> = new Set([
+  'note',
+  'userNotes',
+  'rejectionReason',
+  'rejectionNotes',
+  'rejectedAt',
+]);
+const OWNER_ONLY_FIELDS: readonly string[] = [
+  'status',
+  'screeningStatus',
+  'expertRate',
+  'expertCounterRate',
+  'callDurationMin',
+  'invoiceAmount',
+  'paymentStatus',
+  'paidAt',
+  'stripePaymentLinkId',
+  'stripePaymentLinkUrl',
+  'stripePaymentIntentId',
+];
+
 export async function PUT(
   request: NextRequest,
   { params }: { params: { projectId: string; expertId: string } },
@@ -56,6 +112,16 @@ export async function PUT(
     const { email, role } = await getSessionUser(request);
     const accessible = await getProjectForUser(params.projectId, email, role);
     if (!accessible) return Response.json({ error: 'not_found' }, { status: 404 });
+
+    // Stage and money are the owner's to move; notes are not.
+    // Anything outside the collaborator allowlist is owner-or-admin only.
+    const writesOwnerField = Object.keys(body).some(
+      field => body[field] !== undefined && !COLLABORATOR_FIELDS.has(field),
+    );
+    if (writesOwnerField || OWNER_ONLY_FIELDS.some(field => body[field] !== undefined)) {
+      const ownerErr = requireProjectOwner(accessible, { email, role });
+      if (ownerErr) return ownerErr;
+    }
 
     // Dispatch to correct store method based on action
     if (typeof body.note === 'string') {
@@ -150,9 +216,12 @@ export async function PUT(
       input.screenedAt = body.screenedAt;
     }
 
-    // Billing fields
+    // Billing fields. The client rate rides along with the expert rate in the
+    // same write (lib/projectStore.rateFieldsFor) — never one without the other.
     if (typeof body.expertRate === 'number' && Number.isFinite(body.expertRate) && body.expertRate >= 1 && body.expertRate <= 9999) {
-      input.expertRate = Math.round(body.expertRate);
+      const rates = rateFieldsFor(body.expertRate);
+      input.expertRate = rates.expertRate;
+      input.clientRate = rates.clientRate;
     }
     if (typeof body.callDurationMin === 'number' && Number.isInteger(body.callDurationMin) && body.callDurationMin >= 1 && body.callDurationMin <= 480) {
       input.callDurationMin = body.callDurationMin;
@@ -235,8 +304,9 @@ export async function DELETE(
   request: NextRequest,
   { params }: { params: { projectId: string; expertId: string } },
 ) {
-  const err = guardReadRequest(request);
-  if (err) return err;
+  // A removal is a mutation, so it takes the mutating guard, not the read one.
+  const guard = await guardMutatingRequest(request);
+  if ('error' in guard) return guard.error;
 
   if (!ID_RE.test(params.projectId)) {
     return Response.json({ error: 'invalid_project_id' }, { status: 400 });
@@ -249,6 +319,10 @@ export async function DELETE(
     const { email, role } = await getSessionUser(request);
     const accessible = await getProjectForUser(params.projectId, email, role);
     if (!accessible) return Response.json({ error: 'not_found' }, { status: 404 });
+
+    // Throwing away an engagement is the owner's call, not a reader's.
+    const ownerErr = requireProjectOwner(accessible, { email, role });
+    if (ownerErr) return ownerErr;
 
     const project = await removeExpertFromProject(params.projectId, params.expertId);
     return Response.json({ project: redactProjectForViewer(project, { role }) });

@@ -22,11 +22,16 @@ import {
   stripeVolumeTiers,
   billableMinutes,
   clientRateFor,
+  expertRateFor,
+  CLIENT_RATE_ROUNDING_USD,
   callChargeDollars,
   expertPayoutDollars,
   splitCallAmountCents,
   formatUsdFromCents,
 } from '../lib/pricing';
+// The one non-pricing import: the helper that keeps the two rate columns in
+// step. It is pure and does no I/O, even though its module talks to Postgres.
+import { rateFieldsFor } from '../lib/projectStore';
 
 let failures = 0;
 let checks   = 0;
@@ -282,6 +287,42 @@ eq('expertPayoutDollars(0, 60)',   expertPayoutDollars(0, 60),   0);
 for (const [rate, min] of [[400, 60], [650, 47], [800, 10], [675, 90]] as const) {
   check(`charge(${rate}, ${min}) ≥ payout(${rate}, ${min})`,
     callChargeDollars(rate, min) >= expertPayoutDollars(rate, min));
+}
+
+// ── expertRateFor / rateFieldsFor ───────────────────────────────────────────
+
+section('expert rate is the inverse of the client rate, up to the rounding');
+
+eq('expertRateFor(800)',  expertRateFor(800),  400);
+eq('expertRateFor(1300)', expertRateFor(1300), 650);
+eq('expertRateFor(1600)', expertRateFor(1600), 800);
+eq('expertRateFor(1350)', expertRateFor(1350), 675);
+eq('expertRateFor(0)',    expertRateFor(0),    0);
+eq('expertRateFor(NaN)',  expertRateFor(Number.NaN), 0);
+
+// clientRateFor rounds the client number UP to the next $50, so a round trip
+// can only lose what that rounding added: at most $50 of client money, which is
+// CLIENT_RATE_ROUNDING_USD × EXPERT_SHARE of expert money.
+const ROUND_TRIP_TOLERANCE = CLIENT_RATE_ROUNDING_USD * EXPERT_SHARE;
+for (let x = 100; x <= 2000; x += 50) {
+  const roundTrip = expertRateFor(clientRateFor(x));
+  check(`expertRateFor(clientRateFor(${x})) within $${ROUND_TRIP_TOLERANCE} of ${x}`,
+    Math.abs(roundTrip - x) <= ROUND_TRIP_TOLERANCE,
+    `got ${roundTrip}`);
+  check(`the round trip never quotes the expert MORE than ${x}`, roundTrip <= x, `got ${roundTrip}`);
+}
+
+section('rateFieldsFor writes both numbers or neither');
+
+const seeded = rateFieldsFor(650);
+eq('rateFieldsFor(650).expertRate', seeded.expertRate, 650);
+eq('rateFieldsFor(650).clientRate', seeded.clientRate, 1300);
+eq('rateFieldsFor(649.6) rounds the expert rate', rateFieldsFor(649.6).expertRate, 650);
+eq('rateFieldsFor(649.6) derives from the rounded number', rateFieldsFor(649.6).clientRate, 1300);
+for (const rate of [400, 650, 675, 800]) {
+  const fields = rateFieldsFor(rate);
+  check(`rateFieldsFor(${rate}).clientRate === clientRateFor(${rate})`,
+    fields.clientRate === clientRateFor(rate), `got ${fields.clientRate}`);
 }
 
 // ── Result ───────────────────────────────────────────────────────────────────

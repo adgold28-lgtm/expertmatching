@@ -7,15 +7,20 @@
 //   4. content-type
 //   5. body size + JSON parse
 //
-// For read requests (GET / DELETE — no body):
-//   1–3 only.
+// For read requests (GET — no body):
+//   1–2 only.
+//
+// A DELETE is a mutation, so it goes through guardMutatingRequest too. The
+// content-type check exempts a DELETE that carries no body at all; see
+// checkContentType for why that is safe.
 //
 // NEVER log: project names, research questions, expert names, confidential
 // notes, or the value of x-projects-token.
 
 import { timingSafeEqual } from 'crypto';
-import { NextRequest } from 'next/server';
+import { NextRequest, NextResponse } from 'next/server';
 import { isAuthEnabled } from './auth';
+import type { Project } from '../types';
 
 const MAX_BODY_BYTES = 250 * 1024; // 250 KB
 
@@ -72,12 +77,25 @@ function checkAuth(request: NextRequest): Response | null {
 }
 
 
+/**
+ * The JSON content-type requirement is a CSRF surrogate: a cross-origin form
+ * post cannot set `application/json` without earning a preflight, so demanding
+ * it on a body-carrying request means the browser has already asked us.
+ *
+ * A bodiless DELETE is exempt, and safely so: DELETE is never a "simple"
+ * method, so a cross-origin one is preflighted whatever headers it carries.
+ * The exemption is narrow on purpose — POST / PUT / PATCH, and any DELETE that
+ * actually carries a body, still have to say application/json.
+ */
 function checkContentType(request: NextRequest): Response | null {
   const ct = request.headers.get('content-type') ?? '';
-  if (!ct.startsWith('application/json')) {
-    return Response.json({ error: 'unsupported_media_type' }, { status: 415 });
-  }
-  return null;
+  if (ct.startsWith('application/json')) return null;
+
+  const contentLength = request.headers.get('content-length');
+  const bodiless = ct === '' && (contentLength === null || contentLength === '0');
+  if (request.method === 'DELETE' && bodiless) return null;
+
+  return Response.json({ error: 'unsupported_media_type' }, { status: 415 });
 }
 
 async function readLimitedJson(
@@ -111,11 +129,41 @@ async function readLimitedJson(
 
 // ─── Public API ───────────────────────────────────────────────────────────────
 
-// GET / DELETE — no body
+// GET — no body
 export function guardReadRequest(request: NextRequest): Response | null {
   return (
     checkKillSwitch() ??
     checkAuth(request)
+  );
+}
+
+/**
+ * The owner check, in one place.
+ *
+ * Product rule (docs/MATCHY_SPEC.md, founder answer 5): a project is shared
+ * read-only. Collaborators see everything on it; only the project OWNER — or
+ * platform staff — may act on an expert: start outreach, write to them, move
+ * their status, settle a rate, remove them, spend money on sourcing, or charge
+ * the card. Anything that costs money or leaves the platform goes through here.
+ *
+ * ORDER MATTERS. Call this AFTER getProjectForUser, never before: an
+ * inaccessible project must still 404, so this route never confirms that a
+ * project someone cannot reach exists. By the time this runs, the caller has
+ * already been proved a member.
+ *
+ * Returns null when the caller may proceed, or the 403 to return as-is.
+ */
+export function requireProjectOwner(
+  project: Project,
+  session: { email: string; role: 'admin' | 'user' },
+): Response | null {
+  if (session.role === 'admin') return null;
+  if (project.ownerEmail === session.email) return null;
+
+  guardLog('owner', 'not_project_owner');
+  return NextResponse.json(
+    { error: 'forbidden', message: 'Only the project owner can do this.' },
+    { status: 403 },
   );
 }
 
