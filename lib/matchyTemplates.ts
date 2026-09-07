@@ -34,8 +34,8 @@
 // Both bodies stay under 120 words and both carry the CAN-SPAM footer from
 // lib/outreachFooter.ts.
 //
-// Two style notes. Neither body signs off with a person's name: nobody named
-// is actually writing these, and the footer already says who sent it. And no
+// Two style notes. A body signs off only when OUTREACH_SIGNATURE is set
+// (lib/senderIdentity.ts): unset, the footer already says who sent it. And no
 // em dashes in either body (the house rule for outbound mail) — the one em
 // dash in the subject line is the spec's own wording, quoted verbatim.
 //
@@ -44,6 +44,7 @@
 import type { Project } from '../types';
 import type { FirmTypeValue, FirmSizeValue } from './supabase/database.types';
 import { buildOutreachFooter } from './outreachFooter';
+import { signOff } from './senderIdentity';
 
 export interface MatchyEmail {
   subject: string;
@@ -330,8 +331,8 @@ export function buildIntroEmail(input: IntroEmailInput): MatchyEmail {
 
   return {
     subject: `Paid expert call — ${topic}`,
-    text:    `${body}${footer.text}`,
-    html:    toHtml(body, footer.html),
+    text:    `${signOff(body)}${footer.text}`,
+    html:    toHtml(signOff(body), footer.html),
   };
 }
 
@@ -371,8 +372,8 @@ export function buildFollowUpEmail(input: FollowUpEmailInput): MatchyEmail {
 
   return {
     subject: `Re: Paid expert call — ${topic}`,
-    text:    `${body}${footer.text}`,
-    html:    toHtml(body, footer.html),
+    text:    `${signOff(body)}${footer.text}`,
+    html:    toHtml(signOff(body), footer.html),
   };
 }
 
@@ -402,12 +403,12 @@ export interface RateDecisionInput {
 export function rateAcceptedTemplate(input: RateDecisionInput): string {
   const name = firstNameOf(input.firstName);
   const rate = Math.max(0, Math.round(input.expertRate));
-  return `Thanks, ${name}. $${rate}/hr works. Next I will find a time that suits you both.`;
+  return signOff(`Thanks, ${name}. $${rate}/hr works. Next I will find a time that suits you both.`);
 }
 
 /** The counter: the client is holding at their standing rate. Asked, not told. */
 export function rateCounterTemplate(input: RateDecisionInput): string {
   const name = firstNameOf(input.firstName);
   const rate = Math.max(0, Math.round(input.expertRate));
-  return `Thanks, ${name}. Could you do $${rate}/hr? If so I will get a time on the calendar.`;
+  return signOff(`Thanks, ${name}. Could you do $${rate}/hr? If so I will get a time on the calendar.`);
 }

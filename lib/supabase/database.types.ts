@@ -63,7 +63,11 @@ export type EngagementEventType =
   | 'completed'
   | 'charged'
   | 'rejected'
-  | 'client_ready';
+  | 'client_ready'
+  // Matchy Phase 2 (supabase/migrations/20260907300000_matchy_phase2_events.sql)
+  | 'nudge_sent'
+  | 'rescheduled'
+  | 'time_declined';
 
 export interface Database {
   public: {
