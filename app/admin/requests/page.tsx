@@ -1,13 +1,22 @@
 'use client';
 
+// The whole admin console. /admin/users was folded in here (Session 3, wave 2)
+// because the two pages needed each other's data: approving a request creates an
+// organization, inviting a member changes a seat count, and disabling a user
+// changes what Stripe is billed. Order of sections is the order a founder works
+// them: what is waiting on me, what broke, who I have, who is in them, what is
+// configured.
+
 import { useEffect, useState, useCallback } from 'react';
 import Link from 'next/link';
 import { formatUsdFromCents } from '../../../lib/pricing';
+import type { FirmTypeValue, FirmSizeValue } from '../../../lib/supabase/database.types';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 type FirmStatus = 'active' | 'disabled';
 type UserStatus = 'active' | 'pending' | 'disabled';
+type UserRole   = 'admin' | 'user';
 
 interface FirmBilling {
   complete:            boolean;         // card on file + subscription created
@@ -32,7 +41,7 @@ interface FirmInfo {
 
 interface UserInfo {
   email:      string;
-  role:       'admin' | 'user';
+  role:       UserRole;
   firstName?: string;
   lastName?:  string;
   orgRole?:   'org_admin' | 'org_member';
@@ -47,6 +56,8 @@ interface AccessRequest {
   firm:        string;
   email:       string;
   useCase:     string;
+  firmType:    FirmTypeValue | null;
+  firmSize:    FirmSizeValue | null;
   submittedAt: number;
 }
 
@@ -60,11 +71,55 @@ interface SeatRequest {
   firmName?:  string;
 }
 
+/** GET /api/admin/attention — built by another agent; may not exist yet. */
+interface AttentionItem {
+  id:              string;
+  kind:            string;
+  message:         string;
+  occurredAt:      string;
+  organizationId?: string;
+  projectId?:      string;
+  expertId?:       string;
+}
+
+/** GET /api/admin/env-status — presence only, never values. */
+interface EnvVar   { name: string; set: boolean }
+interface EnvGroup { name: string; vars: EnvVar[] }
+
+// ─── Firm phrase vocabulary ───────────────────────────────────────────────────
+// Mirrors the check constraints in 20260907000000_matchy_phase1.sql and the
+// wording in lib/matchyTemplates.ts — this is the phrase Matchy says to an
+// expert, so the founder gets to correct it before the invite goes out.
+
+const FIRM_TYPE_OPTIONS: { value: FirmTypeValue; label: string }[] = [
+  { value: 'pe_firm',         label: 'PE firm' },
+  { value: 'family_office',   label: 'Family office' },
+  { value: 'consulting_firm', label: 'Consulting firm' },
+  { value: 'law_firm',        label: 'Law firm' },
+  { value: 'hedge_fund',      label: 'Hedge fund' },
+  { value: 'corporate',       label: 'Corporate' },
+  { value: 'other',           label: 'Other' },
+];
+
+const FIRM_SIZE_OPTIONS: { value: FirmSizeValue; label: string }[] = [
+  { value: 'boutique', label: 'Boutique' },
+  { value: 'mid_size', label: 'Mid-size' },
+  { value: 'large',    label: 'Large' },
+];
+
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
 function formatDate(ts: number): string {
   if (!ts) return '—';
   return new Date(ts).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+}
+
+function formatTimestamp(iso: string): string {
+  const ms = Date.parse(iso);
+  if (!Number.isFinite(ms)) return '—';
+  return new Date(ms).toLocaleString('en-US', {
+    month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit',
+  });
 }
 
 /** "Jane Q. Okafor" → { first: 'Jane', last: 'Q. Okafor' } */
@@ -74,6 +129,11 @@ function splitName(fullName: string): { first: string; last: string } {
   const parts = clean.split(' ');
   if (parts.length === 1) return { first: parts[0], last: '' };
   return { first: parts[0], last: parts.slice(1).join(' ') };
+}
+
+function fullName(user: UserInfo): string {
+  const name = `${user.firstName ?? ''} ${user.lastName ?? ''}`.trim();
+  return name || user.email;
 }
 
 function pluralSeats(n: number): string {
@@ -182,11 +242,15 @@ async function readError(res: Response): Promise<string> {
 
 const INPUT_CLASS =
   'w-full border border-frame bg-cream px-3 py-2.5 text-xs text-ink focus:outline-none focus:border-navy transition-colors placeholder-muted/50';
+const SELECT_CLASS =
+  'w-full border border-frame bg-cream px-3 py-2.5 text-xs text-ink focus:outline-none focus:border-navy';
 const LABEL_CLASS = 'block text-[10px] uppercase tracking-widest text-muted mb-1.5';
 const ACTION_CLASS =
   'text-[10px] uppercase tracking-widest text-muted hover:text-navy border border-frame hover:border-navy px-2.5 py-1 transition-colors disabled:opacity-40 shrink-0';
 const DANGER_CLASS =
   'text-[10px] uppercase tracking-widest text-muted hover:text-red-600 border border-frame hover:border-red-300 px-2.5 py-1 transition-colors disabled:opacity-40 shrink-0';
+const CONFIRM_DANGER_CLASS =
+  'text-[10px] uppercase tracking-widest text-red-600 border border-red-300 px-2.5 py-1 transition-colors disabled:opacity-40 shrink-0';
 
 // ─── Section divider ──────────────────────────────────────────────────────────
 
@@ -204,14 +268,50 @@ function SectionHeader({ title }: { title: string }) {
   );
 }
 
+function ErrorBox({ message, onRetry }: { message: string; onRetry: () => void }) {
+  return (
+    <div className="border border-red-200 bg-red-50 px-4 py-3">
+      <p className="text-xs text-red-600">{message}</p>
+      <button
+        onClick={onRetry}
+        className="mt-2 text-[10px] uppercase tracking-widest text-red-500 hover:text-red-700 transition-colors"
+        style={{ letterSpacing: '0.12em' }}
+      >
+        Retry
+      </button>
+    </div>
+  );
+}
+
+function SkeletonRows({ count = 2 }: { count?: number }) {
+  return (
+    <div className="space-y-2">
+      {Array.from({ length: count }, (_, i) => (
+        <div key={i} className="border border-frame bg-cream px-4 py-3">
+          <div className="h-3 w-1/2 bg-frame rounded animate-pulse mb-1.5" />
+          <div className="h-2.5 w-1/3 bg-frame rounded animate-pulse" />
+        </div>
+      ))}
+    </div>
+  );
+}
+
 // ─── Access request card ──────────────────────────────────────────────────────
 
-function AccessRequestCard({ req, onDone }: { req: AccessRequest; onDone: () => void }) {
+function AccessRequestCard({
+  req,
+  onDone,
+}: {
+  req:    AccessRequest;
+  onDone: () => void;   // refreshes requests AND organizations
+}) {
   const prefill = splitName(req.name);
 
   const [firstName, setFirstName] = useState(prefill.first);
   const [lastName,  setLastName]  = useState(prefill.last);
   const [firmName,  setFirmName]  = useState(req.firm);
+  const [firmType,  setFirmType]  = useState<FirmTypeValue | ''>(req.firmType ?? '');
+  const [firmSize,  setFirmSize]  = useState<FirmSizeValue | ''>(req.firmSize ?? '');
   const [loading,   setLoading]   = useState(false);
   const [status,    setStatus]    = useState<'idle' | 'approved' | 'rejected'>('idle');
   const [warnMsg,   setWarnMsg]   = useState('');
@@ -231,6 +331,10 @@ function AccessRequestCard({ req, onDone }: { req: AccessRequest; onDone: () => 
           firstName: firstName.trim(),
           lastName:  lastName.trim(),
           firmName:  firmName.trim(),
+          // Empty means "leave whatever they submitted" — the route ignores
+          // anything that is not one of the constrained values.
+          ...(firmType ? { firmType } : {}),
+          ...(firmSize ? { firmSize } : {}),
         }),
       });
       if (!res.ok) throw new Error(await readError(res));
@@ -266,11 +370,7 @@ function AccessRequestCard({ req, onDone }: { req: AccessRequest; onDone: () => 
         {warnMsg && (
           <div className="flex flex-col sm:flex-row sm:items-center gap-2">
             <p className="text-[11px] text-amber-600 flex-1">{warnMsg}</p>
-            <button
-              onClick={onDone}
-              className={ACTION_CLASS}
-              style={{ letterSpacing: '0.1em' }}
-            >
+            <button onClick={onDone} className={ACTION_CLASS} style={{ letterSpacing: '0.1em' }}>
               Dismiss
             </button>
           </div>
@@ -332,6 +432,56 @@ function AccessRequestCard({ req, onDone }: { req: AccessRequest; onDone: () => 
             />
           </div>
         </div>
+
+        {/* The two answers Matchy turns into a phrase — correctable before approval. */}
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <div>
+            <label
+              className={LABEL_CLASS}
+              style={{ letterSpacing: '0.12em' }}
+              htmlFor={`firm-type-${req.email}`}
+            >
+              Firm type
+            </label>
+            <select
+              id={`firm-type-${req.email}`}
+              value={firmType}
+              onChange={e => setFirmType(e.target.value as FirmTypeValue | '')}
+              disabled={loading}
+              className={SELECT_CLASS}
+            >
+              <option value="">Not given</option>
+              {FIRM_TYPE_OPTIONS.map(o => (
+                <option key={o.value} value={o.value}>{o.label}</option>
+              ))}
+            </select>
+          </div>
+          <div>
+            <label
+              className={LABEL_CLASS}
+              style={{ letterSpacing: '0.12em' }}
+              htmlFor={`firm-size-${req.email}`}
+            >
+              Firm size
+            </label>
+            <select
+              id={`firm-size-${req.email}`}
+              value={firmSize}
+              onChange={e => setFirmSize(e.target.value as FirmSizeValue | '')}
+              disabled={loading}
+              className={SELECT_CLASS}
+            >
+              <option value="">Not given</option>
+              {FIRM_SIZE_OPTIONS.map(o => (
+                <option key={o.value} value={o.value}>{o.label}</option>
+              ))}
+            </select>
+          </div>
+        </div>
+        <p className="text-[10px] text-muted leading-relaxed" style={{ fontWeight: 300 }}>
+          These two answers are how Matchy describes the client to an expert — &ldquo;a mid-size PE
+          firm&rdquo;. Correct them here if the requester picked badly.
+        </p>
 
         <div className="flex flex-wrap items-center gap-3">
           <p className="text-[10px] text-muted flex-1 min-w-[180px]" style={{ fontWeight: 300 }}>
@@ -472,16 +622,56 @@ function SeatRequestCard({ req, onDone }: { req: SeatRequest; onDone: () => void
   );
 }
 
-// ─── User row ─────────────────────────────────────────────────────────────────
+// ─── Status / role pills ──────────────────────────────────────────────────────
 
-function UserRow({ user, onUpdated }: { user: UserInfo; onUpdated: () => void }) {
-  const [loading, setLoading] = useState(false);
-  const [errMsg,  setErrMsg]  = useState('');
+function StatusPill({ status }: { status: UserStatus }) {
+  const color =
+    status === 'active'  ? 'text-green-700' :
+    status === 'pending' ? 'text-amber-600' :
+    'text-red-600';
+  return (
+    <span className={`text-[10px] uppercase tracking-widest font-medium ${color}`} style={{ letterSpacing: '0.1em' }}>
+      {status}
+    </span>
+  );
+}
+
+function RolePill({ user }: { user: UserInfo }) {
+  const isPlatformAdmin = user.role === 'admin';
+  const isOrgAdmin      = user.orgRole === 'org_admin';
+  return (
+    <span
+      className={`text-[10px] px-2 py-0.5 uppercase tracking-widest font-medium whitespace-nowrap ${
+        isPlatformAdmin
+          ? 'bg-navy text-cream'
+          : isOrgAdmin
+            ? 'border border-navy text-navy'
+            : 'border border-frame text-muted'
+      }`}
+      style={{ letterSpacing: '0.1em' }}
+    >
+      {isPlatformAdmin ? 'Platform admin' : isOrgAdmin ? 'Org admin' : 'User'}
+    </span>
+  );
+}
+
+// ─── Organization member row ──────────────────────────────────────────────────
+// Disable/Enable · Resend invite (pending) or Send reset link (active) · Delete
+// behind the same two-step inline confirm the organization row uses.
+
+function MemberRow({ user, onChanged }: { user: UserInfo; onChanged: () => void }) {
+  const [busy,          setBusy]          = useState<'' | 'status' | 'link' | 'delete'>('');
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  const [errMsg,        setErrMsg]        = useState('');
+  const [okMsg,         setOkMsg]         = useState('');
+
+  const loading = busy !== '';
 
   async function toggleStatus() {
     const newStatus: UserStatus = user.status === 'active' ? 'disabled' : 'active';
-    setLoading(true);
+    setBusy('status');
     setErrMsg('');
+    setOkMsg('');
     try {
       const res = await fetch('/api/admin/users', {
         method:  'PATCH',
@@ -489,52 +679,164 @@ function UserRow({ user, onUpdated }: { user: UserInfo; onUpdated: () => void })
         body:    JSON.stringify({ email: user.email, status: newStatus }),
       });
       if (!res.ok) throw new Error(await readError(res));
-      onUpdated();
+      onChanged();
     } catch (e) {
       setErrMsg(e instanceof Error ? e.message : 'Something went wrong');
     } finally {
-      setLoading(false);
+      setBusy('');
     }
   }
 
-  const statusColor =
-    user.status === 'active'   ? 'text-green-700' :
-    user.status === 'pending'  ? 'text-amber-600' :
-    'text-red-600';
+  // Same call for both labels: provisionAccountInvite decides between a fresh
+  // invitation (pending) and a password-reset link (active).
+  async function resend() {
+    setBusy('link');
+    setErrMsg('');
+    setOkMsg('');
+    try {
+      const res = await fetch('/api/admin/users', {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({
+          firstName:    user.firstName ?? '',
+          lastName:     user.lastName ?? '',
+          email:        user.email,
+          organization: { domain: user.firmDomain, name: user.firmName },
+          role:         user.role,
+          reinvite:     true,
+        }),
+      });
+      if (!res.ok) throw new Error(await readError(res));
+      const data = await res.json() as { emailSent?: boolean; warning?: string };
+      setOkMsg(
+        data.emailSent === false
+          ? (data.warning ?? 'Link created, but the email could not be delivered.')
+          : user.status === 'pending' ? 'Invite re-sent.' : 'Reset link sent.',
+      );
+      onChanged();
+    } catch (e) {
+      setErrMsg(e instanceof Error ? e.message : 'Something went wrong');
+    } finally {
+      setBusy('');
+    }
+  }
 
-  const name = `${user.firstName ?? ''} ${user.lastName ?? ''}`.trim();
+  async function remove() {
+    setBusy('delete');
+    setErrMsg('');
+    setOkMsg('');
+    try {
+      const res = await fetch('/api/admin/users', {
+        method:  'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({ email: user.email }),
+      });
+      if (!res.ok) throw new Error(await readError(res));
+      setConfirmDelete(false);
+      onChanged();
+    } catch (e) {
+      setErrMsg(e instanceof Error ? e.message : 'Something went wrong');
+    } finally {
+      setBusy('');
+    }
+  }
 
   return (
-    <div className="flex flex-col sm:flex-row sm:items-center gap-3 px-4 py-3 border border-frame bg-cream">
-      <div className="flex-1 min-w-0">
-        <p className="text-xs text-navy font-medium truncate">{name || user.email}</p>
-        <p className="text-[10px] text-muted truncate">
-          {user.email} · {user.orgRole === 'org_admin' ? 'Org admin' : 'Member'} · {formatDate(user.createdAt)}
+    <div className="border border-frame bg-cream">
+      <div className="flex flex-col sm:flex-row sm:items-center gap-3 px-4 py-3">
+        <div className="flex-1 min-w-0">
+          <p className="text-xs text-navy font-medium truncate">{fullName(user)}</p>
+          <p className="text-[10px] text-muted truncate">
+            {user.email} · {user.orgRole === 'org_admin' ? 'Org admin' : 'Member'} · {formatDate(user.createdAt)}
+          </p>
+        </div>
+
+        <div className="flex flex-wrap items-center gap-2 sm:gap-3 sm:shrink-0">
+          <StatusPill status={user.status} />
+
+          {user.status !== 'pending' && (
+            <button
+              onClick={toggleStatus}
+              disabled={loading}
+              className={ACTION_CLASS}
+              style={{ letterSpacing: '0.1em' }}
+            >
+              {busy === 'status' ? '…' : user.status === 'active' ? 'Disable' : 'Enable'}
+            </button>
+          )}
+
+          {user.status !== 'disabled' && (
+            <button
+              onClick={resend}
+              disabled={loading}
+              className={ACTION_CLASS}
+              style={{ letterSpacing: '0.1em' }}
+              title={
+                user.status === 'pending'
+                  ? 'Send the invitation link again.'
+                  : 'Email this person a password-reset link. Nothing else changes.'
+              }
+            >
+              {busy === 'link' ? '…' : user.status === 'pending' ? 'Resend invite' : 'Send reset link'}
+            </button>
+          )}
+
+          {confirmDelete ? (
+            <>
+              <button
+                onClick={remove}
+                disabled={loading}
+                className={CONFIRM_DANGER_CLASS}
+                style={{ letterSpacing: '0.1em' }}
+              >
+                {busy === 'delete' ? '…' : 'Confirm delete'}
+              </button>
+              <button
+                onClick={() => setConfirmDelete(false)}
+                disabled={loading}
+                className="text-[10px] text-muted hover:text-navy transition-colors disabled:opacity-40"
+              >
+                Cancel
+              </button>
+            </>
+          ) : (
+            <button
+              onClick={() => { setConfirmDelete(true); setErrMsg(''); setOkMsg(''); }}
+              disabled={loading}
+              className={DANGER_CLASS}
+              style={{ letterSpacing: '0.1em' }}
+            >
+              Delete
+            </button>
+          )}
+        </div>
+      </div>
+
+      {confirmDelete && (
+        <p className="text-[10px] text-muted px-4 pb-3 leading-relaxed" style={{ fontWeight: 300 }}>
+          Deleting {user.email} removes the account permanently and frees its billed seat. This
+          cannot be undone.
         </p>
-      </div>
-      <div className="flex items-center gap-3 shrink-0">
-        <span className={`text-[10px] uppercase tracking-widest font-medium ${statusColor}`} style={{ letterSpacing: '0.1em' }}>
-          {user.status}
-        </span>
-        {errMsg && <span className="text-[10px] text-red-600 max-w-[160px] truncate">{errMsg}</span>}
-        {user.status !== 'pending' && (
-          <button
-            onClick={toggleStatus}
-            disabled={loading}
-            className={ACTION_CLASS}
-            style={{ letterSpacing: '0.1em' }}
-          >
-            {loading ? '…' : user.status === 'active' ? 'Disable' : 'Enable'}
-          </button>
-        )}
-      </div>
+      )}
+      {errMsg && <p className="text-[10px] text-red-600 px-4 pb-3">{errMsg}</p>}
+      {okMsg  && <p className="text-[10px] text-green-700 px-4 pb-3">{okMsg}</p>}
     </div>
   );
 }
 
 // ─── Organization panel (expanded) ────────────────────────────────────────────
 
-function FirmPanel({ firm, onClose }: { firm: FirmInfo; onClose: () => void }) {
+function FirmPanel({
+  firm,
+  onClose,
+  onMembersChanged,
+}: {
+  firm:             FirmInfo;
+  onClose:          () => void;
+  /** Seat counts and billing live on the firm row, so the firms list is
+   *  reloaded after every member action, not just the member list. */
+  onMembersChanged: () => void;
+}) {
   const domain = firm.domain;
 
   const [users,       setUsers]       = useState<UserInfo[]>([]);
@@ -543,6 +845,7 @@ function FirmPanel({ firm, onClose }: { firm: FirmInfo; onClose: () => void }) {
   const [firstName,   setFirstName]   = useState('');
   const [lastName,    setLastName]    = useState('');
   const [inviteEmail, setInviteEmail] = useState('');
+  const [inviteRole,  setInviteRole]  = useState<UserRole>('user');
   const [inviting,    setInviting]    = useState(false);
   const [inviteErr,   setInviteErr]   = useState('');
   const [inviteOk,    setInviteOk]    = useState('');
@@ -567,6 +870,11 @@ function FirmPanel({ firm, onClose }: { firm: FirmInfo; onClose: () => void }) {
 
   useEffect(() => { loadUsers(); }, [loadUsers]);
 
+  const afterMemberAction = useCallback(() => {
+    loadUsers();
+    onMembersChanged();
+  }, [loadUsers, onMembersChanged]);
+
   async function sendInvite(e: React.FormEvent) {
     e.preventDefault();
     if (inviting || domain === null) return;
@@ -574,7 +882,7 @@ function FirmPanel({ firm, onClose }: { firm: FirmInfo; onClose: () => void }) {
     setInviteErr('');
     setInviteOk('');
     try {
-      const res = await fetch('/api/admin/invite', {
+      const res = await fetch('/api/admin/users', {
         method:  'POST',
         headers: { 'Content-Type': 'application/json' },
         body:    JSON.stringify({
@@ -582,6 +890,7 @@ function FirmPanel({ firm, onClose }: { firm: FirmInfo; onClose: () => void }) {
           lastName:     lastName.trim(),
           email:        inviteEmail.trim(),
           organization: { domain, name: firm.name },
+          role:         inviteRole,
         }),
       });
       if (!res.ok) throw new Error(await readError(res));
@@ -594,7 +903,8 @@ function FirmPanel({ firm, onClose }: { firm: FirmInfo; onClose: () => void }) {
       setFirstName('');
       setLastName('');
       setInviteEmail('');
-      loadUsers();
+      setInviteRole('user');
+      afterMemberAction();
     } catch (e) {
       setInviteErr(e instanceof Error ? e.message : 'Something went wrong');
     } finally {
@@ -633,30 +943,15 @@ function FirmPanel({ firm, onClose }: { firm: FirmInfo; onClose: () => void }) {
             This organization has no domain, so members cannot be listed or invited here.
           </p>
         ) : usersLoad ? (
-          <div className="space-y-2">
-            {[1, 2].map(i => (
-              <div key={i} className="border border-frame bg-cream px-4 py-3">
-                <div className="h-3 w-1/2 bg-frame rounded animate-pulse" />
-              </div>
-            ))}
-          </div>
+          <SkeletonRows count={2} />
         ) : usersErr ? (
-          <div className="border border-red-200 bg-red-50 px-4 py-3">
-            <p className="text-xs text-red-600">{usersErr}</p>
-            <button
-              onClick={loadUsers}
-              className="mt-2 text-[10px] uppercase tracking-widest text-red-500 hover:text-red-700"
-              style={{ letterSpacing: '0.12em' }}
-            >
-              Retry
-            </button>
-          </div>
+          <ErrorBox message={usersErr} onRetry={loadUsers} />
         ) : users.length === 0 ? (
           <p className="text-xs text-muted">No members yet.</p>
         ) : (
           <div className="space-y-2">
             {users.map(u => (
-              <UserRow key={u.email} user={u} onUpdated={loadUsers} />
+              <MemberRow key={u.email} user={u} onChanged={afterMemberAction} />
             ))}
           </div>
         )}
@@ -698,8 +993,30 @@ function FirmPanel({ firm, onClose }: { firm: FirmInfo; onClose: () => void }) {
                 aria-label="Email"
               />
             </div>
-            <p className="text-[10px] text-muted" style={{ fontWeight: 300 }}>
-              Each accepted invite adds a billed seat to this organization.
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+              <div>
+                <label
+                  className={LABEL_CLASS}
+                  style={{ letterSpacing: '0.12em' }}
+                  htmlFor={`invite-role-${firm.id}`}
+                >
+                  Role
+                </label>
+                <select
+                  id={`invite-role-${firm.id}`}
+                  value={inviteRole}
+                  onChange={e => setInviteRole(e.target.value as UserRole)}
+                  disabled={inviting}
+                  className={SELECT_CLASS}
+                >
+                  <option value="user">User</option>
+                  <option value="admin">Platform admin</option>
+                </select>
+              </div>
+            </div>
+            <p className="text-[10px] text-muted leading-relaxed" style={{ fontWeight: 300 }}>
+              Each accepted invite adds a billed seat to this organization. Platform admins count as
+              a seat for this organization.
             </p>
             <button
               type="submit"
@@ -720,12 +1037,20 @@ function FirmPanel({ firm, onClose }: { firm: FirmInfo; onClose: () => void }) {
 
 // ─── Organization row ─────────────────────────────────────────────────────────
 
+/** What the sync-seats action reported, rendered under the row. */
+interface SyncOutcome {
+  tone: 'ok' | 'muted' | 'error';
+  text: string;
+}
+
 function FirmRow({ firm, onUpdated }: { firm: FirmInfo; onUpdated: () => void }) {
   const [expanded,      setExpanded]      = useState(false);
   const [editing,       setEditing]       = useState(false);
   const [confirmRemove, setConfirmRemove] = useState(false);
   const [capInput,      setCapInput]      = useState(firm.seatLimit === null ? '' : String(firm.seatLimit));
   const [loading,       setLoading]       = useState(false);
+  const [syncing,       setSyncing]       = useState(false);
+  const [sync,          setSync]          = useState<SyncOutcome | null>(null);
   const [errMsg,        setErrMsg]        = useState('');
 
   // A background refresh must not leave stale values in the open editor.
@@ -771,6 +1096,38 @@ function FirmRow({ firm, onUpdated }: { firm: FirmInfo; onUpdated: () => void })
     return save(Math.floor(parsed));
   }
 
+  async function syncSeats() {
+    if (domain === null) return;
+    setSyncing(true);
+    setSync(null);
+    setErrMsg('');
+    try {
+      const res = await fetch('/api/admin/firms', {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({ domain, action: 'sync-seats' }),
+      });
+      if (!res.ok) throw new Error(await readError(res));
+      const data = await res.json() as { outcome?: string; activeSeats?: number };
+      const seats = data.activeSeats ?? firm.seatUsed;
+
+      if (data.outcome === 'updated') {
+        setSync({ tone: 'ok', text: `Synced ${pluralSeats(seats)}.` });
+      } else if (data.outcome === 'unchanged') {
+        setSync({ tone: 'muted', text: `Already in sync — ${pluralSeats(seats)}.` });
+      } else if (data.outcome === 'skipped') {
+        setSync({ tone: 'muted', text: 'Nothing to sync — billing not set up.' });
+      } else {
+        setSync({ tone: 'error', text: 'Stripe refused the seat update. Check the subscription in Stripe.' });
+      }
+      onUpdated();
+    } catch (e) {
+      setSync({ tone: 'error', text: e instanceof Error ? e.message : 'Something went wrong' });
+    } finally {
+      setSyncing(false);
+    }
+  }
+
   async function remove() {
     if (domain === null) return;
     setLoading(true);
@@ -789,6 +1146,11 @@ function FirmRow({ firm, onUpdated }: { firm: FirmInfo; onUpdated: () => void })
       setLoading(false);
     }
   }
+
+  const syncClass =
+    sync?.tone === 'ok'    ? 'text-green-700' :
+    sync?.tone === 'error' ? 'text-red-600'   :
+    'text-muted';
 
   return (
     <>
@@ -861,18 +1223,27 @@ function FirmRow({ firm, onUpdated }: { firm: FirmInfo; onUpdated: () => void })
               <button
                 onClick={() => { setConfirmRemove(false); setEditing(true); }}
                 disabled={!canManage}
-                title={canManage ? undefined : 'This organization has no domain and cannot be edited here.'}
+                title={canManage ? 'Set or clear the invite cap for this organization.' : 'This organization has no domain and cannot be edited here.'}
                 className={ACTION_CLASS}
                 style={{ letterSpacing: '0.1em' }}
               >
-                Save
+                Seat cap
+              </button>
+              <button
+                onClick={syncSeats}
+                disabled={syncing || loading || !canManage}
+                title={canManage ? 'Push the current active-seat count to the Stripe subscription.' : 'This organization has no domain and cannot be synced here.'}
+                className={ACTION_CLASS}
+                style={{ letterSpacing: '0.1em' }}
+              >
+                {syncing ? 'Syncing…' : 'Sync seats to Stripe'}
               </button>
               {confirmRemove ? (
                 <>
                   <button
                     onClick={remove}
                     disabled={loading}
-                    className="text-[10px] uppercase tracking-widest text-red-600 border border-red-300 px-2.5 py-1 transition-colors disabled:opacity-40 shrink-0"
+                    className={CONFIRM_DANGER_CLASS}
                     style={{ letterSpacing: '0.1em' }}
                   >
                     {loading ? '…' : 'Confirm remove'}
@@ -902,20 +1273,157 @@ function FirmRow({ firm, onUpdated }: { firm: FirmInfo; onUpdated: () => void })
 
         {confirmRemove && !editing && (
           <p className="text-[10px] text-muted px-4 pb-3 leading-relaxed" style={{ fontWeight: 300 }}>
-            Members keep their accounts but lose the organization record for {domain ?? firm.name}.
+            Removing the organization deletes its memberships; the people keep their sign-in but lose
+            access until re-invited. Its Stripe subscription is cancelled first.
           </p>
         )}
+        {sync   && <p className={`text-[10px] px-4 pb-3 ${syncClass}`}>{sync.text}</p>}
         {errMsg && <p className="text-[10px] text-red-600 px-4 pb-3">{errMsg}</p>}
       </div>
 
-      {expanded && <FirmPanel firm={firm} onClose={() => setExpanded(false)} />}
+      {expanded && (
+        <FirmPanel
+          firm={firm}
+          onClose={() => setExpanded(false)}
+          onMembersChanged={onUpdated}
+        />
+      )}
     </>
+  );
+}
+
+// ─── Needs attention ──────────────────────────────────────────────────────────
+
+function AttentionSection() {
+  const [items,   setItems]   = useState<AttentionItem[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [errMsg,  setErrMsg]  = useState('');
+
+  const load = useCallback(() => {
+    setLoading(true);
+    setErrMsg('');
+    fetch('/api/admin/attention')
+      .then(async (r) => {
+        // The feed is built by another part of the console; until it ships a
+        // 404 is "nothing to show", not a broken page.
+        if (r.status === 404) return { items: [] };
+        if (!r.ok) throw new Error(await readError(r));
+        return r.json() as Promise<{ items?: AttentionItem[] }>;
+      })
+      .then(d => setItems(d.items ?? []))
+      .catch((e: unknown) => setErrMsg(e instanceof Error ? e.message : 'Failed to load attention items'))
+      .finally(() => setLoading(false));
+  }, []);
+
+  useEffect(() => { load(); }, [load]);
+
+  return (
+    <section>
+      <SectionHeader title="Needs Attention" />
+
+      {loading ? (
+        <SkeletonRows count={2} />
+      ) : errMsg ? (
+        <ErrorBox message={errMsg} onRetry={load} />
+      ) : items.length === 0 ? (
+        <p className="text-sm text-muted py-2">Nothing needs attention.</p>
+      ) : (
+        <div className="space-y-2">
+          {items.map(item => (
+            <div key={item.id} className="border border-frame bg-white px-4 py-3">
+              <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-2">
+                <div className="min-w-0">
+                  <p className="text-[10px] uppercase tracking-widest text-amber-600 font-medium" style={{ letterSpacing: '0.12em' }}>
+                    {item.kind.replace(/_/g, ' ')}
+                  </p>
+                  <p className="text-xs text-ink leading-relaxed mt-1">{item.message}</p>
+                </div>
+                <span className="text-[10px] text-muted shrink-0">{formatTimestamp(item.occurredAt)}</span>
+              </div>
+              {item.projectId && (
+                <Link
+                  href={`/projects/${item.projectId}`}
+                  className="inline-block mt-2 text-[10px] uppercase tracking-widest text-muted hover:text-navy transition-colors"
+                  style={{ letterSpacing: '0.12em' }}
+                >
+                  Open project →
+                </Link>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+    </section>
+  );
+}
+
+// ─── Environment ──────────────────────────────────────────────────────────────
+
+function EnvironmentSection() {
+  const [groups,  setGroups]  = useState<EnvGroup[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [errMsg,  setErrMsg]  = useState('');
+
+  const load = useCallback(() => {
+    setLoading(true);
+    setErrMsg('');
+    fetch('/api/admin/env-status')
+      .then(async (r) => {
+        if (r.status === 404) return { groups: [] };
+        if (!r.ok) throw new Error(await readError(r));
+        return r.json() as Promise<{ groups?: EnvGroup[] }>;
+      })
+      .then(d => setGroups(d.groups ?? []))
+      .catch((e: unknown) => setErrMsg(e instanceof Error ? e.message : 'Failed to load environment status'))
+      .finally(() => setLoading(false));
+  }, []);
+
+  useEffect(() => { load(); }, [load]);
+
+  return (
+    <section>
+      <SectionHeader title="Environment" />
+
+      <p className="text-[11px] text-muted mb-4 leading-relaxed" style={{ fontWeight: 300 }}>
+        Presence only — no value is ever read back into this page.
+      </p>
+
+      {loading ? (
+        <SkeletonRows count={2} />
+      ) : errMsg ? (
+        <ErrorBox message={errMsg} onRetry={load} />
+      ) : groups.length === 0 ? (
+        <p className="text-sm text-muted py-2">No environment report available.</p>
+      ) : (
+        <div className="space-y-4">
+          {groups.map(group => (
+            <div key={group.name} className="border border-frame bg-cream px-4 py-3">
+              <p className="text-[10px] uppercase tracking-widest text-muted mb-2.5" style={{ letterSpacing: '0.16em' }}>
+                {group.name}
+              </p>
+              <ul className="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-1.5">
+                {group.vars.map(v => (
+                  <li key={v.name} className="flex items-center gap-2 min-w-0">
+                    <span
+                      aria-hidden
+                      className={`w-1.5 h-1.5 rounded-full shrink-0 ${v.set ? 'bg-green-600' : 'bg-red-400'}`}
+                    />
+                    <span className="text-[11px] text-ink truncate font-mono">{v.name}</span>
+                    <span className="sr-only">{v.set ? 'set' : 'not set'}</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ))}
+        </div>
+      )}
+    </section>
   );
 }
 
 // ─── Page ─────────────────────────────────────────────────────────────────────
 
-export default function AdminRequestsPage() {
+export default function AdminConsolePage() {
   // Organizations
   const [firms,     setFirms]     = useState<FirmInfo[]>([]);
   const [firmsLoad, setFirmsLoad] = useState(true);
@@ -936,6 +1444,11 @@ export default function AdminRequestsPage() {
   const [seatReqLoad, setSeatReqLoad] = useState(true);
   const [seatReqErr,  setSeatReqErr]  = useState('');
 
+  // All users (cross-organization)
+  const [users,     setUsers]     = useState<UserInfo[]>([]);
+  const [usersLoad, setUsersLoad] = useState(true);
+  const [usersErr,  setUsersErr]  = useState('');
+
   const loadFirms = useCallback(() => {
     setFirmsLoad(true);
     setFirmsErr('');
@@ -947,6 +1460,27 @@ export default function AdminRequestsPage() {
       .then(d => setFirms(d.firms ?? []))
       .catch((e: unknown) => setFirmsErr(e instanceof Error ? e.message : 'Failed to load organizations'))
       .finally(() => setFirmsLoad(false));
+  }, []);
+
+  const loadUsers = useCallback(() => {
+    setUsersLoad(true);
+    setUsersErr('');
+    fetch('/api/admin/users?all=true')
+      .then(async (r) => {
+        if (!r.ok) throw new Error(await readError(r));
+        return r.json() as Promise<{ users?: UserInfo[] }>;
+      })
+      .then((d) => {
+        // Platform admins first, then alphabetical by email.
+        const sorted = (d.users ?? []).slice().sort((a, b) => {
+          if (a.role === 'admin' && b.role !== 'admin') return -1;
+          if (a.role !== 'admin' && b.role === 'admin') return  1;
+          return a.email.localeCompare(b.email);
+        });
+        setUsers(sorted);
+      })
+      .catch((e: unknown) => setUsersErr(e instanceof Error ? e.message : 'Failed to load users'))
+      .finally(() => setUsersLoad(false));
   }, []);
 
   const loadRequests = useCallback(() => {
@@ -979,7 +1513,27 @@ export default function AdminRequestsPage() {
     loadRequests();
     loadSeatRequests();
     loadFirms();
-  }, [loadFirms, loadRequests, loadSeatRequests]);
+    loadUsers();
+  }, [loadFirms, loadRequests, loadSeatRequests, loadUsers]);
+
+  /** Approving anything creates an organization and an account — reload both. */
+  const afterProvisioning = useCallback(() => {
+    loadRequests();
+    loadFirms();
+    loadUsers();
+  }, [loadFirms, loadRequests, loadUsers]);
+
+  const afterSeatRequest = useCallback(() => {
+    loadSeatRequests();
+    loadFirms();
+    loadUsers();
+  }, [loadFirms, loadSeatRequests, loadUsers]);
+
+  /** A member action changes seat counts, billing and the cross-org list. */
+  const afterMemberChange = useCallback(() => {
+    loadFirms();
+    loadUsers();
+  }, [loadFirms, loadUsers]);
 
   async function addFirm(e: React.FormEvent) {
     e.preventDefault();
@@ -1020,6 +1574,8 @@ export default function AdminRequestsPage() {
     }
   }
 
+  const userCount = users.length;
+
   return (
     <div className="min-h-screen flex flex-col" style={{ background: '#F7F9FC' }}>
 
@@ -1037,22 +1593,15 @@ export default function AdminRequestsPage() {
               className="text-[10px] uppercase tracking-widest text-gold/80"
               style={{ letterSpacing: '0.18em' }}
             >
-              Requests
+              Admin
             </span>
-            <Link
-              href="/admin/users"
-              className="text-[10px] uppercase tracking-widest text-gold/50 hover:text-gold/80 transition-colors"
-              style={{ letterSpacing: '0.18em' }}
-            >
-              Users
-            </Link>
           </nav>
         </div>
       </header>
 
       <main className="flex-1 max-w-4xl w-full mx-auto px-6 sm:px-10 py-10 space-y-14">
 
-        {/* ── Section 1: Pending access requests ── */}
+        {/* ── 1. Pending access requests ── */}
         <section>
           <SectionHeader title="Pending Requests" />
 
@@ -1066,62 +1615,39 @@ export default function AdminRequestsPage() {
               ))}
             </div>
           ) : reqErr ? (
-            <div className="border border-red-200 bg-red-50 px-4 py-3">
-              <p className="text-xs text-red-600">{reqErr}</p>
-              <button
-                onClick={loadRequests}
-                className="mt-2 text-[10px] uppercase tracking-widest text-red-500 hover:text-red-700"
-                style={{ letterSpacing: '0.12em' }}
-              >
-                Retry
-              </button>
-            </div>
+            <ErrorBox message={reqErr} onRetry={loadRequests} />
           ) : requests.length === 0 ? (
             <p className="text-sm text-muted py-6">No pending access requests.</p>
           ) : (
             <div className="space-y-3">
               {requests.map(req => (
-                <AccessRequestCard key={req.email} req={req} onDone={loadRequests} />
+                <AccessRequestCard key={req.email} req={req} onDone={afterProvisioning} />
               ))}
             </div>
           )}
         </section>
 
-        {/* ── Section 2: Seat requests ── */}
-        <section>
-          <SectionHeader title="Seat Requests" />
-
-          {seatReqLoad ? (
-            <div className="space-y-2">
-              {[1].map(i => (
-                <div key={i} className="border border-frame bg-white px-5 py-4">
-                  <div className="h-4 w-1/3 bg-frame rounded animate-pulse" />
-                </div>
-              ))}
-            </div>
-          ) : seatReqErr ? (
-            <div className="border border-red-200 bg-red-50 px-4 py-3">
-              <p className="text-xs text-red-600">{seatReqErr}</p>
-              <button
-                onClick={loadSeatRequests}
-                className="mt-2 text-[10px] uppercase tracking-widest text-red-500 hover:text-red-700"
-                style={{ letterSpacing: '0.12em' }}
-              >
-                Retry
-              </button>
-            </div>
-          ) : seatReqs.length === 0 ? (
-            <p className="text-sm text-muted py-6">No pending seat requests.</p>
-          ) : (
+        {/* ── Seat requests — only when a capped organization has one waiting ── */}
+        {seatReqLoad ? null : seatReqErr ? (
+          <section>
+            <SectionHeader title="Seat Requests" />
+            <ErrorBox message={seatReqErr} onRetry={loadSeatRequests} />
+          </section>
+        ) : seatReqs.length > 0 ? (
+          <section>
+            <SectionHeader title="Seat Requests" />
             <div className="space-y-3">
               {seatReqs.map(req => (
-                <SeatRequestCard key={req.email} req={req} onDone={loadSeatRequests} />
+                <SeatRequestCard key={req.email} req={req} onDone={afterSeatRequest} />
               ))}
             </div>
-          )}
-        </section>
+          </section>
+        ) : null}
 
-        {/* ── Section 3: Organizations ── */}
+        {/* ── 2. Needs attention ── */}
+        <AttentionSection />
+
+        {/* ── 3. Organizations ── */}
         <section>
           <SectionHeader title="Organizations" />
 
@@ -1131,37 +1657,21 @@ export default function AdminRequestsPage() {
           </p>
 
           {firmsLoad ? (
-            <div className="space-y-2">
-              {[1, 2].map(i => (
-                <div key={i} className="border border-frame bg-cream px-4 py-3">
-                  <div className="h-3.5 w-1/3 bg-frame rounded animate-pulse mb-1.5" />
-                  <div className="h-2.5 w-1/2 bg-frame rounded animate-pulse" />
-                </div>
-              ))}
-            </div>
+            <SkeletonRows count={2} />
           ) : firmsErr ? (
-            <div className="border border-red-200 bg-red-50 px-4 py-3">
-              <p className="text-xs text-red-600">{firmsErr}</p>
-              <button
-                onClick={loadFirms}
-                className="mt-2 text-[10px] uppercase tracking-widest text-red-500 hover:text-red-700"
-                style={{ letterSpacing: '0.12em' }}
-              >
-                Retry
-              </button>
-            </div>
+            <ErrorBox message={firmsErr} onRetry={loadFirms} />
           ) : firms.length === 0 ? (
             <p className="text-sm text-muted">No organizations yet.</p>
           ) : (
             <div className="space-y-2">
               {firms.map(f => (
-                <FirmRow key={f.id} firm={f} onUpdated={loadFirms} />
+                <FirmRow key={f.id} firm={f} onUpdated={afterMemberChange} />
               ))}
             </div>
           )}
         </section>
 
-        {/* ── Section 4: Add organization ── */}
+        {/* ── 4. Add organization ── */}
         <section>
           <SectionHeader title="Add Organization" />
 
@@ -1222,6 +1732,53 @@ export default function AdminRequestsPage() {
             </div>
           </form>
         </section>
+
+        {/* ── 5. All users ── */}
+        <section>
+          <SectionHeader title={`All Users${userCount > 0 ? ` (${userCount})` : ''}`} />
+
+          <p className="text-[11px] text-muted mb-4 leading-relaxed" style={{ fontWeight: 300 }}>
+            Every account across every organization. Invite, disable and delete from the
+            organization&rsquo;s own panel above — that is where seat counts and billing follow along.
+          </p>
+
+          {usersLoad ? (
+            <SkeletonRows count={3} />
+          ) : usersErr ? (
+            <ErrorBox message={usersErr} onRetry={loadUsers} />
+          ) : users.length === 0 ? (
+            <p className="text-sm text-muted py-2">
+              No users yet. Add an organization, then invite its first member.
+            </p>
+          ) : (
+            <div className="space-y-2">
+              {users.map(u => (
+                <div
+                  key={u.email}
+                  className="flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-3 px-4 py-3 border border-frame bg-cream"
+                >
+                  <div className="flex-1 min-w-0">
+                    <p className="text-xs text-navy font-medium truncate">{fullName(u)}</p>
+                    <p className="text-[10px] text-muted truncate">
+                      {u.email}
+                      {' · '}
+                      {u.firmName || u.firmDomain || (u.role === 'admin' ? 'ExpertMatch' : '—')}
+                      {' · '}
+                      {formatDate(u.createdAt)}
+                    </p>
+                  </div>
+                  <div className="flex items-center gap-3 shrink-0">
+                    <RolePill user={u} />
+                    <StatusPill status={u.status} />
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </section>
+
+        {/* ── 6. Environment ── */}
+        <EnvironmentSection />
 
       </main>
     </div>

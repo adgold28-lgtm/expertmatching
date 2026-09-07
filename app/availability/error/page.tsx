@@ -11,6 +11,10 @@ const REASON_MESSAGES: Record<string, { title: string; body: string }> = {
     title: 'Access not granted',
     body:  'You declined to connect Google Calendar. You can still share your availability by returning to the original link and choosing a different option.',
   },
+  not_found: {
+    title: 'Scheduling link not found',
+    body:  "We couldn't find that scheduling link. Check the email for the latest one.",
+  },
   token_invalid: {
     title: 'Link expired or invalid',
     body:  'This availability link is no longer valid. Please ask your contact at ExpertMatch to send a new one.',

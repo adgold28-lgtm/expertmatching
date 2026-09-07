@@ -71,6 +71,12 @@ export async function GET(request: NextRequest): Promise<Response> {
 // POST { domain, name, seatLimit? } — create or update an organization.
 // seatLimit is an OPTIONAL platform-admin cap: null clears it (unlimited).
 // Omitting the key entirely leaves any existing cap unchanged.
+//
+// POST { domain, action: 'sync-seats' } — re-push this organization's active
+// seat count to Stripe and report what happened. No `name` is required: this
+// action never writes to the organization row. Returns
+// { ok, outcome, activeSeats } where outcome is 'updated' | 'unchanged' |
+// 'skipped' (no completed billing yet) | 'error'.
 export async function POST(request: NextRequest): Promise<Response> {
   const err = await adminGuard(request);
   if (err) return err;
@@ -83,6 +89,42 @@ export async function POST(request: NextRequest): Promise<Response> {
   const b      = (body ?? {}) as Record<string, unknown>;
   const domain = typeof b.domain === 'string' ? b.domain.trim().toLowerCase() : '';
   const name   = typeof b.name   === 'string' ? b.name.trim()                 : '';
+  const action = typeof b.action === 'string' ? b.action                      : '';
+
+  // ── Seat sync ───────────────────────────────────────────────────────────────
+  // Handled before the create/update validation because it needs neither a name
+  // nor a seat cap.
+  if (action === 'sync-seats') {
+    if (!domain) {
+      return Response.json({ error: 'domain_required' }, { status: 400 });
+    }
+
+    const firm = await getFirm(domain).catch(() => null);
+    if (!firm) {
+      return Response.json(
+        { error: 'organization_not_found', message: 'No organization with that domain.' },
+        { status: 404 },
+      );
+    }
+
+    try {
+      const result = await syncOrgSeatQuantity(firm.id);
+      return Response.json({
+        ok:          result.outcome !== 'error',
+        outcome:     result.outcome,
+        activeSeats: result.activeSeats,
+      });
+    } catch {
+      console.error('[admin/firms] seat sync threw');
+      return Response.json(
+        {
+          error:   'seat_sync_failed',
+          message: 'Could not reach Stripe to sync seats. Try again in a moment.',
+        },
+        { status: 502 },
+      );
+    }
+  }
 
   if (!domain || domain.length < 3 || !domain.includes('.')) {
     return Response.json(

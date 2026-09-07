@@ -41,10 +41,10 @@ export default async function NavBar({ activePath }: NavBarProps = {}) {
         >
           EXPERTMATCH
         </Link>
-        <nav className="flex items-center gap-6">
+        <nav className="flex items-center gap-4 sm:gap-6">
           <Link
             href="/pricing"
-            className="text-[11px] uppercase transition-colors hidden sm:block"
+            className="text-[11px] uppercase transition-colors"
             style={{
               letterSpacing: '0.14em',
               color: activePath === 'pricing' ? GOLD : 'rgba(255,255,255,0.6)',

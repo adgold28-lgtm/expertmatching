@@ -20,7 +20,9 @@ const libreFranklin = Libre_Franklin({
 // COPY_AUDIT 1.1 / 1.2 / 11.8. metadataBase resolves any relative metadata URL,
 // and the openGraph/twitter blocks give every page a real link card when the URL
 // is pasted into a Slack or an email — which is how an invite-only product
-// spreads. Still missing: a favicon and an OG image (both binary assets).
+// spreads. app/icon.svg is the favicon Next serves for every route; the icons
+// entry below points at that same file so the tag is present even when a client
+// ignores the file-based convention. Still missing: an OG image.
 const SITE_URL = process.env.NEXT_PUBLIC_APP_URL ?? 'https://expertmatch.fit';
 const SITE_TITLE = "ExpertMatch — Talk to the operators who've done it";
 const SITE_DESCRIPTION =
@@ -41,6 +43,9 @@ export const metadata: Metadata = {
     card: 'summary',
     title: SITE_TITLE,
     description: SITE_DESCRIPTION,
+  },
+  icons: {
+    icon: [{ url: '/icon.svg', type: 'image/svg+xml' }],
   },
 };
 

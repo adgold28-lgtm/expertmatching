@@ -54,7 +54,6 @@ export default async function AvailabilityPage({ params }: Props) {
             token={rawToken}
             expertId={null}
             projectId={projectId}
-            calendarProvider={undefined}
           />
         </div>
         <p className="mt-6 text-[11px] text-[#94a3b8]">
@@ -101,7 +100,6 @@ export default async function AvailabilityPage({ params }: Props) {
           token={rawToken}
           expertId={expertId}
           projectId={projectId}
-          calendarProvider={pe.calendarProvider}
         />
       </div>
 
@@ -143,7 +141,8 @@ function AlreadySubmitted({ expertName }: { expertName: string }) {
           Thanks, {firstName}!
         </h1>
         <p className="text-sm text-[#64748b] leading-relaxed">
-          We already have your availability. Our team will be in touch to confirm the call.
+          We already have your availability. You&apos;ll get a calendar invite if a time works,
+          or an email if not.
         </p>
       </div>
     </main>

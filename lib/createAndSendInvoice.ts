@@ -346,7 +346,7 @@ export async function createAndSendInvoice(
 
     const successUrl = process.env.NEXT_PUBLIC_APP_URL
       ? `${process.env.NEXT_PUBLIC_APP_URL}/payment/success`
-      : 'https://expertmatch.ai/payment/success';
+      : 'https://expertmatch.fit/payment/success';
 
     const paymentLink = await stripe.paymentLinks.create({
       line_items: [{ price: price.id, quantity: 1 }],

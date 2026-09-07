@@ -44,7 +44,7 @@ export default function ContactPage() {
 
             <div className="pb-8 border-b border-frame">
               <p className="text-[10px] uppercase font-medium text-muted mb-2" style={{ letterSpacing: '0.18em' }}>
-                Email
+                Founder
               </p>
               <p className="font-display text-navy" style={{ fontSize: '1.25rem', fontWeight: 500 }}>
                 ashergoldsteinbusiness@gmail.com

@@ -1,3 +1,5 @@
+import Link from 'next/link';
+
 export default function PaymentSuccessPage() {
   return (
     <div className="min-h-screen flex flex-col items-center justify-center px-6" style={{ background: '#F7F9FC' }}>
@@ -29,9 +31,21 @@ export default function PaymentSuccessPage() {
             Payment received.
           </h1>
           <p className="text-sm text-muted leading-relaxed">
-            Thank you — we&apos;ll be in touch shortly.
+            You can close this page.
           </p>
         </div>
+
+        {/* This page is also reached from a Stripe payment link in an email, so
+            the way back into the product has to be explicit. */}
+        <p>
+          <Link
+            href="/app"
+            className="inline-block text-[11px] uppercase text-navy border border-frame hover:border-navy px-4 py-2 transition-colors"
+            style={{ letterSpacing: '0.14em' }}
+          >
+            Back to ExpertMatch
+          </Link>
+        </p>
 
       </div>
     </div>

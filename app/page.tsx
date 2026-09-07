@@ -2,7 +2,6 @@ import type { Metadata } from 'next';
 import Link from 'next/link';
 import NavBar from '../components/NavBar';
 import MarketingFooter from '../components/MarketingFooter';
-import { createClient } from '../lib/supabase/server';
 import { SEAT_TIERS, formatUsdFromCents } from '../lib/pricing';
 
 export const metadata: Metadata = {
@@ -14,14 +13,9 @@ const GOLD = '#C6A75E';
 const NAVY = '#0B1F3B';
 
 
-export default async function LandingPage() {
-  let isSignedIn = false;
-  try {
-    const supabase = createClient();
-    const { data: { user } } = await supabase.auth.getUser();
-    isSignedIn = !!user;
-  } catch { /* signed out */ }
-
+// Signed-in visitors never reach this page — middleware sends them to /app — so
+// there is no signed-in branch here and no session lookup to pay for.
+export default function LandingPage() {
   return (
     <div className="min-h-screen flex flex-col font-body" style={{ background: '#F7F9FC' }}>
       <NavBar />
@@ -54,23 +48,13 @@ export default async function LandingPage() {
             per-minute after that.
           </p>
           <div className="flex flex-col sm:flex-row gap-3 justify-center">
-            {isSignedIn ? (
-              <Link
-                href="/app"
-                className="inline-block px-8 py-3.5 text-[11px] font-medium uppercase transition-colors"
-                style={{ background: GOLD, color: NAVY, letterSpacing: '0.14em' }}
-              >
-                Go to Your Projects
-              </Link>
-            ) : (
-              <Link
-                href="/request-access"
-                className="inline-block px-8 py-3.5 text-[11px] font-medium uppercase transition-colors"
-                style={{ background: GOLD, color: NAVY, letterSpacing: '0.14em' }}
-              >
-                Request Access
-              </Link>
-            )}
+            <Link
+              href="/request-access"
+              className="inline-block px-8 py-3.5 text-[11px] font-medium uppercase transition-colors"
+              style={{ background: GOLD, color: NAVY, letterSpacing: '0.14em' }}
+            >
+              Request Access
+            </Link>
             <Link
               href="/pricing"
               className="inline-block px-8 py-3.5 text-[11px] uppercase transition-colors border"
@@ -182,11 +166,11 @@ export default async function LandingPage() {
                 {[
                   ['Expert sourcing',     'Automated, in minutes',    'Manual researcher'],
                   ['Sourcing turnaround', '< 2 hours',                '2–5 business days'],
-                  ['Outreach',           'Handled for you',           'Not offered'],
+                  ['Outreach',           'Handled for you',           'Manual, researcher-led'],
                   ['Scheduling',         'Handled for you',           'Manual back-and-forth'],
                   ['Billing',            'Per-minute after 15 min, charged instantly', 'Invoice + 30-day net'],
                   ['Per-call pricing',   'One rate, shown up front',  'Opaque markup, 3–10× expert rate'],
-                  ['Expert vetting',     'Verified background, identity revealed at booking', 'Opaque'],
+                  ['Expert vetting',     'Identity revealed at booking', 'Opaque'],
                 ].map(([cap, em, trad], i) => (
                   <tr
                     key={cap}
@@ -245,7 +229,13 @@ export default async function LandingPage() {
                         : `${tier.minSeats}–${tier.maxSeats} seats`}
                     </td>
                     <td className="px-5 py-3 text-right text-[13px] font-semibold whitespace-nowrap" style={{ color: GOLD }}>
-                      {tier.contactSales ? 'Talk to us' : formatUsdFromCents(tier.unitPriceCents)}
+                      {tier.contactSales ? (
+                        <Link href="/contact" className="underline hover:no-underline" style={{ color: GOLD }}>
+                          Talk to us
+                        </Link>
+                      ) : (
+                        formatUsdFromCents(tier.unitPriceCents)
+                      )}
                     </td>
                   </tr>
                 ))}

@@ -22,7 +22,10 @@ export interface AvailabilityRequestParams {
   recipient?:       'expert' | 'client';
   toEmail:          string;   // expert's email address — never logged
   expertName:       string;   // used in greeting — never logged
-  projectName:      string;   // used in subject — never logged
+  /** Kept on the call signature for the callers, but deliberately NOT put in
+   *  the email: the expert is never told which project they are being sourced
+   *  for. */
+  projectName:      string;
   availabilityLink: string;   // full URL including token — never logged
 }
 
@@ -51,7 +54,6 @@ function escapeHtml(s: string): string {
 
 function buildEmailHtml(
   expertName:       string,
-  projectName:      string,
   availabilityLink: string,
   footerHtml:       string,
 ): string {
@@ -83,7 +85,7 @@ function buildEmailHtml(
 
             <p style="margin:0 0 16px;">
               Thank you for your willingness to speak with our team regarding
-              <strong>${escapeHtml(projectName)}</strong>.
+              a research call.
             </p>
 
             <p style="margin:0 0 24px;">
@@ -130,12 +132,12 @@ function buildEmailHtml(
 </html>`;
 }
 
-function buildEmailText(expertName: string, projectName: string, availabilityLink: string): string {
+function buildEmailText(expertName: string, availabilityLink: string): string {
   const firstName = expertName.split(' ')[0] ?? expertName;
   return [
     `Hi ${firstName},`,
     '',
-    `Thank you for your willingness to speak with our team regarding "${projectName}".`,
+    'Thank you for your willingness to speak with our team regarding a research call.',
     '',
     'Please use the link below to share a few times that work for you:',
     '',
@@ -253,7 +255,7 @@ export async function sendAvailabilityRequest(params: AvailabilityRequestParams)
   const from = getFromAddress();
 
   const resend  = getResend();
-  const subject = `Scheduling Request — ${params.projectName}`;
+  const subject = 'Scheduling Request — ExpertMatch';
 
   // CAN-SPAM footer: postal address (when configured) plus a per-recipient
   // opt-out link — only when this email reaches an expert. A client copy gets
@@ -266,8 +268,8 @@ export async function sendAvailabilityRequest(params: AvailabilityRequestParams)
     from,
     to:      params.toEmail,
     subject,
-    html:    buildEmailHtml(params.expertName, params.projectName, params.availabilityLink, footer.html),
-    text:    buildEmailText(params.expertName, params.projectName, params.availabilityLink) + footer.text,
+    html:    buildEmailHtml(params.expertName, params.availabilityLink, footer.html),
+    text:    buildEmailText(params.expertName, params.availabilityLink) + footer.text,
   });
 
   if (error) {

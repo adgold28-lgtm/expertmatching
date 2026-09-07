@@ -12,9 +12,6 @@
 // path — so offering it produced a guaranteed error. App users link a calendar
 // during onboarding instead (GET /api/onboarding/calendar/google).
 //
-// `calendarProvider` prop shows a connected-state banner when the expert has
-// already linked a calendar (e.g. after returning from OAuth).
-//
 // Submits to POST /api/availability/[token] for Calendly and Manual.
 // Google redirects the browser to GET /api/availability/[token]/google-auth.
 
@@ -25,10 +22,9 @@ import { useState } from 'react';
 type Option = 'google' | 'calendly' | 'manual';
 
 interface Props {
-  token:            string;
-  expertId:         string | null;   // null for client tokens
-  projectId:        string;
-  calendarProvider?: 'google' | 'calendly' | 'manual';  // already connected?
+  token:     string;
+  expertId:  string | null;   // null for client tokens
+  projectId: string;
 }
 
 // ─── Validation helpers ───────────────────────────────────────────────────────
@@ -50,7 +46,6 @@ function isValidCalendlyUrl(url: string): boolean {
 export default function AvailabilityForm({
   token,
   expertId,
-  calendarProvider,
 }: Props) {
   // Client tokens have no expert id — and no Google Calendar path.
   const allowGoogle = expertId !== null;
@@ -61,22 +56,6 @@ export default function AvailabilityForm({
   const [submitting,  setSubmitting]  = useState(false);
   const [submitted,   setSubmitted]   = useState(false);
   const [error,       setError]       = useState('');
-
-  // ── Already connected via Google ───────────────────────────────────────────
-
-  if (calendarProvider === 'google') {
-    return (
-      <div className="text-center py-4">
-        <div className="w-10 h-10 rounded-full bg-green-50 border border-green-200 flex items-center justify-center mx-auto mb-4">
-          <span className="text-green-700 text-lg">✓</span>
-        </div>
-        <h2 className="text-base font-semibold text-[#0f172a] mb-2">Google Calendar connected</h2>
-        <p className="text-sm text-[#64748b]">
-          Your availability has been submitted. Our team will be in touch shortly.
-        </p>
-      </div>
-    );
-  }
 
   // ── Calendly submit handler ────────────────────────────────────────────────
 
@@ -163,7 +142,8 @@ export default function AvailabilityForm({
         </div>
         <h2 className="text-base font-semibold text-[#0f172a] mb-2">Got it — thank you!</h2>
         <p className="text-sm text-[#64748b]">
-          Our team will review your availability and send a calendar invite shortly.
+          If a time overlaps with the client&apos;s calendar, you&apos;ll get a calendar invite.
+          Otherwise we&apos;ll follow up by email.
         </p>
       </div>
     );
@@ -340,7 +320,8 @@ export default function AvailabilityForm({
       {/* ── Privacy note ── */}
       <p className="text-[10px] text-[#94a3b8] leading-relaxed border-t border-[#e2e8f0] pt-4">
         Your availability is shared only with the research team coordinating this call.
-        It will not be stored beyond scheduling purposes.
+        We keep it only for scheduling this call and delete it under our Privacy Policy
+        retention terms.
       </p>
 
     </div>

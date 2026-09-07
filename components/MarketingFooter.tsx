@@ -9,7 +9,7 @@ const NAVY = '#0B1F3B';
 
 interface MarketingFooterProps {
   /** The page the visitor is already on — omitted from the link row. */
-  activePath?: '/' | '/pricing' | '/terms' | '/privacy' | '/contact';
+  activePath?: '/' | '/pricing' | '/request-access' | '/terms' | '/privacy' | '/contact';
 }
 
 const LINKS: { href: string; label: string }[] = [

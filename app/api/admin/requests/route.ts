@@ -49,11 +49,32 @@ export async function GET(request: NextRequest): Promise<Response> {
   }
 }
 
-// POST { action: 'approve' | 'reject', email, firstName?, lastName?, firmName? }
+const FIRM_TYPES = new Set<FirmTypeValue>([
+  'pe_firm', 'family_office', 'consulting_firm', 'law_firm', 'hedge_fund', 'corporate', 'other',
+]);
+const FIRM_SIZES = new Set<FirmSizeValue>(['boutique', 'mid_size', 'large']);
+
+/** A submitted override wins only when it is one of the check-constrained values. */
+function readFirmType(raw: unknown): FirmTypeValue | null {
+  return typeof raw === 'string' && FIRM_TYPES.has(raw as FirmTypeValue)
+    ? (raw as FirmTypeValue)
+    : null;
+}
+
+function readFirmSize(raw: unknown): FirmSizeValue | null {
+  return typeof raw === 'string' && FIRM_SIZES.has(raw as FirmSizeValue)
+    ? (raw as FirmSizeValue)
+    : null;
+}
+
+// POST { action: 'approve' | 'reject', email, firstName?, lastName?, firmName?,
+//        firmType?, firmSize? }
 //
 // Approval creates the account through provisionAccountInvite: the requester's
 // submitted name is split into first / last and their firm name becomes the
-// organization name. The admin can correct either before approving.
+// organization name. The admin can correct any of them before approving —
+// including the two firm answers, which are what Matchy turns into "a mid-size
+// PE firm" in an intro.
 export async function POST(request: NextRequest): Promise<Response> {
   const err = await adminGuard(request);
   if (err) return err;
@@ -142,9 +163,10 @@ export async function POST(request: NextRequest): Promise<Response> {
 
   // Carry the requester's two firm answers onto the organization now that it
   // definitely exists. This is what lets Matchy say "a mid-size PE firm" in an
-  // intro instead of falling back to "an investment firm".
-  const firmType = (pending?.firm_type ?? null) as FirmTypeValue | null;
-  const firmSize = (pending?.firm_size ?? null) as FirmSizeValue | null;
+  // intro instead of falling back to "an investment firm". The admin's
+  // correction, when it is a valid value, wins over what was submitted.
+  const firmType = readFirmType(b.firmType) ?? ((pending?.firm_type ?? null) as FirmTypeValue | null);
+  const firmSize = readFirmSize(b.firmSize) ?? ((pending?.firm_size ?? null) as FirmSizeValue | null);
   if (firmType || firmSize) {
     await upsertFirm(domain, {
       ...(firmType ? { firmType } : {}),

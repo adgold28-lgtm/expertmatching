@@ -47,7 +47,7 @@ const FAQS = [
   },
   {
     q: 'How do experts get paid?',
-    a: 'Experts are paid through Stripe as soon as the call is billed, usually the same day. No invoicing on their end.',
+    a: 'Experts are paid through Stripe once the call is billed. No invoicing on their end.',
   },
   {
     q: 'Is there a setup fee, minimum, or long-term contract?',
