@@ -2,7 +2,7 @@
 Last updated: 2026-09-06
 
 ## NOW (blocking or broken)
-- [ ] **APPLY MISSING MIGRATIONS IN PROD** (founder, Supabase Studio): 20260902 (organization_billing + RLS) and 20260906 (outreach_suppressions). Until then onboarding's card step 500s for every new customer. Then re-run a throwaway onboarding to confirm.
+- [x] Missing migrations applied in prod by the founder 2026-09-07 (20260902 organization_billing + RLS, 20260906 outreach_suppressions). Verified: both tables exist, seat_limit backfilled to unlimited, org customer + SetupIntent succeed.
 - [ ] Vercel env: set `QSTASH_URL=https://qstash-us-east-1.upstash.io` and `OUTREACH_FROM_EMAIL=ExpertMatch <notifications@expertmatch.fit>` (code falls back correctly, but the env should match).
 - [ ] Audit blockers (2026-09-06 session 3, see HANDOFF): (1) no password reset path and admins cannot re-invite an existing user; (2) Conversations rate buttons email the CLIENT rate to the expert; (3) POST …/complete has no owner check (a collaborator can charge the owner's card); (4) interview-guide route leaks raw expert identity to non-admins; (5) bookmark with no address is a permanent dead end (no contact discovery, re-bookmark 409s); (6) writing expertRate never recomputes clientRate; (7) removing an org leaves its Stripe subscription live; (8) expert never paid if they finish Connect onboarding after the payment event; (9) /app stage pill keys off 'shortlisted' (never set) and shows the retired 5-step bar; (10) Terms placeholders live in prod.
 - [x] Sourcing fixed + verified in prod (QStash regional host + raw URL) — 2026-09-06.
