@@ -99,10 +99,14 @@ export async function POST(request: NextRequest): Promise<Response> {
     ]);
 
     const orgName = orgNameFromDb || sessionUser.firmName || 'your firm';
+    // Seat economics are the champion's business (org_admin) and the platform's.
+    // An ordinary member onboarding into a firm gets the seat count without the
+    // price — BillingStep only renders the rate line when the price is > 0.
+    const seesEconomics = sessionUser.role === 'admin' || sessionUser.orgRole === 'org_admin';
     const seatSummary = {
       orgName,
       activeSeats,
-      seatUnitPriceCents: seatUnitPriceCents(activeSeats),
+      seatUnitPriceCents: seesEconomics ? seatUnitPriceCents(activeSeats) : 0,
     };
 
     // ─── Someone at this firm already saved the card ───────────────────────

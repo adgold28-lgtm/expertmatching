@@ -102,7 +102,7 @@ function RoleBadge({ member }: { member: Member }) {
       }`}
       style={{ letterSpacing: '0.1em' }}
     >
-      {member.role === 'admin' ? 'Platform admin' : isAdmin ? 'Org admin' : 'Member'}
+      {member.role === 'admin' ? 'Platform admin' : isAdmin ? 'Champion' : 'Member'}
     </span>
   );
 }
@@ -255,7 +255,7 @@ function MemberRow({
               className={actionClass}
               style={{ letterSpacing: '0.1em' }}
             >
-              {busy === 'role' ? '…' : isOrgAdmin ? 'Make member' : 'Make admin'}
+              {busy === 'role' ? '…' : isOrgAdmin ? 'Make member' : 'Make champion'}
             </button>
           )}
 
@@ -394,9 +394,9 @@ export default function TeamPage() {
 
         {denied ? (
           <div className="border border-frame bg-white px-6 py-10 text-center">
-            <p className="text-sm font-semibold text-navy mb-2">Team management is admin-only</p>
+            <p className="text-sm font-semibold text-navy mb-2">Team management is for your firm’s champion</p>
             <p className="text-xs text-muted leading-relaxed max-w-sm mx-auto" style={{ fontWeight: 300 }}>
-              Ask an organization admin on your team to add or remove seats.
+              Ask your firm’s champion to add or remove seats.
             </p>
             <Link
               href="/app"

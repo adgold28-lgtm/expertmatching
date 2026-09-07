@@ -39,7 +39,7 @@ const FAQS = [
   },
   {
     q: 'What happens when I add or remove someone?',
-    a: 'Any organization admin can add or remove seats from the Team page. Changes are prorated: you are charged for the remainder of the month when a seat is added, and credited when one is removed.',
+    a: 'Your firm’s champion can add or remove seats from the Team page. Changes are prorated: you are charged for the remainder of the month when a seat is added, and credited when one is removed.',
   },
   {
     q: 'Are expert calls included in the seat price?',

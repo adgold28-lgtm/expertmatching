@@ -510,14 +510,34 @@ function sourcingView(project: Project | null): SourcingView {
   return project.sourcingStatus === 'failed' ? 'failed' : 'idle';
 }
 
-// No machinery narration and no capability claims we can't back — one honest
-// line, rotated with a second so the loader still reads as alive.
+// The first line is the honest one and always shows first. The rest are
+// Matchy-as-mascot — a little fun, but none of them claim a capability we
+// don't have or narrate the machinery. Order after the first is shuffled per
+// visit so a long wait doesn't read as a loop.
 const SOURCING_MESSAGES = [
   "Finding people who've actually done this — usually a few minutes.",
+  'Matchy is out asking around. The digital version, anyway.',
+  'Matchy is reading the résumés so you don’t have to.',
+  'Still looking. Matchy doesn’t do “close enough”.',
+  'Matchy is checking who has actually done this, not who says they have.',
+  'Skipping the people who only read about it. Matchy is picky on purpose.',
+  'Matchy is ranking by who has been in the room, not who has the best title.',
   'Still working — we only surface people with direct, verifiable experience.',
+  'Almost there. Matchy is putting the strongest matches up top.',
 ];
 
+/** The honest line first, then the rest in a fresh order for this visit. */
+function shuffledSourcingMessages(): string[] {
+  const [first, ...rest] = SOURCING_MESSAGES;
+  for (let i = rest.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [rest[i], rest[j]] = [rest[j], rest[i]];
+  }
+  return [first, ...rest];
+}
+
 function RotatingLoadingMessage() {
+  const [messages]            = useState(shuffledSourcingMessages);
   const [index,   setIndex]   = useState(0);
   const [visible, setVisible] = useState(true);
 
@@ -525,17 +545,17 @@ function RotatingLoadingMessage() {
     const interval = setInterval(() => {
       setVisible(false);
       const timer = setTimeout(() => {
-        setIndex(i => (i + 1) % SOURCING_MESSAGES.length);
+        setIndex(i => (i + 1) % messages.length);
         setVisible(true);
       }, 400);
       return () => clearTimeout(timer);
-    }, 4000);
+    }, 5000);
     return () => clearInterval(interval);
-  }, []);
+  }, [messages.length]);
 
   return (
     <span style={{ transition: 'opacity 0.4s ease', opacity: visible ? 1 : 0 }}>
-      {SOURCING_MESSAGES[index]}
+      {messages[index]}
     </span>
   );
 }
@@ -869,54 +889,50 @@ function matchesStatusFilter(status: ExpertStatus, filter: SourceStatusFilter): 
   return status === 'discovered' || status === 'shortlisted';
 }
 
-/** One chip in a filter group. Selected reads as cream + a navy rule. */
-function FilterChip({
+const SOURCE_SELECT_CLASS =
+  'border border-frame bg-cream px-2.5 py-1.5 pr-7 text-xs text-ink appearance-none cursor-pointer focus:outline-none focus:border-navy hover:border-navy/40 transition-colors';
+
+/** Micro-label + native dropdown. One per control so the strip reads as a row of four. */
+function FilterSelect<T extends string>({
+  id,
   label,
-  count,
-  selected,
-  onClick,
+  value,
+  options,
+  onChange,
 }: {
+  id:       string;
   label:    string;
-  count?:   number;
-  selected: boolean;
-  onClick:  () => void;
+  value:    T;
+  options:  readonly { value: T; label: string }[];
+  onChange: (v: T) => void;
 }) {
   return (
-    <button
-      type="button"
-      onClick={onClick}
-      aria-pressed={selected}
-      className={`relative shrink-0 text-[10px] uppercase tracking-widest px-2 py-1 border transition-colors focus:outline-none focus-visible:ring-1 focus-visible:ring-gold ${
-        selected
-          ? 'bg-cream border-navy text-navy font-medium'
-          : 'border-frame text-muted hover:border-navy/40 hover:text-navy'
-      }`}
-      style={{ letterSpacing: '0.1em' }}
-    >
-      {label}
-      {count !== undefined && (
-        <span className={`ml-1.5 ${selected ? 'text-navy/60' : 'text-muted/60'}`}>{count}</span>
-      )}
-      {selected && <span aria-hidden className="absolute inset-x-0 bottom-0 h-[2px] bg-navy" />}
-    </button>
-  );
-}
-
-/** Micro-label + horizontally scrollable chip row. */
-function FilterGroup({ label, children }: { label: string; children: React.ReactNode }) {
-  return (
-    <div
-      role="group"
-      aria-label={label}
-      className="flex items-center gap-2 min-w-0 max-w-full"
-    >
-      <span
+    <div className="flex items-center gap-2 min-w-0">
+      <label
+        htmlFor={id}
         className="text-[10px] uppercase tracking-widest text-muted font-medium shrink-0"
         style={{ letterSpacing: '0.12em' }}
       >
         {label}
-      </span>
-      <div className="flex items-center gap-1.5 overflow-x-auto">{children}</div>
+      </label>
+      <div className="relative">
+        <select
+          id={id}
+          value={value}
+          onChange={e => onChange(e.target.value as T)}
+          className={SOURCE_SELECT_CLASS}
+        >
+          {options.map(o => (
+            <option key={o.value} value={o.value}>{o.label}</option>
+          ))}
+        </select>
+        <span
+          aria-hidden
+          className="pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 text-[9px] text-muted"
+        >
+          ▼
+        </span>
+      </div>
     </div>
   );
 }
@@ -957,69 +973,57 @@ function SourceListControls({
 }) {
   const filtersActive = tierFilter !== 'all' || categoryFilter !== 'all' || statusFilter !== 'all';
 
+  const tierOptions = (['all', ...TIER_ORDER] as const).map(t => ({
+    value: t,
+    label: `${t === 'all' ? 'All' : TIER_PRICING[t].label} (${tierCounts[t]})`,
+  }));
+  const categoryOptions = [
+    { value: 'all' as const, label: 'All' },
+    ...CATEGORY_OPTIONS.map(c => ({ value: c, label: c })),
+  ];
+  const statusOptions = STATUS_OPTIONS.map(s => ({ value: s, label: STATUS_LABELS[s] }));
+  const sortOptions = (Object.keys(SORT_LABELS) as ExpertSortKey[]).map(k => ({
+    value: k,
+    label: SORT_LABELS[k],
+  }));
+
   return (
     <div className="space-y-2">
       <div className="border border-frame bg-surface px-3 py-2.5 flex flex-wrap items-center gap-x-6 gap-y-3">
-        <FilterGroup label="Tier">
-          {(['all', ...TIER_ORDER] as const).map(t => (
-            <FilterChip
-              key={t}
-              label={t === 'all' ? 'All' : TIER_PRICING[t].label}
-              count={tierCounts[t]}
-              selected={tierFilter === t}
-              onClick={() => onTierChange(t)}
-            />
-          ))}
-        </FilterGroup>
-
-        <FilterGroup label="Category">
-          <FilterChip label="All" selected={categoryFilter === 'all'} onClick={() => onCategoryChange('all')} />
-          {CATEGORY_OPTIONS.map(c => (
-            <FilterChip
-              key={c}
-              label={c}
-              selected={categoryFilter === c}
-              onClick={() => onCategoryChange(categoryFilter === c ? 'all' : c)}
-            />
-          ))}
-        </FilterGroup>
-
-        <FilterGroup label="Status">
-          {STATUS_OPTIONS.map(s => (
-            <FilterChip
-              key={s}
-              label={STATUS_LABELS[s]}
-              selected={statusFilter === s}
-              onClick={() => onStatusChange(s)}
-            />
-          ))}
-        </FilterGroup>
-
+        <FilterSelect
+          id="source-tier"
+          label="Tier"
+          value={tierFilter}
+          options={tierOptions}
+          onChange={onTierChange}
+        />
+        <FilterSelect
+          id="source-category"
+          label="Category"
+          value={categoryFilter}
+          options={categoryOptions}
+          onChange={onCategoryChange}
+        />
+        <FilterSelect
+          id="source-status"
+          label="Status"
+          value={statusFilter}
+          options={statusOptions}
+          onChange={onStatusChange}
+        />
         <div className="lg:ml-auto">
-          <FilterGroup label="Sort">
-            <FilterChip
-              label="Seniority"
-              selected={sortKey === 'seniority'}
-              onClick={() => onSortChange('seniority')}
-            />
-            <FilterChip
-              label="Relevance score"
-              selected={sortKey === 'score'}
-              onClick={() => onSortChange('score')}
-            />
-          </FilterGroup>
+          <FilterSelect
+            id="source-sort"
+            label="Sort"
+            value={sortKey}
+            options={sortOptions}
+            onChange={onSortChange}
+          />
         </div>
       </div>
 
-      {/* Current sort, result count, clear affordance */}
+      {/* Result count + clear affordance */}
       <div className="flex items-center gap-x-3 gap-y-1 flex-wrap">
-        <p
-          className="text-[10px] uppercase tracking-widest text-muted font-medium"
-          style={{ letterSpacing: '0.12em' }}
-        >
-          Sorted by: <span className="text-navy">{SORT_LABELS[sortKey]}</span>
-        </p>
-        <span aria-hidden className="text-muted/40 text-[10px]">·</span>
         <p
           className="text-[10px] uppercase tracking-widest text-muted font-medium"
           style={{ letterSpacing: '0.12em' }}

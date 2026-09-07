@@ -4,6 +4,12 @@
 
 Read with `CLAUDE.md` (operating rules), `TASK_QUEUE.md` (priorities), `docs/MATCHY_SPEC.md` (the contract), `docs/OUTREACH_BOT_AUDIT.md` (why Matchy replaces the outreach bot).
 
+## Session 6 (2026-09-07, afternoon) — small UX pass, NOT pushed
+- **Source pool controls** (`app/projects/[projectId]/page.tsx` `SourceListControls`): Tier / Category / Status / Sort are native `<select>`s (`FilterSelect`), tier counts inside the option labels, the "Sorted by" line removed. FilterChip/FilterGroup deleted.
+- **Champion = org_admin.** The founder wants firm economics (seat price, card, subscription state) visible only to one person per firm, distinct from the platform admin. That is the existing `org_role = 'org_admin'`, now labelled **Champion** in the Team page, admin console, pricing FAQ and settings copy (DB value and API field names unchanged). Gating added: `GET /api/settings/payment-method` returns `{ restricted: true, canReplace: false, orgName }` for non-champions (PaymentPanel renders a one-line "handled by your firm's champion" state); `POST /api/onboarding/billing` sends `seatUnitPriceCents: 0` to non-champions so BillingStep never renders the per-seat line. Team page was already champion-only.
+- **Sourcing loader**: `SOURCING_MESSAGES` is nine lines, the honest one first, the rest Matchy-as-mascot and shuffled per visit, 5 s rotation.
+- Verified: `tsc` clean, `npm run build:local` clean, `test-org-billing` 23/23, `test-pricing` 237/237, `scripts/verify-schema.ts` PASS against prod (23 present, 0 missing). Not browser-verified (needs a throwaway member + champion — same pattern as the Session 5 browser pass). Committed locally on `main`, not pushed.
+
 ## Session 5 (2026-09-07, daytime) — walkthrough mode + Matchy Phase 2. READ THIS FIRST.
 
 The founder asked for two things, in order: (1) a hard stop so no real expert is ever emailed by accident, and (2) Matchy Phase 2 — both calendars, an expert-side "pick a time" page, emails back when a time does or does not work, a way to move the call, and 8am follow-up nudges (random 0–60 min, max 4 business days, one line, never the same) with a hard cap on LLM-written text (1–2 sentences).

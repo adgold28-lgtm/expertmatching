@@ -650,7 +650,7 @@ function RolePill({ user }: { user: UserInfo }) {
       }`}
       style={{ letterSpacing: '0.1em' }}
     >
-      {isPlatformAdmin ? 'Platform admin' : isOrgAdmin ? 'Org admin' : 'User'}
+      {isPlatformAdmin ? 'Platform admin' : isOrgAdmin ? 'Champion' : 'User'}
     </span>
   );
 }
@@ -747,7 +747,7 @@ function MemberRow({ user, onChanged }: { user: UserInfo; onChanged: () => void 
         <div className="flex-1 min-w-0">
           <p className="text-xs text-navy font-medium truncate">{fullName(user)}</p>
           <p className="text-[10px] text-muted truncate">
-            {user.email} · {user.orgRole === 'org_admin' ? 'Org admin' : 'Member'} · {formatDate(user.createdAt)}
+            {user.email} · {user.orgRole === 'org_admin' ? 'Champion' : 'Member'} · {formatDate(user.createdAt)}
           </p>
         </div>
 

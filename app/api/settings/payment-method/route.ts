@@ -1,13 +1,14 @@
 // GET /api/settings/payment-method — the card on file for the caller's FIRM.
 //
 // Session-authenticated (routeAuthGuard). Organization-level, like the rest of
-// billing: one card covers everyone at the firm, so every member sees the same
-// answer — "Card on file · Visa ····4242 · added by Dana Whitfield". A member
-// who did not add it still needs to know it is there (and who to ask), which is
-// why this is not restricted to org admins.
+// billing: one card covers everyone at the firm. Card details and the
+// subscription state are the firm champion's business (org_role 'org_admin')
+// or a platform admin's — an ordinary member gets `{ restricted: true, orgName }`
+// and nothing about the card, so the firm's economics never reach the whole
+// team.
 //
-// Replacing the card IS restricted: `canReplace` is true only for an org admin
-// or a platform admin. The replace flow itself reuses the onboarding routes
+// Replacing the card is likewise restricted: `canReplace` is true only for a
+// champion or a platform admin. The replace flow itself reuses the onboarding routes
 // unchanged — POST /api/onboarding/billing for the SetupIntent and
 // POST /api/onboarding/billing/confirm to make it the default. There is no
 // second copy of the Stripe card logic in this codebase, and there should not
@@ -112,10 +113,15 @@ export async function GET(request: NextRequest): Promise<Response> {
     return Response.json({ error: 'no_organization' }, { status: 409 });
   }
 
-  // Replacing the firm's card is an org-admin action. Platform admins can too.
+  // Seeing and replacing the firm's card is a champion action. Platform admins can too.
   const canReplace = sessionUser.role === 'admin' || sessionUser.orgRole === 'org_admin';
 
   try {
+    if (!canReplace) {
+      const orgName = (await getOrganizationName(organizationId)) || sessionUser.firmName || 'your firm';
+      return Response.json({ restricted: true, canReplace: false, orgName });
+    }
+
     const [row, orgNameFromDb] = await Promise.all([
       getOrgBillingRow(organizationId),
       getOrganizationName(organizationId),

@@ -6,7 +6,7 @@
 // added it. Every member of the firm sees it — a colleague who did not add the
 // card still needs to know it is there and who to ask about it.
 //
-// REPLACE: org admins only, and it reuses the onboarding routes rather than a
+// REPLACE: the firm champion (org_admin) only, reusing the onboarding routes rather than a
 // second copy of the Stripe logic:
 //   POST /api/onboarding/billing { replace: true } → { clientSecret, publishableKey }
 //   stripe.confirmCardSetup(clientSecret, card)
@@ -44,6 +44,8 @@ interface CardSummary {
 }
 
 interface PaymentMethodResponse {
+  /** Set for members who are not the firm's champion — no card details follow. */
+  restricted?:         boolean;
   hasCard?:            boolean;
   canReplace?:         boolean;
   orgName?:            string;
@@ -53,7 +55,7 @@ interface PaymentMethodResponse {
   error?:              string;
 }
 
-type LoadState = 'loading' | 'ready' | 'no_organization' | 'unavailable' | 'failed';
+type LoadState = 'loading' | 'ready' | 'restricted' | 'no_organization' | 'unavailable' | 'failed';
 
 /** A subscription status worth telling the user about, in their words. */
 function subscriptionNotice(status: string | null | undefined): string | null {
@@ -106,7 +108,7 @@ export default function PaymentPanel() {
       if (!res.ok) { setState('failed'); return; }
 
       setData(body);
-      setState('ready');
+      setState(body.restricted ? 'restricted' : 'ready');
     } catch {
       setState('failed');
     }
@@ -138,7 +140,7 @@ export default function PaymentPanel() {
         if (!active) return;
 
         if (res.status === 403) {
-          setError('Only an organization admin can change the firm’s card.');
+          setError('Only your firm’s champion can change the card.');
           setReplacing(false);
           return;
         }
@@ -285,6 +287,13 @@ export default function PaymentPanel() {
         />
       )}
 
+      {state === 'restricted' && (
+        <p className="text-xs leading-relaxed" style={{ color: MUTED }}>
+          One card covers everyone at {data.orgName ?? 'your firm'}. Billing is handled by your
+          firm’s champion — ask them if a call could not be billed.
+        </p>
+      )}
+
       {state === 'no_organization' && (
         <p className="text-xs leading-relaxed" style={{ color: MUTED }}>
           This account is not attached to a firm yet, so there is no billing to show.
@@ -340,7 +349,7 @@ export default function PaymentPanel() {
           {/* ── Replace ─────────────────────────────────────────────────── */}
           {!data.canReplace ? (
             <p className="mt-4 text-[11px] leading-relaxed" style={{ color: FAINT }}>
-              Only an organization admin can change the firm’s card.
+              Only your firm’s champion can change the card.
             </p>
           ) : !replacing ? (
             <button

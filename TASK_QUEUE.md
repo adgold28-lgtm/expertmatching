@@ -2,6 +2,7 @@
 Last updated: 2026-09-07
 
 ## NOW (blocking or broken)
+- [x] 2026-09-07 (session 6): Source pool filters are four dropdowns (tier/category/status/sort); firm economics are champion-only — seat price hidden from ordinary members in onboarding BillingStep and /settings Payment method (GET /api/settings/payment-method returns `{restricted:true}` for non-champions, no card/subscription data); org_admin is labelled "Champion" everywhere (DB value unchanged); sourcing loader rotates 9 Matchy-mascot lines, honest line first. Not yet pushed.
 - [x] WALKTHROUGH MODE LIVE 2026-09-07 (6938846): every project starts in walkthrough (projects.brief.walkthrough, undefined = walkthrough); nothing reaches an expert until the owner goes live (two-step confirm in the settings strip, lands on review-first). Enforced in sendSequenceEmail (resolves the project from the reply token, fails closed) + every caller; contact discovery never runs in walkthrough. scripts/test-walkthrough.ts; e2e-matchy covers both modes.
 - [ ] Founder: set `OUTREACH_SIGNATURE` (e.g. `Asher`) and `OUTREACH_FROM_EMAIL=Asher Goldstein <asher@expertmatch.fit>` in Vercel if emails should go out as you (lib/senderIdentity.ts). Unset = unsigned, from ExpertMatch.
 - [ ] Founder: paste migration 20260907300000_matchy_phase2_events.sql (three new event kinds; harmless until then).
