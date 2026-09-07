@@ -52,7 +52,7 @@ import {
 } from '../../../../../../../lib/contactDiscovery';
 import { redactExpertForViewer } from '../../../../../../../lib/redactExpert';
 import { classifySeniority, TIER_PRICING } from '../../../../../../../lib/seniorityClassifier';
-import { clientRateFor } from '../../../../../../../lib/pricing';
+import { clientRateFor, expertRateFor, clampClientRateToBand } from '../../../../../../../lib/pricing';
 import { getFirm } from '../../../../../../../lib/firmStore';
 import { isWalkthrough } from '../../../../../../../lib/walkthrough';
 import type { ExpertStatus, ProjectExpert } from '../../../../../../../types';
@@ -123,12 +123,18 @@ export async function POST(
     }
 
     // 6. Seed the two rates. expertRate is the tier's opening offer unless a
-    //    number was already chosen; clientRate always follows from it.
-    const tier       = pe.expert.seniorityTier ?? classifySeniority(pe.expert.title ?? '');
-    const expertRate = pe.expertRate && pe.expertRate > 0
+    //    number was already chosen; clientRate always follows from it. When the
+    //    project carries a rate band (what the client said they will pay per
+    //    hour) the opening offer is pulled inside it first: the tier is only
+    //    an estimate, the band is the rule (docs/MATCHY_SPEC.md).
+    const tier        = pe.expert.seniorityTier ?? classifySeniority(pe.expert.title ?? '');
+    const seededRate  = pe.expertRate && pe.expertRate > 0
       ? pe.expertRate
       : TIER_PRICING[tier].expertRate;
-    const clientRate = clientRateFor(expertRate);
+    const tierClient  = clientRateFor(seededRate);
+    const bandClient  = clampClientRateToBand(tierClient, project);
+    const expertRate  = bandClient === tierClient ? seededRate : expertRateFor(bandClient);
+    const clientRate  = clientRateFor(expertRate);
 
     // Already bookmarked = this is a retry of a failed outreach attempt, not a
     // new engagement. The write below is idempotent; the event is not.

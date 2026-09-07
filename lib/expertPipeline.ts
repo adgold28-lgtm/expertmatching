@@ -2,12 +2,11 @@
 //
 // Single source of truth for:
 //   1. the full set of valid ExpertStatus values (API allowlists derive from it)
-//   2. the derived pipeline stage an expert sits in (Outreach Sent → Replied Yes
-//      → Scheduled → Completed → Billed, plus Needs Attention / Declined)
-//   3. per-status and per-stage display metadata (label + pill classes)
+//   2. the coarse project-card stage (summaryStage) derived from status counts
+//   3. per-status display metadata (label + pill classes)
 //
-// The stage is DERIVED from `status` + `replyIntent` + `paymentStatus`. It is
-// never persisted — there is no schema change and no new status value.
+// The per-expert pipeline-stage model (PipelineBar) was retired with the
+// three-tab workspace; nothing is persisted here and there is no new status.
 //
 // Colour language:
 //   sky   — contact found / draft ready
@@ -52,89 +51,11 @@ export const EXPERT_STATUSES: readonly ExpertStatus[] = [
   'rejected_after_outreach',
 ] as const;
 
-// ─── Pipeline stages ──────────────────────────────────────────────────────────
-
-export type PipelineStage =
-  | 'pre_outreach'
-  | 'outreach_sent'
-  | 'replied_yes'
-  | 'needs_attention'
-  | 'scheduled'
-  | 'completed'
-  | 'billed'
-  | 'declined';
-
-/** Board columns / summary strip order. Excludes pre_outreach; declined is last. */
-export const PIPELINE_STAGES: readonly PipelineStage[] = [
-  'outreach_sent',
-  'replied_yes',
-  'needs_attention',
-  'scheduled',
-  'completed',
-  'billed',
-  'declined',
-] as const;
-
-const DECLINED_STATUSES = new Set<ExpertStatus>([
-  'rejected',
-  'rejected_after_outreach',
-]);
-
-/**
- * In flight, waiting on the expert. 'email2_sent' is the RETIRED cadence's
- * second email — nothing writes it any more (docs/MATCHY_SPEC.md, "Phasing"),
- * but rows written before Matchy shipped still carry it, so it stays mapped.
- * 'followup_sent' is its replacement: Matchy's follow-up went out because the
- * expert said yes, not because a clock ran out.
- */
-const OUTREACH_SENT_STATUSES = new Set<ExpertStatus>([
-  'contacted',
-  'email2_sent',
-  'followup_sent',
-  'scheduling_sent',
-]);
-
-/**
- * Derive the pipeline stage for an expert.
- *
- * Precedence: declined statuses always win; a completed expert with an invoice
- * sent or paid is `billed`; a `replied` expert splits on replyIntent —
- * 'interested' is `replied_yes`, anything else (declined / counter_rate /
- * conflict / unclear / absent) needs a human look. A payment status on a
- * non-completed expert is ignored — we trust `status`.
- */
-export function pipelineStage(pe: ProjectExpert): PipelineStage {
-  const status = pe.status;
-
-  if (DECLINED_STATUSES.has(status)) return 'declined';
-
-  if (status === 'completed') {
-    return pe.paymentStatus === 'invoice_sent' || pe.paymentStatus === 'paid'
-      ? 'billed'
-      : 'completed';
-  }
-
-  if (status === 'scheduled') return 'scheduled';
-
-  if (status === 'rate_negotiation' || status === 'conflict_flagged') return 'needs_attention';
-
-  if (status === 'replied') {
-    return pe.replyIntent === 'interested' ? 'replied_yes' : 'needs_attention';
-  }
-
-  if (OUTREACH_SENT_STATUSES.has(status)) return 'outreach_sent';
-
-  // discovered, shortlisted, bookmarked, contact_found, outreach_drafted.
-  // 'bookmarked' is pre-outreach on purpose: the client has saved the expert
-  // and Matchy is looking for an address, but nothing has been sent yet.
-  return 'pre_outreach';
-}
-
 // ─── Project-list stage ───────────────────────────────────────────────────────
 
 /**
- * The stage shown on a project card in the home list. Deliberately coarser than
- * PipelineStage: a client's workflow is Brief → Matches → Conversations
+ * The stage shown on a project card in the home list. Deliberately coarse:
+ * a client's workflow is Brief → Matches → Conversations
  * (docs/MATCHY_SPEC.md), and the two outcomes worth calling out are a booked
  * call and a finished one.
  */
@@ -181,17 +102,6 @@ export function summaryStage(counts: {
 }
 
 // ─── Display metadata ─────────────────────────────────────────────────────────
-
-export const STAGE_META: Record<PipelineStage, { label: string; classes: string }> = {
-  pre_outreach:    { label: 'Pre-Outreach',    classes: 'text-muted border-frame'                     },
-  outreach_sent:   { label: 'Outreach Sent',   classes: 'text-amber-700 border-amber-300 bg-amber-50' },
-  replied_yes:     { label: 'Replied Yes',     classes: 'text-green-700 border-green-200 bg-green-50' },
-  needs_attention: { label: 'Needs Attention', classes: 'text-amber-700 border-amber-400 bg-amber-50' },
-  scheduled:       { label: 'Scheduled',       classes: 'text-green-700 border-green-300 bg-green-50' },
-  completed:       { label: 'Completed',       classes: 'text-navy border-navy/20 bg-navy/5'          },
-  billed:          { label: 'Billed',          classes: 'text-green-800 border-green-400 bg-green-50' },
-  declined:        { label: 'Declined',        classes: 'text-slate-500 border-slate-200 bg-slate-50' },
-};
 
 export const STATUS_META: Record<ExpertStatus, { label: string; classes: string }> = {
   discovered:              { label: 'Discovered',       classes: 'text-muted border-frame'                     },

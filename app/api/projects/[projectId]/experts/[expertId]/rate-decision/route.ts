@@ -14,6 +14,8 @@
 //   accept  → the expert's counter becomes the agreed rate.
 //             expertRate = expertCounterRate, clientRate = clientRateFor(it)
 //             (written together by projectStore.rateFieldsFor, never apart).
+//             Refused with 409 `above_band` when that client rate is above the
+//             project's `clientRateMax` (lib/pricing.clientRateCeilingExceeded).
 //   counter → the client holds at their standing rate. The expert-side figure
 //             is expertRateFor(clientRate) — pricing.ts is the only place the
 //             two convert.
@@ -53,7 +55,7 @@ import { routeAuthGuard, getSessionUser } from '../../../../../../../lib/auth';
 import { guardMutatingRequest, requireProjectOwner } from '../../../../../../../lib/projectsGuard';
 import { getProjectForUser, updateExpertStatus, rateFieldsFor } from '../../../../../../../lib/projectStore';
 import { appendMessage } from '../../../../../../../lib/conversations';
-import { expertRateFor } from '../../../../../../../lib/pricing';
+import { expertRateFor, clientRateCeilingExceeded } from '../../../../../../../lib/pricing';
 import { rateAcceptedTemplate, rateCounterTemplate } from '../../../../../../../lib/matchyTemplates';
 import { sendSequenceEmail } from '../../../../../../../lib/emailSequence';
 import { emitEngagementEvent } from '../../../../../../../lib/engagementEvents';
@@ -116,6 +118,26 @@ export async function POST(
     }
 
     const rates = rateFieldsFor(decision.expertRate);
+
+    // 5b. The band. Accepting a counter that converts to more than the client
+    //     said they would pay is refused rather than silently agreed. The
+    //     client can raise the ceiling in the settings strip or hold at their
+    //     standing rate with `counter`; the expert never learns either number.
+    if (action === 'accept') {
+      const ceiling = clientRateCeilingExceeded(rates.clientRate, project);
+      if (ceiling !== null) {
+        return NextResponse.json(
+          {
+            error:   'above_band',
+            message: `Their rate works out to $${rates.clientRate.toLocaleString('en-US')}/hr, above the ` +
+                     `$${ceiling.toLocaleString('en-US')}/hr ceiling on this project. Raise the ceiling in ` +
+                     'settings, or offer your rate instead.',
+          },
+          { status: 409 },
+        );
+      }
+    }
+
     const text  = action === 'accept'
       ? rateAcceptedTemplate({ firstName: pe.expert.name, expertRate: rates.expertRate })
       : rateCounterTemplate({ firstName: pe.expert.name, expertRate: rates.expertRate });

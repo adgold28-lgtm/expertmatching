@@ -244,7 +244,7 @@ async function main(): Promise<void> {
     // ── rate decision: the client-side number never leaves the platform ────
     // Seed a counter the way inbound-email would — through the store, so this
     // never has to know how project_experts packs its columns.
-    const { updateExpertStatus } = await import('../lib/projectStore');
+    const { updateExpertStatus, getProject } = await import('../lib/projectStore');
     const seeded = await updateExpertStatus(projectId, expertId, {
       status:            'rate_negotiation',
       expertCounterRate: 650,
@@ -255,6 +255,17 @@ async function main(): Promise<void> {
 
     const collabRate = await req(collab, 'POST', `/api/projects/${projectId}/experts/${expertId}/rate-decision`, { action: 'accept' });
     check('collaborator POST rate-decision → 403', collabRate.status === 403, `status ${collabRate.status}`);
+
+    // The band is the rule: $650 converts to $1,300, so a $1,200 ceiling refuses
+    // the accept and nothing moves; the counter is still there afterwards.
+    await req(owner, 'PATCH', `/api/projects/${projectId}`, { clientRateMax: 1200 });
+    const aboveBand = await req(owner, 'POST', `/api/projects/${projectId}/experts/${expertId}/rate-decision`, { action: 'accept' });
+    const aboveBody = await json(aboveBand);
+    check('accept above the ceiling → 409 above_band', aboveBand.status === 409 && aboveBody?.error === 'above_band', `status ${aboveBand.status} ${aboveBody?.error}`);
+    check('above_band message names both numbers', /1,300.*1,200/.test(aboveBody?.message ?? ''), aboveBody?.message);
+    const stillCounter = (await getProject(projectId))?.experts.find(e => e.expert.id === expertId);
+    check('refused accept left the counter in place', stillCounter?.expertCounterRate === 650 && stillCounter?.clientRate === 1600, `counter ${stillCounter?.expertCounterRate} clientRate ${stillCounter?.clientRate}`);
+    await req(owner, 'PATCH', `/api/projects/${projectId}`, { clientRateMax: 1600 });
 
     const accept = await req(owner, 'POST', `/api/projects/${projectId}/experts/${expertId}/rate-decision`, { action: 'accept' });
     const acceptBody = await json(accept);

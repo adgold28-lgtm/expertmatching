@@ -28,6 +28,8 @@ import {
   expertPayoutDollars,
   splitCallAmountCents,
   formatUsdFromCents,
+  clampClientRateToBand,
+  clientRateCeilingExceeded,
 } from '../lib/pricing';
 // The one non-pricing import: the helper that keeps the two rate columns in
 // step. It is pure and does no I/O, even though its module talks to Postgres.
@@ -324,6 +326,27 @@ for (const rate of [400, 650, 675, 800]) {
   check(`rateFieldsFor(${rate}).clientRate === clientRateFor(${rate})`,
     fields.clientRate === clientRateFor(rate), `got ${fields.clientRate}`);
 }
+
+// ── The client's rate band ───────────────────────────────────────────────────
+
+console.log('\n── clampClientRateToBand pulls the opening offer inside the band ──');
+eq('no band → unchanged',            clampClientRateToBand(1300, {}), 1300);
+eq('nulls → unchanged',              clampClientRateToBand(1300, { clientRateMin: null, clientRateMax: null }), 1300);
+eq('inside → unchanged',             clampClientRateToBand(1300, { clientRateMin: 800, clientRateMax: 1500 }), 1300);
+eq('above ceiling → ceiling',        clampClientRateToBand(1300, { clientRateMax: 1000 }), 1000);
+eq('below floor → floor',            clampClientRateToBand(600,  { clientRateMin: 800 }), 800);
+eq('zero ceiling means no limit',    clampClientRateToBand(1300, { clientRateMax: 0 }), 1300);
+eq('negative floor means no limit',  clampClientRateToBand(1300, { clientRateMin: -5 }), 1300);
+eq('min above max → ceiling wins',   clampClientRateToBand(1300, { clientRateMin: 1200, clientRateMax: 1000 }), 1000);
+
+console.log('\n── clientRateCeilingExceeded only ever complains about the ceiling ──');
+eq('no band → null',                 clientRateCeilingExceeded(1300, {}), null);
+eq('under ceiling → null',           clientRateCeilingExceeded(1300, { clientRateMax: 1500 }), null);
+eq('at ceiling → null',              clientRateCeilingExceeded(1500, { clientRateMax: 1500 }), null);
+eq('over ceiling → the ceiling',     clientRateCeilingExceeded(1600, { clientRateMax: 1500 }), 1500);
+eq('below floor is never an error',  clientRateCeilingExceeded(300,  { clientRateMin: 800, clientRateMax: 1500 }), null);
+eq('a counter that converts above the ceiling is caught',
+  clientRateCeilingExceeded(clientRateFor(700), { clientRateMax: 1300 }), 1300);
 
 // ── Result ───────────────────────────────────────────────────────────────────
 

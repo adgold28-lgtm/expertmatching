@@ -1,5 +1,5 @@
 // ─── Shared name validation utilities ────────────────────────────────────────
-// Used by the generate-experts API route, ContactSection, and any component that
+// Used by the generate-experts API route and any component that
 // guards email lookup or expert display on identity completeness.
 // Operates solely on display-name strings — never receives brief content, raw
 // LLM output, API keys, or other sensitive fields.

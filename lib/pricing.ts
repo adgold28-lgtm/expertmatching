@@ -142,6 +142,50 @@ export function expertRateFor(clientRate: number): number {
   return Math.floor(clientRate * EXPERT_SHARE);
 }
 
+// ─── The client's rate band ───────────────────────────────────────────────────
+//
+// `clientRateMin` / `clientRateMax` are set per project in CLIENT-side dollars
+// (docs/MATCHY_SPEC.md: "tiers are rough estimates, the band is the rule").
+// Either end may be null for "no limit". Both helpers are pure so the routes
+// that enforce the band share one definition of "inside".
+
+export interface ClientRateBand {
+  clientRateMin?: number | null;
+  clientRateMax?: number | null;
+}
+
+/** A usable band end: a finite positive number. Anything else is "no limit". */
+function bandEnd(value: number | null | undefined): number | null {
+  return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : null;
+}
+
+/**
+ * The client-side rate a converted number would exceed, or null when the rate
+ * is inside the band. Only the ceiling can be exceeded: a rate BELOW the floor
+ * is cheaper than the client said they would pay, which is never a reason to
+ * refuse it.
+ */
+export function clientRateCeilingExceeded(clientRate: number, band: ClientRateBand): number | null {
+  const max = bandEnd(band.clientRateMax);
+  return max !== null && clientRate > max ? max : null;
+}
+
+/**
+ * The opening offer, pulled inside the band. The tier's client rate is only an
+ * estimate; when the client has said what they will pay, the first number
+ * Matchy quotes sits inside it — never above the ceiling, never below the
+ * floor. Returned in client-side dollars; convert with `expertRateFor` before
+ * it reaches an expert. A band with min > max is treated as the ceiling alone.
+ */
+export function clampClientRateToBand(clientRate: number, band: ClientRateBand): number {
+  const min = bandEnd(band.clientRateMin);
+  const max = bandEnd(band.clientRateMax);
+  let rate = clientRate;
+  if (min !== null && rate < min) rate = min;
+  if (max !== null && rate > max) rate = max;
+  return rate;
+}
+
 /**
  * Whole-dollar amount charged to the client for a call: the client rate
  * pro-rated over the billable minutes (15-minute minimum).

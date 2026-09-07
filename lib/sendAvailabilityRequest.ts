@@ -66,7 +66,7 @@ export async function sendInviteEmail(
   inviteeFirstName?: string,
 ): Promise<void> {
   if (process.env.DISABLE_EMAILS === 'true') {
-    console.log('[sendInviteEmail] suppressed in dev mode');
+    console.warn('[sendInviteEmail] suppressed: DISABLE_EMAILS=true');
     return;
   }
 
@@ -147,7 +147,6 @@ export async function sendInviteEmail(
   });
 
   if (error) throw new Error(`[sendInviteEmail] Resend error: ${error.message}`);
-  console.log('[sendInviteEmail] email sent', { status: 'ok' });
 }
 
 

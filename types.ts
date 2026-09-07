@@ -223,6 +223,12 @@ export interface SchedulingState {
   outcome:         SchedulingOutcome | null;
   pickTokenHash:   string | null;     // SHA-256 of the picker token — stripped for clients
   pickTokenExpiry: number | null;     // unix ms
+  /**
+   * Every slot start ever proposed on this engagement (ISO UTC), across rounds
+   * and reschedules, so a later round never re-offers a time the expert has
+   * already turned down. Optional: rows written before it existed have none.
+   */
+  proposedBefore?: string[];
 }
 
 export interface BookingMove { startUtc: string; endUtc: string; movedAt: number; by: 'client' | 'expert' | 'matchy'; }

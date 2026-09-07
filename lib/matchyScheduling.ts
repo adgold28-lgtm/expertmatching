@@ -132,6 +132,7 @@ export function emptySchedulingState(): SchedulingState {
     outcome:         null,
     pickTokenHash:   null,
     pickTokenExpiry: null,
+    proposedBefore:  [],
   };
 }
 
@@ -969,10 +970,14 @@ export async function proposeTimes(input: ProposeTimesInput): Promise<ProposeTim
     ? resolveTimezone(state.expertTimezone)
     : client.timezone;
 
-  const alreadyOffered = [
+  // Everything ever put in front of this expert: the running history, the
+  // current round (covers rows from before `proposedBefore` existed) and any
+  // time that was actually booked. None of it is offered again.
+  const alreadyOffered = Array.from(new Set([
+    ...(state.proposedBefore ?? []),
     ...state.proposed.map(slot => slot.startUtc),
     ...(pe.booking ? [pe.booking.startUtc, ...pe.booking.history.map(m => m.startUtc)] : []),
-  ];
+  ]));
 
   const proposals = ranges.length === 0 ? [] : pickProposals(ranges, {
     timezone:    client.timezone,
@@ -1078,6 +1083,10 @@ export async function proposeTimes(input: ProposeTimesInput): Promise<ProposeTim
     outcome,
     pickTokenHash:   held ? state.pickTokenHash   : issued.tokenHash,
     pickTokenExpiry: held ? state.pickTokenExpiry : issued.expiry,
+    // The history grows only when the times actually went out.
+    proposedBefore:  held
+      ? (state.proposedBefore ?? [])
+      : Array.from(new Set([...alreadyOffered, ...proposals.map(slot => slot.startUtc)])),
   };
 
   const patch: SchedulingPatch = { scheduling: nextState };

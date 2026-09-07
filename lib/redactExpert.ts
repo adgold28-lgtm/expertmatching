@@ -119,7 +119,7 @@ const INTERNAL_PROJECT_EXPERT_KEYS: readonly (keyof ProjectExpert)[] = [
 /**
  * Project fields a non-admin must never receive. `clientAvailabilityTokenHash`
  * is deliberately NOT here: it is a SHA-256 digest (not a usable credential)
- * and components/ClientSchedulingSection reads its presence to render the
+ * and the client scheduling UI reads its presence to render the
  * "requested — awaiting response" state.
  */
 const INTERNAL_PROJECT_KEYS: readonly (keyof Project)[] = [
