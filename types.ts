@@ -385,7 +385,7 @@ export interface ProjectExpert {
   email2SentAt?:         number;
   email3SentAt?:         number;
   replyDetectedAt?:      number;
-  replyIntent?:          'interested' | 'declined' | 'counter_rate' | 'conflict' | 'unclear';
+  replyIntent?:          ReplyIntent;
   counterRateProposed?:  number;
   // Matchy: the EXPERT-side hourly rate the expert countered with, in whole
   // dollars, as read off their reply. Staff- and expert-side only — the client

@@ -11,7 +11,7 @@
 // NEVER log: project names, research questions, confidential notes, or expert names.
 
 import { randomBytes } from 'crypto';
-import type { Expert, Project, ProjectExpert, ProjectSummary, ExpertStatus, RejectionReason, ValueChainPosition, ScreeningStatus, SuggestedDomain, PublicContactEmail, AvailabilitySlot, OverlapSlot } from '../types';
+import type { Expert, Project, ProjectExpert, ProjectSummary, ExpertStatus, ReplyIntent, RejectionReason, ValueChainPosition, ScreeningStatus, SuggestedDomain, PublicContactEmail, AvailabilitySlot, OverlapSlot, SchedulingState, BookingState, NudgeState } from '../types';
 import { getServiceRoleClient } from './supabase/admin';
 import type { Database, ProjectRow, ProjectExpertRow } from './supabase/database.types';
 import type { SupabaseClient } from '@supabase/supabase-js';
@@ -104,6 +104,10 @@ export interface UpdateExpertInput {
   overlapResult?:    OverlapSlot | null;
   overlapCheckedAt?: number;
   calendarEventId?:  string;
+  // Matchy Phase 2 — all three ride in project_experts.data (no migration).
+  scheduling?: SchedulingState | null;
+  booking?:    BookingState    | null;
+  nudges?:     NudgeState      | null;
   // Billing / Stripe
   clientRate?:           number | null;
   expertRate?:           number | null;
@@ -128,7 +132,7 @@ export interface UpdateExpertInput {
   email2SentAt?:         number;
   email3SentAt?:         number;
   replyDetectedAt?:      number;
-  replyIntent?:          'interested' | 'declined' | 'counter_rate' | 'conflict' | 'unclear';
+  replyIntent?:          ReplyIntent;
   counterRateProposed?:  number;
   // Matchy: the expert-side counter and its client-side equivalent
   // (lib/pricing.clientRateFor). Written together, never apart.
