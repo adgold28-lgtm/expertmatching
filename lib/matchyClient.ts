@@ -277,14 +277,16 @@ export function bookmarkLine(outcome: BookmarkOutcome, firstName: string): strin
       return `Sent ${firstName} the intro. I'll let you know when they reply.`;
     case 'intro_drafted':
       return 'Intro drafted — review and send.';
+    // Nothing retries on its own in Phase 1 (docs/MATCHY_SPEC.md, "Phasing"),
+    // so these lines say what the client has to do — never promise a retry.
     case 'contact_not_found':
-      return `Couldn't find an address for ${firstName} yet.`;
+      return `No address on file for ${firstName} yet. Bookmark again to retry, or pass.`;
     case 'contact_suppressed':
       return `${firstName} has asked not to be contacted.`;
     case 'contact_check_unavailable':
-      return "Couldn't verify an address right now — I'll retry.";
+      return "Couldn't check for an address just now. Bookmark again in a minute.";
     case 'intro_failed':
-      return "The intro didn't send. Try again.";
+      return "The intro didn't send. Bookmark again to retry.";
   }
 }
 

@@ -21,6 +21,12 @@ interface Props {
   index?: number;
   quickActions?: QuickActions;
   hideContact?: boolean;
+  /**
+   * Tier badge + "$X/hr". On by default; ProjectExpertCard turns it off because
+   * it renders the same pair once, below the card, from the engagement's
+   * `clientRate` rather than the tier's opening position.
+   */
+  showRate?: boolean;
 }
 
 function ArrowIcon() {
@@ -49,7 +55,7 @@ function scoreClass(score: number): string {
   return 'text-muted';
 }
 
-export default function ExpertCard({ expert, query, index = 0, quickActions, hideContact = false }: Props) {
+export default function ExpertCard({ expert, query, index = 0, quickActions, hideContact = false, showRate = true }: Props) {
   const [showOutreach, setShowOutreach] = useState(false);
   // Prefer the tier persisted at sourcing time — `title` is blanked for
   // anonymized experts, so classifying from it would read every one as Mid-Level.
@@ -88,16 +94,20 @@ export default function ExpertCard({ expert, query, index = 0, quickActions, hid
                 {expert.relevance_score > 0 ? expert.relevance_score : '—'}
               </div>
               <div className="text-[10px] uppercase tracking-widest text-muted mt-1">Score</div>
-              <div className={`mt-1.5 text-[9px] uppercase tracking-widest font-semibold px-1.5 py-0.5 ${
-                tier === 'executive' ? 'bg-amber-50 text-amber-700 border border-amber-200' :
-                tier === 'senior'    ? 'bg-teal-50 text-teal-700 border border-teal-200' :
-                                       'bg-slate-50 text-slate-500 border border-slate-200'
-              }`} style={{ letterSpacing: '0.1em' }}>
-                {tier === 'executive' ? 'Executive' : tier === 'senior' ? 'Senior' : 'Mid-Level'}
-              </div>
-              <div className="text-[9px] text-muted mt-0.5 cursor-help" title={RATE_DISCLAIMER}>
-                ${pricing.callRate.toLocaleString('en-US')}/hr
-              </div>
+              {showRate && (
+                <>
+                  <div className={`mt-1.5 text-[9px] uppercase tracking-widest font-semibold px-1.5 py-0.5 ${
+                    tier === 'executive' ? 'bg-amber-50 text-amber-700 border border-amber-200' :
+                    tier === 'senior'    ? 'bg-teal-50 text-teal-700 border border-teal-200' :
+                                           'bg-slate-50 text-slate-500 border border-slate-200'
+                  }`} style={{ letterSpacing: '0.1em' }}>
+                    {tier === 'executive' ? 'Executive' : tier === 'senior' ? 'Senior' : 'Mid-Level'}
+                  </div>
+                  <div className="text-[9px] text-muted mt-0.5 cursor-help" title={RATE_DISCLAIMER}>
+                    ${pricing.callRate.toLocaleString('en-US')}/hr
+                  </div>
+                </>
+              )}
             </div>
           </div>
 

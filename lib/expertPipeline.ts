@@ -130,6 +130,56 @@ export function pipelineStage(pe: ProjectExpert): PipelineStage {
   return 'pre_outreach';
 }
 
+// ─── Project-list stage ───────────────────────────────────────────────────────
+
+/**
+ * The stage shown on a project card in the home list. Deliberately coarser than
+ * PipelineStage: a client's workflow is Brief → Matches → Conversations
+ * (docs/MATCHY_SPEC.md), and the two outcomes worth calling out are a booked
+ * call and a finished one.
+ */
+export type SummaryStage = 'Brief' | 'Matches' | 'In conversation' | 'Scheduled' | 'Completed';
+
+/**
+ * Statuses that mean Matchy owns the relationship: the client bookmarked the
+ * expert and something is in flight. 'scheduled' and 'completed' are their own
+ * stages and are deliberately absent.
+ */
+const IN_CONVERSATION_STATUSES: readonly ExpertStatus[] = [
+  'bookmarked',
+  'contact_found',
+  'outreach_drafted',
+  'contacted',
+  'email2_sent',
+  'followup_sent',
+  'scheduling_sent',
+  'replied',
+  'rate_negotiation',
+  'conflict_flagged',
+] as const;
+
+/**
+ * Derive a project card's stage from its expert counts. Pure — no store, no
+ * fetch, no dates.
+ *
+ * `stageCounts` is optional because ProjectSummary does not carry per-status
+ * counts yet (see the report note): with it absent, a project with experts
+ * reads as "Matches", which is the honest floor.
+ */
+export function summaryStage(counts: {
+  expertCount: number;
+  stageCounts?: Partial<Record<ExpertStatus, number>>;
+}): SummaryStage {
+  if (counts.expertCount <= 0) return 'Brief';
+
+  const at = (status: ExpertStatus): number => counts.stageCounts?.[status] ?? 0;
+
+  if (at('completed') > 0) return 'Completed';
+  if (at('scheduled') > 0) return 'Scheduled';
+  if (IN_CONVERSATION_STATUSES.some(s => at(s) > 0)) return 'In conversation';
+  return 'Matches';
+}
+
 // ─── Display metadata ─────────────────────────────────────────────────────────
 
 export const STAGE_META: Record<PipelineStage, { label: string; classes: string }> = {

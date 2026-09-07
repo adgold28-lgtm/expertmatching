@@ -3,26 +3,54 @@
 import { useState, useEffect } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import { ProjectSummary } from '../../types';
+import { ProjectSummary, ExpertStatus } from '../../types';
+import { summaryStage, type SummaryStage } from '../../lib/expertPipeline';
+
+/**
+ * ProjectSummary does not carry per-status counts yet — lib/projectStore only
+ * derives `expertCount` and `shortlistedCount`, and `shortlisted` is a status
+ * the Brief → Matches → Conversations flow no longer writes. The optional
+ * `stageCounts` below is what the store needs to add; until it does, every read
+ * is guarded and a project with experts reads as "Matches".
+ */
+type ProjectSummaryWithStages = ProjectSummary & {
+  stageCounts?: Partial<Record<ExpertStatus, number>>;
+};
 
 function formatDate(ts: number) {
   return new Date(ts).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
 }
 
-function getProjectStage(p: ProjectSummary): { label: string; step: number } {
-  if (p.expertCount === 0) return { label: 'Brief',    step: 1 };
-  if (p.shortlistedCount === 0) return { label: 'Sourcing', step: 2 };
-  return { label: 'Outreach', step: 3 };
-}
-
-const STAGE_COLORS: Record<string, { bg: string; text: string }> = {
-  Brief:    { bg: '#F0F2F5',        text: '#6B7C8D' },
-  Sourcing: { bg: '#EBF0F7',        text: '#0B1F3B' },
-  Outreach: { bg: 'rgba(198,167,94,0.15)', text: '#8B6914' },
-  Complete: { bg: '#EDFAF3',        text: '#1A7A4A' },
+const STAGE_COLORS: Record<SummaryStage, { bg: string; text: string }> = {
+  Brief:              { bg: '#F0F2F5',                text: '#6B7C8D' },
+  Matches:            { bg: '#EBF0F7',                text: '#0B1F3B' },
+  'In conversation':  { bg: 'rgba(198,167,94,0.15)',  text: '#8B6914' },
+  Scheduled:          { bg: '#EDFAF3',                text: '#1A7A4A' },
+  Completed:          { bg: '#EDFAF3',                text: '#1A7A4A' },
 };
 
-const STEPS = ['Brief', 'Source', 'Outreach', 'Screen', 'Deliver'];
+// The client's three real steps (docs/MATCHY_SPEC.md). Outreach / Screen /
+// Deliver are staff-only inside a project and never appear here.
+const STEPS = ['Brief', 'Matches', 'Conversations'] as const;
+
+/** How many of the three steps are behind this project, 1–3. */
+const STAGE_STEP: Record<SummaryStage, number> = {
+  Brief:             1,
+  Matches:           2,
+  'In conversation': 3,
+  Scheduled:         3,
+  Completed:         3,
+};
+
+/**
+ * Error codes from POST /api/projects, written out. Anything unmapped falls
+ * back to the generic line — the raw code is never rendered.
+ * `onboarding_incomplete` is handled separately: it also routes to onboarding.
+ */
+const CREATE_ERROR_LINES: Record<string, string> = {
+  onboarding_incomplete:    'Finish setting up your account first.',
+  failed_to_create_project: "We couldn't create the project. Try again.",
+};
 
 // ─── Main Page ─────────────────────────────────────────────────────────────────
 
@@ -36,7 +64,7 @@ interface CurrentUser {
 export default function AppPage() {
   const router = useRouter();
 
-  const [projects,        setProjects]        = useState<ProjectSummary[]>([]);
+  const [projects,        setProjects]        = useState<ProjectSummaryWithStages[]>([]);
   const [projectsLoading, setProjectsLoading] = useState(true);
   const [currentUser,     setCurrentUser]     = useState<CurrentUser | null>(null);
   const [canManageTeam,   setCanManageTeam]   = useState(false);
@@ -60,7 +88,7 @@ export default function AppPage() {
   useEffect(() => {
     fetch('/api/projects')
       .then(r => r.json())
-      .then((d: { projects?: ProjectSummary[] }) => {
+      .then((d: { projects?: ProjectSummaryWithStages[] }) => {
         setProjects(d.projects ?? []);
         setProjectsLoading(false);
       })
@@ -125,7 +153,13 @@ export default function AppPage() {
       });
       const data = await res.json() as { project?: { id: string }; error?: string };
       if (!res.ok || !data.project) {
-        setCreateError(data.error ?? 'Failed to create project. Please try again.');
+        // A raw error code is never shown — every path ends in a sentence.
+        if (data.error === 'onboarding_incomplete') {
+          setCreateError(CREATE_ERROR_LINES.onboarding_incomplete);
+          router.push('/onboarding');
+          return;
+        }
+        setCreateError(CREATE_ERROR_LINES[data.error ?? ''] ?? 'Something went wrong. Try again.');
         return;
       }
       router.push(`/projects/${data.project.id}`);
@@ -138,6 +172,15 @@ export default function AppPage() {
 
   const sorted       = [...projects].sort((a, b) => b.updatedAt - a.updatedAt);
   const totalExperts = projects.reduce((sum, p) => sum + p.expertCount, 0);
+  // Only claimable once the summaries carry per-status counts — a hardcoded 0
+  // would read as "no calls" rather than "we don't know".
+  const completedKnown  = projects.some(p => p.stageCounts !== undefined);
+  const callsCompleted  = projects.reduce((sum, p) => sum + (p.stageCounts?.completed ?? 0), 0);
+  const stats: Array<{ label: string; value: number }> = [
+    { label: 'Total Projects',  value: projects.length },
+    { label: 'Experts Sourced', value: totalExperts    },
+    ...(completedKnown ? [{ label: 'Calls Completed', value: callsCompleted }] : []),
+  ];
 
   // ─── Render ─────────────────────────────────────────────────────────────────
 
@@ -165,7 +208,7 @@ export default function AppPage() {
       <header className="bg-navy border-b-2 border-gold sticky top-0 z-40">
         <div className="max-w-6xl mx-auto px-6 sm:px-10 py-4 flex items-center justify-between gap-3">
           <Link
-            href="/"
+            href="/app"
             className="font-display text-cream font-semibold shrink-0"
             style={{ letterSpacing: '0.15em', fontSize: '13px' }}
           >
@@ -204,11 +247,7 @@ export default function AppPage() {
         <div style={{ background: '#fff', borderBottom: '1px solid #E8ECF0' }}>
           <div className="max-w-6xl mx-auto px-6 sm:px-10">
             <div className="flex divide-x divide-gray-100">
-              {[
-                { label: 'Total Projects',   value: projects.length },
-                { label: 'Experts Sourced',  value: totalExperts    },
-                { label: 'Calls Completed',  value: 0               },
-              ].map(stat => (
+              {stats.map(stat => (
                 <div key={stat.label} className="py-4 pr-8 first:pl-0 pl-8">
                   <p
                     className="text-[22px] font-semibold leading-none"
@@ -254,8 +293,9 @@ export default function AppPage() {
           ) : sorted.length > 0 ? (
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
               {sorted.map(p => {
-                const { label: stageLabel, step } = getProjectStage(p);
-                const pill = STAGE_COLORS[stageLabel] ?? STAGE_COLORS.Brief;
+                const stageLabel = summaryStage(p);
+                const step       = STAGE_STEP[stageLabel];
+                const pill       = STAGE_COLORS[stageLabel];
                 const projectName = p.name || (p.researchQuestion ? p.researchQuestion.slice(0, 60) : 'Untitled Project');
 
                 return (
@@ -295,7 +335,7 @@ export default function AppPage() {
                         </span>
                       </div>
 
-                      {/* Progress bar — 5 steps */}
+                      {/* Progress bar — Brief · Matches · Conversations */}
                       <div className="flex gap-1 pt-1">
                         {STEPS.map((s, i) => (
                           <div
@@ -310,11 +350,11 @@ export default function AppPage() {
                         {STEPS.map((s, i) => (
                           <span
                             key={s}
-                            className="text-[8px] uppercase"
+                            className={`text-[8px] uppercase ${i === step - 1 ? 'font-semibold' : ''}`}
                             style={{
                               color: i < step ? '#0B1F3B' : '#C4CDD6',
                               letterSpacing: '0.06em',
-                              width: '20%',
+                              width: `${100 / STEPS.length}%`,
                               textAlign: i === 0 ? 'left' : i === STEPS.length - 1 ? 'right' : 'center',
                             }}
                           >

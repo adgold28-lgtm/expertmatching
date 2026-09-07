@@ -7,7 +7,9 @@
 //   2. seed the money: expertRate from the seniority tier if it is not already
 //      set, clientRate derived from it by lib/pricing.clientRateFor — never
 //      recomputed anywhere else
-//   3. emit `bookmarked`
+//   3. emit `bookmarked` — once per engagement. Re-bookmarking an expert that
+//      is already 'bookmarked' (the retry path after contact_not_found /
+//      intro_failed) re-runs the outreach attempt and emits nothing here.
 //   4. if we already have an address, send Matchy's intro (or draft it, when
 //      the project's review-first switch is on)
 //      - sent      → status 'contacted', emit `intro_sent`
@@ -43,14 +45,21 @@ const ID_RE        = /^[a-f0-9]{24}$/;
 const EXPERT_ID_RE = /^[a-zA-Z0-9\-_]+$/;
 
 /**
- * A bookmark is the client saving an expert they have not yet engaged, so it
- * is only reachable from the two pre-engagement statuses. Anything else means
- * the engagement already started (or the expert was rejected) and re-running
+ * A bookmark is the client saving an expert nothing has been sent to yet.
+ *
+ * 'bookmarked' is in the set on purpose: it is the status an expert is left in
+ * when the outreach attempt did not land (no address on file, the intro failed
+ * to send, the suppression check was unavailable). Nothing retries on its own
+ * in Phase 1, so bookmarking again IS the retry — it re-runs the attempt
+ * without emitting a second `bookmarked` event.
+ *
+ * Anything past 'bookmarked' still 409s: the engagement started and re-running
  * the intro would be a second cold email.
  */
 const BOOKMARKABLE_STATUSES: ReadonlySet<ExpertStatus> = new Set<ExpertStatus>([
   'discovered',
   'shortlisted',
+  'bookmarked',
 ]);
 
 export async function POST(
@@ -105,6 +114,10 @@ export async function POST(
       : TIER_PRICING[tier].expertRate;
     const clientRate = clientRateFor(expertRate);
 
+    // Already bookmarked = this is a retry of a failed outreach attempt, not a
+    // new engagement. The write below is idempotent; the event is not.
+    const isRetry = pe.status === 'bookmarked';
+
     let current = await applyBookmark(params.projectId, params.expertId, expertRate, clientRate);
 
     // One organization read: it supplies both the org id every event carries
@@ -112,13 +125,15 @@ export async function POST(
     const firm  = await getFirm(project.firmDomain).catch(() => null);
     const orgId = firm?.id ?? null;
 
-    await emitEngagementEvent({
-      projectId: params.projectId,
-      expertId:  params.expertId,
-      orgId,
-      type:      'bookmarked',
-      payload:   { tier, expertRate, clientRate },
-    });
+    if (!isRetry) {
+      await emitEngagementEvent({
+        projectId: params.projectId,
+        expertId:  params.expertId,
+        orgId,
+        type:      'bookmarked',
+        payload:   { tier, expertRate, clientRate },
+      });
+    }
 
     // 7. Contact. Phase 1 sends to an address we already hold; the autonomous
     //    provider waterfall is Phase 2's /api/jobs/contact-discovery (spec,

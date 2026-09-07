@@ -45,7 +45,6 @@ interface Props {
   projectId: string;
   query: string;
   onUpdate: (updated: ProjectExpert) => void;
-  onRemove: (expertId: string) => void;
   onInterviewGuide: (expertId: string) => void;
   /** Owner or staff. Collaborators browse Matches but cannot start outreach. */
   canBookmark?: boolean;
@@ -62,7 +61,6 @@ export default function ProjectExpertCard({
   projectId,
   query,
   onUpdate,
-  onRemove,
   onInterviewGuide,
   canBookmark = true,
   isAdmin = false,
@@ -75,7 +73,6 @@ export default function ProjectExpertCard({
   const tier    = expert.seniorityTier ?? classifySeniority(expert.title ?? '');
   const pricing = expert.tierPricing ?? TIER_PRICING[tier];
   const [saving,           setSaving]           = useState(false);
-  const [removing,         setRemoving]         = useState(false);
   const [noteOpen,         setNoteOpen]         = useState(false);
   const [noteText,         setNoteText]         = useState('');
   const [rejNoteText,      setRejNoteText]      = useState(rejectionNotes ?? '');
@@ -83,7 +80,6 @@ export default function ProjectExpertCard({
   // Matchy's one line about this expert — the outcome of the last thing it did.
   const [matchyNote, setMatchyNote] = useState<{ text: string; tone: 'default' | 'quiet' | 'alert' } | null>(null);
   const [bookmarking, setBookmarking] = useState(false);
-  const [confirmRemove, setConfirmRemove] = useState(false);
 
   const firstName  = firstNameOf(expert.name);
   // What the client pays. Falls back to the tier's opening position until the
@@ -192,21 +188,13 @@ export default function ProjectExpertCard({
     await patchExpert({ note });
   }
 
-  async function handleRemove() {
-    setConfirmRemove(false);
-    setRemoving(true);
-    try {
-      await fetch(`/api/projects/${projectId}/experts/${expert.id}`, { method: 'DELETE' });
-      onRemove(expert.id);
-    } finally {
-      setRemoving(false);
-    }
-  }
-
   return (
     <div className="flex flex-col">
       {/* Expert card — contact section suppressed in project context (managed by ScreeningCard/OutreachCard) */}
-      <ExpertCard expert={expert} query={query} hideContact />
+      {/* showRate={false}: the tier badge and the rate belong to the strip
+          below, where the number is the engagement's clientRate rather than the
+          tier's opening position — one rate per card, not two. */}
+      <ExpertCard expert={expert} query={query} hideContact showRate={false} />
 
       {/* Project controls — strip below the card */}
       <div className="border border-t-0 border-frame bg-surface px-4 py-3 space-y-2.5">
@@ -220,15 +208,15 @@ export default function ProjectExpertCard({
           }`} style={{ letterSpacing: '0.1em' }}>
             {pricing.label}
           </span>
-          {status === 'bookmarked' || hasConversation(status) ? (
-            <span className="text-[9px] text-muted">
-              {formatRate(clientRate)}/hr · includes ExpertMatch fee
-            </span>
-          ) : (
-            <span className="text-[9px] text-muted cursor-help" title={RATE_DISCLAIMER}>
-              {formatRate(clientRate)}/hr
-            </span>
-          )}
+          {/* The only rate on this card. Before an engagement it is the tier's
+              opening position (hence the disclaimer on hover); after a bookmark
+              it is the engagement's own clientRate. */}
+          <span
+            className={`text-[9px] text-muted ${hasConversation(status) ? '' : 'cursor-help'}`}
+            title={hasConversation(status) ? undefined : RATE_DISCLAIMER}
+          >
+            {formatRate(clientRate)}/hr · includes ExpertMatch fee
+          </span>
           {projectExpert.agreedRate != null && (
             <span className="text-[9px] text-amber-700 font-medium">Agreed: {formatRate(projectExpert.agreedRate)}/hr</span>
           )}
@@ -248,29 +236,45 @@ export default function ProjectExpertCard({
             >
               {bookmarking ? 'Bookmarking…' : 'Bookmark'}
             </button>
+            {/* Passing is a decision about the engagement, so it rides the
+                same permission as Bookmark — the server enforces it too. */}
             <button
               onClick={() => handleStatusChange('rejected')}
-              disabled={saving || bookmarking}
+              disabled={saving || bookmarking || !canBookmark}
               className="flex-1 text-[11px] uppercase tracking-widest border-2 border-frame text-muted hover:text-navy hover:border-navy py-2 font-medium transition-colors disabled:opacity-40"
               style={{ letterSpacing: '0.1em' }}
+              title={canBookmark ? undefined : 'Only the project owner can pass on an expert.'}
             >
               Pass
             </button>
           </div>
         ) : status === 'bookmarked' ? (
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 flex-wrap">
             <span className="flex-1 text-center text-[11px] uppercase tracking-widest border-2 border-navy text-navy bg-navy/5 py-2 font-medium">
               Bookmarked
             </span>
             {canBookmark && (
-              <button
-                onClick={handleUnbookmark}
-                disabled={bookmarking}
-                className="text-[10px] uppercase tracking-widest text-muted hover:text-navy border border-frame px-2.5 py-2 transition-colors disabled:opacity-40"
-                title="Undo the bookmark"
-              >
-                Undo
-              </button>
+              <>
+                {/* Still 'bookmarked' means nothing has gone out — no address,
+                    or the send failed. Nothing retries on its own, so the
+                    client needs a way to ask again. */}
+                <button
+                  onClick={handleBookmark}
+                  disabled={bookmarking}
+                  className="text-[10px] uppercase tracking-widest text-muted hover:text-navy border border-frame px-2.5 py-2 transition-colors disabled:opacity-40"
+                  title="Try the intro again"
+                >
+                  {bookmarking ? '…' : 'Retry'}
+                </button>
+                <button
+                  onClick={handleUnbookmark}
+                  disabled={bookmarking}
+                  className="text-[10px] uppercase tracking-widest text-muted hover:text-navy border border-frame px-2.5 py-2 transition-colors disabled:opacity-40"
+                  title="Undo the bookmark"
+                >
+                  Undo
+                </button>
+              </>
             )}
           </div>
         ) : status !== 'rejected' ? (
@@ -401,39 +405,14 @@ export default function ProjectExpertCard({
           >
             {noteOpen ? 'Cancel' : userNotes ? 'Edit notes ↓' : '+ Add note'}
           </button>
+          {/* No "Remove": Pass covers it and keeps the expert (and the reason
+              we passed) on the record. The DELETE route stays for staff. */}
           <button
             onClick={() => onInterviewGuide(expert.id)}
             className="text-[10px] uppercase tracking-widest text-muted hover:text-navy transition-colors ml-auto"
           >
             Interview guide →
           </button>
-          {confirmRemove ? (
-            <span className="flex items-center gap-2">
-              <span className="text-[10px] text-muted">Remove from this project?</span>
-              <button
-                onClick={handleRemove}
-                disabled={removing}
-                className="text-[10px] uppercase tracking-widest text-red-600 border border-red-200 hover:bg-red-50 px-2 py-0.5 transition-colors disabled:opacity-40"
-              >
-                {removing ? 'Removing…' : 'Remove'}
-              </button>
-              <button
-                onClick={() => setConfirmRemove(false)}
-                className="text-[10px] uppercase tracking-widest text-muted hover:text-navy transition-colors"
-              >
-                Cancel
-              </button>
-            </span>
-          ) : (
-            <button
-              onClick={() => setConfirmRemove(true)}
-              disabled={removing}
-              className="text-[10px] uppercase tracking-widest text-muted hover:text-red-500 transition-colors disabled:opacity-40"
-              title="Remove from project"
-            >
-              Remove
-            </button>
-          )}
         </div>
 
         {noteOpen && (

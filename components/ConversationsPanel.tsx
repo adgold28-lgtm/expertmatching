@@ -8,7 +8,7 @@
 // "UI"). Staff keep those tabs; nothing here is staff-only except the settings
 // strip, which is owner-or-staff because only an owner may send.
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { Project, ProjectExpert } from '../types';
 import { CLIENT_STATUS_META, hasConversation } from './matchyStatus';
 import ConversationThread from './ConversationThread';
@@ -22,6 +22,11 @@ interface Props {
   project:         Project;
   /** Owner or staff — the only people who may send to an expert. */
   canSend:         boolean;
+  /**
+   * Thread to open on mount and whenever it changes — set by "Open" on a card
+   * in Matches. Ignored when the expert has no thread; the first one wins then.
+   */
+  selectedExpertId?: string;
   onExpertUpdate:  (updated: ProjectExpert) => void;
   onProjectUpdate: (project: Project) => void;
   /** Sends the client back to Matches from the empty state. */
@@ -68,6 +73,7 @@ export default function ConversationsPanel({
   projectId,
   project,
   canSend,
+  selectedExpertId,
   onExpertUpdate,
   onProjectUpdate,
   onGoToMatches,
@@ -95,6 +101,18 @@ export default function ConversationsPanel({
     if (threads.length === 0) { setSelectedId(null); return; }
     setSelectedId(prev => (prev && threads.some(t => t.expert.id === prev)) ? prev : threads[0].expert.id);
   }, [threads]);
+
+  // A request from outside ("Open" on a card in Matches) wins over the default
+  // first thread — but only once per id, so a later click in the list or a
+  // project refresh does not snap the pane back.
+  const appliedRequest = useRef<string | undefined>(undefined);
+  useEffect(() => {
+    if (!selectedExpertId) { appliedRequest.current = undefined; return; }
+    if (appliedRequest.current === selectedExpertId) return;
+    if (!threads.some(t => t.expert.id === selectedExpertId)) return;
+    appliedRequest.current = selectedExpertId;
+    setSelectedId(selectedExpertId);
+  }, [selectedExpertId, threads]);
 
   const markOpened = useCallback((expertId: string) => {
     setOpened(prev => {

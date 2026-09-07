@@ -340,6 +340,7 @@ function BriefSection({
   const [businessProblem, setBusinessProblem] = useState(project.researchQuestion ?? '');
   const [expertType,      setExpertType]      = useState(project.expertType ?? '');
   const [saving,          setSaving]          = useState(false);
+  const [saveError,       setSaveError]       = useState('');
   const [starting,        setStarting]        = useState(false);
   const [sourceError,     setSourceError]     = useState('');
   const [parsing,         setParsing]         = useState(false);
@@ -397,8 +398,11 @@ function BriefSection({
     }
   }
 
+  // Moving to Matches is the reward for a saved brief — a failed PUT must not
+  // look like a success, so the step only changes when the server took it.
   async function handleCompleteBrief() {
     setSaving(true);
+    setSaveError('');
     try {
       const res = await fetch(`/api/projects/${project.id}`, {
         method:  'PUT',
@@ -408,11 +412,15 @@ function BriefSection({
           expertType:       expertType      || undefined,
         }),
       });
-      if (res.ok) {
-        const d = await res.json() as { project?: Project };
-        if (d.project) onSave(d.project);
+      const d = await res.json().catch(() => null) as { project?: Project; message?: string } | null;
+      if (!res.ok) {
+        setSaveError(d?.message ?? "Couldn't save the brief. Try again.");
+        return;
       }
+      if (d?.project) onSave(d.project);
       onStepChange('matches');
+    } catch {
+      setSaveError("Couldn't save the brief. Try again.");
     } finally {
       setSaving(false);
     }
@@ -551,8 +559,10 @@ function BriefSection({
         <p className="text-[10px] text-muted" style={{ fontWeight: 300 }}>
           We&apos;ll keep looking in the background — close the tab and come back whenever.
         </p>
-        {(sourceError || sourcingError) && (
-          <p className="text-xs text-red-600 border border-red-200 bg-red-50 px-3 py-2">{sourceError || sourcingError}</p>
+        {(saveError || sourceError || sourcingError) && (
+          <p className="text-xs text-red-600 border border-red-200 bg-red-50 px-3 py-2">
+            {saveError || sourceError || sourcingError}
+          </p>
         )}
       </div>
 
@@ -651,6 +661,9 @@ function SourcePanel({
   const [addingId,    setAddingId]    = useState<string | null>(null);
   const [addingAll,   setAddingAll]   = useState(false);
   const [startError,  setStartError]  = useState('');
+  // A failed add used to just reset the button — the client had no way to tell
+  // "not added" from "already there".
+  const [addError,    setAddError]    = useState('');
   const depth = briefContextDepth(project);
 
   // Core experts are persisted by the worker straight into the discovery pool
@@ -684,20 +697,25 @@ function SourcePanel({
   async function addExpert(expert: Expert) {
     if (addingId || existingExpertIds.has(expert.id) || addedIds.has(expert.id)) return;
     setAddingId(expert.id);
+    setAddError('');
     try {
       const res = await fetch(`/api/projects/${project.id}/experts`, {
         method:  'POST',
         headers: { 'Content-Type': 'application/json' },
         body:    JSON.stringify({ experts: [{ expert }] }),
       });
-      const data = await res.json() as { project?: { experts: ProjectExpert[] } };
-      if (res.ok && data.project) {
-        const added = data.project.experts.filter(pe => pe.expert.id === expert.id);
-        if (added.length > 0) {
-          setAddedIds(prev => { const n = new Set(prev); n.add(expert.id); return n; });
-          onExpertsAdded(added);
-        }
+      const data = await res.json().catch(() => null) as { project?: { experts: ProjectExpert[] } } | null;
+      const added = res.ok && data?.project
+        ? data.project.experts.filter(pe => pe.expert.id === expert.id)
+        : [];
+      if (added.length === 0) {
+        setAddError("Couldn't add that candidate. Try again.");
+        return;
       }
+      setAddedIds(prev => { const n = new Set(prev); n.add(expert.id); return n; });
+      onExpertsAdded(added);
+    } catch {
+      setAddError("Couldn't add that candidate. Try again.");
     } finally {
       setAddingId(null);
     }
@@ -707,19 +725,26 @@ function SourcePanel({
     const toAdd = adjacentResults.filter(e => !existingExpertIds.has(e.id) && !addedIds.has(e.id));
     if (toAdd.length === 0 || addingAll) return;
     setAddingAll(true);
+    setAddError('');
     try {
       const res = await fetch(`/api/projects/${project.id}/experts`, {
         method:  'POST',
         headers: { 'Content-Type': 'application/json' },
         body:    JSON.stringify({ experts: toAdd.map(expert => ({ expert })) }),
       });
-      const data = await res.json() as { project?: { experts: ProjectExpert[] } };
-      if (res.ok && data.project) {
-        const newIds = new Set(toAdd.map(e => e.id));
-        setAddedIds(prev => { const n = new Set(prev); newIds.forEach(id => n.add(id)); return n; });
-        const added = data.project.experts.filter(pe => newIds.has(pe.expert.id));
-        if (added.length > 0) onExpertsAdded(added);
+      const data = await res.json().catch(() => null) as { project?: { experts: ProjectExpert[] } } | null;
+      const newIds = new Set(toAdd.map(e => e.id));
+      const added  = res.ok && data?.project
+        ? data.project.experts.filter(pe => newIds.has(pe.expert.id))
+        : [];
+      if (added.length === 0) {
+        setAddError("Couldn't add that candidate. Try again.");
+        return;
       }
+      setAddedIds(prev => { const n = new Set(prev); added.forEach(pe => n.add(pe.expert.id)); return n; });
+      onExpertsAdded(added);
+    } catch {
+      setAddError("Couldn't add that candidate. Try again.");
     } finally {
       setAddingAll(false);
     }
@@ -831,6 +856,12 @@ function SourcePanel({
               </button>
             </div>
           )}
+          {/* A failed add says so — the button no longer just springs back. */}
+          {addError && (
+            <div className="px-5 py-2.5 border-b border-red-100 bg-red-50">
+              <p className="text-xs text-red-600" role="alert">{addError}</p>
+            </div>
+          )}
           {/* Adjacent Perspectives section */}
           {adjacentResults.length > 0 && (
             <div className="border-t border-frame">
@@ -923,23 +954,29 @@ function EmptyStep({ message, action }: { message: string; action?: React.ReactN
 // ─── Source list controls (sort + filters) ────────────────────────────────────
 
 type ExpertCategory     = Expert['category'];
-/** 'new' is anything not yet bookmarked; 'bookmarked' is anything engaged. */
-type SourceStatusFilter = 'all' | 'new' | 'bookmarked';
+/**
+ * 'new' is anything not yet bookmarked; 'bookmarked' is anything engaged.
+ * 'passed' is the one chip that steps outside the default pool — passed experts
+ * are hidden everywhere else, and without it they are unreachable.
+ */
+type SourceStatusFilter = 'all' | 'new' | 'bookmarked' | 'passed';
 
 /** Per-browser memory of the discovery-pool sort choice. */
 const SOURCE_SORT_KEY = 'expertmatch.source.sort';
 
 const CATEGORY_OPTIONS: readonly ExpertCategory[]     = ['Operator', 'Advisor', 'Outsider'];
-const STATUS_OPTIONS:   readonly SourceStatusFilter[] = ['all', 'new', 'bookmarked'];
+const STATUS_OPTIONS:   readonly SourceStatusFilter[] = ['all', 'new', 'bookmarked', 'passed'];
 const STATUS_LABELS: Record<SourceStatusFilter, string> = {
   all:        'All',
   new:        'New',
   bookmarked: 'Bookmarked',
+  passed:     'Passed',
 };
 
 /** Whether an expert belongs in the chosen chip. */
 function matchesStatusFilter(status: ExpertStatus, filter: SourceStatusFilter): boolean {
   if (filter === 'all')        return true;
+  if (filter === 'passed')     return status === 'rejected';
   if (filter === 'bookmarked') return hasConversation(status);
   return status === 'discovered' || status === 'shortlisted';
 }
@@ -1365,9 +1402,14 @@ function ShareModal({
               className="text-[10px] uppercase tracking-widest px-4 py-2.5 transition-colors disabled:opacity-40 shrink-0"
               style={{ background: '#0B1F3B', color: '#C6A75E', letterSpacing: '0.12em' }}
             >
-              Invite
+              Add
             </button>
           </form>
+
+          {/* Not an invitation — the route only attaches an existing account. */}
+          <p className="text-[11px] text-muted leading-relaxed -mt-3">
+            They must already have an ExpertMatch account at your firm.
+          </p>
 
           {error && <p className="text-[11px] text-red-600">{error}</p>}
 
@@ -1375,7 +1417,8 @@ function ShareModal({
               they are read-only will try to message an expert and fail
               (docs/COPY_AUDIT.md 7.101). */}
           <p className="text-[11px] text-muted leading-relaxed">
-            Collaborators can see everything and add notes. Only you can bookmark experts and write to them.
+            Collaborators can see everything and add notes. Only you can bookmark or pass on experts,
+            write to them, run sourcing, or complete a call.
           </p>
 
           {collaborators.length > 0 ? (
@@ -1435,6 +1478,9 @@ function ProjectPageInner() {
   const [sortKey,        setSortKey]        = useState<ExpertSortKey>('seniority');
   // Outreach pipeline strip — null means "All". Purely client-side.
   const [stageFilter, setStageFilter] = useState<PipelineStage | null>(null);
+  // The thread to open when Conversations mounts — set by "Open" on a card so
+  // the client lands on that expert instead of whoever is first in the list.
+  const [selectedThread, setSelectedThread] = useState<string | undefined>(undefined);
 
   // Restore the remembered sort after mount — reading storage during render
   // would desync the server-rendered markup.
@@ -1484,6 +1530,9 @@ function ProjectPageInner() {
   // Sync active step to URL query param (shallow replace — no scroll)
   function navigateTo(step: WorkflowStep) {
     setActiveStep(step);
+    // Leaving Conversations drops the requested thread, so opening the same
+    // expert again from Matches is honoured rather than swallowed as "no change".
+    if (step !== 'conversations') setSelectedThread(undefined);
     const url = new URL(window.location.href);
     url.searchParams.set('tab', step);
     router.replace(url.pathname + url.search, { scroll: false });
@@ -1493,13 +1542,6 @@ function ProjectPageInner() {
     setProject(prev => {
       if (!prev) return prev;
       return { ...prev, experts: prev.experts.map(pe => pe.expert.id === updated.expert.id ? updated : pe), updatedAt: Date.now() };
-    });
-  }, []);
-
-  const handleExpertRemove = useCallback((expertId: string) => {
-    setProject(prev => {
-      if (!prev) return prev;
-      return { ...prev, experts: prev.experts.filter(pe => pe.expert.id !== expertId), updatedAt: Date.now() };
     });
   }, []);
 
@@ -1592,9 +1634,14 @@ function ProjectPageInner() {
   // A deep link to a staff tab must not strand a client on a blank pane.
   const viewStep: WorkflowStep = steps.some(x => x.id === activeStep) ? activeStep : 'brief';
   const sourceExperts     = project.experts.filter(e => e.status !== 'rejected');
+  // Passed experts live outside the default pool — the "Passed" chip is the one
+  // way back to them, so it swaps the pool rather than filtering inside it.
+  const sourcePool = statusFilter === 'passed'
+    ? project.experts.filter(e => e.status === 'rejected')
+    : sourceExperts;
   // Category + status narrow the pool first; tier counts are then computed over
   // what's left, so a chip's count always equals what clicking it would show.
-  const sourceCohort = sourceExperts.filter(pe =>
+  const sourceCohort = sourcePool.filter(pe =>
     (categoryFilter === 'all' || pe.expert.category === categoryFilter) &&
     matchesStatusFilter(pe.status, statusFilter)
   );
@@ -1816,7 +1863,7 @@ function ProjectPageInner() {
             />
 
             {/* Discovery pool */}
-            {sourceExperts.length > 0 && (
+            {project.experts.length > 0 && (
               <>
                 <div className="flex items-center gap-4 pt-2 flex-wrap">
                   <p className="text-[10px] uppercase tracking-widest text-muted font-medium shrink-0" style={{ letterSpacing: '0.16em' }}>
@@ -1827,7 +1874,7 @@ function ProjectPageInner() {
 
                 <SourceListControls
                   tierCounts={sourceTierCounts}
-                  total={sourceExperts.length}
+                  total={sourcePool.length}
                   visibleCount={visibleSourceExperts.length}
                   tierFilter={tierFilter}
                   categoryFilter={categoryFilter}
@@ -1858,11 +1905,10 @@ function ProjectPageInner() {
                         projectId={projectId}
                         query={project.researchQuestion}
                         onUpdate={handleExpertUpdate}
-                        onRemove={handleExpertRemove}
                         onInterviewGuide={id => setGuideExpert({ id, name: pe.expert.name })}
                         canBookmark={canSend}
                         isAdmin={isAdmin}
-                        onOpenConversation={() => navigateTo('conversations')}
+                        onOpenConversation={id => { setSelectedThread(id); navigateTo('conversations'); }}
                       />
                     ))}
                   </div>
@@ -1884,6 +1930,7 @@ function ProjectPageInner() {
               projectId={projectId}
               project={project}
               canSend={canSend}
+              selectedExpertId={selectedThread}
               onExpertUpdate={handleExpertUpdate}
               onProjectUpdate={p => setProject(p)}
               onGoToMatches={() => navigateTo('matches')}
@@ -2213,7 +2260,7 @@ function ProjectPageInner() {
         <DeleteConfirmOverlay
           projectId={projectId}
           onCancel={() => setShowDelete(false)}
-          onDeleted={() => router.push('/projects')}
+          onDeleted={() => router.push('/app')}
         />
       )}
       {showShare && project && (
