@@ -4,6 +4,10 @@
     {
       "path": "/api/jobs/reconcile",
       "schedule": "0 6 * * *"
+    },
+    {
+      "path": "/api/jobs/schedule-nudges",
+      "schedule": "0 5 * * *"
     }
   ]
 }

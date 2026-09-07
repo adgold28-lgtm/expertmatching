@@ -14,6 +14,11 @@
 //      unpaid. A firm whose card stopped working keeps using the product until
 //      someone notices; this is the noticing.
 //
+//   4. Follow-up nudges that were queued on QStash and never delivered. The
+//      planner will not queue a replacement while a future `scheduledFor` is
+//      set, so a lost job silently ends the follow-up sequence for that
+//      engagement. See lib/nudges.ts.
+//
 // EVERY SOURCE IS INDEPENDENT AND FAILS SOFT. A missing table, an unreadable
 // column or an unreachable database drops that one source and keeps the others
 // — an attention list that 500s because one of its inputs is unavailable is
@@ -32,7 +37,11 @@ import { getSystemEventsClient, SYSTEM_FAILURE_KIND } from './engagementEvents';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
-export type AttentionKind = 'system_failure' | 'sourcing_stuck' | 'billing_past_due';
+export type AttentionKind =
+  | 'system_failure'
+  | 'sourcing_stuck'
+  | 'billing_past_due'
+  | 'nudge_stalled';
 
 export interface AttentionItem {
   /** Stable within a response; prefixed by kind so ids from different sources never collide. */
@@ -50,6 +59,14 @@ export interface AttentionItem {
 /** A sourcing run still 'running' after this long is not running. */
 export const STUCK_SOURCING_MINUTES = 15;
 
+/**
+ * A nudge queued this long ago and still not sent never fired. The planner
+ * aims at the next business day, so a Friday plan legitimately sits over a
+ * weekend — two days past the scheduled instant is the first point at which
+ * "QStash lost it" is the only remaining explanation.
+ */
+export const STALLED_NUDGE_DAYS = 2;
+
 /** Subscription states that mean Stripe is not collecting money. */
 const UNHEALTHY_SUBSCRIPTION_STATUSES = ['past_due', 'unpaid'] as const;
 
@@ -66,6 +83,7 @@ const AREA_LABELS: Record<string, string> = {
   mail:      'An email was not delivered',
   sourcing:  'A sourcing run failed',
   invoice:   'An invoice could not be raised',
+  nudge:     'A follow-up nudge was not queued or sent',
 };
 
 function areaLabel(area: string): string {
@@ -193,6 +211,63 @@ async function billingItems(limit: number): Promise<AttentionItem[]> {
   }
 }
 
+// ─── Source 4: nudges that were queued and never fired ────────────────────────
+
+/**
+ * GET /api/jobs/schedule-nudges writes `scheduledFor` when QStash accepts a
+ * delayed job, and POST /api/jobs/send-nudge clears it the moment the job
+ * arrives — sent, held or skipped. So a `scheduledFor` still sitting there days
+ * later means the job was accepted and never delivered.
+ *
+ * That is invisible otherwise: nothing errors, nobody is emailed, and the
+ * planner will not queue a replacement while a future `scheduledFor` is set.
+ * The engagement simply stops being followed up.
+ *
+ * `nudges` is an unpromoted key inside `project_experts.data` (lib/nudges.ts),
+ * so this filters on the jsonb path rather than a column.
+ */
+async function stalledNudgeItems(limit: number, now: number): Promise<AttentionItem[]> {
+  try {
+    const db = getServiceRoleClient();
+    if (!db) return [];
+
+    const { data, error } = await db
+      .from('project_experts')
+      .select('project_id, expert_id, data')
+      .not('data->nudges->>scheduledFor', 'is', null)
+      .limit(limit);
+
+    if (error || !data) return [];
+
+    const cutoffMs = STALLED_NUDGE_DAYS * 24 * 60 * 60 * 1000;
+    const items: AttentionItem[] = [];
+
+    for (const row of data) {
+      const state = (row.data as { nudges?: { scheduledFor?: unknown } } | null)?.nudges;
+      const raw   = state?.scheduledFor;
+      if (typeof raw !== 'string') continue;
+
+      const scheduledAt = Date.parse(raw);
+      if (!Number.isFinite(scheduledAt)) continue;
+      if (now - scheduledAt < cutoffMs) continue;
+
+      items.push({
+        id:         `nudge_stalled:${row.project_id}:${row.expert_id}`,
+        kind:       'nudge_stalled',
+        message:    `A follow-up email was queued ${Math.floor((now - scheduledAt) / 86_400_000)} `
+                  + 'day(s) ago and never went out. This engagement has stopped being followed up.',
+        occurredAt: new Date(scheduledAt).toISOString(),
+        projectId:  row.project_id,
+        expertId:   row.expert_id,
+      });
+    }
+
+    return items;
+  } catch {
+    return [];
+  }
+}
+
 // ─── Public API ───────────────────────────────────────────────────────────────
 
 /**
@@ -205,13 +280,14 @@ export async function listAttentionItems(limit: number = DEFAULT_LIMIT): Promise
   const capped = Math.min(Math.max(Math.trunc(limit) || DEFAULT_LIMIT, 1), MAX_LIMIT);
   const now    = Date.now();
 
-  const [failures, sourcing, billing] = await Promise.all([
+  const [failures, sourcing, billing, nudges] = await Promise.all([
     systemFailureItems(SOURCE_SCAN_LIMIT),
     stuckSourcingItems(SOURCE_SCAN_LIMIT, now),
     billingItems(SOURCE_SCAN_LIMIT),
+    stalledNudgeItems(SOURCE_SCAN_LIMIT, now),
   ]);
 
-  return [...failures, ...sourcing, ...billing]
+  return [...failures, ...sourcing, ...billing, ...nudges]
     .sort((a, b) => {
       const timeA = Date.parse(a.occurredAt);
       const timeB = Date.parse(b.occurredAt);

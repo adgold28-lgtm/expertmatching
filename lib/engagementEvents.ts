@@ -173,7 +173,7 @@ export async function emitEngagementEvent(input: EmitEngagementEventInput): Prom
 // before the table existed.
 
 /** Which subsystem failed. Deliberately coarse — this is a triage label. */
-export type SystemFailureArea = 'seat_sync' | 'payout' | 'mail' | 'sourcing' | 'invoice';
+export type SystemFailureArea = 'seat_sync' | 'payout' | 'mail' | 'sourcing' | 'invoice' | 'nudge';
 
 /** The only kind written today; the column is free-form so a later kind needs no migration. */
 export const SYSTEM_FAILURE_KIND = 'system_failure';
