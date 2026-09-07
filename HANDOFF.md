@@ -34,13 +34,15 @@ The founder asked for two things, in order: (1) a hard stop so no real expert is
 ### Thread UI (commit 93c87d1)
 `components/ConversationThread.tsx`: propose-times control (+ preferences), proposed-times card in the viewer's zone, booked card (Zoom, ICS download, Move the call with confirm), intent tags. `lib/matchyClient.ts`: `proposeTimes`, `schedulingLine`, `formatSlot`, `bookingIcsUrl`.
 
-### Migrations / env for the founder
-- Paste `supabase/migrations/20260907300000_matchy_phase2_events.sql` (adds `nudge_sent`, `rescheduled`, `time_declined` to the events check constraint; dropped with a warning until then).
-- Vercel env: `CRON_SECRET` (nudge planner + reconcile refuse without it), optionally `OUTREACH_SIGNATURE` + `OUTREACH_FROM_EMAIL`, `NUDGE_LLM_VARIATION=false` (default off), plus the session-4 list (`QSTASH_URL`, `HUNTER_API_KEY`, `CONTACT_ENRICHMENT_ENABLED`).
-- Zoom S2S app needs `meeting:write` (update/delete) — already implied by create.
+### Where it ended (2026-09-07 evening) — all of this is deployed and prod e2e is green
+- HEAD b290424. Commits this session: 6938846 walkthrough, 2e3b496 sender identity + event kinds, adef385 phase 2 types, a9504a6 scheduling, 6f7ee1a nudges, 93c87d1 thread UI, d2f83b1 store keys, e8d9336 one-call guard + real e2e tokens, e65c943 docs, b290424 admin env panel.
+- `SMOKE_BASE_URL=https://expertmatch.fit npx tsx scripts/e2e-matchy.ts` → ALL CHECKS PASSED (live project, walkthrough project, scheduling on both). Throwaway users only; no email sent.
+- Founder DID (per chat, 2026-09-07): paste migration 20260907300000; set `CRON_SECRET`, `QSTASH_URL`, `OUTREACH_FROM_EMAIL`, `OUTREACH_SIGNATURE`; `HUNTER_API_KEY` was already present. Told to add `CONTACT_ENRICHMENT_ENABLED=true` + redeploy to turn contact lookup on — CONFIRM in /admin/requests → Environment → "Optional features" (new group, presence only; grey dot = feature off, red = required var missing).
+- One real bug found and fixed in prod: the propose-times happy path 500'd because the e2e seeded fake reply tokens and the send chokepoint fails closed on an unverifiable token (correct behaviour; real tokens are always signed). The e2e now seeds `generateOutreachToken(...)`. Lesson: any test that exercises a send path must seed a REAL HMAC token.
+- Zoom S2S app: confirm meeting update/delete scopes — a rebook PATCHes the meeting; without the scope the booking still moves but the Zoom time will not.
 
-### Not verified in a browser yet
-The new-project modal, the WALKTHROUGH pill, the Go-live confirm, the thread's scheduling cards, and `/schedule/[token]` (mobile + desktop) were built to the design language and type-check, but only the APIs were exercised in prod (e2e). Do a throwaway-user browser pass next (pattern below).
+### Not verified in a browser yet (DO THIS FIRST NEXT SESSION)
+The new-project modal (Walkthrough preselected), the WALKTHROUGH header pill, the settings-strip Mode row + Go-live confirm, the thread's propose-times control / proposed-times card / booked card / Move the call, the Matches card lines, and `/schedule/[token]` (mobile + desktop; connected / booked / expired states) were built to the design language and type-check, but only the APIs were exercised in prod. Browser pass as a throwaway client (pattern: service-role user with `app_metadata {role:'user', status:'active', firm_domain, onboarding_complete:true}` + org + membership; login re-syncs from `profiles`, so walk /onboarding; set `profiles.billing_complete=true` to skip the card; delete after). For the picker page: on a WALKTHROUGH project a held proposal stores no `pickTokenHash`, so the link 404s by design — to see the page, mint a token with `generateAvailabilityToken` and write its `hashToken` to `scheduling.pickTokenHash` via the service role, then delete.
 
 ### Known gaps / next
 - A round-3 proposal can repeat a round-1 slot (no `proposedBefore` field; exclusion uses current proposals + booking history).
@@ -109,9 +111,9 @@ Full page-by-page audit (every button/input, four questions each) was delivered 
 ## How to continue (for the next session)
 
 Open Claude Code in `/Users/ashergoldstein/Projects/expertmatch` and say:
-> Read HANDOFF.md, then plan Matchy Phase 2 (scheduling + contact discovery) from docs/MATCHY_SPEC.md and dispatch Opus agents to build. Before that, run the post-Phase-1 website audit gate in TASK_QUEUE.md.
+> Read HANDOFF.md Session 5, then (1) do the browser pass listed under "Not verified in a browser yet" with throwaway users and fix what you find, (2) run the website audit gate in TASK_QUEUE.md (second pass of docs/COPY_AUDIT.md against the live site), (3) pick up the Phase 2 leftovers in order.
 
-Working pattern that has worked: Fable plans and writes agent briefs; Opus subagents (general-purpose, model `opus`) build in parallel when files are disjoint (tell each agent exactly which paths it may not touch, and NOT to commit); the lead commits by path, verifies, pushes. Verify with `npx tsc --noEmit`, `npm run build:local` (real `next build` with Google Fonts mocked — tsc alone missed a Next route-export error once), the scripts below, and the two production E2E scripts.
+Working pattern that has worked: Fable plans and writes agent briefs (a shared contract file + one brief per builder, disjoint WRITE lists, lead-owned shared files such as types.ts / projectStore.ts / conversations.ts / migrations / docs); Opus subagents (general-purpose, model `opus`) build in parallel and never commit; the lead type-checks, runs every `scripts/test-*.ts`, builds from a clean export (`git archive HEAD | tar -x -C <dir>`, absolute symlink to node_modules, `npm run build:local`), commits by area, pushes `main`, polls the GitHub deployment status, runs the prod e2e. Never build while `next dev` runs (shared `.next`); `.claude/launch.json` (gitignored) starts the dev server on :3000 for local e2e (`SMOKE_BASE_URL=http://localhost:3000`), which is how the prod 500 was diagnosed (server log showed the chokepoint refusal).
 
 **Founder actions still open:** (1) form a legal entity (Delaware C corp via Stripe Atlas if YC is the plan) and then fill the last two legal placeholders — `app/terms/page.tsx` line ~88 (entity name) and the two `[Governing law: State]` tokens in section 13 (`grep -rn 'CONFIRM\|Governing law' app/terms`); every other placeholder was filled on 2026-09-06 (contact ashergoldsteinbusiness@gmail.com, postal 4502 Mayflower Hill, Waterville, ME 04901, 30-day disputes, 12-month non-circumvention, no recording, 12-month liability cap, courts not arbitration, 12/24-month retention, SCCs). (2) Live Stripe keys + live webhook before real money. (3) A Claude Code "suggested task" chip about adding `followup_sent` to the Outreach grid is STALE — it was done in part 3; dismiss it.
 
@@ -159,8 +161,9 @@ Not in Phase 1 (Phase 2): autonomous contact discovery on bookmark (today bookma
 
 ## Next
 
-1. **Website audit gate** (TASK_QUEUE) — second pass of `docs/COPY_AUDIT.md` now that the workspace is Brief · Matches · Conversations; real-browser walkthrough as a throwaway non-admin.
-2. **Matchy Phase 2** — contact discovery job on bookmark (bounded provider attempts, one send, bounce retry), propose-times from calendar overlap + preferences, book on confirmation (Zoom + ICS), card statuses.
-3. Legal `[CONFIRM]` placeholders; live Stripe.
+1. **Browser pass** of everything in Session 5 "Not verified in a browser yet"; fix what breaks.
+2. **Website audit gate** (TASK_QUEUE) — second pass of `docs/COPY_AUDIT.md` against the live site as a throwaway non-admin; every string true of the product as shipped (walkthrough, scheduling, nudges) and needed by a first-time PE associate.
+3. **Phase 2 leftovers, in order:** enforce `clientRateMin/Max` at bookmark seed and rate-decision (409 `above_band`, card copy); expert timezone for nudges once the picker/reply supplies one; `proposedBefore` so round 3 never repeats round 1; cancel-booking route (Zoom delete + ICS METHOD:CANCEL exist); contact-discovery bounce retry; `docs/STATE_OF_THE_UNION.md` refresh; remove unused `pipelineStage`/`STAGE_META` in lib/expertPipeline.ts.
+4. Legal `[CONFIRM]` placeholders; live Stripe keys + live webhook; Stripe `account.updated` for connected accounts.
 
 Founder preferences to honor: no machinery talk in Matchy's messages; verbs not chat; not a GPT wrapper; collect as much data as possible; ExpertMatch takes 50% of the call plus $250/$200 per seat/month; honest claims only on the website.
