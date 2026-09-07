@@ -2,11 +2,11 @@
 //
 //   POST /api/projects/:projectId/experts/:expertId/bookmark
 //        — session-authed, Matchy's 'intro' step (the new template)
-//   POST /api/projects/:projectId/experts/:expertId/outreach/start
-//        — session-authed, human-clicked, the legacy email1
+//   POST /api/projects/:projectId/experts/:expertId/outreach/approve
+//        — session-authed, the review-first "send the intro" button
 //   POST /api/email-sequence/trigger
-//        — QStash-signed; email2/email3 scheduling is retired, so this now
-//          only drains in-flight jobs
+//        — QStash-signed; the cadence is retired, so this only drains a queued
+//          email1 retry (it acknowledges email2/email3 without calling here)
 //
 // All of them call runSequenceStep() so there is exactly one implementation of
 // "send this step and advance the status": one place that resolves the reply
@@ -18,27 +18,24 @@
 
 import type { Project } from '../types';
 import { getProject, updateExpertStatus } from './projectStore';
-import {
-  generateEmail1,
-  generateEmail2,
-  generateEmail3,
-  sendSequenceEmail,
-  type EmailStep,
-} from './emailSequence';
+import { generateEmail1, sendSequenceEmail } from './emailSequence';
 import { buildIntroEmail, deriveTopic, descriptorFragmentFrom } from './matchyTemplates';
 import type { FirmTypeValue, FirmSizeValue } from './supabase/database.types';
-import { generateAvailabilityToken } from './availabilityToken';
 import { generateOutreachToken } from './outreachToken';
 import { getUpstashClient } from './upstashRedis';
 
 const REPLY_TOKEN_TTL_S = 90 * 24 * 60 * 60;
 
 /**
- * Matchy's intro replaces the legacy `email1` for anything that starts from a
- * bookmark. It is not part of the retired 3-email cadence, so it is not an
- * `EmailStep` and can never be scheduled by QStash.
+ * What this module can actually execute.
+ *
+ * Matchy's 'intro' replaces the legacy `email1` for anything that starts from a
+ * bookmark. 'email1' survives only for a queued QStash retry. The cadence's
+ * 'email2' / 'email3' are gone — they are still valid values on the QStash wire
+ * (lib/emailSequence.EmailStep) but the trigger route acknowledges them and
+ * never reaches here.
  */
-export type OutreachStep = EmailStep | 'intro';
+export type OutreachStep = 'intro' | 'email1';
 
 export interface SequenceStepInput {
   projectId: string;
@@ -180,38 +177,6 @@ export async function runSequenceStep(input: SequenceStepInput): Promise<Sequenc
         email1SentAt:  Date.now(),
         contactedAt:   pe.contactedAt ?? Date.now(),
         outreachToken: activeToken,
-      });
-      return { ok: true, project: updated };
-    }
-
-    if (step === 'email2') {
-      const replyToken = pe.outreachToken ?? token;
-      const { subject, body } = await generateEmail2(pe.expert, query, rate);
-      await sendSequenceEmail(expertEmail, subject, body, replyToken, 'email2');
-
-      const updated = await updateExpertStatus(projectId, expertId, {
-        status:       'email2_sent',
-        outreachStep: 'email2',
-        email2SentAt: Date.now(),
-      });
-      return { ok: true, project: updated };
-    }
-
-    if (step === 'email3') {
-      const replyToken = pe.outreachToken ?? token;
-      const { token: schedToken } = generateAvailabilityToken(projectId, expertId);
-      const baseUrl = process.env.NEXT_PUBLIC_APP_URL ?? 'http://localhost:3000';
-      const schedulingUrl = `${baseUrl}/availability/${schedToken}`;
-
-      const firmName = project.name; // project name serves as firm name context
-
-      const { subject, body } = await generateEmail3(pe.expert, firmName, schedulingUrl);
-      await sendSequenceEmail(expertEmail, subject, body, replyToken, 'email3');
-
-      const updated = await updateExpertStatus(projectId, expertId, {
-        status:       'scheduling_sent',
-        outreachStep: 'email3',
-        email3SentAt: Date.now(),
       });
       return { ok: true, project: updated };
     }

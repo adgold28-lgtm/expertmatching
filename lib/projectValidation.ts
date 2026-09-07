@@ -231,7 +231,6 @@ export interface ProjectCreateData {
   geography:         string;
   seniority:         string;
   notes?:            string;
-  outreachMode?:     'auto' | 'review';
   experts:           Array<{ expert: Expert; status?: ExpertStatus }>;
 }
 
@@ -252,7 +251,6 @@ export function validateCreateProjectInput(
   const notes            = typeof body.notes === 'string'
     ? sanitizeText(body.notes, LIMITS.notes) || undefined
     : undefined;
-  const outreachMode: 'auto' | 'review' = body.outreachMode === 'auto' ? 'auto' : 'review';
 
   // Derive name from research question if not provided
   const rawName = sanitizeText(body.name, LIMITS.projectName);
@@ -284,5 +282,5 @@ export function validateCreateProjectInput(
     experts.push({ expert, status });
   }
 
-  return { data: { name, researchQuestion: researchQuestion || '', expertType: expertType || undefined, industry, function: fn, geography, seniority, notes, outreachMode, experts } };
+  return { data: { name, researchQuestion: researchQuestion || '', expertType: expertType || undefined, industry, function: fn, geography, seniority, notes, experts } };
 }

@@ -46,12 +46,6 @@ const APP_REDIRECT_PATHS = new Set(['/', '/login']);
 const ADMIN_ONLY_PREFIXES = [
   '/admin',
   '/api/admin',
-  '/demo-readiness',
-  '/rank-experts',
-  '/screen-expert',
-  '/api/rank-experts',
-  '/api/demo-readiness',
-  '/api/screen-expert',
 ];
 const isAdminOnly = (pathname: string): boolean =>
   ADMIN_ONLY_PREFIXES.some(p => pathname === p || pathname.startsWith(p + '/'));

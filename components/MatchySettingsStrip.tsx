@@ -128,8 +128,14 @@ export default function MatchySettingsStrip({ projectId, project, onUpdate }: Pr
         <p className="text-[10px] uppercase tracking-widest text-navy font-semibold" style={{ letterSpacing: '0.16em' }}>
           What you&apos;ll pay per hour
         </p>
+        {/* TODO(Phase 2): nothing enforces this band yet. The seeded clientRate
+            comes from the tier and the rate-decision route accepts any counter,
+            so the copy below promises only what is true today. Enforce it
+            server-side when Matchy takes over scheduling and negotiation
+            (docs/MATCHY_SPEC.md, "Pricing rule" + Phase 2). */}
         <p className="text-[11px] text-muted leading-relaxed max-w-md">
-          Matchy negotiates inside this band and never above it. Leave either end blank for no limit.
+          We&apos;ll use this band when negotiating rates (enforced once Matchy handles scheduling).
+          Leave either end blank for no limit.
         </p>
         <div className="flex items-center gap-3 flex-wrap pt-1">
           <label className="flex items-center gap-1.5">

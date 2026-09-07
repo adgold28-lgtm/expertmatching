@@ -44,6 +44,11 @@ interface Props {
   projectExpert:  ProjectExpert;
   /** Owner or staff. Collaborators read the thread and cannot send. */
   canSend:        boolean;
+  /**
+   * Platform admin (role 'admin' from /api/auth/me). Gates the Staff panel —
+   * the one place the retired Outreach / Screen / Deliver badges survive.
+   */
+  isAdmin:        boolean;
   onExpertUpdate: (updated: ProjectExpert) => void;
   /** Reports the newest inbound timestamp so the list can clear its dot. */
   onInboundSeen:  (expertId: string, latestInboundMs: number) => void;
@@ -90,6 +95,149 @@ function latestInbound(messages: ConversationMessage[]): ConversationMessage | n
     if (messages[i].direction === 'inbound') return messages[i];
   }
   return null;
+}
+
+// ─── Staff panel (platform admins only) ──────────────────────────────────────
+//
+// The Outreach, Screen and Deliver steps are gone. The status detail they
+// carried — the address Matchy writes to, both sides of the rate, the call
+// length, the payment state, the Zoom links, the expert's payout onboarding —
+// still matters to whoever is running the desk, so it lives here: collapsed,
+// read-only, and rendered ONLY for role 'admin'.
+//
+// Everything below reads the RAW record. lib/redactExpert.ts strips
+// contactEmail, expertRate, expertCounterRate and expertOnboardingStatus for
+// every non-admin viewer, so a client's payload has nothing here to show even
+// if this panel somehow rendered.
+
+/** "casey@acme.com" → "…@acme.com". The address itself is one click away. */
+function maskAddress(email: string): string {
+  const at = email.lastIndexOf('@');
+  return at > 0 ? `…${email.slice(at)}` : '…';
+}
+
+function StaffRow({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div className="flex items-baseline gap-2">
+      <span
+        className="shrink-0 w-36 text-[9px] uppercase tracking-widest text-muted font-medium"
+        style={{ letterSpacing: '0.14em' }}
+      >
+        {label}
+      </span>
+      <span className="text-[11px] text-ink break-all">{children}</span>
+    </div>
+  );
+}
+
+function StaffPanel({ pe }: { pe: ProjectExpertWithCounter }) {
+  const [open,     setOpen]     = useState(false);
+  const [showMail, setShowMail] = useState(false);
+
+  const contactEmail   = pe.contactEmail ?? null;
+  const expertRate     = typeof pe.expertRate === 'number' ? pe.expertRate : null;
+  const clientRate     = typeof pe.clientRate === 'number' ? pe.clientRate : null;
+  const expertCounter  = typeof pe.expertCounterRate === 'number' ? pe.expertCounterRate : null;
+  const clientCounter  = clientCounterRateOf(pe);
+  const durationMin    = pe.actualDurationMin ?? pe.callDurationMin ?? null;
+  const invoiceAmount  = typeof pe.invoiceAmount === 'number' ? pe.invoiceAmount : null;
+  const scheduledTime  = pe.scheduledTime ?? null;
+
+  return (
+    <div className="border-b border-frame bg-cream/60">
+      <button
+        type="button"
+        onClick={() => setOpen(o => !o)}
+        aria-expanded={open}
+        className="w-full px-4 py-1.5 flex items-center gap-2 text-left hover:bg-cream transition-colors focus:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-gold"
+      >
+        <span
+          className="text-[9px] uppercase tracking-widest text-muted font-semibold"
+          style={{ letterSpacing: '0.18em' }}
+        >
+          Staff
+        </span>
+        <span className="text-[10px] text-muted/70">
+          {open ? 'Hide' : 'Show'} the internal record
+        </span>
+        <span aria-hidden className="ml-auto text-[10px] text-muted/70">{open ? '▾' : '▸'}</span>
+      </button>
+
+      {open && (
+        <div className="px-4 pb-3 pt-1 space-y-1.5">
+          <StaffRow label="Address">
+            {contactEmail ? (
+              <>
+                {showMail ? contactEmail : maskAddress(contactEmail)}
+                <button
+                  type="button"
+                  onClick={() => setShowMail(v => !v)}
+                  className="ml-2 text-[10px] uppercase tracking-widest text-muted hover:text-navy transition-colors"
+                  style={{ letterSpacing: '0.12em' }}
+                >
+                  {showMail ? 'Hide' : 'Reveal'}
+                </button>
+              </>
+            ) : (
+              <span className="text-muted">none on file</span>
+            )}
+          </StaffRow>
+
+          <StaffRow label="Expert rate">
+            {expertRate !== null ? `${formatRate(expertRate)}/hr` : <span className="text-muted">not set</span>}
+            {expertCounter !== null && ` · countered ${formatRate(expertCounter)}/hr`}
+          </StaffRow>
+
+          <StaffRow label="Client rate">
+            {clientRate !== null ? `${formatRate(clientRate)}/hr` : <span className="text-muted">not set</span>}
+            {clientCounter !== null && ` · counter reads ${formatRate(clientCounter)}/hr`}
+          </StaffRow>
+
+          <StaffRow label="Call">
+            {durationMin !== null ? `${durationMin} min` : <span className="text-muted">not recorded</span>}
+            {pe.zoomMeetingStarted && !pe.zoomMeetingEndedAt && ' · in progress'}
+            {pe.zoomMeetingEndedAt && ` · ended ${formatTime(new Date(pe.zoomMeetingEndedAt).toISOString())}`}
+          </StaffRow>
+
+          <StaffRow label="Scheduling">
+            {scheduledTime ?? (pe.calendarEventId ? 'calendar event booked' : <span className="text-muted">not booked</span>)}
+            {pe.zoomJoinUrl && (
+              <a
+                href={pe.zoomJoinUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="ml-2 text-navy hover:underline underline-offset-2"
+              >
+                Zoom link
+              </a>
+            )}
+          </StaffRow>
+
+          <StaffRow label="Payment">
+            {pe.paymentStatus ?? <span className="text-muted">none</span>}
+            {invoiceAmount !== null && ` · ${formatRate(invoiceAmount)}`}
+            {pe.stripePaymentLinkUrl && (
+              <a
+                href={pe.stripePaymentLinkUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="ml-2 text-navy hover:underline underline-offset-2"
+              >
+                Invoice
+              </a>
+            )}
+          </StaffRow>
+
+          <StaffRow label="Expert payout">
+            {pe.expertOnboardingStatus ?? <span className="text-muted">not started</span>}
+            {pe.expertPaidAt != null && ` · paid ${formatTime(new Date(pe.expertPaidAt).toISOString())}`}
+          </StaffRow>
+
+          <StaffRow label="Pipeline status">{pe.status}</StaffRow>
+        </div>
+      )}
+    </div>
+  );
 }
 
 // ─── Message rows ─────────────────────────────────────────────────────────────
@@ -194,6 +342,7 @@ export default function ConversationThread({
   projectId,
   projectExpert,
   canSend,
+  isAdmin,
   onExpertUpdate,
   onInboundSeen,
 }: Props) {
@@ -439,6 +588,9 @@ export default function ConversationThread({
           </span>
         </div>
       </div>
+
+      {/* ── Staff panel (admins only) ── */}
+      {isAdmin && <StaffPanel pe={pe} />}
 
       {/* ── Call + billing strip ── */}
       {(pe.zoomJoinUrl || callMinutes != null || pe.paymentStatus) && (

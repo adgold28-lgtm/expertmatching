@@ -4,9 +4,10 @@
 // client has bookmarked, with the stage and an unread dot. Right: the thread.
 // Above both, the two project settings that govern what Matchy does on its own.
 //
-// This tab replaces Outreach and Screen for clients (docs/MATCHY_SPEC.md,
-// "UI"). Staff keep those tabs; nothing here is staff-only except the settings
-// strip, which is owner-or-staff because only an owner may send.
+// This tab replaces Outreach, Screen and Deliver outright (docs/MATCHY_SPEC.md,
+// "UI") — those steps are gone. Two things are gated: the settings strip is
+// owner-or-staff because only an owner may send, and the Staff panel inside a
+// thread is platform-admin only.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { Project, ProjectExpert } from '../types';
@@ -22,6 +23,8 @@ interface Props {
   project:         Project;
   /** Owner or staff — the only people who may send to an expert. */
   canSend:         boolean;
+  /** Platform admin (role 'admin'). Gates the read-only Staff panel. */
+  isAdmin:         boolean;
   /**
    * Thread to open on mount and whenever it changes — set by "Open" on a card
    * in Matches. Ignored when the expert has no thread; the first one wins then.
@@ -73,6 +76,7 @@ export default function ConversationsPanel({
   projectId,
   project,
   canSend,
+  isAdmin,
   selectedExpertId,
   onExpertUpdate,
   onProjectUpdate,
@@ -204,6 +208,7 @@ export default function ConversationsPanel({
               projectId={projectId}
               projectExpert={selected}
               canSend={canSend}
+              isAdmin={isAdmin}
               onExpertUpdate={onExpertUpdate}
               onInboundSeen={handleInboundSeen}
             />

@@ -155,6 +155,17 @@ export interface ContactPathSuggestion {
 
 // ─── Project workspaces ───────────────────────────────────────────────────────
 
+/** Terminal outcomes written by bookmark / contact discovery (see lib/contactDiscovery.ts). */
+export type MatchyOutcome =
+  | 'intro_sent'
+  | 'intro_drafted'
+  | 'intro_failed'
+  | 'contact_found'
+  | 'contact_not_found'
+  | 'contact_suppressed'
+  | 'contact_check_unavailable'
+  | 'contact_discovery_unavailable';
+
 export type ExpertStatus =
   | 'discovered'
   | 'shortlisted'
@@ -255,6 +266,12 @@ export interface ProjectExpert {
   emailProvider?: 'hunter' | 'snov' | 'none';  // provider that found it
   emailCheckedAt?: number;  // unix ms when last lookup was performed
   contactStatus?: string;   // legacy free-text field; kept for backward compat
+  /**
+   * Client-safe mirror of the last Matchy outcome for this expert, derived from
+   * contactStatus by lib/redactExpert for non-admins (admins read contactStatus
+   * directly). Never carries an address — just which line Matchy should show.
+   */
+  matchyOutcome?: MatchyOutcome;
   contactedAt?: number;     // unix ms timestamp when status first became 'contacted'
   // Every address discovery turned up, best-first. Staff-only — never sent to
   // a client (lib/redactExpert.ts strips it).
@@ -395,9 +412,6 @@ export interface Project {
   clientCalendlyUrl?:            string;
   // New brief fields (simplified two-field brief)
   expertType?: string;              // "who do you want to talk to"
-  // Outreach mode — 'review' (default) queues outreach for approval; 'auto' sends immediately
-  // Legacy 3-email cadence switch. Matchy uses `reviewFirst` below instead.
-  outreachMode?: 'auto' | 'review';
   // ── Matchy (projects.review_first / client_rate_min / client_rate_max) ─────
   // false (the default) means bookmarking an expert sends the intro straight
   // away; true means Matchy drafts it and waits for the client.

@@ -1,19 +1,16 @@
-// The legacy 3-email outreach sequence.
+// Outreach email sending.
 //
-// RETIRED IN PART, Matchy Phase 1: SCHEDULING is gone. scheduleNextEmail() is
-// a no-op and /api/email-sequence/trigger acknowledges email2/email3 without
-// sending them, so no expert receives a timed follow-up any more. The senders
-// below are kept because the trigger route still needs to compile and because
-// email1 is still reachable from the legacy "Send Email 1" button; the
-// bookmark path uses lib/matchyTemplates.ts instead. A later part of Phase 1
-// removes what is left.
+// The 3-email cadence is GONE. Matchy answers a reply on the thread instead of
+// firing a follow-up on a timer, so email 2 (conflicts + rate) and email 3
+// (scheduling link) no longer exist: their generators are deleted and
+// scheduleNextEmail() publishes nothing. What is left is
 //
-// Email 1 — interest check, plain text, no firm name, max 100 words.
-// Email 2 — conflict check + rate confirmation, no firm name, max 120 words.
-// Email 3 — scheduling link + firm name revealed, max 80 words.
+//   generateEmail1   — the legacy interest check, still reachable through a
+//                      queued QStash retry of a send that was already accepted
+//   sendSequenceEmail — the single Resend sender, shared with Matchy's own
+//                      templates (lib/matchyTemplates.ts) and the thread relay
 //
-// Emails sent via Resend with Reply-To: reply+[token]@expertmatch.fit
-// QStash schedules next step with a random 5-12 min delay.
+// Emails go out via Resend with Reply-To: reply+[token]@expertmatch.fit.
 //
 // Required env vars:
 //   RESEND_API_KEY, OUTREACH_FROM_EMAIL
@@ -30,6 +27,14 @@ import { openai } from './openai';
 import { buildOutreachFooter } from './outreachFooter';
 import { getFromAddress } from './mailFrom';
 
+/**
+ * The step field on a QStash job. 'email2' and 'email3' are retired and nothing
+ * publishes them any more, but they stay in the union because it describes the
+ * WIRE FORMAT: /api/email-sequence/trigger must still be able to recognise a
+ * job that QStash accepted before the cadence was removed, acknowledge it, and
+ * send nothing. lib/outreachSteps.OutreachStep is the narrower type of what can
+ * actually be executed.
+ */
 export type EmailStep = 'email1' | 'email2' | 'email3';
 
 export interface SequenceJob {
@@ -61,14 +66,11 @@ function getResend(): Resend {
  *
  * Matchy replaces the cadence: a reply is read, summarized and answered on the
  * thread, and the follow-up goes out because the expert said yes, not because
- * a clock ran out. So this is now a NO-OP. It is kept, rather than deleted,
- * because callers exist that a later part of Phase 1 will rewrite
- * (app/api/inbound-email), and a function that quietly does nothing is a
+ * a clock ran out. So this is a NO-OP. It is kept, rather than deleted, because
+ * app/api/inbound-email still calls it, and a function that does nothing is a
  * smaller change than a half-migrated call site.
  *
- * Nothing is published, nothing throws, and one line says so. The QStash
- * trigger route stays live to drain jobs that were already queued before this
- * shipped.
+ * Nothing is published, nothing throws, and one line says so.
  */
 export async function scheduleNextEmail(job: SequenceJob): Promise<void> {
   console.log('[emailSequence] cadence retired — not scheduling',
@@ -119,88 +121,6 @@ Subject: [subject line]
     model:       'gpt-4o-mini',
     max_tokens:  400,
     temperature: 0.6,
-    messages: [
-      { role: 'system', content: SYSTEM_PROMPT_BASE },
-      { role: 'user',   content: userPrompt },
-    ],
-  });
-
-  return parseEmailResponse(response.choices[0].message.content ?? '');
-}
-
-export async function generateEmail2(
-  expert: Expert,
-  query: string,
-  rate: number,
-): Promise<{ subject: string; body: string }> {
-  const firstName = expert.name.split(' ')[0] ?? expert.name;
-
-  const userPrompt = `Write Email 2 in a 3-part outreach sequence to ${expert.name}, ${expert.title} at ${expert.company}.
-
-Context: They replied with interest to Email 1 about "${query}". The proposed rate is $${rate}/hr, billed per minute — it is not yet agreed.
-
-Requirements:
-- Subject line, then the email body
-- Greet by first name (${firstName})
-- Thank them briefly for their reply
-- Ask three numbered questions:
-  1. Do you have any conflict of interest or NDA that would prevent discussing ${query}?
-  2. Are you aware of any restrictions from your current employer?
-  3. Would $${rate}/hr, billed per minute, work for you?
-- Use only the facts provided above. Do not invent details about this person's background, work, or publications.
-- No firm name. Plain text only.
-- Max 120 words in the body.
-
-Format:
-Subject: [subject line]
-
-[body]`;
-
-  const response = await openai.chat.completions.create({
-    model:       'gpt-4o-mini',
-    max_tokens:  450,
-    temperature: 0.5,
-    messages: [
-      { role: 'system', content: SYSTEM_PROMPT_BASE },
-      { role: 'user',   content: userPrompt },
-    ],
-  });
-
-  return parseEmailResponse(response.choices[0].message.content ?? '');
-}
-
-export async function generateEmail3(
-  expert: Expert,
-  firmName: string,
-  schedulingUrl: string,
-): Promise<{ subject: string; body: string }> {
-  const firstName = expert.name.split(' ')[0] ?? expert.name;
-
-  const userPrompt = `Write Email 3 in a 3-part outreach sequence to ${expert.name}, ${expert.title} at ${expert.company}.
-
-Context: They confirmed no conflicts and agreed to the rate. Now reveal the client firm and send the scheduling link.
-
-Firm name: ${firmName}
-Scheduling link: ${schedulingUrl}
-
-Requirements:
-- Subject line, then the email body
-- Greet by first name (${firstName})
-- Reveal the client firm is ${firmName}
-- Include ONLY the scheduling link — no other links
-- End with: "Please keep this engagement confidential."
-- Plain text only.
-- Max 80 words in the body.
-
-Format:
-Subject: [subject line]
-
-[body]`;
-
-  const response = await openai.chat.completions.create({
-    model:       'gpt-4o-mini',
-    max_tokens:  300,
-    temperature: 0.5,
     messages: [
       { role: 'system', content: SYSTEM_PROMPT_BASE },
       { role: 'user',   content: userPrompt },

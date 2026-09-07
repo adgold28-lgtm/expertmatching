@@ -4,7 +4,14 @@
 // In production: throws if any required variable is missing.
 // In non-production: logs a warning for each missing variable.
 
-const REQUIRED_VARS = [
+/**
+ * Every variable the app refuses to boot without in production.
+ *
+ * Exported so GET /api/admin/env-status can report PRESENCE (never values)
+ * from one list — a second hand-kept copy in the route would drift the moment
+ * a variable is added here.
+ */
+export const REQUIRED_VARS = [
   'AVAILABILITY_TOKEN_SECRET',
   'SIGNUP_TOKEN_SECRET',
   'ENCRYPTION_KEY',

@@ -44,7 +44,6 @@ export interface CreateProjectInput {
   seniority: string;
   experts?: Array<{ expert: Expert; status?: ExpertStatus }>;
   notes?: string;
-  outreachMode?: 'auto' | 'review';
 }
 
 export interface UpdateExpertInput {
@@ -284,7 +283,6 @@ class InMemoryProjectStore implements ProjectStore {
       updatedAt:        now,
       experts:          makeProjectExperts(input.experts ?? []),
       notes:            input.notes,
-      outreachMode:     input.outreachMode ?? 'review',
       ownerEmail,
       collaborators:    [],
       firmDomain,
@@ -552,7 +550,6 @@ class SupabaseProjectStore implements ProjectStore {
       function:     input.function,
       geography:    input.geography,
       seniority:    input.seniority,
-      outreachMode: input.outreachMode ?? 'review',
       ...(input.expertType ? { expertType: input.expertType } : {}),
       ...(input.notes      ? { notes:      input.notes }      : {}),
     };

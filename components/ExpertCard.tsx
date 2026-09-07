@@ -1,11 +1,8 @@
 'use client';
 
-import { useState } from 'react';
 import { Expert, SourceLink, EvidenceItem } from '../types';
 import { isLinkedInProfileUrl } from '../lib/domainSuggestions';
 import { classifySeniority, RATE_DISCLAIMER, TIER_PRICING } from '../lib/seniorityClassifier';
-import OutreachModal from './OutreachModal';
-import ContactSection from './ContactSection';
 import IdentityProtectedLabel, { isAnonymized } from './IdentityProtectedLabel';
 
 interface QuickActions {
@@ -17,9 +14,19 @@ interface QuickActions {
 
 interface Props {
   expert: Expert;
-  query: string;
+  /**
+   * The research question. Kept on the props so call sites read the same, but
+   * nothing on the card renders it any more — the enrichment panel that used it
+   * went with the pre-Matchy workflow.
+   */
+  query?: string;
   index?: number;
   quickActions?: QuickActions;
+  /**
+   * Retained for callers (ProjectExpertCard). Now a no-op: the manual contact
+   * enrichment panel went with the pre-Matchy workflow — Matchy owns contact
+   * discovery (docs/MATCHY_SPEC.md, "Matchy's jobs" 6).
+   */
   hideContact?: boolean;
   /**
    * Tier badge + "$X/hr". On by default; ProjectExpertCard turns it off because
@@ -55,8 +62,7 @@ function scoreClass(score: number): string {
   return 'text-muted';
 }
 
-export default function ExpertCard({ expert, query, index = 0, quickActions, hideContact = false, showRate = true }: Props) {
-  const [showOutreach, setShowOutreach] = useState(false);
+export default function ExpertCard({ expert, index = 0, quickActions, showRate = true }: Props) {
   // Prefer the tier persisted at sourcing time — `title` is blanked for
   // anonymized experts, so classifying from it would read every one as Mid-Level.
   const tier    = expert.seniorityTier ?? classifySeniority(expert.title ?? '');
@@ -201,27 +207,6 @@ export default function ExpertCard({ expert, query, index = 0, quickActions, hid
             );
           })()}
 
-          {/* CTA — outreach is staff work and needs the real identity, so it is
-              hidden on anonymized cards rather than drafting from "Scott S." */}
-          {!anonymized && (
-          <div className="mt-auto pt-1">
-            <button
-              onClick={() => setShowOutreach(true)}
-              className="w-full bg-navy text-cream text-xs font-medium uppercase tracking-widest py-3 px-4 transition-all duration-200 hover:bg-navy-light flex items-center justify-center gap-2 group"
-              style={{ letterSpacing: '0.12em', minHeight: '44px' }}
-            >
-              <svg className="w-3.5 h-3.5 transition-transform duration-200 group-hover:translate-x-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                <path strokeLinecap="round" strokeLinejoin="round" d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
-              </svg>
-              Draft Outreach
-            </button>
-          </div>
-          )}
-
-          {/* Contact enrichment — admin-only, and only on explicit user action;
-              suppressed in project context */}
-          {!hideContact && !anonymized && <ContactSection expert={expert} query={query} />}
-
           {/* Quick actions — shown when browsing search results before saving to a project */}
           {quickActions && (
             <div className="pt-3 border-t border-frame mt-1 flex gap-2">
@@ -250,10 +235,6 @@ export default function ExpertCard({ expert, query, index = 0, quickActions, hid
 
         </div>
       </article>
-
-      {showOutreach && (
-        <OutreachModal expert={expert} query={query} onClose={() => setShowOutreach(false)} />
-      )}
     </>
   );
 }

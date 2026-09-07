@@ -15,60 +15,34 @@ import {
 } from '../../../lib/seniorityClassifier';
 import ProjectExpertCard from '../../../components/ProjectExpertCard';
 import { downloadProjectBriefPdf } from '../../../lib/exportBrief';
-import ScreeningCard from '../../../components/ScreeningCard';
-import OutreachCard from '../../../components/OutreachCard';
-import PipelineBar from '../../../components/PipelineBar';
-import ClientReadyCard from '../../../components/ClientReadyCard';
-import ExpertCard from '../../../components/ExpertCard';
-import ClientSchedulingSection from '../../../components/ClientSchedulingSection';
 import ConversationsPanel from '../../../components/ConversationsPanel';
 import { useFocusTrap } from '../../../lib/useFocusTrap';
-import { pipelineStage, STAGE_META, type PipelineStage } from '../../../lib/expertPipeline';
 import { hasConversation } from '../../../components/matchyStatus';
 
 // ─── Workflow step config ─────────────────────────────────────────────────────
 
 // The client's workflow is Brief -> Matches -> Conversations
-// (docs/MATCHY_SPEC.md, "The idea in one paragraph"). Outreach, Screen and
-// Deliver are the retired staff steps: still here, still working, but only
-// rendered for role 'admin'.
-type WorkflowStep = 'brief' | 'matches' | 'conversations' | 'outreach' | 'screen' | 'deliver';
+// (docs/MATCHY_SPEC.md, "The idea in one paragraph"). The pre-Matchy staff
+// steps — Outreach, Screen, Deliver — are gone; the status detail they carried
+// lives in the admin-only Staff panel at the top of a thread
+// (components/ConversationThread.tsx).
+type WorkflowStep = 'brief' | 'matches' | 'conversations';
 
-const VALID_STEPS = new Set<string>(['brief', 'matches', 'conversations', 'outreach', 'screen', 'deliver']);
+const VALID_STEPS = new Set<string>(['brief', 'matches', 'conversations']);
 
 /** Old ?tab= values still in bookmarks and shared links. */
-const LEGACY_TABS: Record<string, WorkflowStep> = { source: 'matches' };
+const LEGACY_TABS: Record<string, WorkflowStep> = {
+  source:   'matches',
+  outreach: 'conversations',
+  screen:   'conversations',
+  deliver:  'conversations',
+};
 
-const CLIENT_STEPS: Array<{ id: WorkflowStep; label: string }> = [
+const STEPS: Array<{ id: WorkflowStep; label: string }> = [
   { id: 'brief',         label: 'Brief'         },
   { id: 'matches',       label: 'Matches'       },
   { id: 'conversations', label: 'Conversations' },
 ];
-
-const STAFF_STEPS: Array<{ id: WorkflowStep; label: string }> = [
-  { id: 'outreach', label: 'Outreach' },
-  { id: 'screen',   label: 'Screen'   },
-  { id: 'deliver',  label: 'Deliver'  },
-];
-
-function stepsFor(role: 'admin' | 'user'): Array<{ id: WorkflowStep; label: string }> {
-  return role === 'admin' ? [...CLIENT_STEPS, ...STAFF_STEPS] : CLIENT_STEPS;
-}
-
-// Every status that belongs to the outreach cohort. Mid-pipeline reply states
-// (email2_sent → rejected_after_outreach) must be listed here or those experts
-// vanish from the Outreach grid. rejected_after_outreach stays visible — it is
-// an outcome of outreach, styled as declined.
-const OUTREACH_STATUSES: ExpertStatus[] = [
-  'shortlisted', 'bookmarked', 'contact_found', 'outreach_drafted', 'contacted',
-  'email2_sent', 'followup_sent', 'scheduling_sent', 'replied', 'rate_negotiation',
-  'conflict_flagged', 'scheduled', 'completed', 'rejected_after_outreach',
-];
-
-// Experts whose vetting call is booked, done, or being arranged off a reply —
-// shared by the Screen cohort and the "record outcomes" next action so the two
-// cannot drift apart.
-const SCREEN_STATUSES: ExpertStatus[] = ['replied', 'scheduled', 'completed'];
 
 // ─── Step summary & next action ───────────────────────────────────────────────
 
@@ -87,43 +61,28 @@ function stepSummary(project: Project, step: WorkflowStep): StepSummary {
       const n = experts.filter(e => hasConversation(e.status)).length;
       return { text: `${n} conversation${n !== 1 ? 's' : ''}`, done: n > 0 };
     }
-    case 'outreach': {
-      const n = experts.filter(e => OUTREACH_STATUSES.includes(e.status)).length;
-      return { text: `${n} in outreach`, done: n > 0 };
-    }
-    case 'screen': {
-      // Post-call screening: experts who've had a vetting call recorded
-      const n = experts.filter(
-        e => e.status !== 'rejected' && (e.screeningStatus ?? 'not_screened') !== 'not_screened'
-          && e.screeningStatus !== 'vetting_questions_ready',
-      ).length;
-      return { text: `${n} calls recorded`, done: n > 0 };
-    }
-    case 'deliver': {
-      const n = experts.filter(e => e.screeningStatus === 'client_ready' || e.recommendToClient === true).length;
-      return { text: `${n} client-ready`, done: n > 0 };
-    }
   }
 }
 
-type NextActionId = 'complete_brief' | 'find_experts' | 'bookmark_experts' | 'open_conversations' | 'screen_experts';
-interface NextAction { id: NextActionId; step?: WorkflowStep; message: string; cta: string }
+type NextActionId = 'complete_brief' | 'bookmark_experts';
+interface NextAction { id: NextActionId; step: WorkflowStep; message: string; cta: string }
 
 /**
- * The one thing worth doing next. Client-facing by default; the staff-only
- * screening prompt is gated on `isAdmin` so a client is never handed an
- * ExpertMatch operator's task (docs/COPY_AUDIT.md 7.10, 7.6).
+ * The one thing worth doing next — navigation only.
+ *
+ * Nothing here starts sourcing: the two sourcing entry points are "Find
+ * experts →" on Brief and the SourcePanel button on Matches. The banner that
+ * used to duplicate them ("No candidates yet. Run sourcing…") is gone, so a
+ * client cannot fire the same run from three places.
  */
-function getNextAction(project: Project, isAdmin: boolean): NextAction | null {
+function getNextAction(project: Project): NextAction | null {
   const { researchQuestion, experts } = project;
   const briefComplete = !!researchQuestion || experts.length > 0;
   if (!briefComplete) {
     return { id: 'complete_brief', step: 'brief', message: 'Describe the business problem and the type of expert you need.', cta: 'Complete brief' };
   }
   const active = experts.filter(e => e.status !== 'rejected');
-  if (active.length === 0) {
-    return { id: 'find_experts', step: 'matches', message: 'No candidates yet. Run sourcing to see who fits.', cta: 'Find experts' };
-  }
+  if (active.length === 0) return null;
   const engaged = active.filter(e => hasConversation(e.status));
   if (engaged.length === 0) {
     return {
@@ -132,24 +91,7 @@ function getNextAction(project: Project, isAdmin: boolean): NextAction | null {
       cta: 'Go to Matches',
     };
   }
-  if (isAdmin) {
-    const callDone   = active.filter(e => SCREEN_STATUSES.includes(e.status));
-    const postScreen = active.filter(e =>
-      e.screeningStatus && e.screeningStatus !== 'not_screened' && e.screeningStatus !== 'vetting_questions_ready',
-    );
-    if (callDone.length > 0 && postScreen.length === 0) {
-      return {
-        id: 'screen_experts', step: 'screen',
-        message: `${callDone.length} expert${callDone.length !== 1 ? 's' : ''} ready for vetting call review.`,
-        cta: 'Record outcomes',
-      };
-    }
-  }
   return null;
-}
-
-function formatDate(ts: number): string {
-  return new Date(ts).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
 }
 
 /**
@@ -159,45 +101,6 @@ function formatDate(ts: number): string {
  */
 function tierOf(expert: Expert): SeniorityTier {
   return expert.seniorityTier ?? classifySeniority(expert.title ?? '');
-}
-
-// ─── Expert profile modal ─────────────────────────────────────────────────────
-
-function ExpertProfileModal({ projectExpert, query, onClose }: {
-  projectExpert: ProjectExpert;
-  query: string;
-  onClose: () => void;
-}) {
-  const modalRef = useRef<HTMLDivElement>(null);
-  useFocusTrap(modalRef, onClose);
-
-  return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center p-4"
-      style={{ background: 'rgba(11,31,59,0.55)', backdropFilter: 'blur(2px)' }}
-      onClick={e => { if (e.target === e.currentTarget) onClose(); }}
-    >
-      <div
-        ref={modalRef}
-        className="w-full max-w-lg max-h-[90vh] overflow-y-auto flex flex-col shadow-2xl"
-        role="dialog"
-        aria-modal="true"
-        aria-label={`Expert profile — ${projectExpert.expert.name}`}
-      >
-        <div className="sticky top-0 bg-cream border-b border-frame px-4 py-2.5 flex items-center justify-between shrink-0 z-10">
-          <p className="text-[10px] uppercase tracking-widest text-muted font-medium" style={{ letterSpacing: '0.16em' }}>
-            Expert Profile
-          </p>
-          <button onClick={onClose} className="text-muted hover:text-navy transition-colors p-1" aria-label="Close">
-            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-              <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
-            </svg>
-          </button>
-        </div>
-        <ExpertCard expert={projectExpert.expert} query={query} />
-      </div>
-    </div>
-  );
 }
 
 // ─── Interview Guide Modal ────────────────────────────────────────────────────
@@ -321,7 +224,6 @@ function BriefSection({
   project,
   onSave,
   onStepChange,
-  onExport,
   onDeleteStart,
   onStartSourcing,
   sourcingActive,
@@ -330,7 +232,6 @@ function BriefSection({
   project: Project;
   onSave: (updates: Partial<Project>) => void;
   onStepChange: (step: WorkflowStep) => void;
-  onExport: () => void;
   onDeleteStart: () => void;
   /** Starts the server-side run. Resolves to an error message, or null on success. */
   onStartSourcing: (overrides: { businessProblem?: string; expertType?: string }) => Promise<string | null>;
@@ -926,20 +827,6 @@ function SourcePanel({
   );
 }
 
-// ─── Tool link ────────────────────────────────────────────────────────────────
-
-function ToolLink({ href, children }: { href: string; children: React.ReactNode }) {
-  return (
-    <Link
-      href={href}
-      className="inline-flex items-center gap-1.5 text-[10px] uppercase tracking-widest text-gold/70 hover:text-gold border border-gold/30 hover:border-gold px-3 py-1.5 transition-colors"
-      style={{ letterSpacing: '0.12em' }}
-    >
-      {children}
-    </Link>
-  );
-}
-
 // ─── Empty state ──────────────────────────────────────────────────────────────
 
 function EmptyStep({ message, action }: { message: string; action?: React.ReactNode }) {
@@ -981,7 +868,7 @@ function matchesStatusFilter(status: ExpertStatus, filter: SourceStatusFilter): 
   return status === 'discovered' || status === 'shortlisted';
 }
 
-/** One chip in a filter group. Mirrors the PipelineBar segment: selected reads as cream + navy rule. */
+/** One chip in a filter group. Selected reads as cream + a navy rule. */
 function FilterChip({
   label,
   count,
@@ -1154,75 +1041,6 @@ function SourceListControls({
       <p className="text-[11px] text-muted/80" style={{ fontWeight: 300 }}>
         {RATE_DISCLAIMER}
       </p>
-    </div>
-  );
-}
-
-// ─── Outreach mode selector ───────────────────────────────────────────────────
-
-function OutreachModeSelector({
-  projectId,
-  currentMode,
-  onSave,
-}: {
-  projectId: string;
-  currentMode: 'review' | 'auto';
-  onSave: (updates: Partial<Project>) => void;
-}) {
-  const [mode,   setMode]   = useState<'review' | 'auto'>(currentMode);
-  const [saving, setSaving] = useState(false);
-
-  async function handleSelect(next: 'review' | 'auto') {
-    if (next === mode) return;
-    setMode(next);
-    setSaving(true);
-    try {
-      const res = await fetch(`/api/projects/${projectId}`, {
-        method:  'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body:    JSON.stringify({ outreachMode: next }),
-      });
-      if (res.ok) {
-        const d = await res.json() as { project?: Project };
-        if (d.project) onSave(d.project);
-      }
-    } finally {
-      setSaving(false);
-    }
-  }
-
-  const NAVY = '#0B1F3B';
-  const GOLD = '#C6A75E';
-
-  return (
-    <div className="max-w-sm">
-      <p className="text-[9px] uppercase tracking-widest text-muted mb-2 font-medium" style={{ letterSpacing: '0.16em' }}>
-        Outreach mode
-      </p>
-      <div className="flex border border-frame" style={{ opacity: saving ? 0.6 : 1, transition: 'opacity 0.15s' }}>
-        <button
-          type="button"
-          onClick={() => handleSelect('review')}
-          disabled={saving}
-          className="flex-1 text-[10px] uppercase tracking-widest px-4 py-2.5 transition-colors text-left sm:text-center"
-          style={mode === 'review'
-            ? { background: NAVY, color: GOLD, letterSpacing: '0.1em' }
-            : { background: 'transparent', color: '#9ca3af', letterSpacing: '0.1em' }}
-        >
-          Review before sending
-        </button>
-        <button
-          type="button"
-          onClick={() => handleSelect('auto')}
-          disabled={saving}
-          className="flex-1 text-[10px] uppercase tracking-widest px-4 py-2.5 transition-colors border-l border-frame text-left sm:text-center"
-          style={mode === 'auto'
-            ? { background: NAVY, color: GOLD, letterSpacing: '0.1em' }
-            : { background: 'transparent', color: '#9ca3af', letterSpacing: '0.1em' }}
-        >
-          Auto-send drafts
-        </button>
-      </div>
     </div>
   );
 }
@@ -1466,7 +1284,6 @@ function ProjectPageInner() {
   const [error,       setError]       = useState('');
   const [activeStep,  setActiveStep]  = useState<WorkflowStep>(initialStep);
   const [guideExpert, setGuideExpert] = useState<{ id: string; name: string } | null>(null);
-  const [profilePE,   setProfilePE]   = useState<ProjectExpert | null>(null);
   const [showDelete,  setShowDelete]  = useState(false);
   const [showShare,   setShowShare]   = useState(false);
   const [currentUserEmail, setCurrentUserEmail] = useState<string>('');
@@ -1476,8 +1293,6 @@ function ProjectPageInner() {
   const [categoryFilter, setCategoryFilter] = useState<ExpertCategory | 'all'>('all');
   const [statusFilter,   setStatusFilter]   = useState<SourceStatusFilter>('all');
   const [sortKey,        setSortKey]        = useState<ExpertSortKey>('seniority');
-  // Outreach pipeline strip — null means "All". Purely client-side.
-  const [stageFilter, setStageFilter] = useState<PipelineStage | null>(null);
   // The thread to open when Conversations mounts — set by "Open" on a card so
   // the client lands on that expert instead of whoever is first in the list.
   const [selectedThread, setSelectedThread] = useState<string | undefined>(undefined);
@@ -1629,10 +1444,8 @@ function ProjectPageInner() {
   // Only the owner (or staff) may start outreach or write to an expert
   // (docs/MATCHY_SPEC.md, founder answer 5). Collaborators read.
   const canSend           = isAdmin || isOwner;
-  const steps             = stepsFor(currentUserRole);
-  const nextAction        = getNextAction(project, isAdmin);
-  // A deep link to a staff tab must not strand a client on a blank pane.
-  const viewStep: WorkflowStep = steps.some(x => x.id === activeStep) ? activeStep : 'brief';
+  const nextAction        = getNextAction(project);
+  const viewStep: WorkflowStep = STEPS.some(x => x.id === activeStep) ? activeStep : 'brief';
   const sourceExperts     = project.experts.filter(e => e.status !== 'rejected');
   // Passed experts live outside the default pool — the "Passed" chip is the one
   // way back to them, so it swaps the pool rather than filtering inside it.
@@ -1655,15 +1468,6 @@ function ProjectPageInner() {
   const visibleSourceExperts = sourceCohort
     .filter(pe => tierFilter === 'all' || tierOf(pe.expert) === tierFilter)
     .sort((a, b) => sourceComparator(a.expert, b.expert));
-  const outreachExperts   = project.experts.filter(e => OUTREACH_STATUSES.includes(e.status));
-  // Pipeline-stage filter applied on top of the outreach cohort. Derived on every
-  // render from project.experts, so a card update moves both cards and counts.
-  const visibleOutreachExperts = stageFilter
-    ? outreachExperts.filter(pe => pipelineStage(pe) === stageFilter)
-    : outreachExperts;
-  // Screen shows experts who've had (or are about to have) their vetting call
-  const screenExperts     = project.experts.filter(e => SCREEN_STATUSES.includes(e.status));
-  const deliverExperts    = project.experts.filter(e => e.screeningStatus === 'client_ready' || e.recommendToClient === true);
   const hasExpertsSourced = sourceExperts.length > 0;
 
   return (
@@ -1684,16 +1488,6 @@ function ProjectPageInner() {
               {project.name}
             </p>
           </div>
-          <Link
-            href={`/projects/${project.id}/client-view`}
-            target="_blank"
-            rel="noopener"
-            className="shrink-0 text-[10px] uppercase tracking-widest text-gold/50 hover:text-gold/80 transition-colors hidden sm:block"
-            style={{ letterSpacing: '0.12em' }}
-            title="A read-only summary you can share"
-          >
-            Shareable summary ↗
-          </Link>
           {(currentUserRole === 'admin' || project.ownerEmail === currentUserEmail) && (
             <button
               onClick={() => setShowShare(true)}
@@ -1730,18 +1524,22 @@ function ProjectPageInner() {
                   Sourcing experts…
                 </span>
               ) : (
-                <span
-                  className="flex items-center gap-2 border border-amber-200 bg-amber-50 px-3 py-1.5 text-[10px] uppercase tracking-widest text-amber-700 font-medium"
+                // A dead run used to render an inert badge with no way to act on
+                // it. It is now the button that restarts the run.
+                <button
+                  type="button"
+                  onClick={() => { void startSourcing({}); }}
+                  className="flex items-center gap-2 border border-amber-300 bg-amber-50 px-3 py-1.5 text-[10px] uppercase tracking-widest text-amber-700 font-medium hover:bg-amber-100 hover:border-amber-500 transition-colors"
                   style={{ letterSpacing: '0.14em' }}
                   title="This run has been going for over 15 minutes — start it again."
                 >
                   Sourcing timed out — try again
-                </span>
+                </button>
               )}
             </div>
           )}
           <div className="order-1 flex overflow-x-auto min-w-0">
-            {steps.map((step, idx) => {
+            {STEPS.map((step, idx) => {
               const summary  = stepSummary(project, step.id);
               const isActive = viewStep === step.id;
               return (
@@ -1797,13 +1595,13 @@ function ProjectPageInner() {
         </div>
       )}
 
-      {/* ── Ambient next-best-action (non-brief steps) ── */}
-      {viewStep !== 'brief' && nextAction && nextAction.step && nextAction.step !== viewStep && (
+      {/* ── Ambient next-best-action (navigation only — never starts sourcing) ── */}
+      {viewStep !== 'brief' && nextAction && nextAction.step !== viewStep && (
         <div className="bg-navy/5 border-b border-navy/10">
           <div className="max-w-6xl mx-auto px-6 sm:px-10 py-3 flex items-center justify-between gap-4">
             <p className="text-xs text-navy/70">{nextAction.message}</p>
             <button
-              onClick={() => navigateTo(nextAction.step!)}
+              onClick={() => navigateTo(nextAction.step)}
               className="shrink-0 text-[10px] uppercase tracking-widest text-navy border border-navy/30 hover:border-navy px-3 py-1 transition-colors"
               style={{ letterSpacing: '0.12em' }}
             >
@@ -1822,7 +1620,6 @@ function ProjectPageInner() {
             project={project}
             onSave={handleBriefSave}
             onStepChange={navigateTo}
-            onExport={() => { downloadProjectBriefPdf(project); }}
             onDeleteStart={() => setShowDelete(true)}
             onStartSourcing={startSourcing}
             sourcingActive={isSourcing}
@@ -1830,7 +1627,7 @@ function ProjectPageInner() {
           />
         )}
 
-        {/* 2 — Source */}
+        {/* 2 — Matches */}
         {viewStep === 'matches' && (
           <div className="space-y-6">
             <div className="flex items-start justify-between gap-4 flex-wrap">
@@ -1918,7 +1715,7 @@ function ProjectPageInner() {
           </div>
         )}
 
-        {/* 3 — Conversations (replaces Outreach + Screen for clients) */}
+        {/* 3 — Conversations */}
         {viewStep === 'conversations' && (
           <div className="space-y-6">
             <p className="text-sm text-muted leading-relaxed max-w-xl" style={{ fontWeight: 300 }}>
@@ -1930,6 +1727,7 @@ function ProjectPageInner() {
               projectId={projectId}
               project={project}
               canSend={canSend}
+              isAdmin={isAdmin}
               selectedExpertId={selectedThread}
               onExpertUpdate={handleExpertUpdate}
               onProjectUpdate={p => setProject(p)}
@@ -1938,305 +1736,6 @@ function ProjectPageInner() {
           </div>
         )}
 
-        {/* Staff-only: the retired Outreach step */}
-        {isAdmin && viewStep === 'outreach' && (
-          <div className="space-y-6">
-            <p className="text-sm text-muted leading-relaxed max-w-xl" style={{ fontWeight: 300 }}>
-              <strong className="font-medium text-navy">Find, contact, and schedule.</strong>{' '}
-              Shortlisted experts enter here. Find their professional email, generate interview prep questions,
-              draft and send outreach, track replies, send an availability request, and confirm the vetting call slot.
-              Record call outcomes in Screen.
-            </p>
-
-            {/* ── Outreach mode ── */}
-            <OutreachModeSelector projectId={projectId} currentMode={project.outreachMode ?? 'review'} onSave={handleBriefSave} />
-
-            {outreachExperts.length === 0 ? (
-              <EmptyStep
-                message="No experts in outreach yet."
-                action={
-                  <button onClick={() => navigateTo('matches')} className="text-xs text-muted hover:text-navy underline">
-                    Bookmark a candidate in Matches first
-                  </button>
-                }
-              />
-            ) : (
-              <>
-                {/* ── Pipeline summary + stage filter ── */}
-                <PipelineBar
-                  experts={outreachExperts}
-                  activeStage={stageFilter}
-                  onStageChange={setStageFilter}
-                />
-
-                {/* Only a stage filter can empty this grid — the cohort itself is non-empty here. */}
-                {stageFilter && visibleOutreachExperts.length === 0 ? (
-                  <EmptyStep
-                    message={`No experts at the ${STAGE_META[stageFilter].label} stage right now.`}
-                    action={
-                      <button
-                        onClick={() => setStageFilter(null)}
-                        className="text-xs text-muted hover:text-navy underline"
-                      >
-                        Clear filter — show all {outreachExperts.length} experts
-                      </button>
-                    }
-                  />
-                ) : (
-                  <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-5">
-                    {visibleOutreachExperts.map(pe => (
-                      <OutreachCard
-                        key={pe.expert.id}
-                        projectExpert={pe}
-                        projectId={projectId}
-                        query={project.researchQuestion}
-                        onUpdate={handleExpertUpdate}
-                        onContactUpdated={handleExpertUpdate}
-                        onViewProfile={() => setProfilePE(pe)}
-                      />
-                    ))}
-                  </div>
-                )}
-              </>
-            )}
-          </div>
-        )}
-
-        {/* 4 — Screen */}
-        {isAdmin && viewStep === 'screen' && (
-          <div className="space-y-6">
-            <div className="flex items-start justify-between gap-4 flex-wrap">
-              <div className="max-w-xl">
-                <p className="text-sm text-muted leading-relaxed" style={{ fontWeight: 300 }}>
-                  <strong className="font-medium text-navy">Vetting call done — what did you learn?</strong>{' '}
-                  Record pass / fail / no-show, capture key insights, and flag conflicts.
-                  Passed experts move to Deliver for client call scheduling.
-                  No-shows return to Outreach for follow-up.
-                </p>
-              </div>
-            </div>
-
-            {/* Brief context banner */}
-            {(project.researchQuestion || project.expertType) && (
-              <div className="border border-navy/15 bg-navy/5 px-4 py-3 space-y-1.5">
-                <p className="text-[9px] uppercase tracking-widest text-navy/50 font-medium" style={{ letterSpacing: '0.16em' }}>
-                  Evaluating against
-                </p>
-                {project.researchQuestion && (
-                  <p className="text-sm text-navy leading-snug font-medium">{project.researchQuestion}</p>
-                )}
-                {project.expertType && (
-                  <p className="text-[11px] text-muted leading-relaxed">{project.expertType}</p>
-                )}
-              </div>
-            )}
-
-            {screenExperts.length === 0 ? (
-              <EmptyStep
-                message="No experts at the vetting call stage yet."
-                action={
-                  <button onClick={() => navigateTo('outreach')} className="text-xs text-muted hover:text-navy underline">
-                    Move experts through Outreach first
-                  </button>
-                }
-              />
-            ) : (
-              <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-5">
-                {screenExperts.map(pe => (
-                  <ScreeningCard
-                    key={pe.expert.id}
-                    projectExpert={pe}
-                    projectId={projectId}
-                    onUpdate={handleExpertUpdate}
-                    onViewProfile={() => setProfilePE(pe)}
-                  />
-                ))}
-              </div>
-            )}
-          </div>
-        )}
-
-        {/* 5 — Deliver */}
-        {isAdmin && viewStep === 'deliver' && (
-          <div className="space-y-6">
-            <div className="flex items-start justify-between gap-4 flex-wrap">
-              <p className="text-sm text-muted leading-relaxed max-w-xl" style={{ fontWeight: 300 }}>
-                <strong className="font-medium text-navy">What does the client receive?</strong>{' '}
-                Experts cleared on knowledge fit, conflicts, communication quality, and availability — ready to deliver to the client.
-              </p>
-              {deliverExperts.length > 0 && (
-                <button
-                  onClick={() => { downloadProjectBriefPdf(project); }}
-                  className="shrink-0 text-[10px] uppercase tracking-widest bg-navy text-cream px-4 py-2 hover:bg-navy/90 transition-colors"
-                  style={{ letterSpacing: '0.12em' }}
-                >
-                  Export Brief
-                </button>
-              )}
-            </div>
-
-            {/* Client scheduling section — always shown in Deliver tab */}
-            <ClientSchedulingSection
-              projectId={projectId}
-              project={project}
-              onProjectUpdate={p => setProject(p)}
-            />
-
-            {deliverExperts.length === 0 ? (
-              <EmptyStep
-                message="No client-ready experts yet."
-                action={<p className="text-xs text-muted">Record vetting call outcomes in the Screen step — passed experts appear here.</p>}
-              />
-            ) : (
-              <div className="space-y-3">
-                <p className="text-[10px] uppercase tracking-widest text-muted font-medium" style={{ letterSpacing: '0.16em' }}>
-                  Client-Ready Experts
-                </p>
-                <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-5">
-                  {deliverExperts.map(pe => (
-                    <div key={pe.expert.id} className="space-y-1.5">
-                      {/* Per-expert scheduling status badge */}
-                      {pe.calendarEventId ? (
-                        <div className="flex items-center gap-1.5 px-2 py-1 bg-green-50 border border-green-200 text-[10px] text-green-700 font-medium">
-                          <span>&#x1F4C5;</span>
-                          <span>Scheduled</span>
-                        </div>
-                      ) : pe.overlapResult ? (
-                        <div className="flex items-center gap-1.5 px-2 py-1 bg-amber-50 border border-amber-200 text-[10px] text-amber-700 font-medium">
-                          <span>&#x26A0;</span>
-                          <span>Overlap found — invite pending</span>
-                        </div>
-                      ) : pe.availabilitySubmitted ? (
-                        <div className="flex items-center gap-1.5 px-2 py-1 bg-gray-50 border border-gray-200 text-[10px] text-muted font-medium">
-                          <span>&#x23F3;</span>
-                          <span>Availability received</span>
-                        </div>
-                      ) : null}
-                      <ClientReadyCard projectExpert={pe} />
-                      {/* Zoom status section */}
-                      {pe.zoomJoinUrl && (
-                        <div className="px-2 py-1.5 bg-sky-50 border border-sky-200 space-y-0.5">
-                          <span className="block text-[10px] uppercase tracking-widest text-sky-700 font-medium" style={{ letterSpacing: '0.12em' }}>
-                            &#x1F4F9; Zoom Created
-                          </span>
-                          <a
-                            href={pe.zoomJoinUrl}
-                            target="_blank"
-                            rel="noopener"
-                            className="block text-[10px] text-sky-700 hover:underline underline-offset-2 break-all"
-                            title="Join Zoom meeting"
-                          >
-                            {pe.zoomJoinUrl}
-                          </a>
-                        </div>
-                      )}
-                      {pe.zoomMeetingStarted && !pe.zoomMeetingEndedAt && (
-                        <div className="px-2 py-1.5 bg-green-50 border border-green-200">
-                          <span className="text-[10px] uppercase tracking-widest text-green-700 font-medium" style={{ letterSpacing: '0.12em' }}>
-                            &#x1F7E2; Call in Progress
-                          </span>
-                        </div>
-                      )}
-                      {pe.zoomMeetingEndedAt && (
-                        <div className="px-2 py-1.5 bg-gray-50 border border-gray-200">
-                          <span className="text-[10px] text-muted">
-                            &#x2713; Call completed{pe.actualDurationMin != null ? ` · ${pe.actualDurationMin} min` : ''}
-                          </span>
-                        </div>
-                      )}
-                      {pe.actualDurationMin != null && pe.invoiceAmount == null && (
-                        <div className="px-2 py-1.5 bg-amber-50 border border-amber-200 space-y-0.5">
-                          <span className="block text-[10px] uppercase tracking-widest text-amber-700 font-medium" style={{ letterSpacing: '0.12em' }}>
-                            Rate Not Set
-                          </span>
-                          <p className="text-[10px] text-amber-600">
-                            Set the expert rate to send the invoice automatically.
-                          </p>
-                        </div>
-                      )}
-                      {/* Payment status badge */}
-                      {pe.paymentStatus === 'unpaid' && (
-                        <div className="px-2 py-1.5 bg-amber-50 border border-amber-200 space-y-0.5">
-                          <span className="text-[10px] uppercase tracking-widest text-amber-700 font-medium" style={{ letterSpacing: '0.12em' }}>
-                            Invoice Pending
-                          </span>
-                        </div>
-                      )}
-                      {pe.paymentStatus === 'invoice_sent' && (
-                        <div className="px-2 py-1.5 bg-amber-50 border border-amber-200 space-y-1">
-                          <span className="block text-[10px] uppercase tracking-widest text-amber-700 font-medium" style={{ letterSpacing: '0.12em' }}>
-                            Invoice Sent
-                          </span>
-                          {pe.stripePaymentLinkUrl && (
-                            <a
-                              href={pe.stripePaymentLinkUrl}
-                              target="_blank"
-                              rel="noopener noreferrer"
-                              className="block text-[10px] text-sky-700 hover:underline underline-offset-2 break-all"
-                              title="Copy or share this payment link"
-                            >
-                              {pe.stripePaymentLinkUrl}
-                            </a>
-                          )}
-                        </div>
-                      )}
-                      {pe.paymentStatus === 'paid' && (
-                        <div className="px-2 py-1.5 bg-green-50 border border-green-200 space-y-0.5">
-                          <span className="text-[10px] uppercase tracking-widest text-green-700 font-medium" style={{ letterSpacing: '0.12em' }}>
-                            Paid ✓
-                          </span>
-                          {pe.paidAt != null && (
-                            <p className="text-[10px] text-green-600">
-                              {new Date(pe.paidAt).toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' })}
-                            </p>
-                          )}
-                        </div>
-                      )}
-                      {pe.paymentStatus === 'failed' && (
-                        <div className="px-2 py-1.5 bg-red-50 border border-red-200 space-y-1.5">
-                          <span className="block text-[10px] uppercase tracking-widest text-red-700 font-medium" style={{ letterSpacing: '0.12em' }}>
-                            Payment Failed
-                          </span>
-                          {pe.invoiceAmount != null && pe.callDurationMin != null && (
-                            <button
-                              onClick={async () => {
-                                try {
-                                  const res = await fetch(`/api/projects/${projectId}/experts/${pe.expert.id}/complete`, {
-                                    method:  'POST',
-                                    headers: { 'Content-Type': 'application/json' },
-                                    body:    JSON.stringify({
-                                      callDurationMin: pe.callDurationMin,
-                                      invoiceAmount:   pe.invoiceAmount,
-                                    }),
-                                  });
-                                  const data = await res.json() as { paymentLinkUrl?: string };
-                                  if (res.ok) {
-                                    handleExpertUpdate({
-                                      ...pe,
-                                      paymentStatus:       'invoice_sent',
-                                      stripePaymentLinkUrl: data.paymentLinkUrl ?? pe.stripePaymentLinkUrl,
-                                      updatedAt:           Date.now(),
-                                    });
-                                  }
-                                } catch {
-                                  // silent — user can retry
-                                }
-                              }}
-                              className="text-[10px] uppercase tracking-widest text-red-700 border border-red-300 hover:bg-red-100 px-2 py-1 transition-colors"
-                              style={{ letterSpacing: '0.1em' }}
-                            >
-                              Resend Invoice
-                            </button>
-                          )}
-                        </div>
-                      )}
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
-          </div>
-        )}
 
       </main>
 
@@ -2247,13 +1746,6 @@ function ProjectPageInner() {
           expertId={guideExpert.id}
           expertName={guideExpert.name}
           onClose={() => setGuideExpert(null)}
-        />
-      )}
-      {profilePE && (
-        <ExpertProfileModal
-          projectExpert={profilePE}
-          query={project.researchQuestion}
-          onClose={() => setProfilePE(null)}
         />
       )}
       {showDelete && (
