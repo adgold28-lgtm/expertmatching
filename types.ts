@@ -194,7 +194,64 @@ export type ExpertStatus =
   | 'scheduling_sent';
 
 export type EmailStep = 'email1' | 'email2' | 'email3';
-export type ReplyIntent = 'interested' | 'declined' | 'counter_rate' | 'conflict' | 'unclear';
+export type ReplyIntent =
+  | 'interested' | 'declined' | 'counter_rate' | 'conflict' | 'unclear'
+  // Matchy Phase 2 (lib/matchyScheduling.ts): read off a reply while a call is
+  // being scheduled or has been booked.
+  | 'time_chosen' | 'time_unavailable' | 'reschedule';
+
+// ─── Matchy Phase 2: scheduling ───────────────────────────────────────────────
+// All three states below ride in project_experts.data (jsonb) — no migration.
+
+/** One concrete call slot Matchy proposed, in UTC. */
+export interface ProposedSlot { startUtc: string; endUtc: string; durationMin: number; }
+
+export type SchedulingOutcome =
+  | 'times_proposed'          // proposals emailed, waiting on the expert
+  | 'link_sent'               // no usable overlap / no client slots: picker link only
+  | 'expert_declined_times'   // expert said none work and gave nothing usable
+  | 'booked'
+  | 'reschedule_requested'    // client or expert asked to move a booked call
+  | 'no_client_availability'; // owner has no usable calendar connection
+
+export interface SchedulingState {
+  round:           number;            // proposal rounds sent; MAX_PROPOSAL_ROUNDS = 3
+  proposed:        ProposedSlot[];    // latest proposals, max 3
+  proposedAt:      number | null;
+  expertTimezone:  string | null;     // IANA when known (picker page / parsed reply)
+  preferences:     string | null;     // client's stated preference, <= 200 chars, screened
+  outcome:         SchedulingOutcome | null;
+  pickTokenHash:   string | null;     // SHA-256 of the picker token — stripped for clients
+  pickTokenExpiry: number | null;     // unix ms
+}
+
+export interface BookingMove { startUtc: string; endUtc: string; movedAt: number; by: 'client' | 'expert' | 'matchy'; }
+
+export interface BookingState {
+  startUtc:         string;
+  endUtc:           string;
+  durationMin:      number;
+  zoomMeetingId:    string | null;
+  icsUid:           string;
+  icsSequence:      number;           // +1 on every reschedule (ICS SEQUENCE)
+  bookedAt:         number;
+  rescheduledCount: number;
+  history:          BookingMove[];    // previous times, oldest first
+}
+
+// ─── Matchy Phase 2: follow-up nudges (lib/nudges.ts) ─────────────────────────
+
+export type NudgeStage = 'intro' | 'terms' | 'times';
+
+export interface NudgeState {
+  stage:        NudgeStage;
+  waitingSince: number;          // unix ms of the outbound we are waiting on
+  count:        number;          // sent in this waiting stage; MAX_NUDGES = 4
+  lastSentAt:   number | null;
+  scheduledFor: string | null;   // ISO of the queued QStash job, null when none
+  scheduledDay: string | null;   // 'YYYY-MM-DD' in the schedule zone; one per business day
+  linesUsed:    string[];        // exact lines already sent, never repeat
+}
 
 export type RejectionReason =
   | 'too_generic'
@@ -369,6 +426,10 @@ export interface ProjectExpert {
   stripeTransferId?:        string;
   expertPaidAt?:            number;
   expertOnboardingStatus?:  'pending' | 'complete' | 'failed';
+  // Matchy Phase 2 — scheduling, the booked call, and the follow-up nudges.
+  scheduling?: SchedulingState | null;
+  booking?:    BookingState | null;
+  nudges?:     NudgeState | null;
   addedAt: number;
   updatedAt: number;
 }
