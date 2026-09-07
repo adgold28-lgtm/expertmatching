@@ -13,6 +13,18 @@
 //                  → marks the ORGANIZATION billing-complete and starts /
 //                    resizes the per-seat subscription
 //
+// REPLACING A CARD (from /settings): POST { replace: true }. That skips the
+// "already complete" short-circuit and mints a SetupIntent even though a card
+// is on file, so the Settings panel can run the exact same two-step flow
+// instead of a second copy of it. /confirm then promotes the new payment
+// method to the org customer's default, which is what replacing means.
+//
+// `replace` is ORG-ADMIN ONLY (or platform admin) — a member must not be able
+// to change the firm's card. The gate lives here, at the point the SetupIntent
+// is minted, because /confirm can only ever promote a SetupIntent that already
+// belongs to this org's customer; without a client secret there is nothing to
+// confirm. A non-admin asking to replace gets 403 forbidden.
+//
 // The card pays for two things, which is why the response carries the seat
 // count and the current per-seat price: per-minute expert call charges, and the
 // monthly per-seat subscription priced by the volume tiers in lib/pricing.ts.
@@ -56,6 +68,23 @@ export async function POST(request: NextRequest): Promise<Response> {
     return Response.json({ error: 'unauthorized' }, { status: 401 });
   }
 
+  // ── Replace-the-card request? ─────────────────────────────────────────────
+  // Read defensively: the onboarding stepper posts `{}` and older clients post
+  // nothing parseable at all, and neither should become an error here.
+  let replace = false;
+  try {
+    const body = await request.json() as unknown;
+    if (body !== null && typeof body === 'object' && !Array.isArray(body)) {
+      replace = (body as Record<string, unknown>).replace === true;
+    }
+  } catch {
+    // No body / not JSON — a plain onboarding call.
+  }
+
+  if (replace && sessionUser.role !== 'admin' && sessionUser.orgRole !== 'org_admin') {
+    return Response.json({ error: 'forbidden' }, { status: 403 });
+  }
+
   // The org is the payer — without one there is nothing to bill.
   const organizationId = sessionUser.orgId ?? (await getOrganizationIdForUser(sessionUser.email));
   if (!organizationId) {
@@ -77,7 +106,9 @@ export async function POST(request: NextRequest): Promise<Response> {
     };
 
     // ─── Someone at this firm already saved the card ───────────────────────
-    if (status.billingComplete) {
+    // Unless this is a deliberate replacement, in which case a card on file is
+    // the whole premise and we mint a SetupIntent for the new one.
+    if (status.billingComplete && !replace) {
       return Response.json({ alreadyComplete: true, ...seatSummary });
     }
 
@@ -92,7 +123,7 @@ export async function POST(request: NextRequest): Promise<Response> {
       customer:             customerId,
       usage:                'off_session',
       payment_method_types: ['card'],
-      metadata:             { organizationId },
+      metadata:             { organizationId, intent: replace ? 'replace' : 'onboarding' },
     });
 
     if (!setupIntent.client_secret) {

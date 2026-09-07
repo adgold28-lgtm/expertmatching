@@ -28,6 +28,7 @@ import type { SupabaseClient } from '@supabase/supabase-js';
 import { getServiceRoleClient, getAuthUserIdByEmail } from './supabase/admin';
 import type { Database, OrganizationBillingRow } from './supabase/database.types';
 import { stripe } from './stripe';
+import { recordSystemFailure } from './engagementEvents';
 import {
   SEAT_CURRENCY,
   SEAT_PRICE_LOOKUP_KEY,
@@ -603,6 +604,11 @@ export async function syncOrgSeatQuantity(organizationId: string): Promise<SeatS
 
     if (!item) {
       console.error('[orgBilling] subscription has no items', { organizationId });
+      await recordSystemFailure({
+        area:   'seat_sync',
+        reason: 'subscription has no seat line item',
+        organizationId,
+      });
       return { ...base, outcome: 'error' };
     }
 
@@ -677,6 +683,14 @@ export async function syncOrgSeatQuantity(organizationId: string): Promise<SeatS
     return { ...base, outcome: 'unchanged' };
   } catch (err) {
     logFailure('syncOrgSeatQuantity', err);
+    // Every caller of this function swallows a failure so a membership change
+    // never fails on billing. Recording it here — once, at the source — is what
+    // stops that from meaning nobody ever finds out.
+    await recordSystemFailure({
+      area:   'seat_sync',
+      reason: stripeFailureReason(err),
+      organizationId,
+    });
     return { ...base, outcome: 'error' };
   }
 }
@@ -735,6 +749,14 @@ export async function cancelOrgSubscription(
     return { outcome: 'canceled' };
   } catch (err) {
     logFailure('cancelOrgSubscription', err);
+    // The caller surfaces this one (it refuses to delete the organization), but
+    // the standing risk is that we keep charging a firm that asked to leave —
+    // that belongs on the attention list regardless of what the caller does.
+    await recordSystemFailure({
+      area:   'invoice',
+      reason: `seat subscription cancel failed: ${stripeFailureReason(err)}`,
+      organizationId,
+    });
     return { outcome: 'error', reason: stripeFailureReason(err) };
   }
 }

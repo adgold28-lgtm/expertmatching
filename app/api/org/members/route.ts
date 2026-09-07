@@ -11,6 +11,7 @@ import { NextRequest } from 'next/server';
 import { orgAdminGuard, type SessionUser } from '../../../../lib/auth';
 import { provisionAccountInvite } from '../../../../lib/accountProvisioning';
 import { syncOrgSeatQuantity } from '../../../../lib/orgBilling';
+import { recordSystemFailure } from '../../../../lib/engagementEvents';
 import { seatUnitPriceCents, monthlySeatTotalCents, nextSeatTier } from '../../../../lib/pricing';
 import {
   getFirmById,
@@ -91,8 +92,19 @@ async function readJson(request: NextRequest): Promise<Record<string, unknown> |
   }
 }
 
+/**
+ * Best effort towards THIS request — a membership change must never fail
+ * because Stripe is unreachable — but no longer silent: the failure is recorded
+ * so it shows up at GET /api/admin/attention and gets retried by the nightly
+ * reconcile job. syncOrgSeatQuantity reports Stripe failures as outcome 'error'
+ * (and records its own row) rather than throwing, so both paths are covered.
+ */
 async function syncSeats(organizationId: string): Promise<void> {
-  try { await syncOrgSeatQuantity(organizationId); } catch { /* best effort */ }
+  try {
+    await syncOrgSeatQuantity(organizationId);
+  } catch (err) {
+    await recordSystemFailure({ area: 'seat_sync', reason: err, organizationId });
+  }
 }
 
 function noOrg(): Response {

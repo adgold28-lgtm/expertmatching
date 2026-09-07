@@ -224,9 +224,6 @@ export async function PUT(
       ...(typeof body.expertType === 'string' && {
         expertType: sanitizeText(body.expertType, LIMITS.functionField) || undefined,
       }),
-      ...((body.outreachMode === 'auto' || body.outreachMode === 'review') && {
-        outreachMode: body.outreachMode as 'auto' | 'review',
-      }),
     });
 
     return Response.json({ project: redactProjectForViewer(updated, { role }) });

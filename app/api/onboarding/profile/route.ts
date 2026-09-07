@@ -1,9 +1,21 @@
-// POST /api/onboarding/profile — the final onboarding step.
+// POST /api/onboarding/profile — the final onboarding step, and afterwards the
+// route that edits the same three fields from /settings.
 //
-// Saves the caller's name/title AND flips onboarding_complete, which is what
-// middleware.ts reads to release the rest of the app. Because this single call
-// is the gate, it re-checks the two required prerequisites server-side rather
-// than trusting the stepper's client-side sequencing:
+// TWO MODES, decided by the caller's own record, never by the request body:
+//
+//   Onboarding (record.onboardingComplete is false) — saves name/title AND
+//   flips onboarding_complete, which is what middleware.ts reads to release the
+//   rest of the app. Because this single call is the gate, it re-checks the two
+//   required prerequisites server-side rather than trusting the stepper's
+//   client-side sequencing.
+//
+//   Edit (record.onboardingComplete is already true) — saves name/title and
+//   NOTHING ELSE. No prerequisite check (an onboarded user who later has a
+//   billing hiccup must still be able to fix their own last name) and no
+//   re-write of onboarding_complete, so editing a profile can never re-run the
+//   gate or flip a flag as a side effect.
+//
+// The prerequisites, checked in onboarding mode only:
 //
 //   billing  — the FIRM has a card on file (organization_billing.billing_complete,
 //              written only by /api/onboarding/billing/confirm after Stripe
@@ -43,46 +55,63 @@ export async function POST(request: NextRequest): Promise<Response> {
   const sessionUser = await getSessionUser(request);
   if (!sessionUser.email) return Response.json({ error: 'unauthorized' }, { status: 401 });
 
-  // ── Prerequisite check (server-side authority) ──────────────────────────────
+  // ── Which mode are we in? The stored record decides, not the request. ───────
   let record: Awaited<ReturnType<typeof getUser>>;
-  let calendarConnected: boolean;
-  let billingComplete: boolean;
   try {
-    [record, calendarConnected, billingComplete] = await Promise.all([
-      getUser(sessionUser.email),
-      isCalendarConnected(sessionUser.email),
-      isBillingCompleteForUser(sessionUser.email),
-    ]);
+    record = await getUser(sessionUser.email);
   } catch {
     return Response.json({ error: 'internal_error' }, { status: 500 });
   }
 
   if (!record) return Response.json({ error: 'user_not_found' }, { status: 404 });
 
-  if (!billingComplete || !calendarConnected) {
-    return Response.json(
-      {
-        error:             'onboarding_steps_incomplete',
-        calendarConnected,
-        billingComplete,
-      },
-      { status: 409 },
-    );
+  const alreadyOnboarded = record.onboardingComplete === true;
+
+  // ── Prerequisite check (server-side authority) — onboarding mode only ───────
+  if (!alreadyOnboarded) {
+    let calendarConnected: boolean;
+    let billingComplete: boolean;
+    try {
+      [calendarConnected, billingComplete] = await Promise.all([
+        isCalendarConnected(sessionUser.email),
+        isBillingCompleteForUser(sessionUser.email),
+      ]);
+    } catch {
+      return Response.json({ error: 'internal_error' }, { status: 500 });
+    }
+
+    if (!billingComplete || !calendarConnected) {
+      return Response.json(
+        {
+          error:             'onboarding_steps_incomplete',
+          calendarConnected,
+          billingComplete,
+        },
+        { status: 409 },
+      );
+    }
   }
 
   // Persists to profiles and syncs app_metadata (onboarding_complete,
   // first_name), so middleware and NavBar reflect the completed state on the
   // next request — no session cookie re-mint needed.
+  //
+  // `title` is sent as an explicit empty string when the user clears it, so it
+  // is written whenever the key was present rather than only when truthy —
+  // otherwise a title could be set but never removed. onboardingComplete is
+  // written ONLY on the onboarding pass: an edit must not touch the gate.
+  const titleProvided = typeof b.title === 'string';
+
   try {
     await upsertUser(sessionUser.email, {
       firstName,
       lastName,
-      ...(title ? { title } : {}),
-      onboardingComplete: true,
+      ...(titleProvided ? { title } : {}),
+      ...(alreadyOnboarded ? {} : { onboardingComplete: true }),
     });
   } catch {
     return Response.json({ error: 'internal_error' }, { status: 500 });
   }
 
-  return Response.json({ ok: true });
+  return Response.json({ ok: true, updated: alreadyOnboarded });
 }

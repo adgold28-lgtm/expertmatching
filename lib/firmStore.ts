@@ -216,10 +216,17 @@ async function syncSeatsBestEffort(organizationId: string | null | undefined): P
   if (!organizationId) return;
   try {
     const { syncOrgSeatQuantity } = await import('./orgBilling');
-    await syncOrgSeatQuantity(organizationId);
-  } catch {
+    const result = await syncOrgSeatQuantity(organizationId);
+    // syncOrgSeatQuantity catches its own Stripe failures and reports them as
+    // outcome 'error' rather than throwing, so an unhappy sync arrives here as
+    // a value, not an exception. It records its own system_events row.
+    if (result.outcome === 'error') return;
+  } catch (err) {
     // Billing is not reachable (or not yet configured) — the next membership
-    // change or the reconcile job catches up.
+    // change or the nightly reconcile job catches up. Still recorded, so a firm
+    // cannot quietly stop being billed for a seat it is using.
+    const { recordSystemFailure } = await import('./engagementEvents');
+    await recordSystemFailure({ area: 'seat_sync', reason: err, organizationId });
   }
 }
 

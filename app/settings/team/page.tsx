@@ -365,13 +365,20 @@ export default function TeamPage() {
           >
             EXPERTMATCH
           </Link>
-          <nav className="flex items-center gap-5">
+          <nav className="flex items-center gap-4 sm:gap-5 flex-wrap justify-end">
             <span
               className="text-[10px] uppercase tracking-widest text-gold/80"
               style={{ letterSpacing: '0.18em' }}
             >
               Team
             </span>
+            <Link
+              href="/settings"
+              className="text-[10px] uppercase tracking-widest text-gold/50 hover:text-gold/80 transition-colors"
+              style={{ letterSpacing: '0.18em' }}
+            >
+              ← Settings
+            </Link>
             <Link
               href="/app"
               className="text-[10px] uppercase tracking-widest text-gold/50 hover:text-gold/80 transition-colors"

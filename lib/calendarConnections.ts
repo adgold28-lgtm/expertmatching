@@ -26,6 +26,13 @@ import { getServiceRoleClient, getAuthUserIdByEmail } from './supabase/admin';
 import type { Json, UserCalendarConnectionRow }       from './supabase/database.types';
 import { fetchGoogleFreebusy }                        from './fetchGoogleFreebusy';
 import { fetchCalendlySlots }                         from './fetchCalendlySlots';
+import {
+  sanitizeWeeklyWindows,
+  weeklyWindowToJson,
+  mergeAvailability,
+  MAX_WEEKLY_WINDOWS,
+  type WeeklyWindow,
+} from './availabilityWindows';
 import type { AvailabilitySlot }                      from '../types';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -46,6 +53,8 @@ export interface CalendarConnectionInput {
   calendarEmail?: string | null;
   calendlyUrl?:   string | null;
   manualSlots?:   AvailabilitySlot[] | null;
+  /** Recurring weekly availability — see lib/availabilityWindows.ts. */
+  weeklyWindows?: WeeklyWindow[] | null;
   timezone?:      string | null;   // IANA zone, e.g. 'America/New_York'
   oauthState?:    string | null;   // in-flight OAuth nonce; cleared on success
 }
@@ -111,6 +120,47 @@ function slotsFromJson(value: Json | null): AvailabilitySlot[] {
   return slots;
 }
 
+// ─── weekly_windows column (tolerates the column not existing yet) ────────────
+
+/**
+ * `weekly_windows` is added by
+ * supabase/migrations/20260907100000_availability_windows_and_indexes.sql. The
+ * generated Database type does not carry it, and — more importantly — the
+ * column may genuinely not be there yet in an environment where that migration
+ * has not been applied. Everything here is written so that case degrades to
+ * "no weekly windows" rather than to an error:
+ *
+ *   reads  — getCalendarConnection selects '*', so an absent column simply
+ *            yields no key and sanitizeWeeklyWindows sees undefined.
+ *   writes — upsertCalendarConnection retries without the column when Postgres
+ *            says it does not exist (see columnMissing below).
+ */
+type RowWithWeeklyWindows = UserCalendarConnectionRow & { weekly_windows?: Json | null };
+
+/** The recurring windows stored on a connection row. [] when absent or malformed. */
+export function weeklyWindowsFromRow(
+  row: UserCalendarConnectionRow | null,
+): WeeklyWindow[] {
+  if (!row) return [];
+  return sanitizeWeeklyWindows((row as RowWithWeeklyWindows).weekly_windows);
+}
+
+/** The one-off dated slots stored on a connection row. [] when absent or malformed. */
+export function manualSlotsFromRow(
+  row: UserCalendarConnectionRow | null,
+): AvailabilitySlot[] {
+  if (!row) return [];
+  return slotsFromJson(row.manual_slots);
+}
+
+/** True when a Postgres/PostgREST error means "that column is not there". */
+function columnMissing(error: { code?: string; message?: string }): boolean {
+  // 42703 = undefined_column (Postgres); PGRST204 = column not in the schema
+  // cache (PostgREST, which is what a fresh column-less deployment returns).
+  if (error.code === '42703' || error.code === 'PGRST204') return true;
+  return (error.message ?? '').includes('weekly_windows');
+}
+
 /** Builds a jsonb-safe representation of a slot (no implicit index signature on the interface). */
 function slotToJson(slot: AvailabilitySlot): Json {
   const out: { [key: string]: Json } = {
@@ -156,8 +206,11 @@ export async function getCalendarConnection(
  * True when a row represents a connection the scheduler can actually use:
  *   google   → an offline refresh token is on file
  *   calendly → a scheduling URL is on file
- *   manual   → at least one usable slot is on file
+ *   manual   → at least one usable one-off slot OR one recurring weekly window
  * A row that only holds an in-flight `oauth_state` is NOT connected.
+ *
+ * A user who says "Tuesdays and Thursdays, 9–11" and nothing else has given us
+ * everything the scheduler needs, so weekly windows alone complete this step.
  */
 export function connectionIsUsable(
   row: UserCalendarConnectionRow | null,
@@ -166,7 +219,9 @@ export function connectionIsUsable(
   switch (row.provider) {
     case 'google':   return Boolean(row.refresh_token);
     case 'calendly': return Boolean(row.calendly_url);
-    case 'manual':   return slotsFromJson(row.manual_slots).length > 0;
+    case 'manual':
+      return slotsFromJson(row.manual_slots).length > 0
+        || weeklyWindowsFromRow(row).length > 0;
     default:         return false;
   }
 }
@@ -201,26 +256,47 @@ export async function upsertCalendarConnection(
       ? input.manualSlots.slice(0, MAX_MANUAL_SLOTS).map(slotToJson)
       : null;
 
+    const weeklyWindows = input.weeklyWindows?.length
+      ? input.weeklyWindows.slice(0, MAX_WEEKLY_WINDOWS).map(weeklyWindowToJson)
+      : null;
+
+    const base = {
+      profile_id:     profileId,
+      provider:       input.provider,
+      access_token:   input.accessToken   ?? null,
+      refresh_token:  input.refreshToken  ?? null,
+      token_expiry:   input.tokenExpiry   ?? null,
+      calendar_email: input.calendarEmail ?? null,
+      calendly_url:   input.calendlyUrl   ?? null,
+      manual_slots:   manualSlots,
+      timezone:       input.timezone      ?? null,
+      oauth_state:    input.oauthState    ?? null,
+    };
+
     const { error } = await db
       .from('user_calendar_connections')
-      .upsert({
-        profile_id:     profileId,
-        provider:       input.provider,
-        access_token:   input.accessToken   ?? null,
-        refresh_token:  input.refreshToken  ?? null,
-        token_expiry:   input.tokenExpiry   ?? null,
-        calendar_email: input.calendarEmail ?? null,
-        calendly_url:   input.calendlyUrl   ?? null,
-        manual_slots:   manualSlots,
-        timezone:       input.timezone      ?? null,
-        oauth_state:    input.oauthState    ?? null,
-      }, { onConflict: 'profile_id' });
+      .upsert({ ...base, weekly_windows: weeklyWindows } as typeof base,
+        { onConflict: 'profile_id' });
 
-    if (error) {
-      console.error('[calendarConnections] upsert failed:', error.message.slice(0, 120));
-      return false;
+    if (!error) return true;
+
+    // The migration adding weekly_windows has not been applied here. Save
+    // everything else rather than failing a user-visible step — the one-off
+    // slots still work, and applying the migration turns the rest on.
+    if (columnMissing(error)) {
+      console.warn('[calendarConnections] weekly_windows column absent — saving without it');
+      const { error: retryError } = await db
+        .from('user_calendar_connections')
+        .upsert(base, { onConflict: 'profile_id' });
+      if (retryError) {
+        console.error('[calendarConnections] upsert failed:', retryError.message.slice(0, 120));
+        return false;
+      }
+      return true;
     }
-    return true;
+
+    console.error('[calendarConnections] upsert failed:', error.message.slice(0, 120));
+    return false;
   } catch (err) {
     console.error('[calendarConnections] upsert error:',
       err instanceof Error ? err.message.slice(0, 120) : 'unknown');
@@ -342,6 +418,16 @@ export async function updateGoogleAccessToken(
  * provider they linked during onboarding. Returns [] when no connection exists
  * or the provider lookup fails — never throws, so the overlap check can fall
  * back to the project-level paths.
+ *
+ * For the MANUAL provider the answer is the merge of two statements the user
+ * may have made: recurring weekly windows expanded over the horizon
+ * (lib/availabilityWindows.ts) and one-off dates. Duplicates collapse and
+ * anything already in the past is dropped, judged in each slot's own zone.
+ *
+ * Google and Calendly are NOT merged with weekly windows: those providers
+ * report what the user is actually free for, and layering a standing rule on
+ * top would offer an expert a time the user is already booked. The recurring
+ * rule is the manual path's way of saying the same thing.
  */
 export async function getClientSlotsForUser(
   email:      string,
@@ -369,7 +455,12 @@ export async function getClientSlotsForUser(
       return await fetchCalendlySlots(row.calendly_url, windowDays);
     }
 
-    return slotsFromJson(row.manual_slots);
+    return mergeAvailability(
+      weeklyWindowsFromRow(row),
+      slotsFromJson(row.manual_slots),
+      new Date(),
+      windowDays,
+    );
   } catch (err) {
     console.error('[calendarConnections] slot lookup error:',
       err instanceof Error ? err.message.slice(0, 120) : 'unknown');

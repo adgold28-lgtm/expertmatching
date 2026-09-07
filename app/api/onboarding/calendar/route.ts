@@ -5,7 +5,16 @@
 //
 // Body (one of):
 //   { provider: 'calendly', calendlyUrl: 'https://calendly.com/...', timezone?: 'America/New_York' }
-//   { provider: 'manual',   slots: AvailabilitySlot[],               timezone?: 'America/New_York' }
+//   { provider: 'manual',   timezone?: 'America/New_York',
+//     weeklyWindows?: [{ dayOfWeek: 0-6, from: 'HH:MM', to: 'HH:MM', timezone }],
+//     slots?:         AvailabilitySlot[] }
+//
+// A manual connection needs AT LEAST ONE of weeklyWindows or slots — a
+// recurring rule ("Tuesdays 9–11") and specific dates are both complete
+// answers, and a user may give either or both. Both are REPLACED on every
+// write, matching upsertCalendarConnection's replace-the-row contract: sending
+// weeklyWindows without slots clears the one-off dates, which is what the
+// Settings editor means when it saves.
 //
 // Google is NOT accepted here — it is a browser redirect, not a JSON POST:
 //   GET /api/onboarding/calendar/google[?tz=<IANA zone>]
@@ -19,7 +28,8 @@
 // Responses:
 //   200 { ok: true, connected: true, provider }
 //   400 { error: 'invalid_json' | 'invalid_provider' | 'use_oauth_redirect'
-//                | 'invalid_calendly_url' | 'invalid_timezone' | 'no_slots' }
+//                | 'invalid_calendly_url' | 'invalid_timezone' | 'no_slots'
+//                | 'invalid_weekly_windows', reason?, index? }
 //   401 { error: 'unauthorized' }   413 { error: 'request_too_large' }
 //   415 { error: 'content_type_required' }   500 { error: 'internal_error' }
 //
@@ -31,6 +41,7 @@ import {
   upsertCalendarConnection,
   normalizeTimezone,
 } from '../../../../lib/calendarConnections';
+import { parseWeeklyWindows } from '../../../../lib/availabilityWindows';
 import type { AvailabilitySlot } from '../../../../types';
 
 const MAX_BODY         = 16_384;  // bytes — manual slots are the largest payload
@@ -164,13 +175,25 @@ export async function POST(request: NextRequest): Promise<Response> {
         timezone,
       });
     } else {
+      // Recurring windows are validated strictly — a user who typed an
+      // impossible window is told which one, rather than having it dropped.
+      const weekly = parseWeeklyWindows(body.weeklyWindows);
+      if (!weekly.ok) {
+        return Response.json(
+          { error: 'invalid_weekly_windows', reason: weekly.reason, index: weekly.index },
+          { status: 400 },
+        );
+      }
+
       const slots = sanitizeSlots(body.slots, timezone ?? 'UTC');
-      if (slots.length === 0) {
+      if (slots.length === 0 && weekly.windows.length === 0) {
         return Response.json({ error: 'no_slots' }, { status: 400 });
       }
+
       saved = await upsertCalendarConnection(sessionUser.email, {
-        provider:    'manual',
-        manualSlots: slots,
+        provider:      'manual',
+        manualSlots:   slots,
+        weeklyWindows: weekly.windows,
         timezone,
       });
     }

@@ -30,6 +30,7 @@ import {
   type FirmRecord,
 } from '../../../../lib/firmStore';
 import { syncOrgSeatQuantity } from '../../../../lib/orgBilling';
+import { recordSystemFailure } from '../../../../lib/engagementEvents';
 
 const HOUR_MS    = 60 * 60 * 1000;
 const RATE_LIMIT = 5;
@@ -342,7 +343,14 @@ async function handleInvite(
   const activated = await getUser(email).catch(() => null);
   const seatOrgId = activated?.orgId ?? firm?.id;
   if (seatOrgId) {
-    try { await syncOrgSeatQuantity(seatOrgId); } catch { /* best effort */ }
+    try {
+      await syncOrgSeatQuantity(seatOrgId);
+    } catch (err) {
+      // Never fails the activation — but no longer disappears either. The row
+      // surfaces at GET /api/admin/attention and the nightly reconcile job
+      // retries it, so a new seat cannot go unbilled unnoticed.
+      await recordSystemFailure({ area: 'seat_sync', reason: err, organizationId: seatOrgId });
+    }
   }
 
   return signedInResponse(await trySupabaseSignIn(request, email, password));
