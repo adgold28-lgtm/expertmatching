@@ -14,11 +14,13 @@
 
 import { NextRequest } from 'next/server';
 import { adminGuard } from '../../../../lib/auth';
-import { REQUIRED_VARS } from '../../../../lib/validateEnv';
+import { REQUIRED_VARS, OPTIONAL_VARS } from '../../../../lib/validateEnv';
 
 export interface EnvVarStatus {
   name: string;
   set:  boolean;
+  /** True for a feature switch the app boots without (lib/validateEnv.OPTIONAL_VARS). */
+  optional?: boolean;
 }
 
 export interface EnvGroup {
@@ -39,6 +41,7 @@ const GROUPS: ReadonlyArray<{ name: string; prefix: string }> = [
 ];
 
 const OTHER = 'Other';
+const OPTIONAL_GROUP = 'Optional features';
 
 /**
  * The group a variable belongs to.
@@ -70,6 +73,13 @@ export async function GET(request: NextRequest): Promise<Response> {
   const groups: EnvGroup[] = ordered
     .filter(name => byGroup.has(name))
     .map(name => ({ name, vars: byGroup.get(name) ?? [] }));
+
+  // Feature switches in their own group, last: a red dot here is a choice, not
+  // an outage, and the page says so.
+  groups.push({
+    name: OPTIONAL_GROUP,
+    vars: OPTIONAL_VARS.map(name => ({ name, set: !!process.env[name], optional: true })),
+  });
 
   return Response.json({ groups });
 }

@@ -83,7 +83,7 @@ interface AttentionItem {
 }
 
 /** GET /api/admin/env-status — presence only, never values. */
-interface EnvVar   { name: string; set: boolean }
+interface EnvVar   { name: string; set: boolean; optional?: boolean }
 interface EnvGroup { name: string; vars: EnvVar[] }
 
 // ─── Firm phrase vocabulary ───────────────────────────────────────────────────
@@ -1401,12 +1401,17 @@ function EnvironmentSection() {
               <p className="text-[10px] uppercase tracking-widest text-muted mb-2.5" style={{ letterSpacing: '0.16em' }}>
                 {group.name}
               </p>
+              {group.vars.some(v => v.optional) && (
+                <p className="text-[11px] text-muted mb-2 leading-relaxed" style={{ fontWeight: 300 }}>
+                  Feature switches. The app runs without these; a grey dot means the feature is off, not broken.
+                </p>
+              )}
               <ul className="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-1.5">
                 {group.vars.map(v => (
                   <li key={v.name} className="flex items-center gap-2 min-w-0">
                     <span
                       aria-hidden
-                      className={`w-1.5 h-1.5 rounded-full shrink-0 ${v.set ? 'bg-green-600' : 'bg-red-400'}`}
+                      className={`w-1.5 h-1.5 rounded-full shrink-0 ${v.set ? 'bg-green-600' : v.optional ? 'bg-muted/40' : 'bg-red-400'}`}
                     />
                     <span className="text-[11px] text-ink truncate font-mono">{v.name}</span>
                     <span className="sr-only">{v.set ? 'set' : 'not set'}</span>

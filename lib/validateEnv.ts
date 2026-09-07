@@ -46,6 +46,31 @@ export const REQUIRED_VARS = [
   'ANTRHOPICKEYREAL',
 ] as const;
 
+/**
+ * Variables that switch a feature on or tune it, never required to boot. Listed
+ * here ONLY so GET /api/admin/env-status can show the founder whether each one
+ * is set in the running deployment — the console is the one place that answers
+ * "did I already add the Hunter key?" without opening the Vercel dashboard.
+ * validateEnv() never checks these.
+ */
+export const OPTIONAL_VARS = [
+  // Background jobs (Vercel Cron sends this on /api/jobs/reconcile and /api/jobs/schedule-nudges)
+  'CRON_SECRET',
+  // Region-pinned QStash host; the code falls back to us-east-1 when unset
+  'QSTASH_URL',
+  // Contact discovery on bookmark: off unless the flag is 'true' AND a provider key exists
+  'CONTACT_ENRICHMENT_ENABLED',
+  'HUNTER_API_KEY',
+  'SNOV_CLIENT_ID',
+  'SNOV_CLIENT_SECRET',
+  // Who signs Matchy's emails (lib/senderIdentity.ts); unset = unsigned
+  'OUTREACH_SIGNATURE',
+  // CAN-SPAM postal address in the footer
+  'OUTREACH_POSTAL_ADDRESS',
+  // One-line LLM rephrase of nudges; off unless 'true'
+  'NUDGE_LLM_VARIATION',
+] as const;
+
 export function validateEnv(): void {
   const isProd = process.env.NODE_ENV === 'production';
   const missing: string[] = [];
