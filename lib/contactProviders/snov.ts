@@ -18,16 +18,44 @@ interface RawSnovEmail {
   unknown_status_reason: string | null;
 }
 
+// ─── Deadline plumbing ────────────────────────────────────────────────────────
+
+/**
+ * Aborts on whichever comes first: this call's own timeout or the caller's
+ * deadline. lib/contactDiscovery.ts passes a deadline so Snov's poll loop
+ * (up to 8 attempts) can never outrun the job's wall-clock budget.
+ */
+function boundedController(timeoutMs: number, external?: AbortSignal): {
+  controller: AbortController;
+  cleanup:    () => void;
+} {
+  const controller = new AbortController();
+  const timer      = setTimeout(() => controller.abort(), timeoutMs);
+  const onAbort    = () => controller.abort();
+
+  if (external) {
+    if (external.aborted) controller.abort();
+    else external.addEventListener('abort', onAbort, { once: true });
+  }
+
+  return {
+    controller,
+    cleanup: () => {
+      clearTimeout(timer);
+      external?.removeEventListener('abort', onAbort);
+    },
+  };
+}
+
 // ─── Token cache — server-side only, NEVER sent to client ─────────────────────
 
 let cachedToken: string | null = null;
 let tokenExpiresAt = 0;
 
-async function getAccessToken(): Promise<string> {
+async function getAccessToken(signal?: AbortSignal): Promise<string> {
   if (cachedToken && Date.now() < tokenExpiresAt - 60_000) return cachedToken;
 
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 5_000);
+  const { controller, cleanup } = boundedController(5_000, signal);
 
   try {
     const res = await fetch('https://api.snov.io/v1/oauth/access_token', {
@@ -51,7 +79,7 @@ async function getAccessToken(): Promise<string> {
     tokenExpiresAt = Date.now() + 55 * 60 * 1000; // cache 55 min (token valid 1 h)
     return cachedToken;
   } finally {
-    clearTimeout(timer);
+    cleanup();
   }
 }
 
@@ -62,9 +90,9 @@ async function startLookup(
   firstName: string,
   lastName: string,
   domain: string,
+  signal?: AbortSignal,
 ): Promise<string> {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 8_000);
+  const { controller, cleanup } = boundedController(8_000, signal);
 
   try {
     const res = await fetch('https://api.snov.io/v2/emails-by-domain-by-name/start', {
@@ -107,21 +135,24 @@ async function startLookup(
 
     return taskHash;
   } finally {
-    clearTimeout(timer);
+    cleanup();
   }
 }
 
 // ─── Result polling ───────────────────────────────────────────────────────────
 
-async function pollResult(token: string, taskHash: string): Promise<RawSnovEmail[]> {
+async function pollResult(token: string, taskHash: string, signal?: AbortSignal): Promise<RawSnovEmail[]> {
   const maxAttempts = 8;
   const intervalMs  = 800;
 
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    // The caller's deadline stops the loop as well as the request in flight —
+    // otherwise an abandoned lookup keeps polling on the job's clock.
+    if (signal?.aborted) break;
     if (attempt > 0) await new Promise(r => setTimeout(r, intervalMs));
+    if (signal?.aborted) break;
 
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 5_000);
+    const { controller, cleanup } = boundedController(5_000, signal);
 
     try {
       // Bearer token in header — access token is NEVER in the URL
@@ -190,7 +221,7 @@ async function pollResult(token: string, taskHash: string): Promise<RawSnovEmail
 
       return emails;
     } finally {
-      clearTimeout(timer);
+      cleanup();
     }
   }
 
@@ -217,11 +248,11 @@ export const snovProvider: ContactProvider = {
     return Boolean(process.env.SNOV_CLIENT_ID && process.env.SNOV_CLIENT_SECRET);
   },
 
-  async findProfessionalEmail({ firstName, lastName, domain }: ContactLookupInput): Promise<ProviderEmailResult[]> {
+  async findProfessionalEmail({ firstName, lastName, domain, signal }: ContactLookupInput): Promise<ProviderEmailResult[]> {
     // THIS IS WHERE A SNOV CREDIT MAY BE SPENT
-    const token = await getAccessToken();
-    const taskHash = await startLookup(token, firstName, lastName, domain);
-    const rawEmails = await pollResult(token, taskHash);
+    const token = await getAccessToken(signal);
+    const taskHash = await startLookup(token, firstName, lastName, domain, signal);
+    const rawEmails = await pollResult(token, taskHash, signal);
 
     // Debug audit: counts only — no emails, names, domains, tokens, or raw response logged.
     // Helps distinguish "Snov returned nothing" from "our filter excluded everything".

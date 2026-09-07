@@ -13,6 +13,7 @@ import {
   bookmarkLine,
   firstNameOf,
   formatRate,
+  matchyLineFor,
 } from '../lib/matchyClient';
 
 const REJECTION_REASONS: Array<{ value: RejectionReason; label: string }> = [
@@ -79,6 +80,10 @@ export default function ProjectExpertCard({
   const [rejNoteSaving,    setRejNoteSaving]    = useState(false);
   // Matchy's one line about this expert — the outcome of the last thing it did.
   const [matchyNote, setMatchyNote] = useState<{ text: string; tone: 'default' | 'quiet' | 'alert' } | null>(null);
+  // After a poll or a fresh load the local note is empty; the server-derived
+  // outcome (matchyOutcome, set by lib/redactExpert) says what Matchy did.
+  const serverNote = matchyLineFor(projectExpert, firstNameOf(expert.name));
+  const shownNote  = matchyNote ?? serverNote;
   const [bookmarking, setBookmarking] = useState(false);
 
   const firstName  = firstNameOf(expert.name);
@@ -344,8 +349,8 @@ export default function ProjectExpertCard({
         )}
 
         {/* ── Matchy's line — the outcome of the last thing it did here ── */}
-        {matchyNote && (
-          <MatchyLine variant="card" tone={matchyNote.tone}>{matchyNote.text}</MatchyLine>
+        {shownNote && (
+          <MatchyLine variant="card" tone={shownNote.tone}>{shownNote.text}</MatchyLine>
         )}
 
         {/* ── Status machinery — staff only. Clients get the plain stage pill

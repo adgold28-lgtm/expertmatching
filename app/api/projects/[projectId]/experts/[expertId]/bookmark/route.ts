@@ -35,6 +35,11 @@ import { getProjectForUser, updateExpertStatus } from '../../../../../../../lib/
 import { runSequenceStep } from '../../../../../../../lib/outreachSteps';
 import { isSuppressed } from '../../../../../../../lib/outreachSuppressions';
 import { emitEngagementEvent } from '../../../../../../../lib/engagementEvents';
+import {
+  isQStashConfigured,
+  publishContactDiscoveryJob,
+  runContactDiscoveryJobDetached,
+} from '../../../../../../../lib/contactDiscovery';
 import { redactExpertForViewer } from '../../../../../../../lib/redactExpert';
 import { classifySeniority, TIER_PRICING } from '../../../../../../../lib/seniorityClassifier';
 import { clientRateFor } from '../../../../../../../lib/pricing';
@@ -135,21 +140,34 @@ export async function POST(
       });
     }
 
-    // 7. Contact. Phase 1 sends to an address we already hold; the autonomous
-    //    provider waterfall is Phase 2's /api/jobs/contact-discovery (spec,
-    //    "Phasing"). Either way the client sees one line, not the mechanism.
+    // 7. Contact. With an address on file the intro goes now (below). Without
+    //    one, Matchy goes and looks: the provider waterfall takes seconds to
+    //    tens of seconds, so it runs as a background job
+    //    (/api/jobs/contact-discovery) rather than on this request, and that
+    //    job sends the intro itself when it finds something. The client sees
+    //    one line — "Looking for an address…" — not the mechanism.
+    //
+    //    If the job cannot be queued we fall back to Phase 1's behaviour: say
+    //    there is no address and let the client bookmark again to retry.
     if (!current.contactEmail) {
+      const queued = await startContactDiscovery(params.projectId, params.expertId);
+
       await emitEngagementEvent({
         projectId: params.projectId,
         expertId:  params.expertId,
         orgId,
+        // `contact_discovery_started` is not one of the allowed event kinds
+        // (supabase/migrations/20260907000000_matchy_phase1.sql check
+        // constraint), so the start of a search is recorded as the closest
+        // one with a payload that says what actually happened.
         type:      'contact_not_found',
-        payload:   { tier },
+        payload:   { tier, stage: 'discovery', reason: queued ? 'queued' : 'queue_failed', attempt: 1 },
       });
+
       return NextResponse.json({
         ok:            true,
         projectExpert: redactExpertForViewer(current, { role }),
-        outcome:       'contact_not_found',
+        outcome:       queued ? 'contact_discovery_started' : 'contact_not_found',
       });
     }
 
@@ -223,6 +241,36 @@ export async function POST(
   } catch (err) {
     console.error('[bookmark] failed:', err instanceof Error ? err.message.slice(0, 120) : 'unknown');
     return NextResponse.json({ error: 'bookmark_failed' }, { status: 500 });
+  }
+}
+
+/**
+ * Hands the search to the background job and says whether it is on its way.
+ *
+ * Production: QStash publishes to /api/jobs/contact-discovery (retries off —
+ * one attempt per bookmark, because a redelivery would be a second cold email).
+ * Local dev without QSTASH_TOKEN: the same function runs in-process, detached,
+ * exactly as lib/sourcingJob does.
+ *
+ * Returns false when the search could not be started at all — the caller then
+ * falls back to the "no address on file" line and the client can retry by
+ * bookmarking again.
+ */
+async function startContactDiscovery(projectId: string, expertId: string): Promise<boolean> {
+  const job = { projectId, expertId, attempt: 1 };
+
+  if (!isQStashConfigured()) {
+    runContactDiscoveryJobDetached(job);
+    return true;
+  }
+
+  try {
+    await publishContactDiscoveryJob(job);
+    return true;
+  } catch (err) {
+    console.error('[bookmark] could not queue contact discovery:',
+      err instanceof Error ? err.message.slice(0, 120) : 'unknown');
+    return false;
   }
 }
 

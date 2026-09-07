@@ -10,6 +10,13 @@ export interface ContactLookupInput {
   firstName: string;
   lastName: string;
   domain: string;
+  /**
+   * Caller-owned deadline. Every network call a provider makes aborts when this
+   * fires, and a provider that polls stops polling. lib/contactDiscovery.ts
+   * passes one so a single provider can never eat the whole job's wall clock;
+   * without it each provider keeps its own internal timeouts.
+   */
+  signal?: AbortSignal;
 }
 
 // Normalized status from a provider result. 'not_found' is NOT included here — that is

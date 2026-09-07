@@ -22,10 +22,19 @@ import type { Project, ProjectExpert } from '../types';
 export type BookmarkOutcome =
   | 'intro_sent'
   | 'intro_drafted'
+  /**
+   * No address on file, so Matchy went looking. The provider chain runs as a
+   * background job (/api/jobs/contact-discovery) which sends the intro itself
+   * when it finds one — nothing more for the client to do.
+   */
+  | 'contact_discovery_started'
   | 'contact_not_found'
   | 'contact_suppressed'
   | 'contact_check_unavailable'
-  | 'intro_failed';
+  | 'intro_failed'
+  // Async results from the discovery job, read back off the record.
+  | 'contact_found'
+  | 'contact_discovery_unavailable';
 
 /** One thing the compliance screen wants removed before a message can go. */
 export interface ScreenFinding {
@@ -277,8 +286,13 @@ export function bookmarkLine(outcome: BookmarkOutcome, firstName: string): strin
       return `Sent ${firstName} the intro. I'll let you know when they reply.`;
     case 'intro_drafted':
       return 'Intro drafted — review and send.';
-    // Nothing retries on its own in Phase 1 (docs/MATCHY_SPEC.md, "Phasing"),
-    // so these lines say what the client has to do — never promise a retry.
+    // The search is running in the background and will send the intro itself
+    // if it lands — this is the one line that promises something happening.
+    case 'contact_discovery_started':
+      return `Looking for an address for ${firstName}. This usually takes a minute.`;
+    // Nothing else retries on its own, so these lines say what the client has
+    // to do. Re-bookmarking now re-runs discovery, which is why the
+    // contact_not_found line still points at bookmarking again.
     case 'contact_not_found':
       return `No address on file for ${firstName} yet. Bookmark again to retry, or pass.`;
     case 'contact_suppressed':
@@ -287,7 +301,38 @@ export function bookmarkLine(outcome: BookmarkOutcome, firstName: string): strin
       return "Couldn't check for an address just now. Bookmark again in a minute.";
     case 'intro_failed':
       return "The intro didn't send. Bookmark again to retry.";
+    case 'contact_found':
+      return `Found an address for ${firstName}. Sending the intro now.`;
+    case 'contact_discovery_unavailable':
+      return "Address lookup isn't available right now. Bookmark again later.";
   }
+}
+
+/**
+ * Matchy's line for an expert as loaded from the server (after a poll or a
+ * page load), derived from the client-safe `matchyOutcome` the API sets.
+ * Null when there is nothing to say yet.
+ */
+export function matchyLineFor(
+  pe: { status: string; matchyOutcome?: string },
+  firstName: string,
+): { text: string; tone: 'default' | 'quiet' } | null {
+  const outcome = pe.matchyOutcome;
+  if (!outcome || !isBookmarkOutcome(outcome)) return null;
+  if (pe.status !== 'bookmarked' && (outcome === 'contact_not_found' || outcome === 'contact_check_unavailable')) return null;
+  return {
+    text: bookmarkLine(outcome, firstName),
+    tone: outcome === 'intro_sent' || outcome === 'intro_drafted' || outcome === 'contact_found' ? 'default' : 'quiet',
+  };
+}
+
+const BOOKMARK_OUTCOMES: ReadonlySet<string> = new Set<BookmarkOutcome>([
+  'intro_sent', 'intro_drafted', 'contact_discovery_started', 'contact_not_found',
+  'contact_suppressed', 'contact_check_unavailable', 'intro_failed',
+  'contact_found', 'contact_discovery_unavailable',
+]);
+function isBookmarkOutcome(value: string): value is BookmarkOutcome {
+  return BOOKMARK_OUTCOMES.has(value);
 }
 
 /** The rate band's step and floor, mirrored from the API's validator. */

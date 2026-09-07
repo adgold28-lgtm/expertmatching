@@ -35,6 +35,93 @@ function normalizeStatus(
   return 'risky';
 }
 
+// ─── Request plumbing ─────────────────────────────────────────────────────────
+
+/**
+ * Aborts on whichever comes first: this provider's own timeout or the caller's
+ * deadline (lib/contactDiscovery.ts passes one so a single provider can never
+ * eat the whole job's wall clock). Returns the controller plus a cleanup.
+ */
+function boundedController(timeoutMs: number, external?: AbortSignal): {
+  controller: AbortController;
+  cleanup:    () => void;
+} {
+  const controller = new AbortController();
+  const timer      = setTimeout(() => controller.abort(), timeoutMs);
+  const onAbort    = () => controller.abort();
+
+  if (external) {
+    if (external.aborted) controller.abort();
+    else external.addEventListener('abort', onAbort, { once: true });
+  }
+
+  return {
+    controller,
+    cleanup: () => {
+      clearTimeout(timer);
+      external?.removeEventListener('abort', onAbort);
+    },
+  };
+}
+
+/**
+ * One Hunter GET. The key rides in the Authorization header — never in the
+ * query string, so it cannot land in a proxy or access log. Hunter's older
+ * documented scheme is the `api_key` query parameter, so a 401 (and ONLY a
+ * 401) retries once that way rather than failing the whole lookup on an auth
+ * scheme difference. The key is never logged either way.
+ */
+async function hunterGet(
+  path:   string,
+  params: URLSearchParams,
+  apiKey: string,
+  signal: AbortSignal,
+): Promise<Response> {
+  const url = `https://api.hunter.io/v2/${path}?${params.toString()}`;
+  const res = await fetch(url, {
+    headers: { 'Authorization': `Bearer ${apiKey}` },
+    signal,
+  });
+  if (res.status !== 401) return res;
+
+  const withKey = new URLSearchParams(params);
+  withKey.set('api_key', apiKey);
+  return fetch(`https://api.hunter.io/v2/${path}?${withKey.toString()}`, { signal });
+}
+
+/**
+ * Best-effort company → domain lookup, used only when the local heuristic in
+ * lib/contactDiscovery.ts cannot derive a domain from the expert's source
+ * links. Costs no email-finder credit. Returns null on anything but a clean
+ * answer — never throws, so it can be a fallback step in a bounded chain.
+ */
+export async function hunterDomainSearch(
+  company: string,
+  external?: AbortSignal,
+  timeoutMs = 8_000,
+): Promise<string | null> {
+  const apiKey = process.env.HUNTER_API_KEY;
+  const name   = company.trim();
+  if (!apiKey || !name) return null;
+
+  const { controller, cleanup } = boundedController(timeoutMs, external);
+
+  try {
+    const params = new URLSearchParams({ company: name, limit: '1' });
+    const res    = await hunterGet('domain-search', params, apiKey, controller.signal);
+    if (!res.ok) return null;
+
+    const body = await res.json() as Record<string, unknown>;
+    const data = body.data as Record<string, unknown> | null | undefined;
+    const domain = data && typeof data.domain === 'string' ? data.domain.trim().toLowerCase() : '';
+    return domain && domain.includes('.') ? domain : null;
+  } catch {
+    return null;
+  } finally {
+    cleanup();
+  }
+}
+
 // ─── Provider implementation ──────────────────────────────────────────────────
 
 export const hunterProvider: ContactProvider = {
@@ -44,21 +131,17 @@ export const hunterProvider: ContactProvider = {
     return Boolean(process.env.HUNTER_API_KEY);
   },
 
-  async findProfessionalEmail({ firstName, lastName, domain }: ContactLookupInput): Promise<ProviderEmailResult[]> {
+  async findProfessionalEmail({ firstName, lastName, domain, signal }: ContactLookupInput): Promise<ProviderEmailResult[]> {
     // THIS IS WHERE A HUNTER CREDIT MAY BE SPENT
     const apiKey = process.env.HUNTER_API_KEY;
     if (!apiKey) throw new Error('HUNTER_API_KEY not set');
 
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 10_000);
+    const { controller, cleanup } = boundedController(10_000, signal);
 
     try {
       const params = new URLSearchParams({ domain, first_name: firstName, last_name: lastName });
       // API key sent as Authorization header — NEVER in the query string
-      const res = await fetch(`https://api.hunter.io/v2/email-finder?${params}`, {
-        headers: { 'Authorization': `Bearer ${apiKey}` },
-        signal: controller.signal,
-      });
+      const res = await hunterGet('email-finder', params, apiKey, controller.signal);
 
       if (res.status === 429) {
         throw Object.assign(new Error('Hunter upstream rate limit'), { code: 'provider_rate_limited' });
@@ -143,7 +226,7 @@ export const hunterProvider: ContactProvider = {
         reason:           verificationStatus ?? null,
       }];
     } finally {
-      clearTimeout(timer);
+      cleanup();
     }
   },
 

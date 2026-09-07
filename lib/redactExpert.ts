@@ -17,7 +17,7 @@
 //
 // Pure functions — no I/O, no throwing. Unit-checked by scripts/check-redaction.ts.
 
-import type { Expert, ExpertStatus, Project, ProjectExpert } from '../types';
+import type { Expert, ExpertStatus, Project, ProjectExpert, MatchyOutcome } from '../types';
 import { EXPERT_STATUSES } from './expertPipeline';
 import { toInitialForm } from './nameValidation';
 import { fallbackDescriptor } from './anonymizeExpert';
@@ -206,10 +206,26 @@ function anonymizeExpert(expert: Expert): Expert {
 export function redactExpertForViewer(pe: ProjectExpert, viewer: Viewer): ProjectExpert {
   if (viewer.role === 'admin') return pe;
 
-  const stripped = omitKeys(pe, INTERNAL_PROJECT_EXPERT_KEYS);
+  const stripped = { ...omitKeys(pe, INTERNAL_PROJECT_EXPERT_KEYS), ...matchyOutcomeOf(pe) };
   if (isIdentityRevealed(pe.status)) return stripped;
 
   return { ...stripped, expert: anonymizeExpert(pe.expert) };
+}
+
+const MATCHY_OUTCOMES: ReadonlySet<string> = new Set<MatchyOutcome>([
+  'intro_sent', 'intro_drafted', 'intro_failed', 'contact_found',
+  'contact_not_found', 'contact_suppressed', 'contact_check_unavailable',
+  'contact_discovery_unavailable',
+]);
+
+/**
+ * The one thing a client may learn from the internal contactStatus: which
+ * Matchy line to show. Legacy free-text values are dropped, so no stray note
+ * ever reaches the browser.
+ */
+function matchyOutcomeOf(pe: ProjectExpert): { matchyOutcome?: MatchyOutcome } {
+  const raw = pe.contactStatus;
+  return raw && MATCHY_OUTCOMES.has(raw) ? { matchyOutcome: raw as MatchyOutcome } : {};
 }
 
 /**
