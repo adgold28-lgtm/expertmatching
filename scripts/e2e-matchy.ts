@@ -1,6 +1,7 @@
 // scripts/e2e-matchy.ts — Matchy Phase 1 end-to-end against a running app
 // (local or production) using THROWAWAY users only. Sends no email: the test
-// expert has no contact address, so bookmark ends in `contact_not_found` and
+// expert has no contact address, so bookmark enqueues contact discovery
+// (`contact_discovery_started`; `contact_not_found` when QStash is absent) and
 // the thread never starts.
 //
 //   SMOKE_BASE_URL=https://expertmatch.fit npx tsx scripts/e2e-matchy.ts
@@ -144,7 +145,8 @@ async function main(): Promise<void> {
     const bmBody = await json(bm);
     const pe = bmBody?.projectExpert;
     check('bookmark 200', bm.status === 200, `status ${bm.status} ${JSON.stringify(bmBody)?.slice(0, 160)}`);
-    check('bookmark outcome contact_not_found', bmBody?.outcome === 'contact_not_found', `outcome ${bmBody?.outcome}`);
+    const NO_ADDRESS = new Set(['contact_discovery_started', 'contact_not_found']);
+    check('bookmark outcome: discovery started or no address', NO_ADDRESS.has(bmBody?.outcome), `outcome ${bmBody?.outcome}`);
     check('status is bookmarked', pe?.status === 'bookmarked', `status ${pe?.status}`);
     check('clientRate seeded (COO → executive → $1,600)', pe?.clientRate === 1600, `clientRate ${pe?.clientRate}`);
     check('expertRate hidden from client', pe?.expertRate === undefined, `expertRate ${pe?.expertRate}`);
@@ -155,7 +157,7 @@ async function main(): Promise<void> {
     const bm2 = await req(owner, 'POST', `/api/projects/${projectId}/experts/${expertId}/bookmark`, {});
     const bm2Body = await json(bm2);
     check('second bookmark retries the address lookup',
-      bm2.status === 200 && bm2Body?.outcome === 'contact_not_found',
+      bm2.status === 200 && NO_ADDRESS.has(bm2Body?.outcome),
       `status ${bm2.status} outcome ${bm2Body?.outcome}`);
     const collabBm = await req(collab, 'POST', `/api/projects/${projectId}/experts/${expertId}/bookmark`, {});
     check('non-member bookmark 404', collabBm.status === 404, `status ${collabBm.status}`);

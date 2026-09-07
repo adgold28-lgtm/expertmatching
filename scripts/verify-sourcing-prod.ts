@@ -79,7 +79,9 @@ async function main(): Promise<void> {
     const t0 = Date.now(); let last = '';
     while (Date.now() - t0 < WAIT_MS) {
       await new Promise(r => setTimeout(r, 15000));
-      const p = await json(await req(jar, 'GET', `/api/projects/${projectId}`));
+      let p: any = null;
+      try { p = await json(await req(jar, 'GET', `/api/projects/${projectId}`)); }
+      catch (e) { console.log('poll error (transient), retrying:', e instanceof Error ? e.message : e); continue; }
       const pj = p?.project ?? p;
       const line = `${Math.round((Date.now() - t0) / 1000)}s status=${pj?.sourcingStatus} experts=${pj?.experts?.length ?? '?'} err=${pj?.sourcingError ?? ''}`;
       if (line !== last) console.log(line); last = line;
