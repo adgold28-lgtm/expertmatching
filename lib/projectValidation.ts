@@ -231,6 +231,12 @@ export interface ProjectCreateData {
   geography:         string;
   seniority:         string;
   notes?:            string;
+  /**
+   * Walkthrough mode (lib/walkthrough.ts). ABSENT MEANS WALKTHROUGH — the safe
+   * default — so this is only ever carried through when the caller explicitly
+   * said `false` (live) or `true`. Never defaulted here.
+   */
+  walkthrough?:      boolean;
   experts:           Array<{ expert: Expert; status?: ExpertStatus }>;
 }
 
@@ -258,6 +264,17 @@ export function validateCreateProjectInput(
     (researchQuestion ? researchQuestion.slice(0, 80).replace(/['"]/g, '').trim() : '') ||
     `New Research ${new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}`;
 
+  // Walkthrough: only an explicit boolean is accepted. Absent leaves it
+  // undefined, which lib/walkthrough reads as walkthrough — the safe default.
+  let walkthrough: boolean | undefined;
+  if ('walkthrough' in body && body.walkthrough !== undefined) {
+    if (typeof body.walkthrough !== 'boolean') {
+      errors.push({ field: 'walkthrough', error: 'invalid_walkthrough' });
+    } else {
+      walkthrough = body.walkthrough;
+    }
+  }
+
   if (!name) errors.push({ field: 'name', error: 'required' });
   if (errors.length > 0) return { errors };
 
@@ -282,5 +299,5 @@ export function validateCreateProjectInput(
     experts.push({ expert, status });
   }
 
-  return { data: { name, researchQuestion: researchQuestion || '', expertType: expertType || undefined, industry, function: fn, geography, seniority, notes, experts } };
+  return { data: { name, researchQuestion: researchQuestion || '', expertType: expertType || undefined, industry, function: fn, geography, seniority, notes, ...(walkthrough !== undefined && { walkthrough }), experts } };
 }

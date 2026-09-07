@@ -15,6 +15,7 @@ import { CLIENT_STATUS_META, hasConversation } from './matchyStatus';
 import ConversationThread from './ConversationThread';
 import MatchySettingsStrip from './MatchySettingsStrip';
 import MatchyLine from './MatchyLine';
+import { isWalkthrough } from '../lib/walkthrough';
 
 // ─── Props ────────────────────────────────────────────────────────────────────
 
@@ -142,6 +143,8 @@ export default function ConversationsPanel({
   }
 
   const selected = threads.find(t => t.expert.id === selectedId) ?? null;
+  // The project decides, not the thread — one read, passed down.
+  const walkthrough = isWalkthrough(project);
 
   return (
     <div className="space-y-5">
@@ -154,7 +157,9 @@ export default function ConversationsPanel({
       {threads.length === 0 ? (
         <div className="py-14 max-w-md mx-auto space-y-4 text-center">
           <MatchyLine variant="card" tone="quiet" className="text-left">
-            No conversations yet. Bookmark someone in Matches and I&apos;ll write to them.
+            {walkthrough
+              ? 'No conversations yet. Bookmark someone in Matches and I will write the intro here. Nothing is sent in walkthrough mode.'
+              : "No conversations yet. Bookmark someone in Matches and I'll write to them."}
           </MatchyLine>
           <button
             type="button"
@@ -209,6 +214,7 @@ export default function ConversationsPanel({
               projectExpert={selected}
               canSend={canSend}
               isAdmin={isAdmin}
+              walkthrough={walkthrough}
               onExpertUpdate={onExpertUpdate}
               onInboundSeen={handleInboundSeen}
             />

@@ -16,6 +16,16 @@
 //      - drafted   → status 'outreach_drafted', nothing else emitted
 //      - no address → emit `contact_not_found`, status stays 'bookmarked'
 //
+// WALKTHROUGH MODE (lib/walkthrough.ts) changes two things and nothing else:
+//   - contact discovery NEVER starts. It spends a Snov/Hunter credit and the
+//     result could not be used for anything, so an expert with no address on
+//     file ends on outcome `walkthrough_held` with the status still
+//     'bookmarked'. No provider is called.
+//   - an expert we DO have an address for takes the draftOnly path, exactly as
+//     review-first does: the intro is written, the status becomes
+//     'outreach_drafted', and nothing is sent.
+// Live mode is unchanged.
+//
 // The send itself runs through lib/outreachSteps.runSequenceStep with
 // step 'intro', the same implementation the legacy outreach/start route uses —
 // one place that resolves the reply token, indexes it for inbound lookup,
@@ -44,6 +54,7 @@ import { redactExpertForViewer } from '../../../../../../../lib/redactExpert';
 import { classifySeniority, TIER_PRICING } from '../../../../../../../lib/seniorityClassifier';
 import { clientRateFor } from '../../../../../../../lib/pricing';
 import { getFirm } from '../../../../../../../lib/firmStore';
+import { isWalkthrough } from '../../../../../../../lib/walkthrough';
 import type { ExpertStatus, ProjectExpert } from '../../../../../../../types';
 
 const ID_RE        = /^[a-f0-9]{24}$/;
@@ -123,6 +134,11 @@ export async function POST(
     // new engagement. The write below is idempotent; the event is not.
     const isRetry = pe.status === 'bookmarked';
 
+    // Walkthrough: the client is clicking through the flow, so everything below
+    // happens except the two things that reach the outside world — a provider
+    // call and a send.
+    const held = isWalkthrough(project);
+
     let current = await applyBookmark(params.projectId, params.expertId, expertRate, clientRate);
 
     // One organization read: it supplies both the org id every event carries
@@ -150,6 +166,36 @@ export async function POST(
     //    If the job cannot be queued we fall back to Phase 1's behaviour: say
     //    there is no address and let the client bookmark again to retry.
     if (!current.contactEmail) {
+      // Walkthrough: do not spend a credit looking for an address we could not
+      // write to anyway. The outcome is recorded on the expert so the Matchy
+      // line survives a reload, and the status stays 'bookmarked'.
+      if (held) {
+        const marked = await updateExpertStatus(params.projectId, params.expertId, {
+          contactStatus:  'walkthrough_held',
+          emailCheckedAt: Date.now(),
+        });
+
+        await emitEngagementEvent({
+          projectId: params.projectId,
+          expertId:  params.expertId,
+          orgId,
+          // 'walkthrough_held' is not one of the allowed event kinds (the check
+          // constraint in 20260907000000_matchy_phase1.sql), so it rides on the
+          // closest one with a payload that says what actually happened.
+          type:      'contact_not_found',
+          payload:   { tier, walkthrough: true },
+        });
+
+        return NextResponse.json({
+          ok:            true,
+          projectExpert: redactExpertForViewer(
+            marked.experts.find(e => e.expert.id === params.expertId) ?? current,
+            { role },
+          ),
+          outcome:       'walkthrough_held',
+        });
+      }
+
       const queued = await startContactDiscovery(params.projectId, params.expertId);
 
       await emitEngagementEvent({
@@ -197,8 +243,9 @@ export async function POST(
       payload:   { tier, verification: current.emailVerificationStatus ?? 'unknown' },
     });
 
-    // 9. Send the intro, or draft it when the project is on review-first.
-    const draftOnly = project.reviewFirst === true;
+    // 9. Send the intro, or draft it when the project is on review-first — or
+    //    in walkthrough, where nothing may leave the building at all.
+    const draftOnly = project.reviewFirst === true || held;
 
     const result = await runSequenceStep({
       projectId: params.projectId,
@@ -237,6 +284,7 @@ export async function POST(
       ok:            true,
       projectExpert: redactExpertForViewer(current, { role }),
       outcome:       draftOnly ? 'intro_drafted' : 'intro_sent',
+      ...(held && { held: true }),
     });
   } catch (err) {
     console.error('[bookmark] failed:', err instanceof Error ? err.message.slice(0, 120) : 'unknown');

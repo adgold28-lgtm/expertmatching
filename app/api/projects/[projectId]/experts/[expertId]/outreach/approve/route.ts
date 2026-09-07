@@ -16,6 +16,11 @@
 // (docs/MATCHY_SPEC.md, founder answer 5). 404 rather than 403 on an
 // inaccessible project.
 //
+// WALKTHROUGH MODE: 409 `walkthrough_mode`, before any side effect. In
+// walkthrough the bookmark already leaves the intro at `outreach_drafted`, so
+// this button is exactly where an impatient client would try to leave the
+// building; it says so instead of sending.
+//
 // ONLY FROM `outreach_drafted`. Any other status means the intro already went
 // out (or the expert was rejected), and approving again would be a second cold
 // email to the same person.
@@ -32,6 +37,7 @@ import { emitEngagementEvent } from '../../../../../../../../lib/engagementEvent
 import { redactExpertForViewer } from '../../../../../../../../lib/redactExpert';
 import { getFirm } from '../../../../../../../../lib/firmStore';
 import { clientRateFor } from '../../../../../../../../lib/pricing';
+import { isWalkthrough } from '../../../../../../../../lib/walkthrough';
 
 const ID_RE        = /^[a-f0-9]{24}$/;
 const EXPERT_ID_RE = /^[a-zA-Z0-9\-_]+$/;
@@ -62,6 +68,18 @@ export async function POST(
       return NextResponse.json(
         { error: 'read_only', message: 'Only the project owner can approve outreach.' },
         { status: 403 },
+      );
+    }
+
+    // Walkthrough: nothing may be sent from this project at all. Refuse before
+    // any side effect — no suppression lookup, no status write, no Resend call.
+    if (isWalkthrough(project)) {
+      return NextResponse.json(
+        {
+          error:   'walkthrough_mode',
+          message: 'Nothing is sent in walkthrough mode. Switch the project to live first.',
+        },
+        { status: 409 },
       );
     }
 

@@ -10,6 +10,10 @@
 //     the summary alone when it does not.
 //   • No email addresses, no providers, no email numbering. An expert message
 //     is Matchy's summary with the cleaned body beneath it.
+//   • WALKTHROUGH MODE (lib/walkthrough.ts): the thread is fully usable and
+//     nothing leaves the building. Held messages carry a grey tag instead of a
+//     send control, a follow-up drafted before the switch shows its Send button
+//     disabled, and the composer stays open — practising the reply is the point.
 //   • The Accept / Offer buttons send an ACTION, never text. They used to post
 //     "Yes — $1,300/hr works." to the messages endpoint, which emails the body
 //     verbatim — so the expert received the number that includes our fee. They
@@ -26,6 +30,7 @@ import {
   approveOutreach,
   clientCounterRateOf,
   isPendingApproval,
+  isHeld,
   firstNameOf,
   formatRate,
   type ConversationMessage,
@@ -49,6 +54,11 @@ interface Props {
    * the one place the retired Outreach / Screen / Deliver badges survive.
    */
   isAdmin:        boolean;
+  /**
+   * True while the project is in walkthrough mode: every send is held, so the
+   * thread says so rather than pretending. See lib/walkthrough.ts.
+   */
+  walkthrough:    boolean;
   onExpertUpdate: (updated: ProjectExpert) => void;
   /** Reports the newest inbound timestamp so the list can clear its dot. */
   onInboundSeen:  (expertId: string, latestInboundMs: number) => void;
@@ -282,32 +292,54 @@ function ExpertMessage({ message, expertFirstName }: { message: ConversationMess
   );
 }
 
+/** The grey tag a held message wears in place of any send control. */
+function HeldTag() {
+  return (
+    <span
+      className="inline-block text-[9px] uppercase tracking-widest border border-frame text-muted px-1.5 py-0.5"
+      style={{ letterSpacing: '0.12em' }}
+    >
+      Held · walkthrough
+    </span>
+  );
+}
+
 function MatchyMessage({
   message,
   onSend,
   sending,
   canSend,
+  walkthrough,
 }: {
   message: ConversationMessage;
   onSend:  (messageId: string) => void;
   sending: boolean;
   canSend: boolean;
+  walkthrough: boolean;
 }) {
+  const held    = isHeld(message);
   const pending = isPendingApproval(message);
   return (
     <div className="pl-1 space-y-1.5">
       <MatchyLine tone={pending ? 'default' : 'quiet'}>{message.body}</MatchyLine>
-      <div className="flex items-center gap-3 pl-[52px]">
+      <div className="flex items-center gap-3 flex-wrap pl-[52px]">
         <span className="text-[10px] text-muted/70">{formatTime(message.createdAt)}</span>
+        {held && <HeldTag />}
         {pending && (
           <>
-            <span className="text-[10px] text-amber-700">Waiting on you</span>
+            {/* A follow-up drafted before the project went back to walkthrough:
+                it is still pending, but nothing can release it until the project
+                is live, so the button says why rather than failing on click. */}
+            <span className="text-[10px] text-amber-700">
+              {walkthrough ? 'Switch to live to send.' : 'Waiting on you'}
+            </span>
             {canSend && (
               <button
                 type="button"
                 onClick={() => onSend(message.id)}
-                disabled={sending}
-                className="text-[10px] uppercase tracking-widest bg-navy text-cream px-2.5 py-1 hover:bg-navy/90 disabled:opacity-40 transition-colors"
+                disabled={sending || walkthrough}
+                title={walkthrough ? 'Nothing is sent in walkthrough mode' : undefined}
+                className="text-[10px] uppercase tracking-widest bg-navy text-cream px-2.5 py-1 hover:bg-navy/90 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
                 style={{ letterSpacing: '0.1em' }}
               >
                 {sending ? 'Sending…' : 'Send'}
@@ -321,6 +353,7 @@ function MatchyMessage({
 }
 
 function ClientMessage({ message }: { message: ConversationMessage }) {
+  const held    = isHeld(message);
   const pending = isPendingApproval(message);
   return (
     <div className="flex justify-end">
@@ -328,9 +361,12 @@ function ClientMessage({ message }: { message: ConversationMessage }) {
         <div className="border border-navy/20 bg-navy/5 px-3.5 py-2.5">
           <p className="text-[12px] text-ink leading-relaxed whitespace-pre-wrap">{message.body}</p>
         </div>
-        <p className="text-[10px] text-muted/70 mt-1 text-right">
-          {pending ? 'Held for review · ' : ''}{formatTime(message.createdAt)}
-        </p>
+        <div className="flex items-center gap-2 flex-wrap justify-end mt-1">
+          {held && <HeldTag />}
+          <p className="text-[10px] text-muted/70">
+            {pending ? 'Held for review · ' : ''}{formatTime(message.createdAt)}
+          </p>
+        </div>
       </div>
     </div>
   );
@@ -343,6 +379,7 @@ export default function ConversationThread({
   projectExpert,
   canSend,
   isAdmin,
+  walkthrough,
   onExpertUpdate,
   onInboundSeen,
 }: Props) {
@@ -360,6 +397,8 @@ export default function ConversationThread({
   const [sendError, setSendError] = useState('');
   const [pendingId, setPendingId] = useState<string | null>(null);
   const [approving, setApproving] = useState(false);
+  // What the last rate decision did. In walkthrough it says the line was held.
+  const [decisionNote, setDecisionNote] = useState('');
 
   const [noteText,   setNoteText]   = useState(projectExpert.userNotes ?? '');
   const [noteSaving, setNoteSaving] = useState(false);
@@ -396,6 +435,7 @@ export default function ConversationThread({
     setDraft('');
     setFindings([]);
     setSendError('');
+    setDecisionNote('');
     setNoteText(projectExpert.userNotes ?? '');
     setNoteSaved(false);
     void load(true);
@@ -451,6 +491,7 @@ export default function ConversationThread({
     setSending(true);
     setFindings([]);
     setSendError('');
+    setDecisionNote('');
     try {
       const res = await fetch(`/api/projects/${projectId}/experts/${expertId}/rate-decision`, {
         method:  'POST',
@@ -458,12 +499,19 @@ export default function ConversationThread({
         body:    JSON.stringify({ action }),
       });
       const data = await res.json().catch(() => null) as
-        { message?: string; projectExpert?: ProjectExpertWithCounter } | null;
+        { message?: string; held?: boolean; projectExpert?: ProjectExpertWithCounter } | null;
 
       if (!res.ok) {
         setSendError(data?.message ?? 'Something went wrong. Try again.');
         return;
       }
+      // The rate moved either way; in walkthrough the line to the expert did not
+      // go, and saying so is the whole point of the mode.
+      setDecisionNote(data?.held
+        ? 'Recorded. The reply to them was held — nothing is sent in walkthrough mode.'
+        : action === 'accept'
+          ? 'Rate agreed. I have told them.'
+          : 'Held at your rate. I have told them.');
       if (data?.projectExpert) {
         setThreadPE(data.projectExpert);
         onExpertUpdate(data.projectExpert);
@@ -633,7 +681,9 @@ export default function ConversationThread({
         {!loading && !loadError && messages.length === 0 && (
           <MatchyLine variant="card" tone="quiet">
             {status === 'bookmarked'
-              ? `No address on file for ${firstName} yet. Bookmark again to retry, or pass.`
+              ? walkthrough
+                ? `Walkthrough mode. I would look up an address and send ${firstName} the intro here. Nothing was sent.`
+                : `No address on file for ${firstName} yet. Bookmark again to retry, or pass.`
               : `Nothing from ${firstName} yet. I'll put their reply here.`}
           </MatchyLine>
         )}
@@ -650,6 +700,7 @@ export default function ConversationThread({
                 onSend={releasePending}
                 sending={pendingId === m.id}
                 canSend={canSend}
+                walkthrough={walkthrough}
               />
             );
           }
@@ -658,19 +709,25 @@ export default function ConversationThread({
 
         {/* ── Review-first: the intro is written and waiting ── */}
         {status === 'outreach_drafted' && !hasPendingMatchy && (
-          <div className="border border-sky-200 bg-sky-50 px-3.5 py-3 space-y-2">
-            <MatchyLine>Intro drafted — review and send.</MatchyLine>
+          <div className={`border px-3.5 py-3 space-y-2 ${walkthrough ? 'border-frame bg-cream' : 'border-sky-200 bg-sky-50'}`}>
+            <MatchyLine tone={walkthrough ? 'quiet' : 'default'}>
+              {walkthrough
+                ? "Intro written. Nothing is sent in walkthrough mode — switch this project to live and it's yours to send."
+                : 'Intro drafted — review and send.'}
+            </MatchyLine>
             {canSend && (
-              <div className="pl-[52px]">
+              <div className="pl-[52px] flex items-center gap-2 flex-wrap">
                 <button
                   type="button"
                   onClick={() => { void approveIntro(); }}
-                  disabled={approving}
-                  className="text-[10px] uppercase tracking-widest bg-navy text-cream px-3 py-1.5 hover:bg-navy/90 disabled:opacity-40 transition-colors"
+                  disabled={approving || walkthrough}
+                  title={walkthrough ? 'Nothing is sent in walkthrough mode' : undefined}
+                  className="text-[10px] uppercase tracking-widest bg-navy text-cream px-3 py-1.5 hover:bg-navy/90 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
                   style={{ letterSpacing: '0.1em' }}
                 >
                   {approving ? 'Sending…' : 'Send the intro'}
                 </button>
+                {walkthrough && <span className="text-[10px] text-muted">Switch to live to send.</span>}
               </div>
             )}
           </div>
@@ -707,6 +764,10 @@ export default function ConversationThread({
               </div>
             )}
           </div>
+        )}
+
+        {decisionNote && (
+          <MatchyLine tone="quiet">{decisionNote}</MatchyLine>
         )}
 
         <div ref={bottomRef} />
@@ -758,7 +819,9 @@ export default function ConversationThread({
               rows={3}
               placeholder={noAddressYet
                 ? `Nothing to reply to yet.`
-                : `Write to ${firstName} — I'll relay it.`}
+                : walkthrough
+                  ? 'Practice reply. Nothing is sent in walkthrough mode.'
+                  : `Write to ${firstName} — I'll relay it.`}
               disabled={sending || noAddressYet}
               className="w-full px-2.5 py-2 text-[12px] border border-frame bg-cream focus:outline-none focus:border-navy text-ink resize-none disabled:opacity-50"
             />
@@ -766,6 +829,12 @@ export default function ConversationThread({
             {noAddressYet && (
               <p className="text-[11px] text-muted">
                 No address on file yet — I&apos;ll open this up as soon as there is one.
+              </p>
+            )}
+
+            {walkthrough && !noAddressYet && (
+              <p className="text-[11px] text-muted">
+                Walkthrough mode. Your message is screened and saved to the thread, and nothing is sent.
               </p>
             )}
 

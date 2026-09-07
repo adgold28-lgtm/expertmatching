@@ -215,7 +215,7 @@ export function redactExpertForViewer(pe: ProjectExpert, viewer: Viewer): Projec
 const MATCHY_OUTCOMES: ReadonlySet<string> = new Set<MatchyOutcome>([
   'intro_sent', 'intro_drafted', 'intro_failed', 'contact_found',
   'contact_not_found', 'contact_suppressed', 'contact_check_unavailable',
-  'contact_discovery_unavailable',
+  'contact_discovery_unavailable', 'walkthrough_held',
 ]);
 
 /**

@@ -58,6 +58,7 @@ import { emitEngagementEvent } from '../../../lib/engagementEvents';
 import { isIdentityRevealed } from '../../../lib/redactExpert';
 import { buildFollowUpEmail, deriveTopic } from '../../../lib/matchyTemplates';
 import { sendSequenceEmail } from '../../../lib/emailSequence';
+import { isWalkthrough, WALKTHROUGH_HELD_SUMMARY } from '../../../lib/walkthrough';
 import { clientRateFor } from '../../../lib/pricing';
 import { getFirm, getUser } from '../../../lib/firmStore';
 import type { Project, ProjectExpert } from '../../../types';
@@ -539,6 +540,9 @@ async function advanceConflict(
  * the intro left behind:
  *   - review-first project → the follow-up is DRAFTED onto the thread with the
  *     pending flag and waits for POST .../messages/[messageId]/send
+ *   - walkthrough project  → the follow-up is written to the thread marked
+ *     `held: 'walkthrough'`, which is NOT pending: it can never be released
+ *     while the project is not live (lib/walkthrough.ts)
  *   - otherwise            → it is sent, status becomes 'followup_sent', and
  *     `rate_offered` is emitted
  *
@@ -592,6 +596,22 @@ async function advanceInterested(
   // message and not the legal boilerplate.
   const storedBody = cleanEmailBody(email.text);
 
+  const held = isWalkthrough(project);
+
+  if (held) {
+    // Written, readable, and permanently not sendable from here. Held is not
+    // pending, so no approve button renders and the status does not advance.
+    await appendMessage({
+      projectId, expertId,
+      direction: 'outbound',
+      author:    'matchy',
+      bodyClean: storedBody,
+      summary:   WALKTHROUGH_HELD_SUMMARY,
+      held:      'walkthrough',
+    });
+    return;
+  }
+
   if (project.reviewFirst === true) {
     await appendMessage({
       projectId, expertId,
@@ -604,10 +624,25 @@ async function advanceInterested(
     return;
   }
 
-  await sendSequenceEmail(pe.contactEmail, email.subject, email.text, pe.outreachToken ?? token, 'followup', {
+  const outcome = await sendSequenceEmail(pe.contactEmail, email.subject, email.text, pe.outreachToken ?? token, 'followup', {
     footerIncluded: true,
     html:           email.html,
   });
+
+  // The chokepoint refused it (walkthrough flipped mid-flight, or
+  // DISABLE_EMAILS). Store it as pending rather than as sent, and do NOT
+  // advance to 'followup_sent' — nothing has been asked of the expert yet.
+  if (!outcome.sent) {
+    await appendMessage({
+      projectId, expertId,
+      direction: 'outbound',
+      author:    'matchy',
+      bodyClean: storedBody,
+      summary:   'Follow-up drafted. Approve it and I will send it.',
+      pendingApproval: true,
+    });
+    return;
+  }
 
   await appendMessage({
     projectId, expertId,

@@ -41,6 +41,7 @@ import type {
 } from './contactProviders/types';
 import { normalizeDomain, isDisallowedDomain } from './domainSuggestions';
 import { getProject, updateExpertStatus } from './projectStore';
+import { isWalkthrough } from './walkthrough';
 import { runSequenceStep } from './outreachSteps';
 import { isSuppressed } from './outreachSuppressions';
 import { emitEngagementEvent } from './engagementEvents';
@@ -760,7 +761,12 @@ export async function runContactDiscoveryJob(job: ContactDiscoveryJob): Promise<
 
     // The intro — the same call the bookmark route makes when it already has an
     // address, so an expert reply lands on the thread the usual way.
-    const draftOnly = project.reviewFirst === true;
+    //
+    // Walkthrough mode drafts rather than sends. This is defence in depth: the
+    // bookmark route never enqueues this job on a walkthrough project (it will
+    // not spend a provider credit either), and lib/emailSequence holds the send
+    // regardless. Honoring it here as well means the STATUS is right too.
+    const draftOnly = project.reviewFirst === true || isWalkthrough(project);
 
     const sendResult = await runSequenceStep({
       projectId,

@@ -44,15 +44,21 @@ function isValidClientRate(value: unknown): value is number {
 
 interface MatchySettingsPatch {
   reviewFirst?:   boolean;
+  walkthrough?:   boolean;
   clientRateMin?: number | null;
   clientRateMax?: number | null;
 }
 
 /**
- * Reads the three Matchy fields off a PUT/PATCH body. Returns `touched` so the
+ * Reads the Matchy fields off a PUT/PATCH body. Returns `touched` so the
  * caller only enforces owner-or-admin when one of them is actually being
  * changed, and validates the band against whatever the project already has —
  * raising just the floor still has to end up <= the existing ceiling.
+ *
+ * GOING LIVE LANDS ON REVIEW-FIRST. `walkthrough: false` without an explicit
+ * `reviewFirst` in the same body sets `reviewFirst: true`, so the step from
+ * "nothing is sent" to "real emails" is never also a step to "and they go on
+ * their own". An owner who wants auto-send says so in the same request.
  */
 function validateMatchySettings(
   body: Record<string, unknown>,
@@ -67,6 +73,17 @@ function validateMatchySettings(
     }
     patch.reviewFirst = body.reviewFirst;
     touched = true;
+  }
+
+  if ('walkthrough' in body) {
+    if (typeof body.walkthrough !== 'boolean') {
+      return { error: Response.json({ error: 'invalid_walkthrough', field: 'walkthrough' }, { status: 400 }) };
+    }
+    patch.walkthrough = body.walkthrough;
+    touched = true;
+    if (body.walkthrough === false && !('reviewFirst' in body)) {
+      patch.reviewFirst = true;
+    }
   }
 
   for (const field of ['clientRateMin', 'clientRateMax'] as const) {
@@ -155,10 +172,10 @@ export async function PUT(
     if (!project) return Response.json({ error: 'not_found' }, { status: 404 });
 
     // ── Matchy project settings ──────────────────────────────────────────────
-    // The review-first switch and the client-rate band decide what Matchy
-    // sends and what it may agree to on the client's behalf, so only the
-    // project owner (or staff) may change them. Collaborators are read-only on
-    // outreach decisions (docs/MATCHY_SPEC.md, founder answer 5).
+    // Walkthrough/live, the review-first switch and the client-rate band decide
+    // what Matchy sends and what it may agree to on the client's behalf, so only
+    // the project owner (or staff) may change them. Collaborators are read-only
+    // on outreach decisions (docs/MATCHY_SPEC.md, founder answer 5).
     const matchySettings = validateMatchySettings(body, project);
     if ('error' in matchySettings) return matchySettings.error;
     if (matchySettings.touched && role !== 'admin' && project.ownerEmail !== email) {

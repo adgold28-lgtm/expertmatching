@@ -27,6 +27,13 @@
 //   lives in jsonb precisely so it costs no schema change — if a later phase
 //   wants an approval audit trail, that is when the column earns its migration.
 //
+// HELD (same jsonb, same reason)
+//   A project in walkthrough mode sends nothing (lib/walkthrough.ts). Matchy
+//   still writes the message so the client can read exactly what would have
+//   gone out, stored with `{ "held": "walkthrough" }`. A held message is NOT
+//   pending: there is no approve button, because nothing can release it until
+//   the owner switches the project live. The two flags are never both set.
+//
 // WRITES ARE SERVICE-ROLE ONLY. `conversation_messages` has an RLS read policy
 // for project members and no write policy at all, so a browser session can
 // never insert a message; every write goes through here, from a server route
@@ -45,6 +52,7 @@ import {
   type ScreenResult,
 } from './matchyScreen';
 import { isIdentityRevealed } from './redactExpert';
+import { toHeldReason, type HeldReason } from './walkthrough';
 import type { ExpertStatus, ReplyIntent } from '../types';
 
 // ─── Shapes ───────────────────────────────────────────────────────────────────
@@ -61,6 +69,13 @@ export interface StoredScreenResult {
   findings: ScreenFinding[];
   /** Review-first: this outbound message is a draft awaiting approval. */
   pending?: boolean;
+  /**
+   * The send was HELD and can never be released from this record: walkthrough
+   * mode, or the environment kill switch (lib/walkthrough.ts). Distinct from
+   * `pending`, which is a draft the client can approve — a held message has no
+   * send button, because the project is not live. The two are never both set.
+   */
+  held?: HeldReason;
 }
 
 export interface AppendMessageInput {
@@ -76,6 +91,8 @@ export interface AppendMessageInput {
   screenResult?:   ScreenResult | null;
   /** Review-first draft: stored, not sent. */
   pendingApproval?: boolean;
+  /** Walkthrough (or DISABLE_EMAILS): stored, never sent, not approvable. */
+  held?: HeldReason;
   resendMessageId?: string | null;
 }
 
@@ -91,6 +108,8 @@ export interface ViewerMessage {
   screenResult: StoredScreenResult | null;
   /** True when this is a drafted message that has not been sent. */
   pendingApproval: boolean;
+  /** Why this message was never sent, or null when it went out normally. */
+  held: HeldReason | null;
   createdAt: string;
 }
 
@@ -126,10 +145,12 @@ function toStoredScreenResult(value: unknown): StoredScreenResult | null {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
   const obj = value as Record<string, unknown>;
   const findings = Array.isArray(obj.findings) ? (obj.findings as ScreenFinding[]) : [];
+  const held = toHeldReason(obj.held);
   return {
     blocked:  obj.blocked === true,
     findings,
     ...(obj.pending === true ? { pending: true } : {}),
+    ...(held ? { held } : {}),
   };
 }
 
@@ -156,14 +177,20 @@ export async function appendMessage(
     return null;
   }
 
+  // A held message is NOT pending: nothing can release it while the project is
+  // in walkthrough, so it must never render an approve/send control.
+  const held    = input.held ?? null;
+  const pending = !held && input.pendingApproval === true;
+
   const screenResult: StoredScreenResult | null = input.screenResult
     ? {
         blocked:  input.screenResult.blocked,
         findings: input.screenResult.findings,
-        ...(input.pendingApproval ? { pending: true } : {}),
+        ...(pending ? { pending: true } : {}),
+        ...(held    ? { held }          : {}),
       }
-    : input.pendingApproval
-      ? { blocked: false, findings: [], pending: true }
+    : (pending || held)
+      ? { blocked: false, findings: [], ...(pending ? { pending: true } : {}), ...(held ? { held } : {}) }
       : null;
 
   try {
@@ -415,7 +442,8 @@ export function redactMessageForViewer(
     summary:   summary ?? null,
     intent:    toIntent(message.intent),
     screenResult: stored,
-    pendingApproval: stored?.pending === true,
+    pendingApproval: stored?.pending === true && !stored?.held,
+    held:      stored?.held ?? null,
     createdAt: message.created_at,
   };
 }

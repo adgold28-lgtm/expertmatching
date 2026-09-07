@@ -50,7 +50,29 @@ const STAGE_STEP: Record<SummaryStage, number> = {
 const CREATE_ERROR_LINES: Record<string, string> = {
   onboarding_incomplete:    'Finish setting up your account first.',
   failed_to_create_project: "We couldn't create the project. Try again.",
+  invalid_walkthrough:      "Couldn't read that setting. Try again.",
 };
+
+// ─── Walkthrough vs live ──────────────────────────────────────────────────────
+//
+// The one decision a new project starts with. Walkthrough is preselected, and
+// it is what an absent flag means server-side too (lib/walkthrough.ts), so a
+// request that never reaches the API still lands on the safe state.
+
+type ProjectMode = 'walkthrough' | 'live';
+
+const PROJECT_MODES: Array<{ id: ProjectMode; label: string; blurb: string }> = [
+  {
+    id:    'walkthrough',
+    label: 'Walkthrough',
+    blurb: 'Click through everything. No email reaches an expert.',
+  },
+  {
+    id:    'live',
+    label: 'Live',
+    blurb: 'Matchy emails real experts when you bookmark them.',
+  },
+];
 
 // ─── Main Page ─────────────────────────────────────────────────────────────────
 
@@ -72,6 +94,9 @@ export default function AppPage() {
 
   const [showNewProjectModal, setShowNewProjectModal] = useState(false);
   const [projectName,         setProjectName]         = useState('');
+  // Walkthrough is the default and the safe one: nothing reaches an expert
+  // until the owner deliberately switches the project live (lib/walkthrough.ts).
+  const [projectMode,         setProjectMode]         = useState<ProjectMode>('walkthrough');
   const [creating,            setCreating]            = useState(false);
   const [createError,         setCreateError]         = useState('');
 
@@ -130,6 +155,7 @@ export default function AppPage() {
 
   function openNewProjectModal() {
     setProjectName('');
+    setProjectMode('walkthrough');
     setCreateError('');
     setShowNewProjectModal(true);
   }
@@ -137,6 +163,7 @@ export default function AppPage() {
   function closeNewProjectModal() {
     setShowNewProjectModal(false);
     setProjectName('');
+    setProjectMode('walkthrough');
     setCreateError('');
   }
 
@@ -149,7 +176,10 @@ export default function AppPage() {
       const res = await fetch('/api/projects', {
         method:  'POST',
         headers: { 'Content-Type': 'application/json' },
-        body:    JSON.stringify({ name: projectName.trim() || undefined }),
+        body:    JSON.stringify({
+          name:        projectName.trim() || undefined,
+          walkthrough: projectMode === 'walkthrough',
+        }),
       });
       const data = await res.json() as { project?: { id: string }; error?: string };
       if (!res.ok || !data.project) {
@@ -472,6 +502,55 @@ export default function AppPage() {
                   style={{ fontFamily: 'var(--font-libre-franklin)', fontWeight: 300 }}
                 />
               </div>
+
+              {/* ── Walkthrough or live ── */}
+              <fieldset className="space-y-2" disabled={creating}>
+                <legend
+                  className="block text-[10px] uppercase tracking-widest text-muted font-medium mb-1.5"
+                  style={{ letterSpacing: '0.18em' }}
+                >
+                  How this project starts
+                </legend>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                  {PROJECT_MODES.map(mode => {
+                    const selected = projectMode === mode.id;
+                    return (
+                      <label
+                        key={mode.id}
+                        className={`flex gap-2 items-start border px-3 py-2.5 cursor-pointer transition-colors ${
+                          creating ? 'opacity-50 cursor-not-allowed' : ''
+                        } ${selected ? 'border-navy bg-navy/5' : 'border-frame hover:border-navy/40'}`}
+                      >
+                        <input
+                          type="radio"
+                          name="project-mode"
+                          value={mode.id}
+                          checked={selected}
+                          onChange={() => { setProjectMode(mode.id); setCreateError(''); }}
+                          disabled={creating}
+                          className="mt-[3px] shrink-0 accent-navy"
+                        />
+                        <span className="min-w-0">
+                          <span
+                            className={`block text-[10px] uppercase tracking-widest font-semibold ${selected ? 'text-navy' : 'text-muted'}`}
+                            style={{ letterSpacing: '0.14em' }}
+                          >
+                            {mode.label}
+                          </span>
+                          <span className="block text-[11px] text-muted leading-relaxed mt-0.5">
+                            {mode.blurb}
+                          </span>
+                        </span>
+                      </label>
+                    );
+                  })}
+                </div>
+                {projectMode === 'live' && (
+                  <p className="text-[11px] text-amber-700 leading-relaxed">
+                    You can switch back at any time in the project settings.
+                  </p>
+                )}
+              </fieldset>
 
               {createError && (
                 <p className="text-xs text-red-600">{createError}</p>

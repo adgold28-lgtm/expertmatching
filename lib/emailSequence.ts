@@ -26,6 +26,9 @@ import type { Expert } from '../types';
 import { openai } from './openai';
 import { buildOutreachFooter } from './outreachFooter';
 import { getFromAddress } from './mailFrom';
+import { verifyOutreachToken } from './outreachToken';
+import { getProject } from './projectStore';
+import { isWalkthrough, type HeldReason } from './walkthrough';
 
 /**
  * The step field on a QStash job. 'email2' and 'email3' are retired and nothing
@@ -164,6 +167,31 @@ export interface SendSequenceEmailOptions {
   html?: string;
 }
 
+/**
+ * Whether the message actually went out.
+ *
+ * `held` is why it did not: 'walkthrough' when the project has not been
+ * switched live (lib/walkthrough.ts), 'disabled' when DISABLE_EMAILS is set.
+ * Callers that ignore the return value still compile — but every caller in this
+ * repo reads it, so the UI can show a held state rather than pretending
+ * something was sent.
+ */
+export type SendOutcome =
+  | { sent: true }
+  | { sent: false; held: HeldReason };
+
+/**
+ * THE CHOKEPOINT. Every outbound expert email in the product goes through here,
+ * which is why the walkthrough gate lives here and not only at the call sites:
+ * no route, present or future, can leak an email past it.
+ *
+ * The project is resolved from the reply token (the one thing every caller
+ * already has). It FAILS CLOSED: an unverifiable token or a missing project
+ * throws rather than sending, because a message we cannot attribute to a
+ * project is a message we cannot prove is allowed to go.
+ *
+ * Never logs: the recipient address, the subject, the body, or the token.
+ */
 export async function sendSequenceEmail(
   to:         string,
   subject:    string,
@@ -171,10 +199,23 @@ export async function sendSequenceEmail(
   replyToken: string,
   fromName:   string,
   options:    SendSequenceEmailOptions = {},
-): Promise<void> {
+): Promise<SendOutcome> {
   if (process.env.DISABLE_EMAILS === 'true') {
-    console.log('[emailSequence] suppressed (DISABLE_EMAILS=true)');
-    return;
+    console.warn('[emailSequence] suppressed (DISABLE_EMAILS=true)', JSON.stringify({ step: fromName }));
+    return { sent: false, held: 'disabled' };
+  }
+
+  // Resolve the project before Resend is ever touched. The token is the only
+  // handle a caller is guaranteed to have, and it is project+expert scoped.
+  const verified = verifyOutreachToken(replyToken);
+  const project  = verified.ok ? await getProject(verified.data.projectId) : null;
+  if (!project) {
+    throw new Error('[emailSequence] send refused: unresolvable project');
+  }
+
+  if (isWalkthrough(project)) {
+    console.warn('[emailSequence] held (walkthrough)', JSON.stringify({ step: fromName }));
+    return { sent: false, held: 'walkthrough' };
   }
 
   const from    = getFromAddress();
@@ -201,5 +242,6 @@ export async function sendSequenceEmail(
     throw new Error(`[emailSequence] Resend error: ${error.message}`);
   }
 
-  console.log('[emailSequence] sent', { step: fromName, status: 'ok' });
+  console.info('[emailSequence] sent', JSON.stringify({ step: fromName, status: 'ok' }));
+  return { sent: true };
 }

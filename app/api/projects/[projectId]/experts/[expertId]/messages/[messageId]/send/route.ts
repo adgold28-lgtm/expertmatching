@@ -13,6 +13,11 @@
 // WHO MAY: the project owner or a platform admin. Collaborators are read-only.
 // 404 rather than 403 on an inaccessible project.
 //
+// WALKTHROUGH MODE: 409 `walkthrough_mode`, before any side effect. A held
+// message is never marked pending in the first place (lib/conversations), so
+// this is the belt to that braces — a stale client cannot release anything
+// while the project is not live.
+//
 // IDEMPOTENT: the pending flag is what makes a message sendable, and it is
 // cleared as part of sending. A second POST finds no pending flag and answers
 // 409 rather than mailing the expert twice.
@@ -38,6 +43,7 @@ import { emitEngagementEvent } from '../../../../../../../../../lib/engagementEv
 import { isSuppressed } from '../../../../../../../../../lib/outreachSuppressions';
 import { clientRateFor } from '../../../../../../../../../lib/pricing';
 import { getFirm } from '../../../../../../../../../lib/firmStore';
+import { isWalkthrough } from '../../../../../../../../../lib/walkthrough';
 import type { StoredScreenResult } from '../../../../../../../../../lib/conversations';
 
 const ID_RE         = /^[a-f0-9]{24}$/;
@@ -73,6 +79,18 @@ export async function POST(
       return NextResponse.json(
         { error: 'read_only', message: 'Only the project owner can send to an expert.' },
         { status: 403 },
+      );
+    }
+
+    // Walkthrough: nothing may be sent from this project at all. Refuse before
+    // any side effect — no suppression lookup, no status write, no Resend call.
+    if (isWalkthrough(project)) {
+      return NextResponse.json(
+        {
+          error:   'walkthrough_mode',
+          message: 'Nothing is sent in walkthrough mode. Switch the project to live first.',
+        },
+        { status: 409 },
       );
     }
 

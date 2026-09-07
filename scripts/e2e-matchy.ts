@@ -7,8 +7,16 @@
 //   SMOKE_BASE_URL=https://expertmatch.fit npx tsx scripts/e2e-matchy.ts
 //
 // Provisions (and deletes afterwards) via the service role: an owner and a
-// collaborator in one throwaway org, an intruder in another org, one project,
-// one expert. Never touches the founder's account.
+// collaborator in one throwaway org, an intruder in another org, TWO projects
+// (one live, one walkthrough), one expert each. Never touches the founder's
+// account.
+//
+// TWO PROJECTS, ON PURPOSE. Every project now starts in WALKTHROUGH mode
+// (lib/walkthrough.ts) unless it explicitly asks to be live, so the main run
+// creates its project with `walkthrough: false` and every existing assertion
+// holds unchanged. The second project takes the default and asserts the whole
+// held path: no contact discovery, a rate decision that records the money but
+// sends nothing, a client reply stored as held, and 409 on both send routes.
 
 import * as dotenv from 'dotenv';
 import * as path from 'path';
@@ -104,11 +112,19 @@ async function main(): Promise<void> {
     check('intruder login', (await req(intruder, 'POST', '/api/auth/login', { email: INTRUDER_EMAIL, password: PW })).status === 200);
 
     // ── project ────────────────────────────────────────────────────────────
-    const create = await req(owner, 'POST', '/api/projects', { name: 'Matchy E2E', industry: 'Industrial coatings', function: 'Operations', geography: 'US', seniority: 'Senior' });
+    // walkthrough:false makes this the LIVE project — the one every assertion
+    // below was written for. Nothing is still ever sent: the expert has no
+    // address on file.
+    const create = await req(owner, 'POST', '/api/projects', { name: 'Matchy E2E', industry: 'Industrial coatings', function: 'Operations', geography: 'US', seniority: 'Senior', walkthrough: false });
     const created = await json(create);
     projectId = created?.project?.id ?? created?.id;
     check('create project', !!projectId, `status ${create.status}`);
     if (!projectId) throw new Error('no project');
+    check('created project is live (walkthrough:false was honored)',
+      created?.project?.walkthrough === false, `walkthrough ${created?.project?.walkthrough}`);
+    const badMode = await req(owner, 'POST', '/api/projects', { name: 'Matchy E2E bad mode', walkthrough: 'nope' });
+    check('POST /api/projects rejects a non-boolean walkthrough',
+      badMode.status === 400 && (await json(badMode))?.error === 'invalid_walkthrough', `status ${badMode.status}`);
     cleanup.push(async () => {
       await db.from('engagement_events').delete().eq('project_id', projectId!);
       await db.from('projects').delete().eq('id', projectId!);
@@ -313,6 +329,9 @@ async function main(): Promise<void> {
       check('owner anon sign-in for RLS checks', false);
     }
 
+    // ── walkthrough mode: a second project that may not send anything ──────
+    await runWalkthroughChecks(owner, cleanup);
+
     // ── unbookmark ─────────────────────────────────────────────────────────
     const ub = await req(owner, 'POST', `/api/projects/${projectId}/experts/${expertId}/unbookmark`, {});
     const ubBody = await json(ub);
@@ -327,6 +346,134 @@ async function main(): Promise<void> {
   }
   console.log(failures === 0 ? '\nALL CHECKS PASSED' : `\n${failures} CHECK(S) FAILED`);
   process.exit(failures === 0 ? 0 : 1);
+}
+
+
+/**
+ * Everything walkthrough mode has to guarantee, on its own throwaway project.
+ *
+ * The project is created with NO walkthrough flag, so it proves the default as
+ * well as the behaviour. Its expert has no address, exactly like the main run's,
+ * so even a bug in the gate could not reach a real inbox.
+ */
+async function runWalkthroughChecks(owner: Jar, cleanup: Array<() => Promise<void>>): Promise<void> {
+  const create  = await req(owner, 'POST', '/api/projects', { name: 'Matchy E2E walkthrough', industry: 'Industrial coatings', function: 'Operations', geography: 'US', seniority: 'Senior' });
+  const created = await json(create);
+  const wId: string | undefined = created?.project?.id ?? created?.id;
+  check('walkthrough: create project without the flag', !!wId, `status ${create.status}`);
+  if (!wId) return;
+  cleanup.push(async () => {
+    await db.from('conversation_messages').delete().eq('project_id', wId);
+    await db.from('engagement_events').delete().eq('project_id', wId);
+    await db.from('projects').delete().eq('id', wId);
+  });
+
+  // The default IS walkthrough: undefined or true, never false.
+  const got  = await json(await req(owner, 'GET', `/api/projects/${wId}`));
+  const flag = got?.project?.walkthrough;
+  check('walkthrough: GET shows the project is not live',
+    flag === undefined || flag === true, `walkthrough ${JSON.stringify(flag)}`);
+
+  const { addExpertsToProject, updateExpertStatus } = await import('../lib/projectStore');
+  const wExpertId = `e2e-walk-${RUN}`;
+  await addExpertsToProject(wId, [{
+    status: 'shortlisted',
+    expert: {
+      id: wExpertId, name: 'Robin Walkthrough', title: 'Chief Operating Officer', company: 'Example Coatings Inc',
+      location: 'Ohio, US', category: 'Operator', justification: 'Ran operations at a coatings manufacturer.',
+      relevance_score: 88, source_url: 'https://example.com', source_label: 'example', source_links: [],
+      anonymizedDescriptor: 'COO at a mid-size industrial coatings manufacturer',
+    } as any,
+  }]);
+
+  // Bookmark with no address: NO discovery is started, and nothing is sent.
+  const bm     = await req(owner, 'POST', `/api/projects/${wId}/experts/${wExpertId}/bookmark`, {});
+  const bmBody = await json(bm);
+  check('walkthrough: bookmark 200', bm.status === 200, `status ${bm.status}`);
+  check('walkthrough: bookmark outcome is walkthrough_held',
+    bmBody?.outcome === 'walkthrough_held', `outcome ${bmBody?.outcome}`);
+  check('walkthrough: status stays bookmarked',
+    bmBody?.projectExpert?.status === 'bookmarked', `status ${bmBody?.projectExpert?.status}`);
+  check('walkthrough: the client-safe outcome is on the record',
+    bmBody?.projectExpert?.matchyOutcome === 'walkthrough_held', `matchyOutcome ${bmBody?.projectExpert?.matchyOutcome}`);
+
+  const { data: wEvents } = await db.from('engagement_events').select('type, payload').eq('project_id', wId);
+  const wPayloads = JSON.stringify((wEvents ?? []).map((e: any) => e.payload));
+  check('walkthrough: the held bookmark is recorded as an event',
+    (wEvents ?? []).some((e: any) => e.type === 'contact_not_found' && e.payload?.walkthrough === true), wPayloads.slice(0, 160));
+  check('walkthrough: event payloads carry no name/email', !/Robin|Walkthrough person|@/.test(wPayloads), wPayloads.slice(0, 120));
+
+  // Give the engagement a thread and a counter, the way inbound-email would.
+  // The address is on a reserved .example domain that cannot resolve, and the
+  // gate is what is under test — nothing here can reach a real inbox.
+  await updateExpertStatus(wId, wExpertId, {
+    status:            'rate_negotiation',
+    contactEmail:      `expert@${FIRM_DOMAIN}`,
+    outreachToken:     `e2e-walk-${RUN}-token`,
+    expertCounterRate: 650,
+    clientCounterRate: 1300,
+  });
+
+  const accept     = await req(owner, 'POST', `/api/projects/${wId}/experts/${wExpertId}/rate-decision`, { action: 'accept' });
+  const acceptBody = await json(accept);
+  check('walkthrough: rate-decision 200 with held:true',
+    accept.status === 200 && acceptBody?.held === true, `status ${accept.status} held ${acceptBody?.held}`);
+  check('walkthrough: the money still moved ($650 → $1,300)',
+    acceptBody?.projectExpert?.clientRate === 1300, `clientRate ${acceptBody?.projectExpert?.clientRate}`);
+
+  const thread    = await json(await req(owner, 'GET', `/api/projects/${wId}/experts/${wExpertId}/messages`));
+  const lastMatchy = (thread?.messages ?? []).filter((m: any) => m.author === 'matchy').slice(-1)[0];
+  check("walkthrough: the Matchy line is stored held === 'walkthrough'",
+    lastMatchy?.held === 'walkthrough', `held ${JSON.stringify(lastMatchy?.held)}`);
+  check('walkthrough: a held message is not pending approval',
+    lastMatchy?.pendingApproval === false, `pendingApproval ${lastMatchy?.pendingApproval}`);
+
+  // A client reply is screened, stored held, and not sent.
+  const reply     = await req(owner, 'POST', `/api/projects/${wId}/experts/${wExpertId}/messages`, { text: 'Tuesday afternoon suits me.' });
+  const replyBody = await json(reply);
+  check('walkthrough: POST messages → 201',
+    reply.status === 201, `status ${reply.status} ${JSON.stringify(replyBody)?.slice(0, 160)}`);
+  check("walkthrough: the stored reply carries held === 'walkthrough'",
+    replyBody?.message?.held === 'walkthrough', `held ${JSON.stringify(replyBody?.message?.held)}`);
+
+  // The screen still runs — practising the compliance rules is the point.
+  const blocked = await req(owner, 'POST', `/api/projects/${wId}/experts/${wExpertId}/messages`, { text: 'call me on 415-555-0132' });
+  check('walkthrough: the compliance screen still blocks (422)',
+    blocked.status === 422 && (await json(blocked))?.error === 'message_blocked', `status ${blocked.status}`);
+
+  // Both send routes refuse outright, before any side effect.
+  const messageId = replyBody?.message?.id ?? '11111111-2222-3333-4444-555555555555';
+  const sendRes  = await req(owner, 'POST', `/api/projects/${wId}/experts/${wExpertId}/messages/${messageId}/send`, {});
+  const sendBody = await json(sendRes);
+  check('walkthrough: messages/:id/send → 409 walkthrough_mode',
+    sendRes.status === 409 && sendBody?.error === 'walkthrough_mode', `status ${sendRes.status} ${sendBody?.error ?? ''}`);
+
+  const approve     = await req(owner, 'POST', `/api/projects/${wId}/experts/${wExpertId}/outreach/approve`, {});
+  const approveBody = await json(approve);
+  check('walkthrough: outreach/approve → 409 walkthrough_mode',
+    approve.status === 409 && approveBody?.error === 'walkthrough_mode', `status ${approve.status} ${approveBody?.error ?? ''}`);
+
+  // Going live lands on review-first unless the owner says otherwise.
+  const live     = await req(owner, 'PATCH', `/api/projects/${wId}`, { walkthrough: false });
+  const liveBody = await json(live);
+  const lp       = liveBody?.project ?? liveBody;
+  check('walkthrough: PATCH { walkthrough:false } → 200 and the project is live',
+    live.status === 200 && lp?.walkthrough === false, `status ${live.status} walkthrough ${JSON.stringify(lp?.walkthrough)}`);
+  check('walkthrough: going live also turns review-first ON',
+    lp?.reviewFirst === true, `reviewFirst ${lp?.reviewFirst}`);
+
+  const badMode = await req(owner, 'PATCH', `/api/projects/${wId}`, { walkthrough: 'yes' });
+  check('walkthrough: PATCH rejects a non-boolean',
+    badMode.status === 400 && (await json(badMode))?.error === 'invalid_walkthrough', `status ${badMode.status}`);
+
+  // An owner who names both gets both.
+  const liveAuto = await req(owner, 'PATCH', `/api/projects/${wId}`, { walkthrough: false, reviewFirst: false });
+  const lap      = (await json(liveAuto))?.project;
+  check('walkthrough: an explicit reviewFirst in the same patch wins',
+    liveAuto.status === 200 && lap?.reviewFirst === false, `reviewFirst ${lap?.reviewFirst}`);
+
+  // Take the address back off, so nothing downstream could ever write to it.
+  await updateExpertStatus(wId, wExpertId, { contactEmail: '', outreachToken: '' });
 }
 
 main();

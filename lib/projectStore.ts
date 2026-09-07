@@ -44,6 +44,12 @@ export interface CreateProjectInput {
   seniority: string;
   experts?: Array<{ expert: Expert; status?: ExpertStatus }>;
   notes?: string;
+  /**
+   * Walkthrough mode (lib/walkthrough.ts). UNPROMOTED — it rides in the `brief`
+   * jsonb, so this ships with no migration. Leaving it undefined is what makes a
+   * new project a walkthrough by default.
+   */
+  walkthrough?: boolean;
 }
 
 export interface UpdateExpertInput {
@@ -191,6 +197,9 @@ export interface UpdateProjectInput {
   reviewFirst?:   boolean;
   clientRateMin?: number | null;
   clientRateMax?: number | null;
+  // Walkthrough mode — UNPROMOTED, rides in projects.brief (lib/walkthrough.ts).
+  // `false` is the only value that means live.
+  walkthrough?:   boolean;
   // Server-side expert sourcing job status (unpromoted — rides in projects.brief)
   sourcingStatus?:      'running' | 'completed' | 'failed' | null;
   sourcingStartedAt?:   number | null;
@@ -283,6 +292,7 @@ class InMemoryProjectStore implements ProjectStore {
       updatedAt:        now,
       experts:          makeProjectExperts(input.experts ?? []),
       notes:            input.notes,
+      ...(input.walkthrough !== undefined && { walkthrough: input.walkthrough }),
       ownerEmail,
       collaborators:    [],
       firmDomain,
@@ -552,6 +562,9 @@ class SupabaseProjectStore implements ProjectStore {
       seniority:    input.seniority,
       ...(input.expertType ? { expertType: input.expertType } : {}),
       ...(input.notes      ? { notes:      input.notes }      : {}),
+      // Unpromoted: walkthrough lives in the brief. Absent means walkthrough,
+      // so only an explicit choice is written.
+      ...(input.walkthrough !== undefined ? { walkthrough: input.walkthrough } : {}),
     };
 
     const id = generateProjectId();

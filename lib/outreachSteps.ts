@@ -50,7 +50,8 @@ export interface SequenceStepInput {
   firmType?: FirmTypeValue | null;
   firmSize?: FirmSizeValue | null;
   /**
-   * 'intro' only. The project's "review first" switch. When true nothing is
+   * 'intro' only. The project's "review first" switch, OR walkthrough mode
+   * (lib/walkthrough.ts) — callers OR the two together. When true nothing is
    * sent: the intro is written to outreachSubject/outreachDraft and the status
    * becomes 'outreach_drafted' for the client to approve.
    */
@@ -115,23 +116,25 @@ export async function runSequenceStep(input: SequenceStepInput): Promise<Sequenc
         recipientEmail:     expertEmail,
       });
 
-      // Review-first: write the draft and stop. Nothing leaves the building.
+      // Review-first (or walkthrough): write the draft and stop. Nothing
+      // leaves the building.
       if (input.draftOnly) {
-        const drafted = await updateExpertStatus(projectId, expertId, {
-          status:          'outreach_drafted',
-          outreachSubject: email.subject,
-          outreachDraft:   email.text,
-          outreachToken:   activeToken,
-        });
-        return { ok: true, project: drafted };
+        return { ok: true, project: await draft(projectId, expertId, activeToken, email.subject, email.text) };
       }
 
       // buildIntroEmail returns a complete message, CAN-SPAM footer included,
       // so the sender must not append a second one.
-      await sendSequenceEmail(expertEmail, email.subject, email.text, activeToken, 'intro', {
+      const introOutcome = await sendSequenceEmail(expertEmail, email.subject, email.text, activeToken, 'intro', {
         footerIncluded: true,
         html:           email.html,
       });
+
+      // The chokepoint held it (walkthrough mode, or DISABLE_EMAILS). Land on
+      // exactly the same state the draftOnly branch does rather than writing
+      // 'contacted' for a message nobody received.
+      if (!introOutcome.sent) {
+        return { ok: true, project: await draft(projectId, expertId, activeToken, email.subject, email.text) };
+      }
 
       const redis = getUpstashClient();
       if (redis) {
@@ -159,7 +162,13 @@ export async function runSequenceStep(input: SequenceStepInput): Promise<Sequenc
       const activeToken = token || generateOutreachToken(projectId, expertId).token;
 
       const { subject, body } = await generateEmail1(pe.expert, query, rate);
-      await sendSequenceEmail(expertEmail, subject, body, activeToken, 'email1');
+      const outcome = await sendSequenceEmail(expertEmail, subject, body, activeToken, 'email1');
+
+      // Same safety net on the legacy retry path: a held send is a draft, never
+      // a 'contacted'.
+      if (!outcome.sent) {
+        return { ok: true, project: await draft(projectId, expertId, activeToken, subject, body) };
+      }
 
       // Store reply-token index in Redis for inbound-email lookup
       const redis = getUpstashClient();
@@ -187,4 +196,27 @@ export async function runSequenceStep(input: SequenceStepInput): Promise<Sequenc
       err instanceof Error ? err.message.slice(0, 120) : 'unknown');
     return { ok: false, error: 'step_failed', status: 500 };
   }
+}
+
+/**
+ * The "written but not sent" state, in one place.
+ *
+ * Three paths land here: the review-first switch, walkthrough mode, and the
+ * chokepoint refusing a send (lib/emailSequence.SendOutcome). All three mean the
+ * same thing to the client — the intro exists and is waiting on them — so they
+ * must write the same record.
+ */
+async function draft(
+  projectId: string,
+  expertId:  string,
+  token:     string,
+  subject:   string,
+  text:      string,
+): Promise<Project> {
+  return updateExpertStatus(projectId, expertId, {
+    status:          'outreach_drafted',
+    outreachSubject: subject,
+    outreachDraft:   text,
+    outreachToken:   token,
+  });
 }

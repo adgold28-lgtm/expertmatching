@@ -22,6 +22,12 @@
 // (spec, founder answer 5) and get 403. 404 rather than 403 on an inaccessible
 // project, so the route never confirms that a project exists.
 //
+// WALKTHROUGH MODE (lib/walkthrough.ts) skips the send and nothing else. The
+// money fields move exactly as they do in live mode — practising a decision has
+// to leave the engagement in the state it really would be in — and the outbound
+// line is written to the thread marked `held: 'walkthrough'` so the client can
+// read what would have gone to the expert. The response carries `held: true`.
+//
 // STATUS IS NOT TOUCHED. There is no "rate agreed" status in
 // lib/expertPipeline.ts and this is not the place to invent one: an engagement
 // advances when the expert replies (POST /api/inbound-email classifies it), and
@@ -44,6 +50,7 @@ import { sendSequenceEmail } from '../../../../../../../lib/emailSequence';
 import { emitEngagementEvent } from '../../../../../../../lib/engagementEvents';
 import { redactExpertForViewer } from '../../../../../../../lib/redactExpert';
 import { getFirm } from '../../../../../../../lib/firmStore';
+import { isWalkthrough, WALKTHROUGH_HELD_SUMMARY } from '../../../../../../../lib/walkthrough';
 import type { EngagementEventType } from '../../../../../../../lib/engagementEvents';
 
 const ID_RE        = /^[a-f0-9]{24}$/;
@@ -105,8 +112,10 @@ export async function POST(
     // 6. Tell the expert. An engagement with no address yet (bookmark ended in
     //    `contact_not_found`) still records the decision — the line is stored
     //    on the thread, the send is skipped, and nothing throws. Same shape the
-    //    bookmark route uses when there is nobody to write to.
-    if (pe.contactEmail && pe.outreachToken) {
+    //    bookmark route uses when there is nobody to write to. Walkthrough is
+    //    the third way this can be a no-send.
+    const held = isWalkthrough(project);
+    if (!held && pe.contactEmail && pe.outreachToken) {
       const base    = pe.outreachSubject?.trim() || 'Paid expert call';
       const subject = /^re:/i.test(base) ? base : `Re: ${base}`;
       await sendSequenceEmail(pe.contactEmail, subject, text, pe.outreachToken, 'rate_decision');
@@ -133,9 +142,12 @@ export async function POST(
       direction: 'outbound',
       author:    'matchy',
       bodyClean: text,
-      summary:   action === 'accept'
-        ? 'Rate agreed. Finding a time next.'
-        : 'Held at your rate. Waiting on their answer.',
+      summary:   held
+        ? WALKTHROUGH_HELD_SUMMARY
+        : action === 'accept'
+          ? 'Rate agreed. Finding a time next.'
+          : 'Held at your rate. Waiting on their answer.',
+      ...(held && { held: 'walkthrough' as const }),
     });
 
     const firm  = await getFirm(project.firmDomain).catch(() => null);
@@ -145,12 +157,18 @@ export async function POST(
       expertId:  params.expertId,
       orgId:     firm?.id ?? null,
       type,
-      payload:   { expertRate: rates.expertRate, clientRate: rates.clientRate, sent: !!pe.contactEmail },
+      payload:   {
+        expertRate: rates.expertRate,
+        clientRate: rates.clientRate,
+        sent:       !held && !!pe.contactEmail,
+        ...(held && { walkthrough: true }),
+      },
     });
 
     return NextResponse.json({
       ok:            true,
       projectExpert: redactExpertForViewer(current, { role }),
+      ...(held && { held: true }),
     });
   } catch (err) {
     console.error('[rate-decision] failed:',

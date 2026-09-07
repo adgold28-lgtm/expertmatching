@@ -18,6 +18,7 @@ import { downloadProjectBriefPdf } from '../../../lib/exportBrief';
 import ConversationsPanel from '../../../components/ConversationsPanel';
 import { useFocusTrap } from '../../../lib/useFocusTrap';
 import { hasConversation } from '../../../components/matchyStatus';
+import { isWalkthrough } from '../../../lib/walkthrough';
 
 // ─── Workflow step config ─────────────────────────────────────────────────────
 
@@ -1446,6 +1447,9 @@ function ProjectPageInner() {
   const canSend           = isAdmin || isOwner;
   const nextAction        = getNextAction(project);
   const viewStep: WorkflowStep = STEPS.some(x => x.id === activeStep) ? activeStep : 'brief';
+  // Walkthrough is a property of the project, so the pill rides in the header
+  // and is visible on every step — not just the one that owns the settings.
+  const walkthrough       = isWalkthrough(project);
   const sourceExperts     = project.experts.filter(e => e.status !== 'rejected');
   // Passed experts live outside the default pool — the "Passed" chip is the one
   // way back to them, so it swaps the pool rather than filtering inside it.
@@ -1475,7 +1479,9 @@ function ProjectPageInner() {
 
       {/* ── Header ── */}
       <header className="bg-navy border-b-2 border-gold sticky top-0 z-40">
-        <div className="max-w-6xl mx-auto px-6 sm:px-10 py-4 flex items-center justify-between gap-4">
+        {/* flex-wrap: the walkthrough pill is a fourth item in this row and a
+            375px screen has no room for it beside the rest. */}
+        <div className="max-w-6xl mx-auto px-6 sm:px-10 py-4 flex items-center justify-between gap-3 sm:gap-4 flex-wrap">
           <Link
             href="/app"
             className="text-[10px] uppercase tracking-widest text-gold/60 hover:text-gold transition-colors shrink-0"
@@ -1488,6 +1494,20 @@ function ProjectPageInner() {
               {project.name}
             </p>
           </div>
+          {/* The one thing a client must never be unsure about: whether this
+              project can reach a real person. Clicking it goes to Conversations,
+              where MatchySettingsStrip has the switch. */}
+          {walkthrough && (
+            <button
+              type="button"
+              onClick={() => navigateTo('conversations')}
+              title="Nothing is sent in walkthrough mode"
+              className="shrink-0 text-[10px] uppercase tracking-widest text-gold border border-gold px-2.5 py-1.5 hover:bg-gold/10 transition-colors"
+              style={{ letterSpacing: '0.14em' }}
+            >
+              Walkthrough
+            </button>
+          )}
           {(currentUserRole === 'admin' || project.ownerEmail === currentUserEmail) && (
             <button
               onClick={() => setShowShare(true)}

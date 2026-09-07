@@ -164,7 +164,11 @@ export type MatchyOutcome =
   | 'contact_not_found'
   | 'contact_suppressed'
   | 'contact_check_unavailable'
-  | 'contact_discovery_unavailable';
+  | 'contact_discovery_unavailable'
+  // Walkthrough mode: the client bookmarked an expert we have no address for.
+  // Matchy did NOT go looking (a provider call spends credits) and nothing was
+  // sent. See lib/walkthrough.ts.
+  | 'walkthrough_held';
 
 export type ExpertStatus =
   | 'discovered'
@@ -416,6 +420,14 @@ export interface Project {
   // false (the default) means bookmarking an expert sends the intro straight
   // away; true means Matchy drafts it and waits for the client.
   reviewFirst?: boolean;
+  /**
+   * Walkthrough mode (unpromoted — rides in projects.brief, no migration).
+   * `undefined` means WALKTHROUGH: the client can click through the whole flow
+   * and see exactly what Matchy would say, but no email reaches an expert and
+   * no contact-discovery provider is called. Only an explicit `false` is live.
+   * Read it through lib/walkthrough.isWalkthrough, never directly.
+   */
+  walkthrough?: boolean;
   // The CLIENT-side hourly band Matchy negotiates inside, in whole dollars.
   // Null/absent = no bound; tier defaults apply.
   clientRateMin?: number | null;

@@ -32,6 +32,11 @@ export type BookmarkOutcome =
   | 'contact_suppressed'
   | 'contact_check_unavailable'
   | 'intro_failed'
+  /**
+   * Walkthrough mode and no address on file. Matchy did NOT go looking (that
+   * spends a provider credit) and nothing was sent. See lib/walkthrough.ts.
+   */
+  | 'walkthrough_held'
   // Async results from the discovery job, read back off the record.
   | 'contact_found'
   | 'contact_discovery_unavailable';
@@ -49,12 +54,21 @@ export interface MessageScreenResult {
   findings: ScreenFinding[];
   /** True while a review-first message is drafted and waiting to be sent. */
   pending?: boolean;
+  /** Why the message was never sent. Mirrors ConversationMessage.held. */
+  held?:    'walkthrough' | 'disabled' | null;
 }
 
 export type MessageIntent = 'interested' | 'declined' | 'counter_rate' | 'conflict' | 'unclear';
 
 export interface ConversationMessage {
   id:           string;
+  /**
+   * Set when this message was written but HELD: 'walkthrough' while the project
+   * has not been switched live, 'disabled' behind the environment kill switch.
+   * A held message can never be released from the thread, so it renders a tag
+   * rather than a Send button. Mutually exclusive with `pendingApproval`.
+   */
+  held?:        'walkthrough' | 'disabled' | null;
   /**
    * True while Matchy has written this message and is holding it for the
    * client's approval (review-first). Mirrors `screenResult.pending`; both are
@@ -91,7 +105,13 @@ export function clientCounterRateOf(pe: ProjectExpertWithCounter): number | null
 
 /** Whether a message is written but still waiting on the client to send it. */
 export function isPendingApproval(message: ConversationMessage): boolean {
+  if (isHeld(message)) return false;
   return message.pendingApproval === true || message.screenResult?.pending === true;
+}
+
+/** Whether a message was written but held — walkthrough mode, or the kill switch. */
+export function isHeld(message: ConversationMessage): boolean {
+  return !!(message.held ?? message.screenResult?.held);
 }
 
 export interface ThreadPayload {
@@ -138,6 +158,8 @@ const ERROR_LINES: Record<string, string> = {
   invalid_client_rate_min:  'Rates are whole dollars, at least $100, in $50 steps.',
   invalid_client_rate_max:  'Rates are whole dollars, at least $100, in $50 steps.',
   invalid_client_rate_band: 'The lowest rate has to be at or below the highest.',
+  walkthrough_mode:         'Nothing is sent in walkthrough mode. Switch the project to live first.',
+  invalid_walkthrough:      "Couldn't save that setting.",
 };
 
 interface ApiError {
@@ -256,6 +278,12 @@ export function sendPendingMessage(
 // ─── Project settings ─────────────────────────────────────────────────────────
 
 export interface MatchySettingsPatch {
+  /**
+   * `false` switches the project LIVE. Anything else (true, absent) is
+   * walkthrough. Going live without also naming `reviewFirst` lands on
+   * review-first — the API does that, not the caller.
+   */
+  walkthrough?:   boolean;
   reviewFirst?:   boolean;
   clientRateMin?: number | null;
   clientRateMax?: number | null;
@@ -305,6 +333,9 @@ export function bookmarkLine(outcome: BookmarkOutcome, firstName: string): strin
       return `Found an address for ${firstName}. Sending the intro now.`;
     case 'contact_discovery_unavailable':
       return "Address lookup isn't available right now. Bookmark again later.";
+    // Walkthrough: say what would happen, and that it did not.
+    case 'walkthrough_held':
+      return `Walkthrough mode. I would look up an address and send ${firstName} the intro here. Nothing was sent.`;
   }
 }
 
@@ -319,7 +350,12 @@ export function matchyLineFor(
 ): { text: string; tone: 'default' | 'quiet' } | null {
   const outcome = pe.matchyOutcome;
   if (!outcome || !isBookmarkOutcome(outcome)) return null;
-  if (pe.status !== 'bookmarked' && (outcome === 'contact_not_found' || outcome === 'contact_check_unavailable')) return null;
+  // These three only describe an engagement that never got off the ground. Once
+  // the expert has moved on, a stale one would contradict the pipeline.
+  if (pe.status !== 'bookmarked'
+    && (outcome === 'contact_not_found' || outcome === 'contact_check_unavailable' || outcome === 'walkthrough_held')) {
+    return null;
+  }
   return {
     text: bookmarkLine(outcome, firstName),
     tone: outcome === 'intro_sent' || outcome === 'intro_drafted' || outcome === 'contact_found' ? 'default' : 'quiet',
@@ -329,7 +365,7 @@ export function matchyLineFor(
 const BOOKMARK_OUTCOMES: ReadonlySet<string> = new Set<BookmarkOutcome>([
   'intro_sent', 'intro_drafted', 'contact_discovery_started', 'contact_not_found',
   'contact_suppressed', 'contact_check_unavailable', 'intro_failed',
-  'contact_found', 'contact_discovery_unavailable',
+  'contact_found', 'contact_discovery_unavailable', 'walkthrough_held',
 ]);
 function isBookmarkOutcome(value: string): value is BookmarkOutcome {
   return BOOKMARK_OUTCOMES.has(value);

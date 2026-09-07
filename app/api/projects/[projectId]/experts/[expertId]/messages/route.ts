@@ -21,6 +21,12 @@
 //        findings and NOTHING IS STORED — a blocked message is not a message,
 //        and storing it would put the leaked detail in the database anyway.
 //
+// WALKTHROUGH MODE (lib/walkthrough.ts): the screen still runs, and a blocked
+// message still 422s — practising the compliance rules is the point of a
+// walkthrough. What changes is the send: the message is stored marked
+// `held: 'walkthrough'` and nothing goes to the expert. Still 201, still with
+// the message, so the thread renders the reply the client just wrote.
+//
 // 404, NEVER 403, on a project the caller cannot reach: the route must not
 // confirm that a project exists.
 //
@@ -41,6 +47,7 @@ import {
 import { screenMessage } from '../../../../../../../lib/matchyScreen';
 import { redactExpertForViewer, isIdentityRevealed } from '../../../../../../../lib/redactExpert';
 import { sendSequenceEmail } from '../../../../../../../lib/emailSequence';
+import { isWalkthrough } from '../../../../../../../lib/walkthrough';
 import { getFirm, getUser } from '../../../../../../../lib/firmStore';
 import type { Project } from '../../../../../../../types';
 
@@ -199,7 +206,13 @@ export async function POST(
     const base = pe.outreachSubject?.trim() || 'Paid expert call';
     const subject = /^re:/i.test(base) ? base : `Re: ${base}`;
 
-    await sendSequenceEmail(pe.contactEmail, subject, text, pe.outreachToken, 'client_reply');
+    // Walkthrough: the screen has already run (above) — only the send is
+    // skipped. lib/emailSequence would hold it anyway; refusing here is what
+    // lets the message be STORED as held rather than as sent.
+    const held = isWalkthrough(project);
+    if (!held) {
+      await sendSequenceEmail(pe.contactEmail, subject, text, pe.outreachToken, 'client_reply');
+    }
 
     const stored = await appendMessage({
       projectId: params.projectId,
@@ -208,13 +221,20 @@ export async function POST(
       author:    'client',
       bodyClean: text,
       screenResult,
+      ...(held && { held: 'walkthrough' as const }),
     });
 
     if (!stored) {
       // The email went out; the copy did not. Say so plainly rather than
       // pretending the send failed — a resend would double-email the expert.
+      // In walkthrough nothing went out, so the line says only that.
       return NextResponse.json(
-        { error: 'message_not_recorded', message: 'Your message was sent but could not be saved to the thread.' },
+        {
+          error:   'message_not_recorded',
+          message: held
+            ? 'Your message could not be saved to the thread.'
+            : 'Your message was sent but could not be saved to the thread.',
+        },
         { status: 500 },
       );
     }
