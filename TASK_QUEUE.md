@@ -5,7 +5,11 @@ Last updated: 2026-09-07
 - [x] WALKTHROUGH MODE LIVE 2026-09-07 (6938846): every project starts in walkthrough (projects.brief.walkthrough, undefined = walkthrough); nothing reaches an expert until the owner goes live (two-step confirm in the settings strip, lands on review-first). Enforced in sendSequenceEmail (resolves the project from the reply token, fails closed) + every caller; contact discovery never runs in walkthrough. scripts/test-walkthrough.ts; e2e-matchy covers both modes.
 - [ ] Founder: set `OUTREACH_SIGNATURE` (e.g. `Asher`) and `OUTREACH_FROM_EMAIL=Asher Goldstein <asher@expertmatch.fit>` in Vercel if emails should go out as you (lib/senderIdentity.ts). Unset = unsigned, from ExpertMatch.
 - [ ] Founder: paste migration 20260907300000_matchy_phase2_events.sql (three new event kinds; harmless until then).
-- [ ] Matchy Phase 2 build in flight (scheduling + expert picker + nudges + thread UI) — see HANDOFF.md Session 5.
+- [x] MATCHY PHASE 2 LIVE 2026-09-07 (a9504a6 scheduling + /schedule/[token] picker + book/move; 6f7ee1a nudges; 93c87d1 thread UI; e8d9336 one-call guard). Prod e2e-matchy ALL PASSED. See HANDOFF.md Session 5.
+- [ ] Vercel env: `CRON_SECRET` (nudge planner + reconcile refuse without it). Optional: `OUTREACH_SIGNATURE`, `OUTREACH_FROM_EMAIL`, `NUDGE_LLM_VARIATION=false`.
+- [ ] Zoom S2S app: confirm meeting update/delete scopes (reschedule PATCHes the meeting).
+- [ ] Browser pass (throwaway users) of: new-project modal, WALKTHROUGH pill, Go-live confirm, thread scheduling cards, /schedule/[token] on mobile + desktop.
+- [ ] Matchy Phase 2 leftovers: round-3 slot may repeat round-1; nudge zone is the owner's; rate band still unenforced; cancel-booking route; discovery bounce retry.
 - [x] Missing migrations applied in prod by the founder 2026-09-07 (20260902 organization_billing + RLS, 20260906 outreach_suppressions). Verified: both tables exist, seat_limit backfilled to unlimited, org customer + SetupIntent succeed.
 - [ ] Vercel env: set `QSTASH_URL=https://qstash-us-east-1.upstash.io` and `OUTREACH_FROM_EMAIL=ExpertMatch <notifications@expertmatch.fit>` (code falls back correctly, but the env should match).
 - [x] Wave 1 shipped 2026-09-07 (commits 53569e0, 9401d05, 535c9e8, 1eb7aa6; e2e-matchy ALL PASSED in prod): owner-only writes + rate-decision + redacted interview guide; Stripe cancel-on-delete + payout retry on account.updated + indexed Zoom lookup; password reset + org-carrying invites + onboarding exit; home/workspace UX fixes + re-bookmark retry.
