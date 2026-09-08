@@ -36,8 +36,14 @@ const TEN_MIN_MS = 10 * 60 * 1000;
 async function checkTokenRateLimit(tokenHash: string): Promise<boolean> {
   if (!_rlStore) return true;
   const key = `rl:avail-gauth:${tokenHash.slice(0, 16)}:10m`;
-  const { count } = await _rlStore.increment(key, TEN_MIN_MS);
-  return count <= 5;
+  // Fail open on a store error, not only on a store that would not build — a
+  // live Upstash rejection here would 500 the expert's "connect calendar" step.
+  try {
+    const { count } = await _rlStore.increment(key, TEN_MIN_MS);
+    return count <= 5;
+  } catch {
+    return true;
+  }
 }
 
 // ─── Constants ────────────────────────────────────────────────────────────────

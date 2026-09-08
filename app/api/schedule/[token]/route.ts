@@ -65,8 +65,15 @@ const _rlStore = (() => { try { return createRateLimiterStore(); } catch { retur
 
 async function withinRateLimit(tokenHash: string): Promise<boolean> {
   if (!_rlStore) return true; // store unavailable — allow, as the old route did
-  const { count } = await _rlStore.increment(`rl:schedule:${tokenHash.slice(0, 16)}:10m`, TEN_MIN_MS);
-  return count <= 10;
+  // Fail open on a store error too, not only on a store that would not build.
+  // Upstash can reject a live call (quota, outage); an unhandled rejection here
+  // 500s the expert's picker at the moment they are trying to book.
+  try {
+    const { count } = await _rlStore.increment(`rl:schedule:${tokenHash.slice(0, 16)}:10m`, TEN_MIN_MS);
+    return count <= 10;
+  } catch {
+    return true;
+  }
 }
 
 // ─── Token resolution ─────────────────────────────────────────────────────────
@@ -181,7 +188,10 @@ export async function GET(
 
   const payload: SchedulePayload = {
     proposed,
-    more:            pe.booking ? [] : await moreWindowsFor(project, pe, proposed),
+    // `more` is the fallback list behind "None of these work" and is computed
+    // from live calendar data. If that lookup fails the expert must still see
+    // the times already proposed, so it degrades to empty rather than throwing.
+    more:            pe.booking ? [] : await moreWindowsFor(project, pe, proposed).catch(() => []),
     durationMin:     pe.booking?.durationMin ?? CALL_DURATION_MIN,
     expertFirstName: firstNameOf(pe.expert.name),
     topic:           deriveTopic(project),
