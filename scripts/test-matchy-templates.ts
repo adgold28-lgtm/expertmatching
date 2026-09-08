@@ -128,6 +128,21 @@ eq('keeps an ordinary sentence-case opening word',
   topic('Margins in specialty pharma distribution'),
   'margins in specialty pharma distribution');
 
+// A brief is often several sentences. Only the first becomes the topic clause:
+// the rest used to flow through and fuse into a run-on once a capitalised word
+// was dropped as a company name, taking its full stop with it.
+eq('uses only the first sentence',
+  topic('We are evaluating consolidation in industrial automation. We need to understand how operators price multi-year contracts.'),
+  'consolidation in industrial automation');
+
+check('a dropped proper noun cannot fuse two sentences',
+  !/\bUS We\b/.test(topic('We are evaluating an acquisition in cold chain logistics in the US Southeast. We need to understand contract pricing.')),
+  topic('We are evaluating an acquisition in cold chain logistics in the US Southeast. We need to understand contract pricing.'));
+
+check('an abbreviation is not a sentence end',
+  topic('Margins at Acme Inc. Reports say they are thin').split(/\s+/).length > 2,
+  topic('Margins at Acme Inc. Reports say they are thin'));
+
 eq('empty brief falls back', topic(''), 'this market');
 eq('empty question falls back to industry', topic('', 'Specialty Pharma'), 'specialty pharma');
 check('never returns empty', topic('?').length > 0);

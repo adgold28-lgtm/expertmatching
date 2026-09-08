@@ -141,6 +141,37 @@ const TRAILING_NOISE = [
 const MAX_TOPIC_WORDS = 22;
 
 /**
+ * Common abbreviations whose full stop does not end a sentence. Without these,
+ * "U.S. Southeast" or "Acme Inc. Reports" would split in the wrong place.
+ */
+const ABBREVIATIONS = /(?:\b(?:Inc|Ltd|Co|Corp|Bros|No|vs|etc|al|Dr|Mr|Mrs|Ms|Jr|Sr|St|Mt|Ave|Est|approx|Fig)|\b[A-Z])\.$/;
+
+/**
+ * The first sentence of a brief, or the whole string when it is one sentence.
+ *
+ * The topic is a single clause dropped into the middle of a sentence an expert
+ * reads ("a 60 minute paid call about {topic}"). A multi-sentence brief used to
+ * flow straight through, and because a capitalised word can be dropped as a
+ * company name — taking its full stop with it — two sentences could fuse into
+ * one run-on ("…in the US We need to understand…"). Cutting at the first
+ * sentence removes that class of bug and keeps the clause to the point the
+ * client led with.
+ */
+function firstSentence(text: string): string {
+  const parts = text.split(/(?<=[a-z0-9)\]])([.?!]+)\s+(?=[A-Z])/);
+  if (parts.length < 3) return text;
+
+  let out = parts[0];
+  // Re-join where the split landed on an abbreviation rather than a real stop.
+  for (let i = 1; i < parts.length; i += 2) {
+    const candidate = out + parts[i];
+    if (!ABBREVIATIONS.test(candidate)) return candidate;
+    out = candidate + ' ' + (parts[i + 1] ?? '');
+  }
+  return out;
+}
+
+/**
  * Words that mark a token as a real word rather than a company name, so a
  * Capitalised token here is not treated as a proper noun.
  */
@@ -203,7 +234,8 @@ function tidy(text: string): string {
  *      they are already generalized by construction
  *   2. otherwise take the research question, strip the interrogative opener and
  *      any client-only trailing clause, drop anything that looks like a company
- *      name, and cap the length
+ *      name, and cap the length. Only the FIRST sentence is used — the topic is
+ *      one clause inside a sentence the expert reads, not a paragraph.
  *   3. fall back to the industry alone, then to "this market"
  *
  * Never returns an empty string.
@@ -214,7 +246,7 @@ export function deriveTopic(project: Pick<Project, 'researchQuestion' | 'industr
 
   if (industry && func) return `${func.toLowerCase()} in ${industry.toLowerCase()}`;
 
-  let topic = tidy(project.researchQuestion ?? '');
+  let topic = tidy(firstSentence(tidy(project.researchQuestion ?? '')));
 
   for (const pattern of TRAILING_NOISE) topic = topic.replace(pattern, '');
 
