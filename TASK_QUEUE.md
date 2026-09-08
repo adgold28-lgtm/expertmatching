@@ -1,7 +1,10 @@
 # ExpertMatch Task Queue
-Last updated: 2026-09-07
+Last updated: 2026-09-08
 
 ## NOW (blocking or broken)
+- [x] 2026-09-08 (session 7): Session 6 pushed + deployed. Browser pass of Sessions 5–6 DONE (see HANDOFF Session 7). Two prod bugs fixed and deployed: expert picker 500 when Upstash rejects (4dd815a, fail-open); topic clause run-on (62d1bb3, first sentence only). Prod on 62d1bb3, e2e-matchy ALL PASSED.
+- [ ] Founder: Upstash is rate-limited on the current plan (`[searchCache] set failed` on every sourcing run). Check the dashboard / upgrade before design partners start.
+- [ ] NEXT BUILD — trial seats: `lib/entitlements.ts`; `organization_billing.trial_*`; admin provisioning in /admin/requests; BillingStep skippable for trial orgs; Go-live requires a card; convert-to-paid from /settings. Decisions recorded in HANDOFF Session 7.
 - [x] 2026-09-07 (session 6): Source pool filters are four dropdowns (tier/category/status/sort); firm economics are champion-only — seat price hidden from ordinary members in onboarding BillingStep and /settings Payment method (GET /api/settings/payment-method returns `{restricted:true}` for non-champions, no card/subscription data); org_admin is labelled "Champion" everywhere (DB value unchanged); sourcing loader rotates 9 Matchy-mascot lines, honest line first. Not yet pushed.
 - [x] WALKTHROUGH MODE LIVE 2026-09-07 (6938846): every project starts in walkthrough (projects.brief.walkthrough, undefined = walkthrough); nothing reaches an expert until the owner goes live (two-step confirm in the settings strip, lands on review-first). Enforced in sendSequenceEmail (resolves the project from the reply token, fails closed) + every caller; contact discovery never runs in walkthrough. scripts/test-walkthrough.ts; e2e-matchy covers both modes.
 - [ ] Founder: set `OUTREACH_SIGNATURE` (e.g. `Asher`) and `OUTREACH_FROM_EMAIL=Asher Goldstein <asher@expertmatch.fit>` in Vercel if emails should go out as you (lib/senderIdentity.ts). Unset = unsigned, from ExpertMatch.
@@ -9,7 +12,7 @@ Last updated: 2026-09-07
 - [x] MATCHY PHASE 2 LIVE 2026-09-07 (a9504a6 scheduling + /schedule/[token] picker + book/move; 6f7ee1a nudges; 93c87d1 thread UI; e8d9336 one-call guard). Prod e2e-matchy ALL PASSED. See HANDOFF.md Session 5.
 - [ ] Vercel env: `CRON_SECRET` (nudge planner + reconcile refuse without it). Optional: `OUTREACH_SIGNATURE`, `OUTREACH_FROM_EMAIL`, `NUDGE_LLM_VARIATION=false`.
 - [ ] Zoom S2S app: confirm meeting update/delete scopes (reschedule PATCHes the meeting).
-- [ ] Browser pass (throwaway users) of: new-project modal, WALKTHROUGH pill, Go-live confirm, thread scheduling cards, /schedule/[token] on mobile + desktop.
+- [x] Browser pass (throwaway users) of: new-project modal, WALKTHROUGH pill, Go-live confirm, thread scheduling cards, /schedule/[token] on mobile + desktop — DONE 2026-09-08 (session 7).
 - [x] 2026-09-07 (session 6): rate band ENFORCED — bookmark seeds the opening offer inside clientRateMin/Max (lib/pricing.clampClientRateToBand); rate-decision accept above clientRateMax → 409 above_band with both numbers in the message (e2e covers it). `scheduling.proposedBefore` accumulates every offered slot so no round repeats one. Dead PipelineStage/STAGE_META removed from lib/expertPipeline.ts; stale comments + console.log cleared.
 - [ ] Matchy Phase 2 leftovers: nudge zone is the owner's; cancel-booking route (product call needed: what status after a cancel — see HANDOFF Session 6); discovery bounce retry.
 - [x] Missing migrations applied in prod by the founder 2026-09-07 (20260902 organization_billing + RLS, 20260906 outreach_suppressions). Verified: both tables exist, seat_limit backfilled to unlimited, org customer + SetupIntent succeed.
