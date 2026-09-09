@@ -5,6 +5,22 @@ import { sanitizeText, LIMITS, VALID_PERSPECTIVES } from '../../../../lib/projec
 import { getSessionUser } from '../../../../lib/auth';
 import { redactProjectForViewer, isIdentityRevealed } from '../../../../lib/redactExpert';
 import { backfillProjectAnonymization, needsAnonymization } from '../../../../lib/anonymizeExpert';
+import { getEntitlementsForProject, activationRequired } from '../../../../lib/entitlements';
+import { trackProductEvent } from '../../../../lib/productEvents';
+import { getAuthUserIdByEmail } from '../../../../lib/supabase/admin';
+
+/**
+ * Brief fields a PUT may change. Everything here is merged into the brief
+ * document (lib/projectStore.updateProject rewrites the whole jsonb), which is
+ * why saving carries a version: two people editing the same brief must not
+ * silently overwrite each other (see `briefVersion` below).
+ */
+const BRIEF_FIELDS = new Set([
+  'name', 'clientEmail', 'clientName', 'notes', 'confidentialNotes', 'timeline',
+  'targetExpertCount', 'keyQuestions', 'initialHypotheses', 'conflictExclusions',
+  'additionalContext', 'mustHaveExpertise', 'niceToHaveExpertise', 'targetCompanies',
+  'companiesToAvoid', 'peopleToAvoid', 'perspectivesNeeded', 'researchQuestion', 'expertType',
+]);
 
 const ID_RE = /^[a-f0-9]{24}$/;
 
@@ -143,9 +159,15 @@ export async function GET(
     // descriptor. If any such expert has none stored, enrich them for next time.
     if (role !== 'admin') {
       const needsBackfill = project.experts.some(pe =>
-        !isIdentityRevealed(pe.status) && needsAnonymization(pe.expert),
+        !isIdentityRevealed(pe) && needsAnonymization(pe.expert),
       );
       if (needsBackfill) scheduleAnonymizationBackfill(params.projectId);
+    }
+
+    // The workspace's FIRST fetch says so with a header; the 5-second sourcing
+    // poll and the thread refreshes do not, so one visit is one event.
+    if (request.headers.get('x-em-visit') === '1') {
+      void trackProductEvent({ type: 'project_opened', actorEmail: email, projectId: params.projectId });
     }
 
     return Response.json({ project: redactProjectForViewer(project, { role }) });
@@ -171,23 +193,60 @@ export async function PUT(
     const project = await getProjectForUser(params.projectId, email, role);
     if (!project) return Response.json({ error: 'not_found' }, { status: 404 });
 
-    // ── Matchy project settings ──────────────────────────────────────────────
-    // Walkthrough/live, the review-first switch and the client-rate band decide
-    // what Matchy sends and what it may agree to on the client's behalf, so only
-    // the project owner (or staff) may change them. Collaborators are read-only
-    // on outreach decisions (docs/MATCHY_SPEC.md, founder answer 5).
-    const matchySettings = validateMatchySettings(body, project);
-    if ('error' in matchySettings) return matchySettings.error;
-    if (matchySettings.touched && role !== 'admin' && project.ownerEmail !== email) {
+    // ── Who may write ────────────────────────────────────────────────────────
+    // A shared project is READ-ONLY for collaborators (docs/MATCHY_SPEC.md,
+    // founder answer 5): they read the brief, the candidates and the thread,
+    // and may keep notes on an expert — nothing here. Only the owner (or staff)
+    // edits the brief or changes what Matchy is allowed to send.
+    if (role !== 'admin' && project.ownerEmail !== email) {
       return Response.json(
-        { error: 'forbidden', message: 'Only the project owner can change outreach settings.' },
+        { error: 'read_only', message: 'Only the project owner can edit this project.' },
         { status: 403 },
       );
     }
 
+    // ── Matchy project settings ──────────────────────────────────────────────
+    const matchySettings = validateMatchySettings(body, project);
+    if ('error' in matchySettings) return matchySettings.error;
+
+    // ── Going live needs an activated account ────────────────────────────────
+    // THE trial boundary (lib/entitlements.ts). Every send path holds in
+    // walkthrough, so a project that cannot leave walkthrough can never reach
+    // an expert. A card on file is what lifts this; nothing in the request can.
+    if (matchySettings.patch.walkthrough === false && project.walkthrough !== false) {
+      const entitlements = await getEntitlementsForProject(params.projectId);
+      if (!entitlements.canGoLive) {
+        const actorId = await getAuthUserIdByEmail(email).catch(() => null);
+        return activationRequired(entitlements, { action: 'go_live', actorId, projectId: params.projectId });
+      }
+    }
+
+    // ── Brief version check ──────────────────────────────────────────────────
+    // The client sends the `briefUpdatedAt` it loaded. If the brief moved since
+    // (a colleague saved, or another tab), refuse with the current project so
+    // the UI can show their version instead of overwriting it. Only brief
+    // fields bump the version — a bookmark or a sourcing run does not, so a
+    // user is never told their own brief changed under them for no reason.
+    const touchesBrief = Object.keys(body).some(k => BRIEF_FIELDS.has(k) && body[k] !== undefined);
+    if (touchesBrief && typeof body.briefVersion === 'number') {
+      const current = typeof project.briefUpdatedAt === 'number' ? project.briefUpdatedAt : 0;
+      if (current !== body.briefVersion) {
+        return Response.json(
+          {
+            error:   'brief_conflict',
+            message: 'This brief changed since you opened it. Review the latest version before saving again.',
+            project: redactProjectForViewer(project, { role }),
+          },
+          { status: 409 },
+        );
+      }
+    }
+    const briefVersionPatch = touchesBrief ? { briefUpdatedAt: Date.now() } : {};
+
     const updated = await updateProject({
       ...project,
       ...matchySettings.patch,
+      ...briefVersionPatch,
       ...(typeof body.name  === 'string' && { name:  sanitizeText(body.name,  LIMITS.projectName) || project.name }),
       // Client scheduling fields — stored as-is (validated by request-client-availability route)
       ...('clientEmail' in body && { clientEmail: typeof body.clientEmail === 'string' ? body.clientEmail.trim() || null : null }),
@@ -235,13 +294,30 @@ export async function PUT(
           .filter((v): v is string => typeof v === 'string' && VALID_PERSPECTIVES.has(v))
           .slice(0, 10),
       }),
+      // An explicit empty string CLEARS the question — the old `|| project.
+      // researchQuestion` fallback silently resurrected deleted text on reload.
       ...(typeof body.researchQuestion === 'string' && {
-        researchQuestion: sanitizeText(body.researchQuestion, LIMITS.researchQuestion) || project.researchQuestion,
+        researchQuestion: sanitizeText(body.researchQuestion, LIMITS.researchQuestion),
       }),
       ...(typeof body.expertType === 'string' && {
         expertType: sanitizeText(body.expertType, LIMITS.functionField) || undefined,
       }),
     });
+
+    if (touchesBrief) {
+      void trackProductEvent({
+        type:       'brief_saved',
+        actorEmail: email,
+        projectId:  params.projectId,
+        payload:    {
+          hasQuestion:   (updated.researchQuestion ?? '').trim().length > 0,
+          hasExpertType: (updated.expertType ?? '').trim().length > 0,
+        },
+      });
+    }
+    if (matchySettings.patch.walkthrough === false && project.walkthrough !== false) {
+      void trackProductEvent({ type: 'went_live', actorEmail: email, projectId: params.projectId });
+    }
 
     return Response.json({ project: redactProjectForViewer(updated, { role }) });
   } catch (err) {
@@ -277,6 +353,12 @@ export async function DELETE(
     if (!result.success) {
       return Response.json({ error: 'failed_to_delete_project' }, { status: 500 });
     }
+    void trackProductEvent({
+      type:       'project_deleted',
+      actorEmail: email,
+      projectId:  params.projectId,
+      payload:    { experts: project.experts.length },
+    });
     return Response.json({ ok: true });
   } catch (err) {
     console.error('[api/projects/[id]] DELETE error:', err instanceof Error ? err.message : String(err));

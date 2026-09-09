@@ -17,6 +17,7 @@
 
 import type { Expert, Project } from '../types';
 import { getProject, addExpertsToProject, updateProjectFields } from './projectStore';
+import { trackProductEvent } from './productEvents';
 import {
   generateExperts,
   GenerateExpertsError,
@@ -105,6 +106,7 @@ function buildBriefContext(project: Project, expertTypeOverride?: string): Brief
  * 'failed' so the UI can never be stranded on a spinner.
  */
 export async function runSourcingJob(job: SourcingJob): Promise<void> {
+  const startedAtMs = Date.now();
   try {
     const project = await getProject(job.projectId);
     if (!project) {
@@ -180,6 +182,16 @@ export async function runSourcingJob(job: SourcingJob): Promise<void> {
       core:      toAdd.length,
       adjacent:  adjacent.length,
     });
+    void trackProductEvent({
+      type:      'sourcing_completed',
+      projectId: job.projectId,
+      payload:   {
+        count:       toAdd.length,
+        adjacent:    adjacent.length,
+        limitedPool: result.limited_pool === true,
+        durationMs:  Date.now() - startedAtMs,
+      },
+    });
   } catch (err) {
     // Human-readable, never raw internals — only messages we author ourselves
     // reach the client; anything else collapses to the generic line.
@@ -193,6 +205,11 @@ export async function runSourcingJob(job: SourcingJob): Promise<void> {
     console.error('[sourcingJob] failed', {
       projectId: job.projectId,
       code:      err instanceof GenerateExpertsError ? err.code : 'unknown',
+    });
+    void trackProductEvent({
+      type:      'sourcing_failed',
+      projectId: job.projectId,
+      payload:   { code: err instanceof GenerateExpertsError ? err.code : 'unknown', durationMs: Date.now() - startedAtMs },
     });
     await finish(job.projectId, 'failed', message);
   }

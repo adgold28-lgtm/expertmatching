@@ -29,3 +29,4 @@ supabase/.temp/
 
 # TypeScript incremental build state
 tsconfig.tsbuildinfo
+scripts/.e2e-trial-keep.json

@@ -15,7 +15,7 @@
 // answer 5). Every field PATCHes /api/projects/:id and renders the API's own
 // validation message inline.
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import type { Project } from '../types';
 import {
   updateMatchySettings,
@@ -48,6 +48,21 @@ export default function MatchySettingsStrip({ projectId, project, onUpdate }: Pr
   const [minInput,     setMinInput]     = useState(project.clientRateMin != null ? String(project.clientRateMin) : '');
   const [maxInput,     setMaxInput]     = useState(project.clientRateMax != null ? String(project.clientRateMax) : '');
   const [bandError,    setBandError]    = useState('');
+  // The account boundary (lib/entitlements.ts). Until it loads, the Go-live
+  // control is shown; the server refuses with activation_required regardless,
+  // so this is copy, not enforcement.
+  const [account, setAccount] = useState<{ kind: 'trial' | 'customer'; canGoLive: boolean } | null>(null);
+  useEffect(() => {
+    let active = true;
+    fetch('/api/auth/me')
+      .then(r => (r.ok ? r.json() : null))
+      .then((d: { account?: { kind: 'trial' | 'customer'; canGoLive: boolean } } | null) => {
+        if (active && d?.account) setAccount(d.account);
+      })
+      .catch(() => { /* the server still enforces; the strip just cannot explain yet */ });
+    return () => { active = false; };
+  }, []);
+  const activationNeeded = account !== null && !account.canGoLive;
   const [bandSaving,   setBandSaving]   = useState(false);
   const [bandSaved,    setBandSaved]    = useState(false);
 
@@ -148,7 +163,15 @@ export default function MatchySettingsStrip({ projectId, project, onUpdate }: Pr
             >
               {walkthrough ? 'Walkthrough' : 'Live'}
             </span>
-            {walkthrough ? (
+            {walkthrough && activationNeeded ? (
+              <a
+                href="/settings"
+                className="text-[10px] uppercase tracking-widest border border-frame text-muted hover:border-navy hover:text-navy px-3 py-1.5 transition-colors"
+                style={{ letterSpacing: '0.12em' }}
+              >
+                {account?.kind === 'trial' ? 'Activate to go live' : 'Add a card to go live'}
+              </a>
+            ) : walkthrough ? (
               <button
                 type="button"
                 onClick={() => { setModeError(''); setLiveReview(true); setConfirmLive(v => !v); }}
@@ -173,7 +196,15 @@ export default function MatchySettingsStrip({ projectId, project, onUpdate }: Pr
           </div>
         </div>
 
-        {confirmLive && walkthrough && (
+        {walkthrough && activationNeeded && (
+          <p className="text-[11px] text-muted leading-relaxed border border-frame bg-cream px-3.5 py-2.5">
+            {account?.kind === 'trial'
+              ? 'Trial account. Everything up to outreach works — brief, sourcing, candidates, bookmarks. Going live (real emails, scheduling, billing) needs your firm’s card, added once in Settings → Payment method.'
+              : 'Going live needs a card on file for your firm. Add one in Settings → Payment method.'}
+          </p>
+        )}
+
+        {confirmLive && walkthrough && !activationNeeded && (
           <div className="border border-gold/60 bg-cream px-3.5 py-3 space-y-2.5">
             <p className="text-[11px] text-ink leading-relaxed">
               Matchy will email real experts from this project. Emails you have already drafted stay

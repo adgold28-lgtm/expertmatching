@@ -182,9 +182,85 @@ const COMMON_CAPITALIZED = new Set([
   'i', 'we', 'they',
 ]);
 
+/**
+ * Words a research brief ordinarily OPENS with. A sentence-initial capital is
+ * ambiguous — "Margins in specialty pharma" and "Zoetis pricing power" both
+ * start with a capital letter — and the first used to be excused because a
+ * sentence starts there, which is exactly how a target's name reached an
+ * expert. Now the opening word keeps its place only when it is one of these
+ * ordinary words; anything else in first position is treated as a name and
+ * dropped. Losing "Fermentation" from "Fermentation capacity in Europe" costs a
+ * little specificity; leaking "Zoetis" costs the client's confidentiality.
+ */
+const BRIEF_OPENERS = new Set([
+  // verbs / framing
+  'understand', 'understanding', 'assess', 'assessing', 'assessment', 'evaluate', 'evaluating',
+  'evaluation', 'analyze', 'analyse', 'analyzing', 'analysis', 'review', 'reviewing', 'map',
+  'mapping', 'size', 'sizing', 'benchmark', 'benchmarking', 'compare', 'comparing', 'explore',
+  'exploring', 'validate', 'validating', 'identify', 'identifying', 'estimate', 'estimating',
+  'model', 'modeling', 'modelling', 'forecast', 'forecasting', 'due', 'commercial', 'diligence',
+  'strategy', 'strategic', 'operational', 'operations', 'entry', 'exit', 'expansion',
+  // market words
+  'market', 'markets', 'competitive', 'competition', 'competitor', 'competitors', 'landscape',
+  'dynamics', 'trends', 'trend', 'growth', 'demand', 'supply', 'pricing', 'price', 'prices',
+  'margins', 'margin', 'unit', 'economics', 'cost', 'costs', 'customer', 'customers', 'buyer',
+  'buyers', 'vendor', 'vendors', 'supplier', 'suppliers', 'channel', 'channels', 'distribution',
+  'regulatory', 'regulation', 'regulations', 'reimbursement', 'adoption', 'penetration', 'share',
+  'revenue', 'revenues', 'profitability', 'valuation', 'capacity', 'utilization', 'utilisation',
+  'labor', 'labour', 'workforce', 'hiring', 'talent', 'churn', 'retention', 'acquisition',
+  'acquisitions', 'integration', 'roll-up', 'rollup', 'rollups', 'consolidation', 'fragmentation',
+  'outlook', 'risks', 'risk', 'opportunity', 'opportunities', 'business', 'industry', 'sector',
+  'segment', 'segments', 'product', 'products', 'service', 'services', 'technology', 'software',
+  'hardware', 'platform', 'platforms', 'data', 'digital', 'ai', 'automation', 'infrastructure',
+  'logistics', 'freight', 'cold', 'storage', 'warehousing', 'manufacturing', 'industrial',
+  'consumer', 'retail', 'wholesale', 'healthcare', 'health', 'medical', 'clinical', 'dental',
+  'veterinary', 'pharma', 'pharmaceutical', 'biotech', 'devices', 'diagnostics', 'payer',
+  'payers', 'provider', 'providers', 'hospital', 'hospitals', 'insurance', 'banking', 'payments',
+  'fintech', 'lending', 'wealth', 'asset', 'assets', 'real', 'estate', 'construction',
+  'housing', 'energy', 'power', 'solar', 'wind', 'oil', 'gas', 'utilities', 'water', 'waste',
+  'recycling', 'chemicals', 'materials', 'packaging', 'plastics', 'metals', 'steel', 'mining',
+  'agriculture', 'agricultural', 'food', 'beverage', 'restaurant', 'restaurants', 'hospitality',
+  'travel', 'leisure', 'fitness', 'education', 'edtech', 'media', 'advertising', 'marketing',
+  'telecom', 'telecommunications', 'aerospace', 'defense', 'defence', 'automotive', 'mobility',
+  'transportation', 'shipping', 'maritime', 'rail', 'aviation', 'textiles', 'apparel', 'fiber',
+  'fibre', 'poultry', 'dairy', 'meat', 'seafood', 'crop', 'crops', 'seed', 'fertilizer',
+  'equipment', 'machinery', 'components', 'semiconductors', 'electronics', 'cybersecurity',
+  'security', 'cloud', 'saas', 'enterprise', 'smb', 'mid-market', 'residential', 'multifamily',
+  'specialty', 'generic', 'branded', 'animal', 'companion', 'pet', 'human', 'imaging', 'surgical',
+  'therapeutics', 'nutrition', 'wellness', 'senior', 'home', 'care', 'behavioral', 'primary',
+  'staffing', 'outsourcing', 'consulting', 'legal', 'accounting', 'compliance', 'government',
+  'public', 'private', 'nonprofit', 'international', 'domestic', 'regional', 'local', 'emerging',
+  // function words and pronouns
+  'how', 'what', 'why', 'who', 'where', 'which', 'when', 'does', 'do', 'is', 'are', 'will',
+  'would', 'can', 'could', 'should', 'our', 'we', 'i', 'the', 'a', 'an', 'in', 'on', 'for', 'to',
+  'of', 'with', 'from', 'by', 'about', 'key', 'current', 'future', 'recent', 'new', 'early',
+  'late', 'best', 'practices', 'total', 'addressable', 'go-to-market', 'end', 'end-market',
+  'multi-site', 'multi-year', 'long-term', 'short-term', 'mid-size', 'large', 'small', 'top',
+  ...Array.from(COMMON_CAPITALIZED),
+]);
+
+/**
+ * Words too generic to identify a client on their own, so they never enter the
+ * deny list even when they appear in the firm's or a target's name.
+ */
+const GENERIC_NAME_WORDS = new Set([
+  'inc', 'llc', 'ltd', 'plc', 'corp', 'corporation', 'company', 'co', 'group', 'holdings',
+  'partners', 'partner', 'capital', 'ventures', 'equity', 'fund', 'funds', 'management',
+  'advisors', 'advisory', 'associates', 'consulting', 'services', 'solutions', 'international',
+  'global', 'national', 'american', 'european', 'the', 'and', 'of', 'for', 'at', 'in', 'on',
+  'a', 'an', 'trial', 'test', 'firm', 'office', 'family', 'limited', 'industries', 'enterprises',
+  'labs', 'technologies', 'technology', 'systems', 'health', 'medical', 'veterinary', 'clinic',
+  'clinics', 'hospital', 'pharma', 'logistics', 'energy', 'retail', 'software', 'media',
+]);
+
 /** Strips punctuation so a token can be inspected as a bare word. */
 function bareToken(token: string): string {
   return token.replace(/[^A-Za-z0-9&.'-]/g, '');
+}
+
+/** Lower-cases and drops a possessive ("Zoetis's" / "Zoetis'" → "zoetis"). */
+function comparable(token: string): string {
+  return bareToken(token).toLowerCase().replace(/(?:'s|')$/, '').replace(/^'+|'+$/g, '');
 }
 
 /** A Capitalised word that is not one of the ordinary ones. */
@@ -199,11 +275,10 @@ function looksProper(token: string): boolean {
  * Group/Holdings/Partners/Capital. Deliberately blunt — a topic that loses one
  * word is fine; a topic that names the target is not.
  *
- * `sentenceStart` exempts a leading capital that is only a capital because a
- * sentence starts there. The caller grants it only when the token really is
- * the start of the question (nothing was stripped off the front) AND the next
- * word is not itself Capitalised — "Margins in specialty pharma" keeps its
- * first word, "Bayview Veterinary Partners pricing" does not.
+ * `sentenceStart` marks the very first word of the question. A capital there
+ * is excused ONLY when the word is one a brief ordinarily opens with
+ * (BRIEF_OPENERS) — "Margins in specialty pharma" keeps its first word,
+ * "Zoetis pricing power" and "Bayview Veterinary Partners pricing" do not.
  */
 function looksLikeCompanyName(token: string, sentenceStart: boolean): boolean {
   const bare = bareToken(token);
@@ -216,9 +291,25 @@ function looksLikeCompanyName(token: string, sentenceStart: boolean): boolean {
   // or a brand, e.g. "NVDA", "IBM".
   if (/^[A-Z]{2,}$/.test(bare) && !COMMON_CAPITALIZED.has(bare.toLowerCase())) return true;
 
-  if (!sentenceStart && looksProper(bare)) return true;
+  if (looksProper(bare)) {
+    if (!sentenceStart) return true;
+    return !BRIEF_OPENERS.has(comparable(bare));
+  }
 
   return false;
+}
+
+/**
+ * Same test for a structured FRAGMENT ("Veterinary Services", "Operations"),
+ * where every word may be title-cased and none is a sentence start: an
+ * ordinary topical word (BRIEF_OPENERS) is kept whatever its case; anything
+ * else that looks proper is dropped.
+ */
+function looksLikeCompanyNameInFragment(token: string): boolean {
+  const bare = bareToken(token);
+  if (!bare) return false;
+  if (BRIEF_OPENERS.has(comparable(bare)) && !/^[A-Z]{2,}$/.test(bare)) return false;
+  return looksLikeCompanyName(token, false);
 }
 
 /** Collapses whitespace and strips a trailing question mark or period. */
@@ -226,23 +317,165 @@ function tidy(text: string): string {
   return text.replace(/\s+/g, ' ').trim().replace(/[?.!,;:]+$/, '').trim();
 }
 
+/** Words that cannot end a clause, or stand next to each other, once a name between them is gone. */
+const CONNECTORS = new Set([
+  'for', 'at', 'in', 'on', 'of', 'to', 'with', 'from', 'by', 'about', 'into', 'across', 'versus', 'vs',
+  'and', 'or', 'but', 'the', 'a', 'an', 'its', 'their', 'our',
+]);
+
+/**
+ * Removing a company name leaves its connectors behind: "commercial diligence
+ * for Blackstone" → "commercial diligence for"; "margins at Chewy and Petco" →
+ * "margins at and". Drop trailing connectors and collapse runs of them so the
+ * clause still reads as a clause.
+ */
+function trimDangling(text: string): string {
+  const tokens = text.split(/\s+/).filter(Boolean);
+  const out: string[] = [];
+  for (const token of tokens) {
+    const word = comparable(token);
+    const prev = out.length > 0 ? comparable(out[out.length - 1]) : '';
+    if (CONNECTORS.has(word) && CONNECTORS.has(prev)) {
+      // "for in" → keep the later one; "at and" → keep neither (handled below).
+      out[out.length - 1] = token;
+      continue;
+    }
+    out.push(token);
+  }
+  while (out.length > 0 && CONNECTORS.has(comparable(out[out.length - 1]))) out.pop();
+  while (out.length > 0 && /^(and|or|but)$/.test(comparable(out[0]))) out.shift();
+  return tidy(out.join(' '));
+}
+
+// ─── Client deny list ──────────────────────────────────────────────────────────
+
+/** The project fields deriveTopic reads. */
+export type TopicSource = Pick<
+  Project,
+  'researchQuestion' | 'industry' | 'function' | 'expertType'
+> & Partial<Pick<Project, 'name' | 'targetCompanies' | 'companiesToAvoid' | 'peopleToAvoid' | 'firmDomain'>>;
+
+export interface DeriveTopicOptions {
+  /**
+   * Names that identify the client or their targets and must never reach an
+   * expert, however they are capitalised: the organization's name, target
+   * companies, people to avoid. Matched as whole phrases and as their
+   * distinctive words, possessives included. clientDenyTermsFor() builds the
+   * list from a project; callers add the organization name when they have it.
+   */
+  denyTerms?: readonly string[];
+}
+
+/**
+ * Splits free text ("Chewy, Petco; Tractor Supply") into candidate names.
+ */
+function splitNames(text: string | undefined | null): string[] {
+  if (!text) return [];
+  return text.split(/[,;\n/|]+|\band\b/i).map(t => t.trim()).filter(Boolean);
+}
+
+/** The second-level label of a domain: "blackstone.com" → "blackstone". */
+function domainLabel(domain: string | undefined | null): string {
+  if (!domain) return '';
+  const parts = domain.toLowerCase().split('.').filter(Boolean);
+  if (parts.length < 2) return parts[0] ?? '';
+  // "x.co.uk" → "x"; "trial-ab12.expertmatch.fit" → "trial-ab12" (harmless).
+  return parts.length >= 3 && parts[parts.length - 2].length <= 3 ? parts[parts.length - 3] : parts[parts.length - 2];
+}
+
+/**
+ * Everything on a project that names the client or what they are looking at:
+ * the firm's name, the owner's email domain, target companies, companies and
+ * people to avoid, and any proper noun in the project's title (which is where
+ * a target's name usually lives — "Zoetis diligence").
+ */
+export function clientDenyTermsFor(project: TopicSource, firmName?: string | null): string[] {
+  const terms: string[] = [];
+  if (firmName) terms.push(firmName);
+  const label = domainLabel(project.firmDomain);
+  if (label && !/^(gmail|outlook|hotmail|yahoo|icloud|proton|expertmatch|trial-[a-z0-9]+)$/.test(label)) terms.push(label);
+  terms.push(...splitNames(project.targetCompanies));
+  terms.push(...splitNames(project.companiesToAvoid));
+  terms.push(...splitNames(project.peopleToAvoid));
+  for (const token of (project.name ?? '').split(/\s+/)) {
+    if (looksProper(token) || /^[A-Z]{2,}$/.test(bareToken(token))) terms.push(bareToken(token));
+  }
+  return terms.filter(Boolean);
+}
+
+interface DenyMatcher {
+  phrases: RegExp[];
+  words:   Set<string>;
+}
+
+function buildDenyMatcher(denyTerms: readonly string[] | undefined): DenyMatcher {
+  const phrases: RegExp[] = [];
+  const words = new Set<string>();
+  const escape = (t: string) => t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+  for (const raw of denyTerms ?? []) {
+    const term = raw.trim();
+    if (!term) continue;
+    const tokens = term.split(/\s+/).map(comparable).filter(Boolean);
+    if (tokens.length === 0) continue;
+    if (tokens.length > 1) {
+      phrases.push(new RegExp(`\\b${tokens.map(escape).join('\\s+')}(?:'s|')?\\b`, 'gi'));
+    }
+    for (const t of tokens) {
+      if (t.length >= 3 && !GENERIC_NAME_WORDS.has(t)) words.add(t);
+    }
+  }
+  return { phrases, words };
+}
+
+/** Removes every deny phrase from the text and every deny word from the tokens. */
+function applyDenyList(text: string, matcher: DenyMatcher): string {
+  let out = text;
+  for (const phrase of matcher.phrases) out = out.replace(phrase, ' ');
+  if (matcher.words.size === 0) return tidy(out);
+  return tidy(out.split(/\s+/).filter(token => !matcher.words.has(comparable(token))).join(' '));
+}
+
+/**
+ * Drops anything that looks like a company name from a clause. `fragment`
+ * means the text is not a sentence (a structured industry/function value), so
+ * no word gets the sentence-start allowance.
+ */
+function stripCompanyNames(text: string, fragment: boolean): string {
+  const tokens = text.split(/\s+/).filter(Boolean);
+  if (tokens.length === 0) return '';
+  if (fragment) return tidy(tokens.filter(token => !looksLikeCompanyNameInFragment(token)).join(' '));
+  const firstIsSentenceStart = !looksProper(tokens[1] ?? '');
+  return tidy(
+    tokens
+      .filter((token, i) => !looksLikeCompanyName(token, i === 0 && firstIsSentenceStart))
+      .join(' '),
+  );
+}
+
 /**
  * Generalizes a project's research question into the one clause the intro
  * drops into "…evaluating {topic}". Deterministic, no LLM call:
  *
- *   1. prefer the brief's structured `industry` + `function` when both exist —
- *      they are already generalized by construction
- *   2. otherwise take the research question, strip the interrogative opener and
- *      any client-only trailing clause, drop anything that looks like a company
- *      name, and cap the length. Only the FIRST sentence is used — the topic is
- *      one clause inside a sentence the expert reads, not a paragraph.
- *   3. fall back to the industry alone, then to "this market"
+ *   1. remove every client deny term (firm name, targets, project-title names),
+ *      as phrases and as words, whatever their capitalisation
+ *   2. prefer the brief's structured `industry` + `function` when both exist —
+ *      generalized by construction, but still run through the same filters,
+ *      because a client can type "Commercial diligence for Blackstone" into
+ *      either box
+ *   3. otherwise take the research question's FIRST sentence, strip the
+ *      interrogative opener and any client-only trailing clause, drop anything
+ *      that looks like a company name (including an opening word that is not an
+ *      ordinary brief word), and cap the length
+ *   4. fall back to the industry alone, then to "this market"
  *
  * Never returns an empty string.
  */
-export function deriveTopic(project: Pick<Project, 'researchQuestion' | 'industry' | 'function' | 'expertType'>): string {
-  const industry = tidy(project.industry ?? '');
-  const func     = tidy(project.function ?? '');
+export function deriveTopic(project: TopicSource, options: DeriveTopicOptions = {}): string {
+  const deny = buildDenyMatcher([...(options.denyTerms ?? []), ...clientDenyTermsFor(project)]);
+
+  const industry = trimDangling(stripCompanyNames(applyDenyList(tidy(project.industry ?? ''), deny), true));
+  const func     = trimDangling(stripCompanyNames(applyDenyList(tidy(project.function ?? ''), deny), true));
 
   if (industry && func) return `${func.toLowerCase()} in ${industry.toLowerCase()}`;
 
@@ -257,15 +490,11 @@ export function deriveTopic(project: Pick<Project, 'researchQuestion' | 'industr
     const stripped = topic.replace(opener, '');
     if (stripped !== topic) { topic = stripped; openerStripped = true; break; }
   }
-  topic = tidy(topic);
+  topic = applyDenyList(tidy(topic), deny);
 
   if (topic) {
-    const tokens = topic.split(/\s+/);
-    const firstIsSentenceStart = !openerStripped && !looksProper(tokens[1] ?? '');
-    const kept = tokens
-      .filter((token, i) => !looksLikeCompanyName(token, i === 0 && firstIsSentenceStart))
-      .slice(0, MAX_TOPIC_WORDS);
-    topic = tidy(kept.join(' '));
+    topic = trimDangling(stripCompanyNames(topic, openerStripped));
+    topic = tidy(topic.split(/\s+/).slice(0, MAX_TOPIC_WORDS).join(' '));
   }
 
   // Lower-case a leading capital so the clause reads mid-sentence, unless the

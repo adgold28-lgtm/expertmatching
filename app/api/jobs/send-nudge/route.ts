@@ -34,6 +34,7 @@ import { appendMessage, listThread } from '../../../../lib/conversations';
 import { sendSequenceEmail } from '../../../../lib/emailSequence';
 import { isSuppressed } from '../../../../lib/outreachSuppressions';
 import { isWalkthrough } from '../../../../lib/walkthrough';
+import { getEntitlementsForProject, recordRestrictedAttempt } from '../../../../lib/entitlements';
 import { getFirm } from '../../../../lib/firmStore';
 import { emitEngagementEvent, recordSystemFailure } from '../../../../lib/engagementEvents';
 import {
@@ -71,6 +72,7 @@ interface NudgeJob {
 type SkipReason =
   | 'project_missing'
   | 'walkthrough'
+  | 'activation_required'
   | 'expert_missing'
   | 'stage_moved'
   | 'replied'
@@ -158,6 +160,13 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
   // The chokepoint would hold the send anyway; refusing here means we do not
   // burn a line or a count on a project that cannot send.
   if (isWalkthrough(project)) return skipped('walkthrough');
+
+  // Account boundary (lib/entitlements.ts): no card on file, no nudge.
+  const entitlements = await getEntitlementsForProject(projectId);
+  if (!entitlements.canOutreachExperts) {
+    await recordRestrictedAttempt(entitlements, { action: 'send_nudge', projectId, expertId });
+    return skipped('activation_required');
+  }
 
   const pe = project.experts.find(e => e.expert.id === expertId);
   if (!pe) return skipped('expert_missing');

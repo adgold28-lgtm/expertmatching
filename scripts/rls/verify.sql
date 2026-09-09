@@ -2,6 +2,12 @@
 --
 -- ExpertMatch — Row-Level-Security proof suite.
 --
+-- 20260908: projects / project_members / project_experts / conversation_messages
+-- are service-role only (no authenticated policies). Every "owner can …" claim
+-- about those tables below is therefore asserted as a DENIAL or 0 rows — the
+-- application performs those writes through lib/projectStore.ts and redacts
+-- every read.
+--
 -- Provisions two client organizations plus a platform admin, then re-plays the
 -- whole schema actor by actor as `anon`, as each `authenticated` user, and as
 -- `service_role`, asserting exactly what each one may see and write. It proves
@@ -231,6 +237,24 @@ select public._rls_verify_eq('schema: user_calendar_connections has zero policie
 select public._rls_verify_eq('schema: organization_billing has zero policies',
   (select count(*) from pg_policies where schemaname='public' and tablename='organization_billing')::bigint, 0::bigint);
 
+-- 20260908: the project family is service-role only too. The application never
+-- queried these as the signed-in user, and the policies granted MORE than the
+-- application does (raw expert identity in project_experts.data, collaborator
+-- writes). lib/redactExpert.ts is now the only path to an expert row.
+select public._rls_verify_eq('schema: projects has zero policies',
+  (select count(*) from pg_policies where schemaname='public' and tablename='projects')::bigint, 0::bigint);
+select public._rls_verify_eq('schema: project_members has zero policies',
+  (select count(*) from pg_policies where schemaname='public' and tablename='project_members')::bigint, 0::bigint);
+select public._rls_verify_eq('schema: project_experts has zero policies',
+  (select count(*) from pg_policies where schemaname='public' and tablename='project_experts')::bigint, 0::bigint);
+select public._rls_verify_eq('schema: conversation_messages has zero policies',
+  (select count(*) from pg_policies where schemaname='public' and tablename='conversation_messages')::bigint, 0::bigint);
+select public._rls_verify_eq('schema: product_events exists with RLS enabled',
+  (select count(*) from pg_class c join pg_namespace n on n.oid = c.relnamespace
+    where n.nspname = 'public' and c.relname = 'product_events' and c.relrowsecurity)::bigint, 1::bigint);
+select public._rls_verify_eq('schema: product_events has zero policies',
+  (select count(*) from pg_policies where schemaname='public' and tablename='product_events')::bigint, 0::bigint);
+
 -- If these grants were missing, every "denied" result would be a false pass.
 select public._rls_verify_eq('grants: authenticated may select projects (denials come from RLS)',
   has_table_privilege('authenticated', 'public.projects', 'select'), true);
@@ -278,6 +302,10 @@ select public._rls_verify_eq('anon: user_calendar_connections invisible',
   (select count(*) from public.user_calendar_connections where profile_id in (:'A1', :'B1'))::bigint, 0::bigint);
 select public._rls_verify_eq('anon: organization_billing invisible',
   (select count(*) from public.organization_billing where organization_id in (:'ORG_A', :'ORG_B'))::bigint, 0::bigint);
+select public._rls_verify_eq('anon: product_events invisible',
+  (select count(*) from public.product_events where organization_id in (:'ORG_A', :'ORG_B'))::bigint, 0::bigint);
+select public._rls_verify_denied('anon: cannot insert a product_event',
+  format('insert into public.product_events (organization_id, type) values (%L, %L)', :'ORG_A', 'signed_in'));
 select public._rls_verify_denied('anon: cannot insert a project',
   format('insert into public.projects (id, organization_id, owner_id, name) values (%L, %L, %L, %L)',
          :'PNEW', :'ORG_A', :'A1', 'anon project'));
@@ -344,8 +372,8 @@ select public._rls_verify_denied('A1: cannot promote a platform admin''s members
          :'PADM', :'A2', :'ORG_A'));
 
 -- projects
-select public._rls_verify_eq('A1: sees own project and the one shared with them',
-  (select count(*) from public.projects where id in (:'PA1', :'PA2', :'PB1', :'PC1'))::bigint, 2::bigint);
+select public._rls_verify_eq('A1: sees NO project rows directly (service-role only; the app redacts)',
+  (select count(*) from public.projects where id in (:'PA1', :'PA2', :'PB1', :'PC1'))::bigint, 0::bigint);
 select public._rls_verify_eq('A1: cannot see org-B project by id',
   (select count(*) from public.projects where id = :'PB1')::bigint, 0::bigint);
 select public._rls_verify_rows('A1: cannot update org-B project',
@@ -356,18 +384,26 @@ select public._rls_verify_rows('A1: collaborator cannot update the shared projec
   format('update public.projects set name = %L where id = %L', 'collab edit', :'PA2'), 0::bigint);
 select public._rls_verify_rows('A1: collaborator cannot delete the shared project',
   format('delete from public.projects where id = %L', :'PA2'), 0::bigint);
-select public._rls_verify_rows('A1: owner can rename own project',
-  format('update public.projects set name = %L where id = %L', 'renamed', :'PA1'), 1::bigint);
-select public._rls_verify_denied('A1: owner cannot hand a project to another user',
-  format('update public.projects set owner_id = %L where id = %L', :'A2', :'PA1'));
-select public._rls_verify_denied('A1: owner cannot move a project into another org',
-  format('update public.projects set organization_id = %L where id = %L', :'ORG_B', :'PA1'));
+select public._rls_verify_rows('A1: owner cannot rename own project directly (writes go through the app)',
+  format('update public.projects set name = %L where id = %L', 'renamed', :'PA1'), 0::bigint);
+select public._rls_verify_rows('A1: owner cannot hand a project to another user',
+  format('update public.projects set owner_id = %L where id = %L', :'A2', :'PA1'), 0::bigint);
+select public._rls_verify_rows('A1: owner cannot move a project into another org',
+  format('update public.projects set organization_id = %L where id = %L', :'ORG_B', :'PA1'), 0::bigint);
+select public._rls_verify_rows('A1: owner cannot flip own project live directly (brief is service-role only)',
+  format('update public.projects set brief = %L where id = %L', '{"walkthrough":false}', :'PA1'), 0::bigint);
 
 -- project_members / project_experts
 select public._rls_verify_denied('A1: collaborator cannot add members to the shared project',
   format('insert into public.project_members (project_id, profile_id) values (%L, %L)', :'PA2', :'A4'));
-select public._rls_verify_eq('A1: sees experts of both accessible projects',
-  (select count(*) from public.project_experts where project_id in (:'PA1', :'PA2'))::bigint, 2::bigint);
+select public._rls_verify_eq('A1: sees NO expert rows directly, not even own (raw identity lives here)',
+  (select count(*) from public.project_experts where project_id in (:'PA1', :'PA2'))::bigint, 0::bigint);
+select public._rls_verify_rows('A1: cannot update own project''s experts directly',
+  format('update public.project_experts set status = %L where project_id = %L', 'scheduled', :'PA1'), 0::bigint);
+select public._rls_verify_rows('A1: cannot delete own project''s experts directly',
+  format('delete from public.project_experts where project_id = %L', :'PA1'), 0::bigint);
+select public._rls_verify_eq('A1: sees no conversation_messages',
+  (select count(*) from public.conversation_messages where project_id in (:'PA1', :'PA2'))::bigint, 0::bigint);
 select public._rls_verify_eq('A1: sees no org-B experts',
   (select count(*) from public.project_experts where project_id = :'PB1')::bigint, 0::bigint);
 select public._rls_verify_denied('A1: cannot insert an expert into an org-B project',
@@ -384,6 +420,10 @@ select public._rls_verify_eq('A1: own calendar connection invisible (token ciphe
   (select count(*) from public.user_calendar_connections where profile_id = :'A1')::bigint, 0::bigint);
 select public._rls_verify_eq('A1: organization_billing invisible (Stripe ids unreachable)',
   (select count(*) from public.organization_billing where organization_id = :'ORG_A')::bigint, 0::bigint);
+select public._rls_verify_eq('A1: product_events invisible',
+  (select count(*) from public.product_events where organization_id = :'ORG_A')::bigint, 0::bigint);
+select public._rls_verify_denied('A1: cannot insert a product_event',
+  format('insert into public.product_events (actor_id, organization_id, type) values (%L, %L, %L)', :'A1', :'ORG_A', 'signed_in'));
 select public._rls_verify_denied('A1: cannot insert organization_billing',
   format('insert into public.organization_billing (organization_id) values (%L)', :'ORG_C'));
 select public._rls_verify_rows('A1: cannot mark own org billing complete',
@@ -434,13 +474,11 @@ select public._rls_verify_rows('A2: member cannot promote self to org_admin',
   format('update public.organization_members set role = %L where profile_id = %L', 'org_admin', :'A2'), 0::bigint);
 
 -- projects
-select public._rls_verify_eq('A2: sees only own project',
-  (select count(*) from public.projects where id in (:'PA1', :'PA2', :'PB1', :'PC1'))::bigint, 1::bigint);
-select public._rls_verify_eq('A2: the visible project is PA2',
-  (select id from public.projects where id in (:'PA1', :'PA2', :'PB1', :'PC1'))::text, (:'PA2')::text);
-select public._rls_verify_rows('A2: can create a project in own org',
+select public._rls_verify_eq('A2: sees NO project rows directly (service-role only)',
+  (select count(*) from public.projects where id in (:'PA1', :'PA2', :'PB1', :'PC1'))::bigint, 0::bigint);
+select public._rls_verify_denied('A2: cannot create a project directly (creation goes through the app)',
   format('insert into public.projects (id, organization_id, owner_id, name) values (%L, %L, %L, %L)',
-         :'PNEW', :'ORG_A', :'A2', 'new project'), 1::bigint);
+         :'PNEW', :'ORG_A', :'A2', 'new project'));
 select public._rls_verify_denied('A2: cannot create a project owned by someone else',
   format('insert into public.projects (id, organization_id, owner_id, name) values (%L, %L, %L, %L)',
          :'PNEW', :'ORG_A', :'A1', 'planted project'));
@@ -449,26 +487,28 @@ select public._rls_verify_denied('A2: cannot create a project in another org',
          :'PNEW', :'ORG_B', :'A2', 'cross-org project'));
 
 -- project_members — the cross-org sharing hole this pass closes
-select public._rls_verify_rows('A2: owner can share own project inside the org',
-  format('insert into public.project_members (project_id, profile_id) values (%L, %L)', :'PA2', :'A4'), 1::bigint);
+select public._rls_verify_denied('A2: owner cannot share a project directly (sharing goes through the app)',
+  format('insert into public.project_members (project_id, profile_id) values (%L, %L)', :'PA2', :'A4'));
 select public._rls_verify_denied('A2: owner CANNOT share a project across organizations',
   format('insert into public.project_members (project_id, profile_id) values (%L, %L)', :'PA2', :'B1'));
 select public._rls_verify_denied('A2: owner cannot share with a profile that belongs to no org',
   format('insert into public.project_members (project_id, profile_id) values (%L, %L)', :'PA2', :'A5'));
 select public._rls_verify_denied('A2: owner cannot share with a disabled org member',
   format('insert into public.project_members (project_id, profile_id) values (%L, %L)', :'PA2', :'A3'));
-select public._rls_verify_denied('A2: owner cannot repoint an existing share at an outsider',
-  format('update public.project_members set profile_id = %L where project_id = %L', :'B1', :'PA2'));
-select public._rls_verify_eq('A2: sees own project''s member rows',
-  (select count(*) from public.project_members where project_id = :'PA2')::bigint, 1::bigint);
-select public._rls_verify_rows('A2: owner can revoke a share',
-  format('delete from public.project_members where project_id = %L and profile_id = %L', :'PA2', :'A1'), 1::bigint);
+select public._rls_verify_rows('A2: owner cannot repoint an existing share at an outsider',
+  format('update public.project_members set profile_id = %L where project_id = %L', :'B1', :'PA2'), 0::bigint);
+select public._rls_verify_eq('A2: sees no project_members rows directly',
+  (select count(*) from public.project_members where project_id = :'PA2')::bigint, 0::bigint);
+select public._rls_verify_rows('A2: cannot revoke a share directly',
+  format('delete from public.project_members where project_id = %L and profile_id = %L', :'PA2', :'A1'), 0::bigint);
 
 -- project_experts
-select public._rls_verify_eq('A2: sees only own project''s experts',
-  (select count(*) from public.project_experts where project_id in (:'PA1', :'PA2', :'PB1'))::bigint, 1::bigint);
-select public._rls_verify_rows('A2: can update own project''s experts',
-  format('update public.project_experts set status = %L where project_id = %L', 'shortlisted', :'PA2'), 1::bigint);
+select public._rls_verify_eq('A2: sees NO expert rows directly, not even own',
+  (select count(*) from public.project_experts where project_id in (:'PA1', :'PA2', :'PB1'))::bigint, 0::bigint);
+select public._rls_verify_rows('A2: cannot update own project''s experts directly',
+  format('update public.project_experts set status = %L where project_id = %L', 'shortlisted', :'PA2'), 0::bigint);
+select public._rls_verify_rows('A2: cannot force the identity reveal directly',
+  format('update public.project_experts set status = %L where project_id = %L', 'scheduled', :'PA2'), 0::bigint);
 select public._rls_verify_denied('A2: cannot insert an expert into a project they cannot see',
   format('insert into public.project_experts (project_id, expert_id) values (%L, %L)', :'PA1', 'exp-injected'));
 
@@ -555,10 +595,10 @@ select public._rls_verify_eq('platform admin (user JWT): is_platform_admin is tr
   (select is_platform_admin from public.profiles where id = :'PADM'), true);
 select public._rls_verify_eq('platform admin (user JWT): sees only own organization',
   (select count(*) from public.organizations where id in (:'ORG_A', :'ORG_B', :'ORG_C'))::bigint, 1::bigint);
-select public._rls_verify_eq('platform admin (user JWT): sees only own project',
-  (select count(*) from public.projects where id in (:'PA1', :'PA2', :'PB1', :'PC1'))::bigint, 1::bigint);
-select public._rls_verify_eq('platform admin (user JWT): sees only own experts',
-  (select count(*) from public.project_experts where project_id in (:'PA1', :'PA2', :'PB1', :'PC1'))::bigint, 1::bigint);
+select public._rls_verify_eq('platform admin (user JWT): sees no project rows directly',
+  (select count(*) from public.projects where id in (:'PA1', :'PA2', :'PB1', :'PC1'))::bigint, 0::bigint);
+select public._rls_verify_eq('platform admin (user JWT): sees no expert rows directly',
+  (select count(*) from public.project_experts where project_id in (:'PA1', :'PA2', :'PB1', :'PC1'))::bigint, 0::bigint);
 select public._rls_verify_eq('platform admin (user JWT): sees only own profile',
   (select count(*) from public.profiles where id in (:'A1', :'A2', :'A3', :'B1', :'PADM'))::bigint, 1::bigint);
 select public._rls_verify_eq('platform admin (user JWT): access_requests invisible',
@@ -597,6 +637,11 @@ select public._rls_verify_eq('service_role: sees all fixture calendar connection
   (select count(*) from public.user_calendar_connections where profile_id in (:'A1', :'B1'))::bigint, 2::bigint);
 select public._rls_verify_eq('service_role: sees all fixture org billing rows',
   (select count(*) from public.organization_billing where organization_id in (:'ORG_A', :'ORG_B'))::bigint, 2::bigint);
+select public._rls_verify_eq('service_role: sees all fixture experts (the app''s own connection)',
+  (select count(*) from public.project_experts where project_id in (:'PA1', :'PA2', :'PB1', :'PC1'))::bigint, 4::bigint);
+select public._rls_verify_rows('service_role: may record a product event',
+  format('insert into public.product_events (actor_id, organization_id, project_id, type) values (%L, %L, %L, %L)',
+         :'A1', :'ORG_A', :'PA1', 'project_opened'), 1::bigint);
 
 select public._rls_verify_rows('service_role: may share a project inside the org',
   format('insert into public.project_members (project_id, profile_id) values (%L, %L)', :'PA2', :'A4'), 1::bigint);

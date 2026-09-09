@@ -31,12 +31,23 @@ import { getSessionUser } from '../../../../../../lib/auth';
 import { sanitizeText, LIMITS } from '../../../../../../lib/projectValidation';
 import { EXPERT_STATUSES } from '../../../../../../lib/expertPipeline';
 import { redactProjectForViewer } from '../../../../../../lib/redactExpert';
+import { trackProductEvent } from '../../../../../../lib/productEvents';
 import type { ExpertStatus, RejectionReason, ValueChainPosition, ScreeningStatus, ContactStatus, SuggestedDomain, PublicContactEmail } from '../../../../../../types';
 
 const ID_RE        = /^[a-f0-9]{24}$/;
 const EXPERT_ID_RE = /^[a-zA-Z0-9\-_]+$/;
 
 const VALID_STATUSES = new Set<ExpertStatus>(EXPERT_STATUSES);
+
+/**
+ * The statuses a CLIENT (owner) may write directly: put a candidate back in the
+ * pool, shortlist them, or pass on them. Everything else is the engagement's
+ * progress and is written by the server as Matchy works — bookmark has its own
+ * route, and `scheduled` / `completed` are half of the identity-reveal
+ * condition (lib/redactExpert.isIdentityRevealed), so a client writing them
+ * would be a client revealing an expert nobody has booked. Staff may write any.
+ */
+const CLIENT_WRITABLE_STATUSES = new Set<ExpertStatus>(['discovered', 'shortlisted', 'rejected']);
 
 const VALID_REJECTION_REASONS = new Set<RejectionReason>([
   'too_generic', 'wrong_industry', 'wrong_geography', 'weak_evidence',
@@ -137,6 +148,16 @@ export async function PUT(
     if (body.status !== undefined) {
       if (!VALID_STATUSES.has(body.status as ExpertStatus)) {
         return Response.json({ error: 'invalid_status', field: 'status' }, { status: 400 });
+      }
+      if (role !== 'admin' && !CLIENT_WRITABLE_STATUSES.has(body.status as ExpertStatus)) {
+        return Response.json(
+          {
+            error:   'status_not_client_settable',
+            field:   'status',
+            message: 'That stage is set by Matchy as the engagement progresses.',
+          },
+          { status: 403 },
+        );
       }
       input.status = body.status as ExpertStatus;
     }
@@ -288,7 +309,23 @@ export async function PUT(
       input.selectedContactPathType = body.selectedContactPathType as 'personal_email' | 'general_company_email' | 'linkedin_source' | 'unknown';
     }
 
+    const before  = accessible.experts.find(e => e.expert.id === params.expertId)?.status;
     const project = await updateExpertStatus(params.projectId, params.expertId, input);
+
+    if (input.status && input.status !== before) {
+      const type = input.status === 'rejected' ? 'candidate_passed'
+        : before === 'rejected' ? 'candidate_unpassed'
+        : null;
+      if (type) {
+        void trackProductEvent({
+          type,
+          actorEmail: email,
+          projectId:  params.projectId,
+          payload:    { expertId: params.expertId, ...(input.rejectionReason ? { reason: input.rejectionReason } : {}) },
+        });
+      }
+    }
+
     return Response.json({ project: redactProjectForViewer(project, { role }) });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);

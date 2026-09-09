@@ -36,12 +36,24 @@ export const WALKTHROUGH_HELD_SUMMARY = 'Held. Walkthrough mode sends nothing.';
  * Why a send did not happen.
  *   'walkthrough' — the project has not been switched live
  *   'disabled'    — DISABLE_EMAILS=true, the environment-wide kill switch
+ *   'trial'       — the organization has no card on file (lib/entitlements.ts):
+ *                   a trial or not-yet-activated account may never reach an
+ *                   expert, whatever the project's own mode says
  * Both mean "not sent"; they are distinguished so a caller can tell a product
  * state from an operational one.
  */
-export type HeldReason = 'walkthrough' | 'disabled';
+export type HeldReason = 'walkthrough' | 'disabled' | 'trial';
 
-const HELD_REASONS: ReadonlySet<string> = new Set<HeldReason>(['walkthrough', 'disabled']);
+const HELD_REASONS: ReadonlySet<string> = new Set<HeldReason>(['walkthrough', 'disabled', 'trial']);
+
+/** The short tag a held message wears in the thread. */
+export function heldLabel(reason: HeldReason | string | null | undefined): string {
+  switch (reason) {
+    case 'trial':    return 'Held · activation required';
+    case 'disabled': return 'Held · sending disabled';
+    default:         return 'Held · walkthrough';
+  }
+}
 
 /** Narrows an unknown stored value to a HeldReason. */
 export function toHeldReason(value: unknown): HeldReason | null {

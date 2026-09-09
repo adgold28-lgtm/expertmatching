@@ -32,6 +32,7 @@ import { buildOutreachFooter } from './outreachFooter';
 import { getFromAddress } from './mailFrom';
 import { getProject } from './projectStore';
 import { isWalkthrough, type HeldReason } from './walkthrough';
+import { getEntitlementsForProject, recordRestrictedAttempt } from './entitlements';
 
 // ─── Client (cached per process) ─────────────────────────────────────────────
 
@@ -206,6 +207,15 @@ export async function sendBookingEmail(
       console.warn('[sendBookingEmail] held (walkthrough)',
         JSON.stringify({ recipient: options.recipient }));
       return { sent: false, held: 'walkthrough' };
+    }
+    // Account boundary (lib/entitlements.ts): no card on file, no invite to a
+    // real expert.
+    const entitlements = await getEntitlementsForProject(project.id);
+    if (!entitlements.canScheduleCalls) {
+      console.warn('[sendBookingEmail] held (activation required)',
+        JSON.stringify({ recipient: options.recipient }));
+      await recordRestrictedAttempt(entitlements, { action: 'send_booking_email', projectId: project.id });
+      return { sent: false, held: 'trial' };
     }
   }
 

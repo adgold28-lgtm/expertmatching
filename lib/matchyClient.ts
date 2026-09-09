@@ -78,11 +78,12 @@ export interface ConversationMessage {
   id:           string;
   /**
    * Set when this message was written but HELD: 'walkthrough' while the project
-   * has not been switched live, 'disabled' behind the environment kill switch.
+   * has not been switched live, 'trial' while the firm has no card on file,
+   * 'disabled' behind the environment kill switch.
    * A held message can never be released from the thread, so it renders a tag
    * rather than a Send button. Mutually exclusive with `pendingApproval`.
    */
-  held?:        'walkthrough' | 'disabled' | null;
+  held?:        'walkthrough' | 'disabled' | 'trial' | null;
   /**
    * True while Matchy has written this message and is holding it for the
    * client's approval (review-first). Mirrors `screenResult.pending`; both are
@@ -160,6 +161,8 @@ const ERROR_LINES: Record<string, string> = {
   already_engaged:          'This expert has already moved past the shortlist.',
   outreach_already_started: "Matchy has already written to this expert — you can't undo that now.",
   read_only:                'Only the project owner can message experts.',
+  activation_required:      'Going live needs a card on file for your firm. Add one in Settings → Payment method.',
+  status_not_client_settable: 'That stage is set by Matchy as the engagement progresses.',
   forbidden:                'Only the project owner can do that.',
   message_blocked:          'This message needs an edit before it can go.',
   thread_not_started:       "I haven't written to this expert yet — nothing to reply to.",

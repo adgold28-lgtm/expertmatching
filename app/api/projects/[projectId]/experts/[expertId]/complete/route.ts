@@ -17,6 +17,8 @@ import { routeAuthGuard, getSessionUser } from '../../../../../../../lib/auth';
 import { requireProjectOwner } from '../../../../../../../lib/projectsGuard';
 import { getProjectForUser, updateExpertStatus } from '../../../../../../../lib/projectStore';
 import { createAndSendInvoice } from '../../../../../../../lib/createAndSendInvoice';
+import { getEntitlementsForProject, activationRequired } from '../../../../../../../lib/entitlements';
+import { getAuthUserIdByEmail } from '../../../../../../../lib/supabase/admin';
 
 const ID_RE        = /^[a-f0-9]{24}$/;
 const EXPERT_ID_RE = /^[a-zA-Z0-9\-_]+$/;
@@ -76,6 +78,16 @@ export async function POST(
   // 3b. Only the owner (or staff) may bill a call. Collaborators read.
   const ownerErr = requireProjectOwner(project, { email, role });
   if (ownerErr) return ownerErr as NextResponse;
+
+  // 3c. The account boundary (lib/entitlements.ts): no card on file, no charge.
+  //     createAndSendInvoice refuses too; refusing here keeps the status honest.
+  const entitlements = await getEntitlementsForProject(params.projectId);
+  if (!entitlements.canCharge) {
+    const actorId = await getAuthUserIdByEmail(email).catch(() => null);
+    return (await activationRequired(entitlements, {
+      action: 'charge_card', actorId, projectId: params.projectId, expertId: params.expertId,
+    })) as NextResponse;
+  }
 
   // 4. Check expertRate is set
   if (!pe.expertRate) {

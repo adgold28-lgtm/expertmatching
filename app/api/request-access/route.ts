@@ -3,8 +3,6 @@ import { Resend } from 'resend';
 import { createHmac } from 'crypto';
 import { getServiceRoleClient } from '../../../lib/supabase/admin';
 import { getUpstashClient } from '../../../lib/upstashRedis';
-import { isApprovedDomain, upsertFirm } from '../../../lib/firmStore';
-import { provisionAccountInvite, splitFullName } from '../../../lib/accountProvisioning';
 import type { FirmTypeValue, FirmSizeValue } from '../../../lib/supabase/database.types';
 import { getFromAddress } from '../../../lib/mailFrom';
 
@@ -155,50 +153,13 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  // Check if domain is already approved — if so, send invite immediately
-  let autoApproved = false;
-  if (domain) {
-    try {
-      autoApproved = await isApprovedDomain(domain);
-    } catch {
-      autoApproved = false;
-    }
-  }
-
-  // Known organization → provision the invite immediately. Account creation
-  // always runs through provisionAccountInvite, so the requester's name and
-  // organization are mandatory here too.
-  if (autoApproved) {
-    const { firstName, lastName } = splitFullName(record.name);
-
-    if (firstName && lastName) {
-      const result = await provisionAccountInvite({
-        firstName,
-        lastName,
-        email:        record.email,
-        organization: { domain, name: record.firm },
-      });
-      if (result.ok) {
-        // The organization already exists, so there is no approval step to
-        // carry these to — write them now. Never overwrites with a blank.
-        if (record.firmType || record.firmSize) {
-          await upsertFirm(domain, {
-            ...(record.firmType ? { firmType: record.firmType } : {}),
-            ...(record.firmSize ? { firmSize: record.firmSize } : {}),
-          }).catch(() => { /* the invite already went out; this is not worth failing on */ });
-        }
-        // `invited: true` lets the form say the link is already in their inbox
-        // instead of promising a follow-up that will never come. It is only
-        // reachable for a domain the platform already approved, so it reveals
-        // nothing about any individual address.
-        return Response.json({ ok: true, invited: true });
-      }
-    }
-
-    // Anything we cannot auto-provision (single-word name, existing account,
-    // seat cap, storage) falls through to manual review below. The response is
-    // identical either way, so the form never reveals whether an account exists.
-  }
+  // EVERY request is reviewed by a platform admin. Requests used to be
+  // auto-approved when the email domain matched an existing organization,
+  // which turned the founder's gmail.com admin org into open registration for
+  // every Gmail address on earth (lib/emailDomains.ts). Access is invite-only:
+  // an admin approves from /admin/requests, or a champion invites a colleague
+  // from Settings → Team. The response is identical for every address, so the
+  // form never reveals whether a firm or an account exists.
 
   // Store as pending (service-role write — access_requests has no
   // authenticated RLS policies) and notify admin.

@@ -10,6 +10,7 @@
 import { useEffect, useState, useCallback } from 'react';
 import Link from 'next/link';
 import { formatUsdFromCents } from '../../../lib/pricing';
+import { isPublicEmailDomain } from '../../../lib/emailDomains';
 import type { FirmTypeValue, FirmSizeValue } from '../../../lib/supabase/database.types';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -185,6 +186,14 @@ function billingLineParts(firm: FirmInfo): BillingLineParts {
   const { billing } = firm;
 
   if (!billing.complete) {
+    // lib/entitlements.ts: a trial is a billing row that says 'trialing' with
+    // no card. Everything external stays closed until the champion adds one.
+    if (billing.subscriptionStatus === 'trialing') {
+      return {
+        text: 'Trial account — no card. Sourcing and walkthrough only; outreach, scheduling and billing unlock when a card is added in Settings',
+        tone: 'muted',
+      };
+    }
     return {
       text: "Billing not set up — the first member adds the firm's card during onboarding",
       tone: 'muted',
@@ -312,6 +321,10 @@ function AccessRequestCard({
   const [firmName,  setFirmName]  = useState(req.firm);
   const [firmType,  setFirmType]  = useState<FirmTypeValue | ''>(req.firmType ?? '');
   const [firmSize,  setFirmSize]  = useState<FirmSizeValue | ''>(req.firmSize ?? '');
+  // A personal address (Gmail, Outlook…) cannot form an organization, so such
+  // a requester can only be approved as a trial tester in a generated org.
+  const personalDomain = isPublicEmailDomain(req.email.split('@')[1] ?? '');
+  const [trial,     setTrial]     = useState(personalDomain);
   const [loading,   setLoading]   = useState(false);
   const [status,    setStatus]    = useState<'idle' | 'approved' | 'rejected'>('idle');
   const [warnMsg,   setWarnMsg]   = useState('');
@@ -335,6 +348,7 @@ function AccessRequestCard({
           // anything that is not one of the constrained values.
           ...(firmType ? { firmType } : {}),
           ...(firmSize ? { firmSize } : {}),
+          ...(trial ? { trial: true } : {}),
         }),
       });
       if (!res.ok) throw new Error(await readError(res));
@@ -483,9 +497,30 @@ function AccessRequestCard({
           firm&rdquo;. Correct them here if the requester picked badly.
         </p>
 
+        <label className="flex items-start gap-2 cursor-pointer">
+          <input
+            type="checkbox"
+            checked={trial}
+            onChange={e => setTrial(e.target.checked)}
+            disabled={loading || personalDomain}
+            className="mt-[2px] shrink-0 accent-navy"
+          />
+          <span className="text-[11px] text-ink leading-relaxed">
+            Trial account — no card at onboarding. They can brief, source and bookmark; nothing reaches
+            an expert until a card is added.
+            {personalDomain && (
+              <span className="block text-[10px] text-muted mt-0.5">
+                Personal email address: this can only be approved as a trial, in its own organization.
+              </span>
+            )}
+          </span>
+        </label>
+
         <div className="flex flex-wrap items-center gap-3">
           <p className="text-[10px] text-muted flex-1 min-w-[180px]" style={{ fontWeight: 300 }}>
-            The organization is billed per active seat once the first member adds a card.
+            {trial
+              ? 'Trial: the organization is created without billing. Converting is one card, added by the tester from Settings.'
+              : 'The organization is billed per active seat once the first member adds a card.'}
           </p>
           <div className="flex items-center gap-2 sm:ml-auto">
             <button
@@ -502,7 +537,7 @@ function AccessRequestCard({
               className="text-[10px] uppercase tracking-widest px-4 py-1.5 transition-colors disabled:opacity-40"
               style={{ background: '#0B1F3B', color: '#C6A75E', letterSpacing: '0.12em' }}
             >
-              {loading ? 'Sending…' : 'Approve + Send Invite'}
+              {loading ? 'Sending…' : trial ? 'Approve as Trial + Send Invite' : 'Approve + Send Invite'}
             </button>
           </div>
         </div>
@@ -1292,6 +1327,109 @@ function FirmRow({ firm, onUpdated }: { firm: FirmInfo; onUpdated: () => void })
   );
 }
 
+// ─── Trial tester ─────────────────────────────────────────────────────────────
+
+/**
+ * One form for the whole trial flow: name + email (+ optional firm name) →
+ * POST /api/admin/users { trial: true }. A tester on a personal address lands
+ * in a generated organization of their own; a work address forms (or joins)
+ * its firm's organization, marked trial. The invite email goes out from here.
+ */
+function TrialTesterForm({ onDone }: { onDone: () => void }) {
+  const [firstName, setFirstName] = useState('');
+  const [lastName,  setLastName]  = useState('');
+  const [email,     setEmail]     = useState('');
+  const [firmName,  setFirmName]  = useState('');
+  const [busy,      setBusy]      = useState(false);
+  const [okMsg,     setOkMsg]     = useState('');
+  const [errMsg,    setErrMsg]    = useState('');
+
+  const personal = isPublicEmailDomain(email.trim().split('@')[1] ?? '');
+
+  async function submit(e: React.FormEvent) {
+    e.preventDefault();
+    if (busy) return;
+    setBusy(true);
+    setOkMsg('');
+    setErrMsg('');
+    try {
+      const res = await fetch('/api/admin/users', {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({
+          firstName:    firstName.trim(),
+          lastName:     lastName.trim(),
+          email:        email.trim(),
+          organization: firmName.trim() ? { name: firmName.trim() } : {},
+          trial:        true,
+        }),
+      });
+      if (!res.ok) throw new Error(await readError(res));
+      const data = await res.json().catch(() => ({})) as {
+        emailSent?: boolean; warning?: string; organizationDomain?: string; trial?: boolean;
+      };
+      setOkMsg(
+        (data.warning ?? `Trial invite sent to ${email.trim()}.`) +
+        (data.organizationDomain ? ` Organization: ${data.organizationDomain}.` : '') +
+        (data.trial === false ? ' The trial flag could not be written — check the organization row.' : ''),
+      );
+      setFirstName(''); setLastName(''); setEmail(''); setFirmName('');
+      onDone();
+    } catch (err) {
+      setErrMsg(err instanceof Error ? err.message : 'Something went wrong');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <form onSubmit={submit} className="space-y-3">
+      <p className="text-[11px] text-muted leading-relaxed" style={{ fontWeight: 300 }}>
+        A trial tester behaves like a prospective customer: onboarding without a card, briefs, sourcing,
+        anonymized candidates, bookmarks and passes. Nothing reaches an expert, no call is booked and no
+        card is charged until they add a card from Settings — that is the conversion.
+      </p>
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+        <div>
+          <label className={LABEL_CLASS} style={{ letterSpacing: '0.14em' }} htmlFor="trial-first">First name</label>
+          <input id="trial-first" type="text" value={firstName} onChange={e => setFirstName(e.target.value)} className={INPUT_CLASS} autoComplete="off" />
+        </div>
+        <div>
+          <label className={LABEL_CLASS} style={{ letterSpacing: '0.14em' }} htmlFor="trial-last">Last name</label>
+          <input id="trial-last" type="text" value={lastName} onChange={e => setLastName(e.target.value)} className={INPUT_CLASS} autoComplete="off" />
+        </div>
+        <div>
+          <label className={LABEL_CLASS} style={{ letterSpacing: '0.14em' }} htmlFor="trial-email">Email</label>
+          <input id="trial-email" type="email" value={email} onChange={e => setEmail(e.target.value)} className={INPUT_CLASS} autoComplete="off" placeholder="tester@gmail.com" />
+        </div>
+        <div>
+          <label className={LABEL_CLASS} style={{ letterSpacing: '0.14em' }} htmlFor="trial-firm">
+            Firm name <span className="normal-case tracking-normal text-muted">(optional)</span>
+          </label>
+          <input id="trial-firm" type="text" value={firmName} onChange={e => setFirmName(e.target.value)} className={INPUT_CLASS} autoComplete="off" placeholder="Shown to them as their firm" />
+        </div>
+      </div>
+      <p className="text-[10px] text-muted leading-relaxed" style={{ fontWeight: 300 }}>
+        {personal
+          ? 'Personal address: they get their own generated organization (trial-….expertmatch.fit).'
+          : email.includes('@')
+            ? 'Work address: they form or join their firm\u2019s organization, marked as a trial.'
+            : 'Each tester gets a normal account; the trial flag lives on the organization.'}
+      </p>
+      <button
+        type="submit"
+        disabled={busy || !firstName.trim() || !lastName.trim() || !email.trim()}
+        className="text-[10px] uppercase tracking-widest px-4 py-2 transition-colors disabled:opacity-40"
+        style={{ background: '#0B1F3B', color: '#C6A75E', letterSpacing: '0.12em' }}
+      >
+        {busy ? 'Sending…' : 'Create trial + send invite'}
+      </button>
+      {errMsg && <p className="text-[11px] text-red-600">{errMsg}</p>}
+      {okMsg  && <p className="text-[11px] text-green-700">{okMsg}</p>}
+    </form>
+  );
+}
+
 // ─── Needs attention ──────────────────────────────────────────────────────────
 
 function AttentionSection() {
@@ -1674,6 +1812,12 @@ export default function AdminConsolePage() {
               ))}
             </div>
           )}
+        </section>
+
+        {/* ── 3b. Provision a trial tester ── */}
+        <section>
+          <SectionHeader title="Provision Trial Tester" />
+          <TrialTesterForm onDone={afterMemberChange} />
         </section>
 
         {/* ── 4. Add organization ── */}

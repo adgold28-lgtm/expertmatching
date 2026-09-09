@@ -30,6 +30,7 @@ import type {
 } from './supabase/database.types';
 import { Resend } from 'resend';
 import { getFromAddress } from './mailFrom';
+import { isPublicEmailDomain } from './emailDomains';
 
 // ─── Types ─────────────────────────────────────────────────────────────────────
 
@@ -310,6 +311,10 @@ export async function listFirms(): Promise<FirmRecord[]> {
 }
 
 export async function isApprovedDomain(domain: string): Promise<boolean> {
+  // A consumer domain is never an organization, whatever rows exist. The
+  // founder's own admin org was keyed on gmail.com for a while, which made
+  // every Gmail address an auto-approved colleague (lib/emailDomains.ts).
+  if (isPublicEmailDomain(domain)) return false;
   const db = getServiceRoleClient();
   if (!db) return false;
   const { data } = await db

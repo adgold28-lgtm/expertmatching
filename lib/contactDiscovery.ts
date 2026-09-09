@@ -42,6 +42,7 @@ import type {
 import { normalizeDomain, isDisallowedDomain } from './domainSuggestions';
 import { getProject, updateExpertStatus } from './projectStore';
 import { isWalkthrough } from './walkthrough';
+import { getEntitlementsForProject, recordRestrictedAttempt } from './entitlements';
 import { runSequenceStep } from './outreachSteps';
 import { isSuppressed } from './outreachSuppressions';
 import { emitEngagementEvent } from './engagementEvents';
@@ -766,7 +767,13 @@ export async function runContactDiscoveryJob(job: ContactDiscoveryJob): Promise<
     // bookmark route never enqueues this job on a walkthrough project (it will
     // not spend a provider credit either), and lib/emailSequence holds the send
     // regardless. Honoring it here as well means the STATUS is right too.
-    const draftOnly = project.reviewFirst === true || isWalkthrough(project);
+    // The account boundary (lib/entitlements.ts) is honored the same way: an
+    // organization with no card on file gets the intro DRAFTED, never sent.
+    const entitlements = await getEntitlementsForProject(projectId);
+    if (!entitlements.canOutreachExperts) {
+      await recordRestrictedAttempt(entitlements, { action: 'contact_discovery', projectId, expertId });
+    }
+    const draftOnly = project.reviewFirst === true || isWalkthrough(project) || !entitlements.canOutreachExperts;
 
     const sendResult = await runSequenceStep({
       projectId,
@@ -775,6 +782,7 @@ export async function runContactDiscoveryJob(job: ContactDiscoveryJob): Promise<
       token:     pe.outreachToken ?? '',
       firmType:  firm?.firmType ?? null,
       firmSize:  firm?.firmSize ?? null,
+      firmName:  firm?.name ?? null,
       draftOnly,
     });
 

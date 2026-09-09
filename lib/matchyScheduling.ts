@@ -66,7 +66,7 @@ import { cleanEmailBody } from './emailClean';
 import { emitEngagementEvent } from './engagementEvents';
 import { getFirm } from './firmStore';
 import { sendSequenceEmail } from './emailSequence';
-import { isWalkthrough, WALKTHROUGH_HELD_SUMMARY } from './walkthrough';
+import { isWalkthrough, WALKTHROUGH_HELD_SUMMARY, type HeldReason } from './walkthrough';
 import { openai } from './openai';
 import {
   proposeTimesEmail,
@@ -1037,7 +1037,7 @@ export async function proposeTimes(input: ProposeTimesInput): Promise<ProposeTim
         subject,
       });
 
-  let sendOutcome: { sent: boolean; held?: 'walkthrough' | 'disabled' };
+  let sendOutcome: { sent: boolean; held?: HeldReason };
   try {
     sendOutcome = await sendSequenceEmail(
       pe.contactEmail, subject, email.text, pe.outreachToken, 'propose_times',

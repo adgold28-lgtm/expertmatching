@@ -143,7 +143,13 @@ export default function ProjectExpertCard({
     else onUpdate({ ...projectExpert, status: 'shortlisted', updatedAt: Date.now() });
   }
 
-  async function patchExpert(patch: Record<string, unknown>) {
+  /**
+   * One PUT, one answer. A failed save is SAID, not swallowed: the card's
+   * Matchy line turns into the server's message (or a plain "could not save"),
+   * and callers get `false` so they can undo their optimistic update. A tester
+   * must never believe something saved when it did not.
+   */
+  async function patchExpert(patch: Record<string, unknown>): Promise<boolean> {
     setSaving(true);
     try {
       const res  = await fetch(`/api/projects/${projectId}/experts/${expert.id}`, {
@@ -151,16 +157,29 @@ export default function ProjectExpertCard({
         headers: { 'Content-Type': 'application/json' },
         body:    JSON.stringify(patch),
       });
-      const data = await res.json() as { project?: { experts: ProjectExpert[] } };
-      if (!res.ok) return;
+      const data = await res.json().catch(() => ({})) as {
+        project?: { experts: ProjectExpert[] }; message?: string; error?: string;
+      };
+      if (!res.ok) {
+        setMatchyNote({
+          text: data.message
+            ?? (res.status === 403 ? 'Only the project owner can change this.' : "Couldn't save that change. Try again."),
+          tone: 'alert',
+        });
+        return false;
+      }
       const updated = data.project?.experts.find(e => e.expert.id === expert.id);
       if (updated) onUpdate(updated);
+      return true;
+    } catch {
+      setMatchyNote({ text: "Couldn't reach ExpertMatch. Check your connection and try again.", tone: 'alert' });
+      return false;
     } finally {
       setSaving(false);
     }
   }
 
-  function handleStatusChange(next: ExpertStatus) {
+  async function handleStatusChange(next: ExpertStatus) {
     const now   = Date.now();
     const patch: Record<string, unknown> = { status: next };
     if (next === 'rejected') {
@@ -173,8 +192,9 @@ export default function ProjectExpertCard({
     if (next === 'contacted' && !projectExpert.contactedAt) {
       patch.contactedAt = now;
     }
-    patchExpert(patch);
-    // Optimistic local update
+    // Optimistic local update, rolled back if the server says no.
+    const before = projectExpert;
+    setMatchyNote(null);
     onUpdate({
       ...projectExpert,
       status: next,
@@ -182,14 +202,17 @@ export default function ProjectExpertCard({
       ...(next === 'rejected' ? { rejectedAt: now } : { rejectionReason: undefined, rejectionNotes: undefined }),
       ...(next === 'contacted' && !projectExpert.contactedAt ? { contactedAt: now } : {}),
     });
+    const ok = await patchExpert(patch);
+    if (!ok) onUpdate(before);
   }
 
   async function saveRejectionNote() {
     const note = rejNoteText.trim();
     setRejNoteSaving(true);
     try {
+      // The server's copy is what the card shows afterwards (patchExpert calls
+      // onUpdate with it); nothing is written locally on a failure.
       await patchExpert({ rejectionNotes: note });
-      onUpdate({ ...projectExpert, rejectionNotes: note || undefined, updatedAt: Date.now() });
     } finally {
       setRejNoteSaving(false);
     }
@@ -198,9 +221,12 @@ export default function ProjectExpertCard({
   async function handleAddNote() {
     const note = noteText.trim();
     if (!note) return;
-    setNoteText('');
-    setNoteOpen(false);
-    await patchExpert({ note });
+    // The textarea keeps its text until the server has the note.
+    const ok = await patchExpert({ note });
+    if (ok) {
+      setNoteText('');
+      setNoteOpen(false);
+    }
   }
 
   return (
@@ -259,7 +285,7 @@ export default function ProjectExpertCard({
             {/* Passing is a decision about the engagement, so it rides the
                 same permission as Bookmark — the server enforces it too. */}
             <button
-              onClick={() => handleStatusChange('rejected')}
+              onClick={() => { void handleStatusChange('rejected'); }}
               disabled={saving || bookmarking || !canBookmark}
               className="flex-1 text-[11px] uppercase tracking-widest border-2 border-frame text-muted hover:text-navy hover:border-navy py-2 font-medium transition-colors disabled:opacity-40"
               style={{ letterSpacing: '0.1em' }}
@@ -318,14 +344,16 @@ export default function ProjectExpertCard({
               <span className="flex-1 text-center text-[11px] uppercase tracking-widest border-2 border-slate-200 text-slate-500 bg-slate-50 py-2 font-medium">
                 Passed
               </span>
-              <button
-                onClick={() => handleStatusChange('discovered')}
-                disabled={saving}
-                className="text-[10px] uppercase tracking-widest text-muted hover:text-navy border border-frame px-2.5 py-2 transition-colors disabled:opacity-40"
-                title="Put them back in Matches"
-              >
-                Undo
-              </button>
+              {canBookmark && (
+                <button
+                  onClick={() => { void handleStatusChange('discovered'); }}
+                  disabled={saving}
+                  className="text-[10px] uppercase tracking-widest text-muted hover:text-navy border border-frame px-2.5 py-2 transition-colors disabled:opacity-40"
+                  title="Put them back in Matches"
+                >
+                  Undo
+                </button>
+              )}
             </div>
             <div className="flex items-center gap-2">
               <span className="text-[10px] uppercase tracking-widest text-muted shrink-0">Reason:</span>

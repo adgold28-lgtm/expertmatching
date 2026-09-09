@@ -43,6 +43,7 @@ import {
   getOrgBillingRow,
   getOrganizationName,
 } from '../../../../lib/orgBilling';
+import { entitlementsFromBilling } from '../../../../lib/entitlements';
 
 interface CardSummary {
   brand:    string;
@@ -132,6 +133,8 @@ export async function GET(request: NextRequest): Promise<Response> {
       canReplace,
       orgName,
       subscriptionStatus: row?.subscription_status ?? null,
+      // 'trial' until the champion adds a card (lib/entitlements.ts).
+      accountKind: entitlementsFromBilling(organizationId, row).kind,
     };
 
     const customerId = row?.stripe_customer_id ?? null;

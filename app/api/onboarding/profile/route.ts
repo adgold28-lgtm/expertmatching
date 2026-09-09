@@ -34,6 +34,8 @@ import { routeAuthGuard, getSessionUser } from '../../../../lib/auth';
 import { getUser, upsertUser } from '../../../../lib/firmStore';
 import { isCalendarConnected } from '../../../../lib/calendarConnections';
 import { isBillingCompleteForUser } from '../../../../lib/orgBilling';
+import { getEntitlementsForUser } from '../../../../lib/entitlements';
+import { trackProductEvent } from '../../../../lib/productEvents';
 
 export async function POST(request: NextRequest): Promise<Response> {
   const authError = await routeAuthGuard(request);
@@ -72,10 +74,15 @@ export async function POST(request: NextRequest): Promise<Response> {
     let calendarConnected: boolean;
     let billingComplete: boolean;
     try {
-      [calendarConnected, billingComplete] = await Promise.all([
+      const [calendar, billing, entitlements] = await Promise.all([
         isCalendarConnected(sessionUser.email),
         isBillingCompleteForUser(sessionUser.email),
+        getEntitlementsForUser(sessionUser.email),
       ]);
+      calendarConnected = calendar;
+      // A TRIAL account has no card by design (lib/entitlements.ts): the step
+      // counts as done. Everything external stays closed until a card exists.
+      billingComplete   = billing || entitlements.kind === 'trial';
     } catch {
       return Response.json({ error: 'internal_error' }, { status: 500 });
     }
@@ -111,6 +118,11 @@ export async function POST(request: NextRequest): Promise<Response> {
     });
   } catch {
     return Response.json({ error: 'internal_error' }, { status: 500 });
+  }
+
+  if (!alreadyOnboarded) {
+    void trackProductEvent({ type: 'onboarding_step_completed', actorEmail: sessionUser.email, payload: { step: 'profile' } });
+    void trackProductEvent({ type: 'onboarding_completed', actorEmail: sessionUser.email });
   }
 
   return Response.json({ ok: true, updated: alreadyOnboarded });

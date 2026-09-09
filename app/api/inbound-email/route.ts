@@ -379,7 +379,7 @@ async function handleReply({ project, pe, token, rawEmail }: HandleReplyInput): 
   const now       = Date.now();
 
   const context = await loadThreadContext(project);
-  const revealed = isIdentityRevealed(pe.status);
+  const revealed = isIdentityRevealed(pe);
 
   // ── Clean ────────────────────────────────────────────────────────────────
   // Quoted history and signatures are stripped BEFORE the screen runs, so a
@@ -792,8 +792,9 @@ async function advanceInterested(
     return;
   }
 
+  const firm = await getFirm(project.firmDomain).catch(() => null);
   const email = buildFollowUpEmail({
-    topic:           deriveTopic(project),
+    topic:           deriveTopic(project, { denyTerms: firm?.name ? [firm.name] : [] }),
     expertRate,
     expertFirstName: pe.expert.name,
     recipientEmail:  pe.contactEmail,

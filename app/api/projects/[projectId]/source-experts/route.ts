@@ -18,6 +18,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { routeAuthGuard, getSessionUser } from '../../../../../lib/auth';
 import { requireProjectOwner } from '../../../../../lib/projectsGuard';
+import { trackProductEvent } from '../../../../../lib/productEvents';
 import { getProjectForUser, updateProjectFields } from '../../../../../lib/projectStore';
 import {
   isQStashConfigured,
@@ -119,6 +120,13 @@ export async function POST(
     });
     return NextResponse.json({ error: 'enqueue_failed' }, { status: 502 });
   }
+
+  void trackProductEvent({
+    type:       'sourcing_started',
+    actorEmail: email,
+    projectId:  params.projectId,
+    payload:    { existingExperts: project.experts.length, rerun: project.experts.length > 0 },
+  });
 
   return NextResponse.json({ ok: true, status: 'running' });
 }

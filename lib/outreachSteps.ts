@@ -50,6 +50,12 @@ export interface SequenceStepInput {
   firmType?: FirmTypeValue | null;
   firmSize?: FirmSizeValue | null;
   /**
+   * The client organization's name. NEVER written into the email — it is a
+   * deny term for deriveTopic, so a brief that names the client's own firm
+   * cannot carry it to the expert.
+   */
+  firmName?: string | null;
+  /**
    * 'intro' only. The project's "review first" switch, OR walkthrough mode
    * (lib/walkthrough.ts) — callers OR the two together. When true nothing is
    * sent: the intro is written to outreachSubject/outreachDraft and the status
@@ -110,7 +116,7 @@ export async function runSequenceStep(input: SequenceStepInput): Promise<Sequenc
       const email = buildIntroEmail({
         firmType:           input.firmType ?? null,
         firmSize:           input.firmSize ?? null,
-        topic:              deriveTopic(project),
+        topic:              deriveTopic(project, { denyTerms: input.firmName ? [input.firmName] : [] }),
         descriptorFragment: descriptorFragmentFrom(pe.expert.anonymizedDescriptor),
         expertFirstName:    pe.expert.name,
         recipientEmail:     expertEmail,

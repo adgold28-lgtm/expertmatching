@@ -88,6 +88,12 @@ export default function AppPage() {
 
   const [projects,        setProjects]        = useState<ProjectSummaryWithStages[]>([]);
   const [projectsLoading, setProjectsLoading] = useState(true);
+  // A failed list is an ERROR, not an empty account — "Start your first project"
+  // on a 500 would send a tester to recreate work that is still there.
+  const [projectsError,   setProjectsError]   = useState('');
+  const [listAttempt,     setListAttempt]     = useState(0);
+  // lib/entitlements.ts: 'trial' until the firm adds a card.
+  const [accountKind,     setAccountKind]     = useState<'trial' | 'customer' | null>(null);
   const [currentUser,     setCurrentUser]     = useState<CurrentUser | null>(null);
   const [canManageTeam,   setCanManageTeam]   = useState(false);
   const [showWelcome,     setShowWelcome]     = useState(false);
@@ -111,13 +117,19 @@ export default function AppPage() {
   }, []);
 
   useEffect(() => {
+    setProjectsLoading(true);
+    setProjectsError('');
     fetch('/api/projects')
-      .then(r => r.json())
-      .then((d: { projects?: ProjectSummaryWithStages[] }) => {
+      .then(async r => {
+        const d = await r.json().catch(() => ({})) as { projects?: ProjectSummaryWithStages[]; error?: string };
+        if (!r.ok) throw new Error(d.error ?? `http_${r.status}`);
         setProjects(d.projects ?? []);
-        setProjectsLoading(false);
       })
-      .catch(() => setProjectsLoading(false));
+      .catch(() => setProjectsError("We couldn't load your projects. They are still there — try again."))
+      .finally(() => setProjectsLoading(false));
+  }, [listAttempt]);
+
+  useEffect(() => {
 
     // /api/auth/me carries orgRole; read it defensively and confirm with the
     // membership endpoint (which is authoritative for legacy sessions).
@@ -128,8 +140,10 @@ export default function AppPage() {
         role?:       'admin' | 'user';
         firmDomain?: string;
         orgRole?:    'org_admin' | 'org_member';
+        account?:    { kind: 'trial' | 'customer'; canGoLive: boolean };
       }) => {
         if (!d.email) return;
+        if (d.account?.kind) setAccountKind(d.account.kind);
         setCurrentUser({
           email:      d.email,
           role:       d.role ?? 'user',
@@ -234,6 +248,22 @@ export default function AppPage() {
         </div>
       )}
 
+      {/* ── Trial banner ── */}
+      {accountKind === 'trial' && (
+        <div
+          className="px-6 py-2.5 text-[11px] flex items-center justify-between gap-4 flex-wrap"
+          style={{ background: '#0B1F3B', color: '#F7F7F5', letterSpacing: '0.04em' }}
+        >
+          <span>
+            <span className="uppercase font-semibold mr-2" style={{ color: '#C6A75E', letterSpacing: '0.14em' }}>Trial</span>
+            Brief, source and bookmark freely. Nothing reaches a real expert until your firm adds a card.
+          </span>
+          <Link href="/settings" className="underline underline-offset-2 hover:opacity-80" style={{ color: '#C6A75E' }}>
+            Activate in Settings →
+          </Link>
+        </div>
+      )}
+
       {/* ── Header ── */}
       <header className="bg-navy border-b-2 border-gold sticky top-0 z-40">
         <div className="max-w-6xl mx-auto px-6 sm:px-10 py-4 flex items-center justify-between gap-3">
@@ -326,6 +356,18 @@ export default function AppPage() {
                   <div className="skeleton h-2 w-full rounded mt-4" />
                 </div>
               ))}
+            </div>
+          ) : projectsError ? (
+            <div className="bg-white border border-red-200 p-6 max-w-lg">
+              <p className="text-sm text-red-700 mb-3">{projectsError}</p>
+              <button
+                type="button"
+                onClick={() => setListAttempt(n => n + 1)}
+                className="text-[10px] uppercase tracking-widest px-4 py-2 border border-navy text-navy hover:bg-navy hover:text-cream transition-colors"
+                style={{ letterSpacing: '0.12em' }}
+              >
+                Try again
+              </button>
             </div>
           ) : sorted.length > 0 ? (
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">

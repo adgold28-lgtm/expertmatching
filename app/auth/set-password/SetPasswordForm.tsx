@@ -5,12 +5,15 @@ import { useRouter } from 'next/navigation';
 
 export default function SetPasswordForm({
   token,
+  hashedToken,
   email,
   firmName,
   firstName,
   kind = 'invite',
 }: {
   token:      string;
+  /** Supabase's single-use recovery token hash — redeemed on submit. */
+  hashedToken: string;
   email:      string;
   firmName:   string;
   firstName?: string;
@@ -38,7 +41,8 @@ export default function SetPasswordForm({
     setError(null);
 
     try {
-      const res = await fetch(`/api/auth/set-password?token=${encodeURIComponent(token)}`, {
+      const res = await fetch(
+        `/api/auth/set-password?token=${encodeURIComponent(token)}&th=${encodeURIComponent(hashedToken)}`, {
         method:  'POST',
         headers: { 'Content-Type': 'application/json' },
         body:    JSON.stringify({ password, confirmPassword: confirm }),
@@ -67,7 +71,7 @@ export default function SetPasswordForm({
         setError('This reset link is no longer valid. Request a new one from the sign-in page.');
       } else if (data.error === 'invite_used') {
         setError('This invite link has already been used.');
-      } else if (data.error === 'invite_expired') {
+      } else if (data.error === 'invite_expired' || data.error === 'reset_expired') {
         setError('This link has expired. Request a new one to continue.');
       } else if (data.error === 'invite_invalid') {
         setError('This link is invalid or has already been used.');

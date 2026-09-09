@@ -99,13 +99,15 @@ async function loadServerState(): Promise<ServerState | null> {
     const me = await meRes.json() as {
       firstName?: string; lastName?: string; title?: string;
       firmName?: string; orgName?: string; billingComplete?: boolean;
+      /** Card on file OR a trial account (lib/entitlements.ts) — the step is done. */
+      billingStepComplete?: boolean;
     };
     const calendar = await calendarRes.json() as { connected?: boolean; provider?: unknown };
 
     return {
       calendarConnected: calendar.connected === true,
       calendarProvider:  narrowProvider(calendar.provider),
-      billingComplete:   me.billingComplete === true,
+      billingComplete:   me.billingStepComplete === true || me.billingComplete === true,
       orgName:           me.orgName || me.firmName || '',
       seed: {
         firstName: me.firstName ?? '',
@@ -403,7 +405,9 @@ export default function OnboardingPage() {
                     kind: 'success',
                     text: context === 'already_set_up'
                       ? `Billing is already set up for ${orgName || 'your firm'}.`
-                      : 'Payment method saved.',
+                      : context === 'trial'
+                        ? 'Trial account — no card needed to continue.'
+                        : 'Payment method saved.',
                   });
                 }}
                 onContinue={() => goTo(3)}

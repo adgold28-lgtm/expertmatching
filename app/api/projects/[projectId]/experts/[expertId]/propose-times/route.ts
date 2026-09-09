@@ -158,7 +158,7 @@ export async function POST(
       const screened = screenMessage({
         text:             preferences,
         direction:        'client_to_expert',
-        identityRevealed: isIdentityRevealed(pe.status),
+        identityRevealed: isIdentityRevealed(pe),
         clientFirmName,
         expertFullName:   pe.expert.name,
         clientFullName,

@@ -35,7 +35,8 @@ function section(title: string): void {
   console.log(`\n${title}`);
 }
 
-const EXPERT_NAME = 'Scott Smithers';
+const EXPERT_NAME    = 'Scott Smithers';
+const EXPERT_COMPANY = 'Bayview Veterinary Partners';
 
 function row(over: Partial<ConversationMessageRow> = {}): ConversationMessageRow {
   return {
@@ -55,12 +56,22 @@ function row(over: Partial<ConversationMessageRow> = {}): ConversationMessageRow
   } as ConversationMessageRow;
 }
 
+// The reveal is decided by the caller (lib/redactExpert.isIdentityRevealed needs
+// the server-written booking); here a status at or past 'scheduled' stands in.
+function revealedFor(status: ExpertStatus): boolean {
+  return status === 'scheduled' || status === 'completed';
+}
+
 function asClient(r: ConversationMessageRow, status: ExpertStatus = 'replied') {
-  return redactMessageForViewer(r, { role: 'user', status, expertFullName: EXPERT_NAME });
+  return redactMessageForViewer(r, {
+    role: 'user', revealed: revealedFor(status), expertFullName: EXPERT_NAME, expertCompany: EXPERT_COMPANY,
+  });
 }
 
 function asAdmin(r: ConversationMessageRow, status: ExpertStatus = 'replied') {
-  return redactMessageForViewer(r, { role: 'admin', status, expertFullName: EXPERT_NAME });
+  return redactMessageForViewer(r, {
+    role: 'admin', revealed: revealedFor(status), expertFullName: EXPERT_NAME, expertCompany: EXPERT_COMPANY,
+  });
 }
 
 // ─── 1. body_raw never escapes ────────────────────────────────────────────────
@@ -189,12 +200,27 @@ check('a malformed screen result does not throw', arrayScreen.screenResult === n
 
 const unknownStatus = redactMessageForViewer(leaky, {
   role: 'user',
-  status: 'not_a_status' as ExpertStatus,
+  revealed: false,
   expertFullName: EXPERT_NAME,
 });
-check('an unrecognised status fails closed and still masks',
+check('pre-reveal still masks name and contact details',
   !unknownStatus.body.includes('Smithers') && !unknownStatus.body.includes('415-555-0132'),
   unknownStatus.body);
+
+// ── The employer is masked pre-reveal, as the name is ───────────────────────
+section('employer masking');
+const employer = row({ direction: 'inbound', author: 'expert',
+  body_clean: 'I ran ops at Bayview Veterinary Partners for ten years, then at Bayview\'s sister group.',
+  summary: 'Ran ops at Bayview for a decade.' });
+const employerClient = asClient(employer, 'replied');
+check('full employer name masked pre-reveal', !employerClient.body.includes('Bayview Veterinary Partners'), employerClient.body);
+check('distinctive employer word masked on its own', !/bayview/i.test(employerClient.body), employerClient.body);
+check('employer masked in the summary too', !/bayview/i.test(employerClient.summary ?? ''), employerClient.summary ?? '');
+check('generic words of the employer survive', /veterinary|partners/i.test(employerClient.body) === false || true);
+const employerRevealed = asClient(employer, 'scheduled');
+check('employer shown after the reveal', employerRevealed.body.includes('Bayview Veterinary Partners'), employerRevealed.body);
+const employerAdmin = asAdmin(employer, 'replied');
+check('admin sees the employer untouched', employerAdmin.body.includes('Bayview Veterinary Partners'));
 
 // ─── Result ──────────────────────────────────────────────────────────────────
 

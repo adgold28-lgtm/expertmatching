@@ -184,6 +184,7 @@ export async function GET(
   }
 
   const { project, pe } = resolved;
+  const firm = await getFirm(project.firmDomain).catch(() => null);
   const proposed = pe.scheduling?.proposed ?? [];
 
   const payload: SchedulePayload = {
@@ -194,7 +195,7 @@ export async function GET(
     more:            pe.booking ? [] : await moreWindowsFor(project, pe, proposed).catch(() => []),
     durationMin:     pe.booking?.durationMin ?? CALL_DURATION_MIN,
     expertFirstName: firstNameOf(pe.expert.name),
-    topic:           deriveTopic(project),
+    topic:           deriveTopic(project, { denyTerms: firm?.name ? [firm.name] : [] }),
     calendarLinked:  expertHasConnectedCalendar(pe),
     booked:          pe.booking ? { startUtc: pe.booking.startUtc, endUtc: pe.booking.endUtc } : null,
   };

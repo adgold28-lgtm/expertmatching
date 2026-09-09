@@ -28,6 +28,7 @@ import type Stripe from 'stripe';
 import { routeAuthGuard, getSessionUser } from '../../../../../lib/auth';
 import { stripe } from '../../../../../lib/stripe';
 import { getAuthUserIdByEmail } from '../../../../../lib/supabase/admin';
+import { trackProductEvent } from '../../../../../lib/productEvents';
 import {
   getOrganizationIdForUser,
   getOrgBillingRow,
@@ -110,6 +111,12 @@ export async function POST(request: NextRequest): Promise<Response> {
     await completeOrgBilling(organizationId, { paymentMethodId, setUpByProfileId });
 
     console.log('[api/onboarding/billing/confirm] org-billing-complete', { organizationId });
+    void trackProductEvent({
+      type:           'onboarding_step_completed',
+      actorId:        setUpByProfileId,
+      organizationId,
+      payload:        { step: 'billing' },
+    });
 
     return Response.json({ ok: true });
   } catch (err) {

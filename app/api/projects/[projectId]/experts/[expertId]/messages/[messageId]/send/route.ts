@@ -44,6 +44,7 @@ import { isSuppressed } from '../../../../../../../../../lib/outreachSuppression
 import { clientRateFor } from '../../../../../../../../../lib/pricing';
 import { getFirm } from '../../../../../../../../../lib/firmStore';
 import { isWalkthrough } from '../../../../../../../../../lib/walkthrough';
+import { isIdentityRevealed } from '../../../../../../../../../lib/redactExpert';
 import type { StoredScreenResult } from '../../../../../../../../../lib/conversations';
 
 const ID_RE         = /^[a-f0-9]{24}$/;
@@ -170,8 +171,9 @@ export async function POST(
     return NextResponse.json({
       message: redactMessageForViewer(updatedRow ?? stored, {
         role,
-        status:         pe.status,
+        revealed:       isIdentityRevealed(pe),
         expertFullName: pe.expert.name,
+        expertCompany:  pe.expert.company,
       }),
     });
   } catch (err) {

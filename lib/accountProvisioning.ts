@@ -6,16 +6,21 @@
 // user — that is what makes "first name + last name + email + organization,
 // always" impossible to bypass.
 //
+// Single-use links are Supabase recovery tokens (lib/authLinks.ts) — Redis is
+// used here only for the best-effort seat-claim lock, so an Upstash outage
+// cannot stop an invitation.
+//
 // Expected failures come back as a typed result, never thrown: callers turn
 // them straight into HTTP responses. Only genuinely unexpected conditions are
 // caught and reported as `internal_error`.
 //
 // Never logs email, name, domain, organization name or tokens.
 
-import { getUpstashClient } from './upstashRedis';
-import { generateSignupToken, tokenRedisKey, tokenTtlSeconds } from './signupToken';
+import { mintSetPasswordLink } from './authLinks';
+import { isPublicEmailDomain } from './emailDomains';
 import { sendInviteEmail } from './sendAvailabilityRequest';
 import { sendPasswordResetEmail } from './passwordReset';
+import { trackProductEvent } from './productEvents';
 import {
   getFirm,
   upsertFirm,
@@ -36,6 +41,7 @@ export type ProvisionErrorCode =
   | 'invalid_last_name'
   | 'invalid_email'
   | 'invalid_organization'
+  | 'personal_email_domain'
   | 'organization_name_required'
   | 'email_domain_mismatch'
   | 'organization_disabled'
@@ -195,13 +201,19 @@ export async function provisionAccountInvite(
     );
   }
 
-  const redis = getUpstashClient();
-  if (!redis) {
-    return fail('storage_unavailable', 'Invite storage is unavailable. Please try again shortly.', 503);
+  // A consumer email domain is never an organization (lib/emailDomains.ts).
+  // Someone on Gmail joins the organization a platform admin NAMES for them —
+  // never one derived from the address. This is what closed the door the
+  // founder's gmail.com admin org had left open.
+  if (isPublicEmailDomain(orgDomain)) {
+    return fail(
+      'personal_email_domain',
+      `${orgDomain} is a personal email provider, not an organization. Invite this person into a named organization instead.`,
+      400,
+    );
   }
 
-  const appUrl = (process.env.NEXT_PUBLIC_APP_URL ?? '').replace(/\/$/, '');
-  if (!appUrl) {
+  if (!(process.env.NEXT_PUBLIC_APP_URL ?? '').trim()) {
     return fail('not_configured', 'Invite links are not configured. Contact support.', 500);
   }
 
@@ -251,13 +263,11 @@ export async function provisionAccountInvite(
       // pending one gets a fresh invitation. Either way the token carries the
       // organization, so accepting it cannot re-home them.
       const kind = existing.status === 'active' ? 'reset' : 'invite';
-      const { token, hash, expiry } = generateSignupToken(email, organizationName, {
-        kind,
-        orgId: firm.id,
-      });
-      await redis.set(tokenRedisKey(kind, hash), email, { ex: tokenTtlSeconds(kind, expiry) });
-
-      const setPasswordUrl = `${appUrl}/auth/set-password?token=${encodeURIComponent(token)}`;
+      const link = await mintSetPasswordLink(email, organizationName, { kind, orgId: firm.id });
+      if (!link) {
+        return fail('storage_unavailable', 'Could not create the link. Please try again shortly.', 503);
+      }
+      const setPasswordUrl = link.url;
       const greetingName   = existing.firstName || firstName;
 
       let emailSent = true;
@@ -329,16 +339,25 @@ export async function provisionAccountInvite(
         ...(input.orgRole ? { orgRole: input.orgRole } : {}),
       });
 
-      // ── 8. Single-use invite token ─────────────────────────────────────────
-      // The organization travels inside the token: set-password uses it instead
-      // of re-deriving the org from the email domain, which used to strand a
-      // cross-domain invitee in a brand-new organization of their own.
-      const { token, hash, expiry, kind } = generateSignupToken(email, organizationName, {
-        orgId: firm.id,
-      });
-      await redis.set(tokenRedisKey(kind, hash), email, { ex: tokenTtlSeconds(kind, expiry) });
+      // ── 8. Single-use invite link ──────────────────────────────────────────
+      // Our signed token carries the organization, so set-password never
+      // re-derives it from the email domain (which used to strand a
+      // cross-domain invitee in a new organization of their own). Single use
+      // is Supabase's recovery token, not a Redis key (lib/authLinks.ts).
+      const link = await mintSetPasswordLink(email, organizationName, { kind: 'invite', orgId: firm.id });
+      if (!link) {
+        // The pending account exists; "Resend invite" (reinvite: true) mints
+        // a fresh link. Say so rather than pretending the invite went out.
+        return fail('storage_unavailable', 'The account was created but the invite link could not be minted. Use Resend invite.', 503);
+      }
+      const setPasswordUrl = link.url;
 
-      const setPasswordUrl = `${appUrl}/auth/set-password?token=${encodeURIComponent(token)}`;
+      await trackProductEvent({
+        type:           'account_invited',
+        actorEmail:     email,
+        organizationId: firm.id,
+        payload:        { role: input.role === 'admin' ? 'admin' : 'user', orgRole: input.orgRole ?? 'auto' },
+      });
 
       // ── 9. Invite email ────────────────────────────────────────────────────
       let emailSent = true;

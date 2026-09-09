@@ -4,6 +4,7 @@ import { guardReadRequest, guardMutatingRequest } from '../../../lib/projectsGua
 import { validateCreateProjectInput } from '../../../lib/projectValidation';
 import { getSessionUser } from '../../../lib/auth';
 import { redactProjectForViewer } from '../../../lib/redactExpert';
+import { trackProductEvent } from '../../../lib/productEvents';
 
 export async function GET(request: NextRequest) {
   const err = guardReadRequest(request);
@@ -33,6 +34,12 @@ export async function POST(request: NextRequest) {
   try {
     const { email, role } = await getSessionUser(request);
     const project = await createProject(data, email);
+    void trackProductEvent({
+      type:       'project_created',
+      actorEmail: email,
+      projectId:  project.id,
+      payload:    { walkthrough: project.walkthrough !== false, hasQuestion: (project.researchQuestion ?? '').trim().length > 0 },
+    });
     // ProjectSummary (the GET list above) carries no expert identity, but a
     // freshly created project may already hold experts — redact like any other
     // `{ project }` response.

@@ -60,7 +60,7 @@ export async function POST(
     if (!pe) return Response.json({ error: 'expert_not_found' }, { status: 404 });
 
     const { expert } = pe;
-    const identified = role === 'admin' || isIdentityRevealed(pe.status);
+    const identified = role === 'admin' || isIdentityRevealed(pe);
 
     const systemPrompt = `You generate structured interview guides for expert calls at a primary research firm. The client will use this guide on a 45-60 minute call with an industry expert. Questions must be sharp, specific, and non-generic. No em dashes. No filler. Return only valid JSON, no markdown, no code fences.`;
 

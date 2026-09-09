@@ -1,6 +1,6 @@
 import { NextRequest } from 'next/server';
 import { addExpertsToProject, getProjectForUser } from '../../../../../lib/projectStore';
-import { guardMutatingRequest } from '../../../../../lib/projectsGuard';
+import { guardMutatingRequest, requireProjectOwner } from '../../../../../lib/projectsGuard';
 import { getSessionUser } from '../../../../../lib/auth';
 import { validateProjectExpert, MAX_EXPERTS_PER_PROJECT } from '../../../../../lib/projectValidation';
 import { EXPERT_STATUSES } from '../../../../../lib/expertPipeline';
@@ -10,6 +10,15 @@ import type { ExpertStatus } from '../../../../../types';
 const ID_RE = /^[a-f0-9]{24}$/;
 
 const VALID_STATUSES = new Set<ExpertStatus>(EXPERT_STATUSES);
+
+/**
+ * A client may add a candidate as found or shortlisted — never as anything the
+ * engagement has to EARN (contacted, scheduled, completed …). Those statuses
+ * are written by the server as Matchy works, and `scheduled`/`completed` are
+ * half of the identity-reveal condition (lib/redactExpert.isIdentityRevealed).
+ * Staff may seed any status.
+ */
+const CLIENT_ADDABLE_STATUSES = new Set<ExpertStatus>(['discovered', 'shortlisted']);
 
 export async function POST(
   request: NextRequest,
@@ -33,6 +42,12 @@ export async function POST(
     const { email, role } = await getSessionUser(request);
     const existing = await getProjectForUser(params.projectId, email, role);
     if (!existing) return Response.json({ error: 'not_found' }, { status: 404 });
+
+    // Adding candidates changes what the project is about; a collaborator reads
+    // (docs/MATCHY_SPEC.md, founder answer 5). 404 above ran first, so this
+    // never confirms a project the caller cannot reach.
+    const ownerErr = requireProjectOwner(existing, { email, role });
+    if (ownerErr) return ownerErr;
 
     const incoming = (body.experts as unknown[]).length;
     if (existing.experts.length + incoming > MAX_EXPERTS_PER_PROJECT) {
@@ -59,8 +74,9 @@ export async function POST(
         if (!posted) return null;
         const expert = storedCandidates.get(posted.id) ?? posted;
         const rawStatus = entry.status;
+        const allowed = role === 'admin' ? VALID_STATUSES : CLIENT_ADDABLE_STATUSES;
         const status: ExpertStatus | undefined =
-          typeof rawStatus === 'string' && VALID_STATUSES.has(rawStatus as ExpertStatus)
+          typeof rawStatus === 'string' && allowed.has(rawStatus as ExpertStatus)
             ? (rawStatus as ExpertStatus)
             : undefined;
         return { expert, status };

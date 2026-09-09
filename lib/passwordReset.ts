@@ -2,9 +2,10 @@
 //
 // An account is created by invitation and its password is set through the
 // tokenized /auth/set-password page. Recovery reuses exactly that page: this
-// module mints a signup token of kind 'reset', stores its hash in Redis for one
-// hour and emails the link. app/api/auth/set-password then swaps the password
-// via the Supabase admin API without touching status or org membership.
+// module mints a signup token of kind 'reset' paired with a Supabase recovery
+// token (lib/authLinks.ts) and emails the link. app/api/auth/set-password then
+// swaps the password via the Supabase admin API without touching status or org
+// membership.
 //
 // Enumeration safety is the whole point of the shape here: the caller ALWAYS
 // gets { ok: true }, whether the address has an account, has a disabled
@@ -17,7 +18,7 @@ import { createHmac } from 'crypto';
 import { getUpstashClient } from './upstashRedis';
 import { getUser } from './firmStore';
 import { getFromAddress } from './mailFrom';
-import { generateSignupToken, tokenRedisKey, tokenTtlSeconds } from './signupToken';
+import { mintSetPasswordLink } from './authLinks';
 
 // ─── Rate limiting ────────────────────────────────────────────────────────────
 
@@ -176,37 +177,27 @@ export async function requestPasswordReset(email: string): Promise<PasswordReset
   const normalized = email.trim().toLowerCase().slice(0, 254);
   if (!normalized || !normalized.includes('@')) return OK;
 
-  const appUrl = (process.env.NEXT_PUBLIC_APP_URL ?? '').replace(/\/$/, '');
-  if (!appUrl) {
-    console.error('[passwordReset] NEXT_PUBLIC_APP_URL is not configured');
-    return OK;
-  }
-
-  const redis = getUpstashClient();
-  if (!redis) {
-    console.error('[passwordReset] token storage unavailable');
-    return OK;
-  }
-
   try {
     const user = await getUser(normalized);
     // Pending accounts still hold an unused invite; disabled accounts must go
     // through an admin. Neither gets a reset link, and neither is revealed.
     if (!user || user.status !== 'active') return OK;
 
-    const { token, hash, expiry, kind } = generateSignupToken(
-      normalized,
-      user.firmName || 'ExpertMatch',
-      { kind: 'reset', ...(user.orgId ? { orgId: user.orgId } : {}) },
-    );
+    // Single use is Supabase's own recovery token (lib/authLinks.ts) — no
+    // Redis key, so a rate-limited cache cannot lock anyone out of recovery.
+    const link = await mintSetPasswordLink(normalized, user.firmName || 'ExpertMatch', {
+      kind: 'reset',
+      ...(user.orgId ? { orgId: user.orgId } : {}),
+    });
+    if (!link) {
+      console.error('[passwordReset] could not mint a reset link');
+      return OK;
+    }
 
-    await redis.set(tokenRedisKey(kind, hash), normalized, { ex: tokenTtlSeconds(kind, expiry) });
-
-    const resetUrl = `${appUrl}/auth/set-password?token=${encodeURIComponent(token)}`;
-    await sendPasswordResetEmail(normalized, resetUrl, user.firstName ?? '');
+    await sendPasswordResetEmail(normalized, link.url, user.firstName ?? '');
   } catch {
-    // Storage or delivery failed. The caller still gets { ok: true }: telling
-    // them otherwise would confirm the address exists.
+    // Delivery failed. The caller still gets { ok: true }: telling them
+    // otherwise would confirm the address exists.
     console.error('[passwordReset] could not issue a reset link');
   }
 

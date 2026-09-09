@@ -1,24 +1,29 @@
-// POST /api/auth/set-password?token=… — the one place a password is chosen.
+// POST /api/auth/set-password?token=…&th=… — the one place a password is chosen.
+//
+// A link has two halves (lib/authLinks.ts): `token`, our own HMAC-signed
+// payload (email, organization, kind, expiry — stateless, so a tampered or
+// expired link is refused without a storage read), and `th`, a Supabase
+// recovery token hash that Supabase keeps, expires and burns on first use.
+// Redeeming `th` is what makes a link single-use; there is no Redis in this
+// path any more, so a rate-limited cache can no longer stop an invitee.
 //
 // Two token kinds land here (lib/signupToken):
 //   'invite' — a pending account is activated. The invite's own organization
 //              (payload orgId) decides the membership and the seat check;
-//              legacy tokens without one fall back to the email domain, which
-//              is what used to silently re-home a cross-domain invitee into a
-//              brand-new organization.
+//              legacy tokens without one fall back to the email domain.
 //   'reset'  — an ACTIVE account replaces its password. Nothing else moves: no
 //              status change, no membership write, no onboarding reset.
 //
-// Ordering matters: the seat cap is checked BEFORE the token is consumed, so a
+// Ordering matters: the seat cap is checked BEFORE the link is redeemed, so a
 // capped firm leaves the invitee holding a link that still works once a seat
-// is freed. Redis being unreachable is 503 temporarily_unavailable, never
-// "already used" — the two are indistinguishable to a user otherwise.
+// is freed.
 
 import { NextRequest, NextResponse } from 'next/server';
 import { createServerClient } from '@supabase/ssr';
-import { verifySignupToken, hashToken, tokenRedisKey, type SignupTokenKind } from '../../../../lib/signupToken';
+import { verifySignupToken, hashToken, type SignupTokenKind } from '../../../../lib/signupToken';
+import { redeemSetPasswordLink } from '../../../../lib/authLinks';
 import { getUpstashClient } from '../../../../lib/upstashRedis';
-import { ensureSupabaseUser, getSupabaseAdminClient, getAuthUserIdByEmail } from '../../../../lib/supabase/admin';
+import { getSupabaseAdminClient, getAuthUserIdByEmail } from '../../../../lib/supabase/admin';
 import {
   getUser,
   upsertUser,
@@ -31,6 +36,7 @@ import {
 } from '../../../../lib/firmStore';
 import { syncOrgSeatQuantity } from '../../../../lib/orgBilling';
 import { recordSystemFailure } from '../../../../lib/engagementEvents';
+import { trackProductEvent } from '../../../../lib/productEvents';
 
 const HOUR_MS    = 60 * 60 * 1000;
 const RATE_LIMIT = 5;
@@ -53,17 +59,6 @@ function passwordError(password: string): string | null {
   return null;
 }
 
-/** Redis is down or refusing. Distinct from "this link is spent". */
-function temporarilyUnavailable(): Response {
-  return Response.json(
-    {
-      error:   'temporarily_unavailable',
-      message: 'We couldn’t check your invitation just now — try again in a minute.',
-    },
-    { status: 503 },
-  );
-}
-
 function linkSpent(kind: SignupTokenKind): Response {
   return kind === 'reset'
     ? Response.json(
@@ -74,6 +69,18 @@ function linkSpent(kind: SignupTokenKind): Response {
         { error: 'invite_used', message: 'This invite link has already been used.' },
         { status: 409 },
       );
+}
+
+function linkExpired(kind: SignupTokenKind): Response {
+  return Response.json(
+    {
+      error:   kind === 'reset' ? 'reset_expired' : 'invite_expired',
+      message: kind === 'reset'
+        ? 'This reset link has expired. Request a new one from the sign-in page.'
+        : 'This invitation has expired. Ask for a new one to continue.',
+    },
+    { status: 410 },
+  );
 }
 
 // Signs in via Supabase and captures the session Set-Cookie entries.
@@ -124,19 +131,27 @@ function signedInResponse(
   return response;
 }
 
-export async function POST(request: NextRequest): Promise<Response> {
-  const token = request.nextUrl.searchParams.get('token') ?? '';
+/** Best-effort per-link attempt cap. Redis down = no cap, never a refusal. */
+async function overAttemptLimit(rawToken: string): Promise<boolean> {
+  const redis = getUpstashClient();
+  if (!redis) return false;
+  try {
+    const { count } = await redis.incrWithWindow(`invite-rl:${hashToken(rawToken).slice(0, 16)}`, HOUR_MS);
+    return count > RATE_LIMIT;
+  } catch {
+    return false;
+  }
+}
 
-  // ── 1. Verify token signature + expiry ────────────────────────────────────
+export async function POST(request: NextRequest): Promise<Response> {
+  const token       = request.nextUrl.searchParams.get('token') ?? '';
+  const hashedToken = request.nextUrl.searchParams.get('th')    ?? '';
+
+  // ── 1. Verify our token's signature + expiry (stateless) ──────────────────
   const verified = verifySignupToken(token);
 
   if (!verified.valid) {
-    if (verified.expired) {
-      return Response.json(
-        { error: 'invite_expired', message: 'This link has expired. Request a new one to continue.' },
-        { status: 410 },
-      );
-    }
+    if (verified.expired) return linkExpired('invite');
     return Response.json(
       { error: 'invite_invalid', message: 'This link is invalid or has already been used.' },
       { status: 404 },
@@ -144,23 +159,25 @@ export async function POST(request: NextRequest): Promise<Response> {
   }
 
   const { email, firmName, orgId, kind } = verified;
-  const hash     = hashToken(token);
-  const redisKey = tokenRedisKey(kind, hash);
 
-  const redis = getUpstashClient();
-  if (!redis) return temporarilyUnavailable();
+  // A link minted before single use moved to Supabase has no `th`. Those links
+  // were stored in Redis, which is no longer consulted — ask for a fresh one.
+  if (!hashedToken) {
+    return Response.json(
+      {
+        error:   kind === 'reset' ? 'reset_invalid' : 'invite_invalid',
+        message: 'This link is from an older invitation. Ask for a new one to continue.',
+      },
+      { status: 404 },
+    );
+  }
 
-  // ── 2. Rate limit ─────────────────────────────────────────────────────────
-  try {
-    const { count } = await redis.incrWithWindow(`invite-rl:${hash.slice(0, 16)}`, HOUR_MS);
-    if (count > RATE_LIMIT) {
-      return Response.json(
-        { error: 'rate_limited', message: 'Too many attempts. Try again later.' },
-        { status: 429 },
-      );
-    }
-  } catch {
-    return temporarilyUnavailable();
+  // ── 2. Attempt cap (best effort) ──────────────────────────────────────────
+  if (await overAttemptLimit(token)) {
+    return Response.json(
+      { error: 'rate_limited', message: 'Too many attempts. Try again later.' },
+      { status: 429 },
+    );
   }
 
   // ── 3. Parse + validate body ──────────────────────────────────────────────
@@ -180,30 +197,38 @@ export async function POST(request: NextRequest): Promise<Response> {
   const pwErr = passwordError(password);
   if (pwErr) return Response.json({ error: 'invalid_password', message: pwErr }, { status: 400 });
 
-  // ── 4. Check the token has not been consumed (peek only) ──────────────────
-  let stored: string | null;
-  try {
-    stored = await redis.get(redisKey);
-  } catch {
-    return temporarilyUnavailable();
-  }
-  if (!stored) return linkSpent(kind);
-
   return kind === 'reset'
-    ? handleReset(request, redis, redisKey, email, password)
-    : handleInvite(request, redis, redisKey, email, password, firmName, orgId);
+    ? handleReset(request, hashedToken, email, password)
+    : handleInvite(request, hashedToken, email, password, firmName, orgId);
 }
 
-type Redis = NonNullable<ReturnType<typeof getUpstashClient>>;
+/** Redeems the single-use half, mapping Supabase's answer onto our errors. */
+async function redeemOrRefuse(
+  request:     NextRequest,
+  hashedToken: string,
+  email:       string,
+  kind:        SignupTokenKind,
+): Promise<{ ok: true; userId: string } | { ok: false; response: Response }> {
+  const redeemed = await redeemSetPasswordLink(request, hashedToken, email);
+  if (redeemed.ok) return redeemed;
+  if (redeemed.reason === 'expired') return { ok: false, response: linkExpired(kind) };
+  if (redeemed.reason === 'invalid') return { ok: false, response: linkSpent(kind) };
+  return {
+    ok: false,
+    response: Response.json(
+      { error: 'temporarily_unavailable', message: 'We couldn’t check your link just now — try again in a minute.' },
+      { status: 503 },
+    ),
+  };
+}
 
 // ─── Reset: swap the password, touch nothing else ─────────────────────────────
 
 async function handleReset(
-  request:  NextRequest,
-  redis:    Redis,
-  redisKey: string,
-  email:    string,
-  password: string,
+  request:     NextRequest,
+  hashedToken: string,
+  email:       string,
+  password:    string,
 ): Promise<Response> {
   const user = await getUser(email).catch(() => null);
   if (!user || user.status !== 'active') {
@@ -216,22 +241,16 @@ async function handleReset(
     );
   }
 
-  let consumed: string | null;
-  try {
-    consumed = await redis.getAndDel(redisKey);
-  } catch {
-    return temporarilyUnavailable();
-  }
-  if (!consumed) return linkSpent('reset');
+  const redeemed = await redeemOrRefuse(request, hashedToken, email, 'reset');
+  if (!redeemed.ok) return redeemed.response;
 
-  const admin  = getSupabaseAdminClient();
-  const authId = await getAuthUserIdByEmail(email).catch(() => null);
-  if (!admin || !authId) {
-    console.error('[auth/set-password] reset could not resolve the account');
+  const admin = getSupabaseAdminClient();
+  if (!admin) {
+    console.error('[auth/set-password] reset: admin client unavailable');
     return Response.json({ error: 'internal_error' }, { status: 500 });
   }
 
-  const { error } = await admin.auth.admin.updateUserById(authId, { password });
+  const { error } = await admin.auth.admin.updateUserById(redeemed.userId, { password });
   if (error) {
     console.error('[auth/set-password] reset failed to update the password');
     return Response.json({ error: 'internal_error' }, { status: 500 });
@@ -243,13 +262,12 @@ async function handleReset(
 // ─── Invite: activate the pending account inside its own organization ─────────
 
 async function handleInvite(
-  request:  NextRequest,
-  redis:    Redis,
-  redisKey: string,
-  email:    string,
-  password: string,
-  firmName: string,
-  orgId:    string | null,
+  request:     NextRequest,
+  hashedToken: string,
+  email:       string,
+  password:    string,
+  firmName:    string,
+  orgId:       string | null,
 ): Promise<Response> {
   // ── The user record must exist and still be pending ───────────────────────
   let user;
@@ -279,7 +297,7 @@ async function handleInvite(
   const orgDomain = firm?.domain ?? emailDomain;
   const orgName   = firm?.name   ?? firmName;
 
-  // ── Seat cap — checked BEFORE the token is consumed ───────────────────────
+  // ── Seat cap — checked BEFORE the link is redeemed ────────────────────────
   // seat_limit is an optional platform-admin cap; null means unlimited.
   if (orgDomain) {
     try {
@@ -310,18 +328,19 @@ async function handleInvite(
     } catch { /* non-fatal — a seat-count read failure must not strand an invitee */ }
   }
 
-  // ── Atomic token consumption ──────────────────────────────────────────────
-  let consumed: string | null;
-  try {
-    consumed = await redis.getAndDel(redisKey);
-  } catch {
-    return temporarilyUnavailable();
-  }
-  if (!consumed) return linkSpent('invite');
+  // ── Redeem the single-use half ────────────────────────────────────────────
+  const redeemed = await redeemOrRefuse(request, hashedToken, email, 'invite');
+  if (!redeemed.ok) return redeemed.response;
 
   // ── Set the Supabase password + activate the account ──────────────────────
-  const authId = await ensureSupabaseUser(email, password);
-  if (!authId) {
+  const admin  = getSupabaseAdminClient();
+  const authId = redeemed.userId || (await getAuthUserIdByEmail(email).catch(() => null));
+  if (!admin || !authId) {
+    console.error('[auth/set-password] invite: could not resolve the account');
+    return Response.json({ error: 'internal_error' }, { status: 500 });
+  }
+  const { error: pwError } = await admin.auth.admin.updateUserById(authId, { password });
+  if (pwError) {
     console.error('[auth/set-password] failed to set password');
     return Response.json({ error: 'internal_error' }, { status: 500 });
   }
@@ -346,12 +365,15 @@ async function handleInvite(
     try {
       await syncOrgSeatQuantity(seatOrgId);
     } catch (err) {
-      // Never fails the activation — but no longer disappears either. The row
-      // surfaces at GET /api/admin/attention and the nightly reconcile job
-      // retries it, so a new seat cannot go unbilled unnoticed.
       await recordSystemFailure({ area: 'seat_sync', reason: err, organizationId: seatOrgId });
     }
   }
+
+  await trackProductEvent({
+    type:           'account_activated',
+    actorId:        authId,
+    organizationId: seatOrgId ?? null,
+  });
 
   return signedInResponse(await trySupabaseSignIn(request, email, password));
 }

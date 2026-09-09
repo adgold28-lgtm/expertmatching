@@ -213,6 +213,37 @@ check('expertRate STILL absent after the reveal — the two rates never share an
       scheduled.expertRate === undefined);
 check('clientRate still shown after the reveal', scheduled.clientRate === 1300);
 
+// ─── The reveal needs a server-written booking, not just a status ─────────────
+// A project owner can PUT status through the API; `booking` is written only by
+// lib/bookCall.ts. Status alone must therefore never reveal anyone.
+
+console.log("\nrole 'user', status 'scheduled' WITHOUT a booking — still anonymized");
+const statusOnly = { ...projectExpertAt('scheduled'), booking: undefined, zoomMeetingId: undefined };
+const statusOnlyView = redactExpertForViewer(statusOnly, { role: 'user' });
+check('scheduled with no booking is NOT revealed', !isIdentityRevealed(statusOnly));
+check('scheduled with no booking stays initialed', statusOnlyView.expert.name === 'Scott S.');
+check('scheduled with no booking keeps the company hidden', statusOnlyView.expert.company === '');
+const completedOnly = { ...projectExpertAt('completed'), booking: undefined, zoomMeetingId: undefined };
+check('completed with no booking is NOT revealed', !isIdentityRevealed(completedOnly));
+check('scheduled with a booking IS revealed', isIdentityRevealed(projectExpertAt('scheduled')));
+check('legacy zoomMeetingId also counts as a booking',
+      isIdentityRevealed({ status: 'scheduled', booking: undefined, zoomMeetingId: '123' }));
+check('a booking on an earlier status does not reveal',
+      !isIdentityRevealed({ status: 'contacted', booking: bookingState() }));
+
+// ─── Scheduling-flow fields the expert typed or connected never reach a client ─
+
+console.log("\nrole 'user' — availabilityRaw / calendarEmail / calendlyUrl stripped");
+const withRaw = redactExpertForViewer({
+  ...projectExpertAt('contacted'),
+  availabilityRaw: 'Call me on 415-555-0132, Scott Smithers, Bayview',
+  calendarEmail:   'scott@bayviewvet.example',
+  calendlyUrl:     'https://calendly.com/scott-smithers',
+}, { role: 'user' });
+check('availabilityRaw absent', withRaw.availabilityRaw === undefined);
+check('calendarEmail absent',   withRaw.calendarEmail   === undefined);
+check('calendlyUrl absent',     withRaw.calendlyUrl     === undefined);
+
 // ─── Declines never reveal ────────────────────────────────────────────────────
 
 console.log("\nrole 'user', declined statuses — never revealed");
@@ -226,7 +257,7 @@ for (const status of ['rejected', 'rejected_after_outreach'] as const) {
 console.log("\nrole 'user', status 'bookmarked' — saved but still anonymized");
 const bookmarked = redactExpertForViewer(projectExpertAt('bookmarked'), { role: 'user' });
 check('bookmarked stays initialed',      bookmarked.expert.name === 'Scott S.');
-check('bookmarked identity not revealed', !isIdentityRevealed('bookmarked'));
+check('bookmarked identity not revealed', !isIdentityRevealed(projectExpertAt('bookmarked')));
 check('bookmarked contactEmail absent',  bookmarked.contactEmail === undefined);
 check('bookmarked expertRate absent',    bookmarked.expertRate === undefined);
 check('bookmarked clientRate kept',      bookmarked.clientRate === 1300);

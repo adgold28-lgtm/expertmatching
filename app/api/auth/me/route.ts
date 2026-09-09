@@ -20,6 +20,7 @@ import { NextRequest } from 'next/server';
 import { routeAuthGuard, getSessionUser } from '../../../../lib/auth';
 import { getUser } from '../../../../lib/firmStore';
 import { getUserBillingSummary } from '../../../../lib/orgBilling';
+import { getOrgEntitlements, NO_ORG_ENTITLEMENTS } from '../../../../lib/entitlements';
 
 export async function GET(request: NextRequest): Promise<Response> {
   const authError = await routeAuthGuard(request);
@@ -39,9 +40,23 @@ export async function GET(request: NextRequest): Promise<Response> {
         }),
   ]);
 
+  const orgIdForEntitlements = session.orgId ?? billing.organizationId ?? null;
+  const entitlements = orgIdForEntitlements
+    ? await getOrgEntitlements(orgIdForEntitlements)
+    : NO_ORG_ENTITLEMENTS;
+
   return Response.json({
     authenticated:      true,
     role,
+    // The account boundary (lib/entitlements.ts). `kind` is 'trial' for an
+    // organization provisioned without a card; `canGoLive` is what the UI reads
+    // to explain that outreach and scheduling need activation.
+    account: {
+      kind:      entitlements.kind,
+      canGoLive: entitlements.canGoLive,
+    },
+    // Trial accounts skip the card at onboarding; the step is "done" for them.
+    billingStepComplete: entitlements.kind === 'trial' || billing.billingComplete || session.billingComplete || false,
     email,
     firmDomain,
     // `||` not `??`: an empty profile column means "not set", so it should fall

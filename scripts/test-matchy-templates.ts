@@ -135,6 +135,75 @@ eq('uses only the first sentence',
   topic('We are evaluating consolidation in industrial automation. We need to understand how operators price multi-year contracts.'),
   'consolidation in industrial automation');
 
+// ─── Client identity: the deny list and the sentence-start rule ──────────────
+// A client's own firm, a target, a lowercase brand, a possessive, a title — none
+// of it may reach an expert. lib/matchyTemplates.deriveTopic is deterministic;
+// these are the shapes the 2026-09-08 audit found leaking.
+
+function topicWithDeny(researchQuestion: string, extra: Record<string, string> = {}, deny: string[] = []): string {
+  return deriveTopic({ researchQuestion, industry: '', function: '', expertType: '', ...extra }, { denyTerms: deny });
+}
+
+check('client firm named in the question is removed (deny list)',
+  !topicWithDeny('Commercial diligence for Blackstone', {}, ['Blackstone']).toLowerCase().includes('blackstone'),
+  topicWithDeny('Commercial diligence for Blackstone', {}, ['Blackstone']));
+
+check('client firm named in the question is removed even without a deny list (sentence-internal capital)',
+  !topicWithDeny('Commercial diligence for Blackstone').toLowerCase().includes('blackstone'),
+  topicWithDeny('Commercial diligence for Blackstone'));
+
+check('no dangling preposition is left where the name was',
+  !/\b(for|at|in|of|and)$/.test(topicWithDeny('Commercial diligence for Blackstone')),
+  topicWithDeny('Commercial diligence for Blackstone'));
+
+check('structured industry/function path is filtered too',
+  !topicWithDeny('anything', { industry: 'Acme Corp veterinary roll-up', function: 'Commercial diligence for Blackstone' })
+    .toLowerCase().match(/acme|blackstone/),
+  topicWithDeny('anything', { industry: 'Acme Corp veterinary roll-up', function: 'Commercial diligence for Blackstone' }));
+
+check('sentence-initial company name is dropped',
+  !topicWithDeny('Zoetis pricing power in companion animal diagnostics').toLowerCase().includes('zoetis'),
+  topicWithDeny('Zoetis pricing power in companion animal diagnostics'));
+
+check('possessive company name is dropped',
+  !topicWithDeny("Zoetis's pricing power in companion animal diagnostics").toLowerCase().includes('zoetis'),
+  topicWithDeny("Zoetis's pricing power in companion animal diagnostics"));
+
+check('lowercase company names are removed when the brief lists them as targets',
+  !topicWithDeny('Understand margins at chewy and petco', { targetCompanies: 'Chewy, Petco' }).toLowerCase().match(/chewy|petco/),
+  topicWithDeny('Understand margins at chewy and petco', { targetCompanies: 'Chewy, Petco' }));
+
+check('a target named in the project TITLE is removed from the topic',
+  !topicWithDeny('Pricing dynamics in cold chain logistics at Lineage', { name: 'Lineage diligence' }).toLowerCase().includes('lineage'),
+  topicWithDeny('Pricing dynamics in cold chain logistics at Lineage', { name: 'Lineage diligence' }));
+
+check('the owner email domain label is a deny term',
+  !topicWithDeny('How is blackstone thinking about cold storage?', { firmDomain: 'blackstone.com' }).toLowerCase().includes('blackstone'),
+  topicWithDeny('How is blackstone thinking about cold storage?', { firmDomain: 'blackstone.com' }));
+
+check('a lowercase deny term matches whatever the case in the brief',
+  !topicWithDeny('How is KKR thinking about cold storage consolidation?', {}, ['kkr']).toLowerCase().includes('kkr'),
+  topicWithDeny('How is KKR thinking about cold storage consolidation?', {}, ['kkr']));
+
+check('multi-sentence brief: only the first sentence, names removed',
+  (() => {
+    const t = topicWithDeny('Acme Corp is exploring cold storage. Blackstone wants to know pricing. We need contract terms.', {}, ['Acme Corp']);
+    return !t.toLowerCase().match(/acme|blackstone/) && !t.toLowerCase().includes('contract terms');
+  })(),
+  topicWithDeny('Acme Corp is exploring cold storage. Blackstone wants to know pricing. We need contract terms.', {}, ['Acme Corp']));
+
+eq('ordinary opening words survive the sentence-start rule',
+  topicWithDeny('Pricing dynamics in cold chain logistics'),
+  'pricing dynamics in cold chain logistics');
+
+check('the topic still describes the subject after a name is removed',
+  topicWithDeny('Zoetis pricing power in companion animal diagnostics').includes('companion animal diagnostics'),
+  topicWithDeny('Zoetis pricing power in companion animal diagnostics'));
+
+check('never empty — falls back rather than returning nothing',
+  topicWithDeny('Blackstone', {}, ['Blackstone']).length > 0,
+  topicWithDeny('Blackstone', {}, ['Blackstone']));
+
 check('a dropped proper noun cannot fuse two sentences',
   !/\bUS We\b/.test(topic('We are evaluating an acquisition in cold chain logistics in the US Southeast. We need to understand contract pricing.')),
   topic('We are evaluating an acquisition in cold chain logistics in the US Southeast. We need to understand contract pricing.'));

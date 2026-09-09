@@ -536,6 +536,39 @@ export interface Database {
         };
         Relationships: [];
       };
+      // What people DO in the product — the trial/usage funnel. Service-role
+      // only (RLS enabled, no policies). See lib/productEvents.ts and
+      // supabase/migrations/20260908000000_identity_boundary_trial_events.sql.
+      product_events: {
+        Row: {
+          id: string;
+          actor_id: string | null;
+          organization_id: string | null;
+          project_id: string | null;
+          type: string;
+          payload: Json;
+          created_at: string;
+        };
+        Insert: {
+          id?: string;
+          actor_id?: string | null;
+          organization_id?: string | null;
+          project_id?: string | null;
+          type: string;
+          payload?: Json;
+          created_at?: string;
+        };
+        Update: {
+          id?: string;
+          actor_id?: string | null;
+          organization_id?: string | null;
+          project_id?: string | null;
+          type?: string;
+          payload?: Json;
+          created_at?: string;
+        };
+        Relationships: [];
+      };
     };
     Views: Record<string, never>;
     Functions: {
@@ -573,3 +606,4 @@ export type OutreachSuppressionRow = Database['public']['Tables']['outreach_supp
 export type OrganizationBillingRow = Database['public']['Tables']['organization_billing']['Row'];
 export type ConversationMessageRow = Database['public']['Tables']['conversation_messages']['Row'];
 export type EngagementEventRow = Database['public']['Tables']['engagement_events']['Row'];
+export type ProductEventRow = Database['public']['Tables']['product_events']['Row'];

@@ -46,6 +46,8 @@ interface CardSummary {
 interface PaymentMethodResponse {
   /** Set for members who are not the firm's champion — no card details follow. */
   restricted?:         boolean;
+  /** lib/entitlements.ts — 'trial' until a card is on file. */
+  accountKind?:        'trial' | 'customer';
   hasCard?:            boolean;
   canReplace?:         boolean;
   orgName?:            string;
@@ -347,6 +349,13 @@ export default function PaymentPanel() {
           )}
 
           {/* ── Replace ─────────────────────────────────────────────────── */}
+          {data.accountKind === 'trial' && !data.hasCard && (
+            <p className="mt-3 text-xs leading-relaxed" style={{ color: MUTED }}>
+              Trial account. Adding a card activates the firm: Matchy can then write to experts, book
+              calls and bill them, and the monthly seat subscription starts.
+            </p>
+          )}
+
           {!data.canReplace ? (
             <p className="mt-4 text-[11px] leading-relaxed" style={{ color: FAINT }}>
               Only your firm’s champion can change the card.
@@ -358,7 +367,7 @@ export default function PaymentPanel() {
               className="mt-4 w-full sm:w-auto px-5 py-2.5 text-[10px] uppercase font-medium border transition-colors hover:bg-navy hover:text-white"
               style={{ color: NAVY, borderColor: NAVY, letterSpacing: '0.14em' }}
             >
-              {data.hasCard ? 'Replace card' : 'Add a card'}
+              {data.hasCard ? 'Replace card' : data.accountKind === 'trial' ? 'Add a card to activate' : 'Add a card'}
             </button>
           ) : (
             <div className="mt-4">

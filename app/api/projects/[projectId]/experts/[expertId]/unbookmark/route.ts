@@ -21,6 +21,7 @@ import { getSessionUser } from '../../../../../../../lib/auth';
 import { guardMutatingRequest } from '../../../../../../../lib/projectsGuard';
 import { getProjectForUser, updateExpertStatus } from '../../../../../../../lib/projectStore';
 import { redactExpertForViewer } from '../../../../../../../lib/redactExpert';
+import { trackProductEvent } from '../../../../../../../lib/productEvents';
 
 const ID_RE        = /^[a-f0-9]{24}$/;
 const EXPERT_ID_RE = /^[a-zA-Z0-9\-_]+$/;
@@ -71,6 +72,12 @@ export async function POST(
       status: 'shortlisted',
     });
     const after = updated.experts.find(e => e.expert.id === params.expertId);
+    void trackProductEvent({
+      type:       'candidate_unbookmarked',
+      actorEmail: email,
+      projectId:  params.projectId,
+      payload:    { expertId: params.expertId },
+    });
 
     return NextResponse.json({
       ok:            true,

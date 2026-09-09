@@ -221,8 +221,21 @@ function InterviewGuideModal({ projectId, expertId, expertName, onClose }: {
 
 // ─── Brief section ────────────────────────────────────────────────────────────
 
+/** The two brief fields as typed, held by the PAGE so a tab switch keeps them. */
+interface BriefDraft {
+  businessProblem: string;
+  expertType:      string;
+}
+
+function draftFromProject(project: Project): BriefDraft {
+  return { businessProblem: project.researchQuestion ?? '', expertType: project.expertType ?? '' };
+}
+
 function BriefSection({
   project,
+  draft,
+  onDraftChange,
+  readOnly,
   onSave,
   onStepChange,
   onDeleteStart,
@@ -231,6 +244,11 @@ function BriefSection({
   sourcingError,
 }: {
   project: Project;
+  /** Lifted to the page: BriefSection unmounts on every tab switch. */
+  draft: BriefDraft;
+  onDraftChange: (draft: BriefDraft) => void;
+  /** Collaborators read the brief; only the owner (or staff) edits it. */
+  readOnly: boolean;
   onSave: (updates: Partial<Project>) => void;
   onStepChange: (step: WorkflowStep) => void;
   onDeleteStart: () => void;
@@ -239,10 +257,50 @@ function BriefSection({
   sourcingActive: boolean;
   sourcingError:  string | null;
 }) {
-  const [businessProblem, setBusinessProblem] = useState(project.researchQuestion ?? '');
-  const [expertType,      setExpertType]      = useState(project.expertType ?? '');
+  const businessProblem = draft.businessProblem;
+  const expertType      = draft.expertType;
+  const setBusinessProblem = (v: string) => onDraftChange({ ...draft, businessProblem: v });
+  const setExpertType      = (v: string) => onDraftChange({ ...draft, expertType: v });
+  const dirty =
+    businessProblem !== (project.researchQuestion ?? '') || expertType !== (project.expertType ?? '');
+  // The other person's version, when a save was refused as stale (409 brief_conflict).
+  const [conflict,        setConflict]        = useState<Project | null>(null);
   const [saving,          setSaving]          = useState(false);
   const [saveError,       setSaveError]       = useState('');
+
+  // Typed text must not vanish with the tab. Same guard a document editor uses.
+  useEffect(() => {
+    if (!dirty || readOnly) return;
+    const warn = (e: BeforeUnloadEvent) => { e.preventDefault(); e.returnValue = ''; };
+    window.addEventListener('beforeunload', warn);
+    return () => window.removeEventListener('beforeunload', warn);
+  }, [dirty, readOnly]);
+
+  /**
+   * One PUT for the two fields: only the ones that CHANGED, plus the version
+   * of the brief this screen loaded, so two people cannot overwrite each other
+   * unknowingly. An empty string clears a field on the server.
+   */
+  async function putBrief(): Promise<{ ok: true; project: Project } | { ok: false; message: string; conflict?: Project }> {
+    const changes: Record<string, unknown> = { briefVersion: project.briefUpdatedAt ?? 0 };
+    if (businessProblem !== (project.researchQuestion ?? '')) changes.researchQuestion = businessProblem;
+    if (expertType      !== (project.expertType ?? ''))      changes.expertType       = expertType;
+    if (Object.keys(changes).length === 1) return { ok: true, project };
+
+    const res = await fetch(`/api/projects/${project.id}`, {
+      method:  'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify(changes),
+    });
+    const d = await res.json().catch(() => null) as { project?: Project; message?: string; error?: string } | null;
+    if (res.status === 409 && d?.error === 'brief_conflict' && d.project) {
+      return { ok: false, message: d.message ?? 'This brief changed since you opened it.', conflict: d.project };
+    }
+    if (!res.ok || !d?.project) {
+      return { ok: false, message: d?.message ?? (res.status === 403 ? 'Only the project owner can edit the brief.' : "Couldn't save the brief. Try again.") };
+    }
+    return { ok: true, project: d.project };
+  }
   const [starting,        setStarting]        = useState(false);
   const [sourceError,     setSourceError]     = useState('');
   const [parsing,         setParsing]         = useState(false);
@@ -275,19 +333,24 @@ function BriefSection({
 
       const brief = d.brief;
       // Fill the two on-screen fields immediately.
-      if (brief.researchQuestion) setBusinessProblem(brief.researchQuestion);
-      if (brief.expertType)       setExpertType(brief.expertType);
+      onDraftChange({
+        businessProblem: brief.researchQuestion ?? businessProblem,
+        expertType:      brief.expertType       ?? expertType,
+      });
 
       // Persist everything (including the extended brief fields) in one PUT.
       const putRes = await fetch(`/api/projects/${project.id}`, {
         method:  'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body:    JSON.stringify(brief),
+        body:    JSON.stringify({ ...brief, briefVersion: project.briefUpdatedAt ?? 0 }),
       });
-      if (putRes.ok) {
-        const saved = await putRes.json() as { project?: Project };
-        if (saved.project) onSave(saved.project);
+      const saved = await putRes.json().catch(() => null) as { project?: Project; message?: string } | null;
+      if (!putRes.ok || !saved?.project) {
+        // The fields above are filled in; nothing is saved yet. Say so.
+        throw new Error(saved?.message ?? 'The document was read, but the brief could not be saved. Click Save brief to try again.');
       }
+      onSave(saved.project);
+      onDraftChange(draftFromProject(saved.project));
 
       const extraCount = Object.keys(brief).filter(k => !['researchQuestion', 'expertType'].includes(k)).length;
       setParseSuccess(
@@ -305,27 +368,31 @@ function BriefSection({
   async function handleCompleteBrief() {
     setSaving(true);
     setSaveError('');
+    setConflict(null);
     try {
-      const res = await fetch(`/api/projects/${project.id}`, {
-        method:  'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body:    JSON.stringify({
-          researchQuestion: businessProblem || undefined,
-          expertType:       expertType      || undefined,
-        }),
-      });
-      const d = await res.json().catch(() => null) as { project?: Project; message?: string } | null;
-      if (!res.ok) {
-        setSaveError(d?.message ?? "Couldn't save the brief. Try again.");
+      const result = await putBrief();
+      if (!result.ok) {
+        setSaveError(result.message);
+        if (result.conflict) setConflict(result.conflict);
         return;
       }
-      if (d?.project) onSave(d.project);
+      onSave(result.project);
+      onDraftChange(draftFromProject(result.project));
       onStepChange('matches');
     } catch {
       setSaveError("Couldn't save the brief. Try again.");
     } finally {
       setSaving(false);
     }
+  }
+
+  /** Takes the other person's version: replaces the draft and clears the conflict. */
+  function acceptConflict() {
+    if (!conflict) return;
+    onSave(conflict);
+    onDraftChange(draftFromProject(conflict));
+    setConflict(null);
+    setSaveError('');
   }
 
   // Kicks off the server-side sourcing run. The run itself survives navigation
@@ -335,21 +402,18 @@ function BriefSection({
     if (starting || sourcingActive) return;
     setStarting(true);
     setSourceError('');
+    setConflict(null);
     try {
-      const saveRes = await fetch(`/api/projects/${project.id}`, {
-        method:  'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body:    JSON.stringify({
-          researchQuestion: businessProblem || undefined,
-          expertType:       expertType      || undefined,
-        }),
-      });
-      // Keep parent state in sync — otherwise Re-source later in this session
-      // reads a stale empty researchQuestion and fails with "Query is required".
-      if (saveRes.ok) {
-        const saved = await saveRes.json() as { project?: Project };
-        if (saved.project) onSave(saved.project);
+      // Save first — sourcing reads the stored brief. A refused save stops here
+      // so the run never starts on text the server does not have.
+      const saved = await putBrief();
+      if (!saved.ok) {
+        setSourceError(saved.message);
+        if (saved.conflict) setConflict(saved.conflict);
+        return;
       }
+      onSave(saved.project);
+      onDraftChange(draftFromProject(saved.project));
 
       const startErr = await onStartSourcing({
         businessProblem: businessProblem || project.researchQuestion || undefined,
@@ -413,6 +477,7 @@ function BriefSection({
             value={businessProblem}
             onChange={e => setBusinessProblem(e.target.value)}
             rows={5}
+            readOnly={readOnly}
             placeholder="e.g. We're evaluating entry into cold chain logistics in the Southeast"
             className={fieldClass}
           />
@@ -424,6 +489,7 @@ function BriefSection({
             value={expertType}
             onChange={e => setExpertType(e.target.value)}
             rows={5}
+            readOnly={readOnly}
             placeholder="e.g. Someone with 20+ years in the poultry industry, former VP or Director level at a major integrator like Tyson, Pilgrim's, or Koch Foods"
             className={fieldClass}
           />
@@ -432,7 +498,17 @@ function BriefSection({
       </div>
 
       {/* ── Complete Brief / Source Experts ── */}
+      {readOnly ? (
+        <p className="border-t border-frame pt-6 text-xs text-muted">
+          Shared with you — read-only. Only the project owner can edit the brief or source experts.
+        </p>
+      ) : (
       <div className="border-t border-frame pt-6 space-y-3">
+        {dirty && !saving && (
+          <p className="text-[10px] uppercase tracking-widest text-amber-700" style={{ letterSpacing: '0.12em' }}>
+            Unsaved changes
+          </p>
+        )}
         <div className="flex items-center gap-4 flex-wrap">
           <button
             onClick={handleCompleteBrief}
@@ -462,25 +538,38 @@ function BriefSection({
           We&apos;ll keep looking in the background — close the tab and come back whenever.
         </p>
         {(saveError || sourceError || sourcingError) && (
-          <p className="text-xs text-red-600 border border-red-200 bg-red-50 px-3 py-2">
-            {saveError || sourceError || sourcingError}
-          </p>
+          <div className="text-xs text-red-600 border border-red-200 bg-red-50 px-3 py-2 space-y-2">
+            <p>{saveError || sourceError || sourcingError}</p>
+            {conflict && (
+              <button
+                type="button"
+                onClick={acceptConflict}
+                className="text-[10px] uppercase tracking-widest border border-red-300 hover:border-red-500 px-3 py-1 transition-colors"
+                style={{ letterSpacing: '0.12em' }}
+              >
+                Load the latest version
+              </button>
+            )}
+          </div>
         )}
       </div>
+      )}
 
-      {/* ── Danger zone ── */}
-      <div className="pt-6 border-t border-frame">
-        <p className="text-[10px] uppercase tracking-widest text-muted font-medium mb-3" style={{ letterSpacing: '0.14em' }}>
-          Delete this project
-        </p>
-        <button
-          onClick={onDeleteStart}
-          className="text-[10px] uppercase tracking-widest text-red-600 border border-red-200 hover:bg-red-50 px-4 py-2 transition-colors"
-          style={{ letterSpacing: '0.1em' }}
-        >
-          Delete Project
-        </button>
-      </div>
+      {/* ── Danger zone (owner only) ── */}
+      {!readOnly && (
+        <div className="pt-6 border-t border-frame">
+          <p className="text-[10px] uppercase tracking-widest text-muted font-medium mb-3" style={{ letterSpacing: '0.14em' }}>
+            Delete this project
+          </p>
+          <button
+            onClick={onDeleteStart}
+            className="text-[10px] uppercase tracking-widest text-red-600 border border-red-200 hover:bg-red-50 px-4 py-2 transition-colors"
+            style={{ letterSpacing: '0.1em' }}
+          >
+            Delete Project
+          </button>
+        </div>
+      )}
     </div>
   );
 }
@@ -1328,12 +1417,18 @@ function ProjectPageInner() {
     setStatusFilter('all');
   }, []);
 
+  // The brief as typed, kept here so switching tabs never loses it.
+  const [briefDraft, setBriefDraft] = useState<BriefDraft | null>(null);
+
   useEffect(() => {
-    fetch(`/api/projects/${projectId}`)
+    // X-Em-Visit marks the page's first load as ONE visit for usage records;
+    // the sourcing poll below never sends it.
+    fetch(`/api/projects/${projectId}`, { headers: { 'X-Em-Visit': '1' } })
       .then(r => r.json())
       .then((d: { project?: Project; error?: string }) => {
         if (d.error) { setError(d.error); return; }
         setProject(d.project ?? null);
+        if (d.project) setBriefDraft(draftFromProject(d.project));
       })
       .catch(() => setError('Failed to load project.'))
       .finally(() => setLoading(false));
@@ -1642,6 +1737,9 @@ function ProjectPageInner() {
         {viewStep === 'brief' && (
           <BriefSection
             project={project}
+            draft={briefDraft ?? draftFromProject(project)}
+            onDraftChange={setBriefDraft}
+            readOnly={!canSend}
             onSave={handleBriefSave}
             onStepChange={navigateTo}
             onDeleteStart={() => setShowDelete(true)}

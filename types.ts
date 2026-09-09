@@ -495,6 +495,13 @@ export interface Project {
    * Read it through lib/walkthrough.isWalkthrough, never directly.
    */
   walkthrough?: boolean;
+  /**
+   * Unix ms of the last save that touched a BRIEF field (PUT /api/projects/[id]).
+   * The workspace sends it back as `briefVersion`; a mismatch is 409
+   * brief_conflict, so two people editing one brief cannot overwrite each
+   * other unknowingly. Unpromoted — rides in `brief` jsonb, no migration.
+   */
+  briefUpdatedAt?: number;
   // The CLIENT-side hourly band Matchy negotiates inside, in whole dollars.
   // Null/absent = no bound; tier defaults apply.
   clientRateMin?: number | null;

@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createServerClient } from '@supabase/ssr';
 import { getUpstashClient } from '../../../../lib/upstashRedis';
+import { trackProductEvent } from '../../../../lib/productEvents';
 
 // Supabase Auth is the only login path. On success the @supabase/ssr client
 // writes the session cookies onto the response; authorization metadata
@@ -92,6 +93,7 @@ export async function POST(request: NextRequest): Promise<Response> {
   const captured: Array<{ name: string; value: string; options?: SetCookieOption }> = [];
   let signInOk = false;
   let disabled = false;
+  let signedInUserId: string | null = null;
 
   try {
     const supabase = createServerClient(url, key, {
@@ -112,6 +114,7 @@ export async function POST(request: NextRequest): Promise<Response> {
         await supabase.auth.signOut().catch(() => {});
       } else {
         signInOk = true;
+        signedInUserId = data.user.id;
       }
     }
   } catch {
@@ -129,6 +132,8 @@ export async function POST(request: NextRequest): Promise<Response> {
     // Uniform error — do not reveal whether the email exists.
     return Response.json({ error: 'invalid_credentials' }, { status: 401 });
   }
+
+  void trackProductEvent({ type: 'signed_in', actorId: signedInUserId });
 
   const response = NextResponse.json({ ok: true });
   for (const { name, value, options = {} } of captured) {

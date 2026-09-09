@@ -42,7 +42,7 @@ interface BillingStepProps {
   /** Firm name from /api/auth/me, so the resumed state can name the firm. */
   orgName?:   string;
   /** 'saved' — this user entered the card; 'already_set_up' — a colleague had. */
-  onComplete: (context: 'saved' | 'already_set_up') => void;
+  onComplete: (context: 'saved' | 'already_set_up' | 'trial') => void;
   onContinue: () => void;
 }
 
@@ -51,6 +51,8 @@ interface BillingInitResponse {
   clientSecret?:       string;
   publishableKey?:     string;
   alreadyComplete?:    boolean;
+  /** lib/entitlements.ts: a trial organization skips the card here. */
+  trial?:              boolean;
   orgName?:            string;
   activeSeats?:        number;
   seatUnitPriceCents?: number;
@@ -72,6 +74,8 @@ export default function BillingStep({ complete, orgName, onComplete, onContinue 
   const [firmAlreadySetUp, setFirmAlreadySetUp] = useState(false);
   // True when THIS user just entered the card, so the confirmation can say so.
   const [savedByYou,       setSavedByYou]       = useState(false);
+  // True for a trial organization: no card is asked for; outreach stays closed.
+  const [trialAccount,     setTrialAccount]     = useState(false);
   const [seatInfo,         setSeatInfo]         = useState<SeatInfo | null>(null);
   // Set when Stripe confirmed the card but our own confirm call did not land —
   // the card IS saved, so the retry must not re-run confirmCardSetup.
@@ -121,6 +125,15 @@ export default function BillingStep({ complete, orgName, onComplete, onContinue 
             activeSeats:        data.activeSeats ?? 0,
             seatUnitPriceCents: data.seatUnitPriceCents ?? 0,
           });
+        }
+
+        // ── Trial: no card at onboarding ─────────────────────────────────
+        if (data.trial) {
+          if (!active) return;
+          setTrialAccount(true);
+          setInitState('ready');
+          onCompleteRef.current('trial');
+          return;
         }
 
         // ── A colleague already saved the firm's card ─────────────────────
@@ -261,7 +274,7 @@ export default function BillingStep({ complete, orgName, onComplete, onContinue 
 
   // `complete` (resumed from the server) and `firmAlreadySetUp` (discovered on
   // this load) render the same "nothing to do" state.
-  const showSetUpState = complete || firmAlreadySetUp;
+  const showSetUpState = complete || firmAlreadySetUp || trialAccount;
 
   // ── Render ─────────────────────────────────────────────────────────────────
 
@@ -271,8 +284,9 @@ export default function BillingStep({ complete, orgName, onComplete, onContinue 
         {showSetUpState ? 'Billing' : 'Add Your Firm’s Payment Method'}
       </h2>
       <p className="mb-2 leading-relaxed" style={{ color: MUTED, fontSize: '14px', fontWeight: 300 }}>
-        One card covers your whole firm. Calls are billed after they happen — 15-minute minimum,
-        then per minute. Your seat subscription is billed monthly. This step is required.
+        {trialAccount
+          ? 'No card is needed during your trial. Calls are billed after they happen — 15-minute minimum, then per minute — once your firm adds a card.'
+          : 'One card covers your whole firm. Calls are billed after they happen — 15-minute minimum, then per minute. Your seat subscription is billed monthly. This step is required.'}
       </p>
       {seatLine && (
         <p className="mb-6 leading-relaxed" style={{ color: FAINT, fontSize: '12px' }}>
@@ -289,10 +303,14 @@ export default function BillingStep({ complete, orgName, onComplete, onContinue 
           <span aria-hidden="true" style={{ color: GOLD }}>✓</span>
           <div>
             <p className="font-medium text-navy">
-              {savedByYou ? 'Payment method saved' : `Billing is set up for ${firmLabel}`}
+              {trialAccount
+                ? 'Trial account — nothing to add here'
+                : savedByYou ? 'Payment method saved' : `Billing is set up for ${firmLabel}`}
             </p>
             <p className="mt-1 text-xs leading-relaxed" style={{ color: MUTED }}>
-              Calls and seats are billed to your firm’s card on file. You do not need to enter one.
+              {trialAccount
+                ? 'You can write a brief, source candidates and bookmark them. Outreach, scheduling and billing unlock when your firm adds a card in Settings → Payment method.'
+                : 'Calls and seats are billed to your firm’s card on file. You do not need to enter one.'}
             </p>
           </div>
         </div>

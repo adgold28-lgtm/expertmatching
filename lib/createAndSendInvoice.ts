@@ -26,6 +26,7 @@ import { Resend } from 'resend';
 import { getStripe } from './stripe';
 import { getProject, updateExpertStatus, updateProjectFields } from './projectStore';
 import { chargeSavedCard } from './chargeSavedCard';
+import { getEntitlementsForProject, recordRestrictedAttempt } from './entitlements';
 import { getFromAddress } from './mailFrom';
 
 // ─── Email HTML/text builders (shared with complete route) ────────────────────
@@ -253,6 +254,16 @@ export async function createAndSendInvoice(
     const pe = project.experts.find(e => e.expert.id === expertId);
     if (!pe) {
       console.error('[stripe] createAndSendInvoice: expert not found');
+      return null;
+    }
+
+    // Account boundary (lib/entitlements.ts): an organization with no card on
+    // file is never charged and never emailed an invoice. A trial cannot book
+    // a call in the first place; this is the backstop for every caller.
+    const entitlements = await getEntitlementsForProject(projectId);
+    if (!entitlements.canCharge) {
+      console.warn('[stripe] createAndSendInvoice refused: activation required', { projectId });
+      await recordRestrictedAttempt(entitlements, { action: 'charge_card', projectId, expertId });
       return null;
     }
 

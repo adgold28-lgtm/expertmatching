@@ -29,6 +29,7 @@ import { getFromAddress } from './mailFrom';
 import { verifyOutreachToken } from './outreachToken';
 import { getProject } from './projectStore';
 import { isWalkthrough, type HeldReason } from './walkthrough';
+import { getEntitlementsForProject, recordRestrictedAttempt } from './entitlements';
 
 /**
  * The step field on a QStash job. 'email2' and 'email3' are retired and nothing
@@ -171,7 +172,8 @@ export interface SendSequenceEmailOptions {
  * Whether the message actually went out.
  *
  * `held` is why it did not: 'walkthrough' when the project has not been
- * switched live (lib/walkthrough.ts), 'disabled' when DISABLE_EMAILS is set.
+ * switched live (lib/walkthrough.ts), 'trial' when the organization has no card
+ * on file (lib/entitlements.ts), 'disabled' when DISABLE_EMAILS is set.
  * Callers that ignore the return value still compile — but every caller in this
  * repo reads it, so the UI can show a held state rather than pretending
  * something was sent.
@@ -216,6 +218,17 @@ export async function sendSequenceEmail(
   if (isWalkthrough(project)) {
     console.warn('[emailSequence] held (walkthrough)', JSON.stringify({ step: fromName }));
     return { sent: false, held: 'walkthrough' };
+  }
+
+  // The account boundary (lib/entitlements.ts): a trial, or any organization
+  // with no card on file, may never reach an expert — whatever the project's
+  // own mode claims. A project cannot normally leave walkthrough without this
+  // entitlement, so this is the backstop, not the gate.
+  const entitlements = await getEntitlementsForProject(project.id);
+  if (!entitlements.canOutreachExperts) {
+    console.warn('[emailSequence] held (activation required)', JSON.stringify({ step: fromName }));
+    await recordRestrictedAttempt(entitlements, { action: 'send_email', projectId: project.id });
+    return { sent: false, held: 'trial' };
   }
 
   const from    = getFromAddress();

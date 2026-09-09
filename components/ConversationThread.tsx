@@ -48,7 +48,7 @@ import {
 import MatchyLine from './MatchyLine';
 import ClientReadyCard from './ClientReadyCard';
 import { CLIENT_STATUS_META } from './matchyStatus';
-import { WALKTHROUGH_HELD_SUMMARY } from '../lib/walkthrough';
+import { WALKTHROUGH_HELD_SUMMARY, heldLabel } from '../lib/walkthrough';
 
 // ─── Props ────────────────────────────────────────────────────────────────────
 
@@ -339,13 +339,13 @@ function Spinner() {
 }
 
 /** The grey tag a held message wears in place of any send control. */
-function HeldTag() {
+function HeldTag({ reason }: { reason?: string | null }) {
   return (
     <span
       className="inline-block text-[9px] uppercase tracking-widest border border-frame text-muted px-1.5 py-0.5"
       style={{ letterSpacing: '0.12em' }}
     >
-      Held · walkthrough
+      {heldLabel(reason)}
     </span>
   );
 }
@@ -370,7 +370,7 @@ function MatchyMessage({
       <MatchyLine tone={pending ? 'default' : 'quiet'}>{message.body}</MatchyLine>
       <div className="flex items-center gap-3 flex-wrap pl-[52px]">
         <span className="text-[10px] text-muted/70">{formatTime(message.createdAt)}</span>
-        {held && <HeldTag />}
+        {held && <HeldTag reason={message.held ?? message.screenResult?.held} />}
         {pending && (
           <>
             {/* A follow-up drafted before the project went back to walkthrough:
@@ -408,7 +408,7 @@ function ClientMessage({ message }: { message: ConversationMessage }) {
           <p className="text-[12px] text-ink leading-relaxed whitespace-pre-wrap">{message.body}</p>
         </div>
         <div className="flex items-center gap-2 flex-wrap justify-end mt-1">
-          {held && <HeldTag />}
+          {held && <HeldTag reason={message.held ?? message.screenResult?.held} />}
           <p className="text-[10px] text-muted/70">
             {pending ? 'Held for review · ' : ''}{formatTime(message.createdAt)}
           </p>

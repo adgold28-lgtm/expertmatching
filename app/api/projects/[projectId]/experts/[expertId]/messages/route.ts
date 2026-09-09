@@ -113,8 +113,9 @@ export async function GET(
     const rows = await listThread(params.projectId, params.expertId);
     const messages = rows.map(row => redactMessageForViewer(row, {
       role,
-      status:         pe.status,
+      revealed:       isIdentityRevealed(pe),
       expertFullName: pe.expert.name,
+      expertCompany:  pe.expert.company,
     }));
 
     return NextResponse.json({
@@ -186,7 +187,7 @@ export async function POST(
     const screenResult = screenMessage({
       text,
       direction:        'client_to_expert',
-      identityRevealed: isIdentityRevealed(pe.status),
+      identityRevealed: isIdentityRevealed(pe),
       clientFirmName,
       expertFullName:   pe.expert.name,
       clientFullName,
@@ -243,8 +244,9 @@ export async function POST(
       {
         message: redactMessageForViewer(stored, {
           role,
-          status:         pe.status,
+          revealed:       isIdentityRevealed(pe),
           expertFullName: pe.expert.name,
+          expertCompany:  pe.expert.company,
         }),
       },
       { status: 201 },

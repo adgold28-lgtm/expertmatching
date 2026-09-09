@@ -51,6 +51,7 @@ import {
   countActiveSeats,
   ensureOrgStripeCustomer,
 } from '../../../../lib/orgBilling';
+import { getOrgEntitlements } from '../../../../lib/entitlements';
 
 export async function POST(request: NextRequest): Promise<Response> {
   const authError = await routeAuthGuard(request);
@@ -71,17 +72,21 @@ export async function POST(request: NextRequest): Promise<Response> {
   // ── Replace-the-card request? ─────────────────────────────────────────────
   // Read defensively: the onboarding stepper posts `{}` and older clients post
   // nothing parseable at all, and neither should become an error here.
-  let replace = false;
+  let replace  = false;
+  let activate = false;
   try {
     const body = await request.json() as unknown;
     if (body !== null && typeof body === 'object' && !Array.isArray(body)) {
-      replace = (body as Record<string, unknown>).replace === true;
+      replace  = (body as Record<string, unknown>).replace  === true;
+      activate = (body as Record<string, unknown>).activate === true;
     }
   } catch {
     // No body / not JSON — a plain onboarding call.
   }
 
-  if (replace && sessionUser.role !== 'admin' && sessionUser.orgRole !== 'org_admin') {
+  // Replacing the card, or ACTIVATING a trial by adding one, is the champion's
+  // (org_admin) decision — it starts the seat subscription for the whole firm.
+  if ((replace || activate) && sessionUser.role !== 'admin' && sessionUser.orgRole !== 'org_admin') {
     return Response.json({ error: 'forbidden' }, { status: 403 });
   }
 
@@ -114,6 +119,17 @@ export async function POST(request: NextRequest): Promise<Response> {
     // the whole premise and we mint a SetupIntent for the new one.
     if (status.billingComplete && !replace) {
       return Response.json({ alreadyComplete: true, ...seatSummary });
+    }
+
+    // ─── Trial: no card at onboarding ──────────────────────────────────────
+    // A trial organization (lib/entitlements.ts) walks through onboarding
+    // without a card and stays in walkthrough until one is added. The stepper
+    // treats this like "already complete"; `activate: true` (Settings → add a
+    // card) is the conversion path and skips this short-circuit, so a
+    // SetupIntent is minted normally and no Stripe customer exists until then.
+    const entitlements = await getOrgEntitlements(organizationId);
+    if (entitlements.kind === 'trial' && !replace && !activate) {
+      return Response.json({ trial: true, alreadyComplete: false, ...seatSummary });
     }
 
     // ─── Org Stripe customer (create once, reuse forever) ──────────────────

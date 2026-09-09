@@ -37,6 +37,7 @@
 
 import { NextRequest } from 'next/server';
 import { routeAuthGuard, getSessionUser } from '../../../../lib/auth';
+import { trackProductEvent } from '../../../../lib/productEvents';
 import {
   upsertCalendarConnection,
   normalizeTimezone,
@@ -209,6 +210,11 @@ export async function POST(request: NextRequest): Promise<Response> {
   }
 
   console.log('[api/onboarding/calendar] calendar connected', { provider });
+  void trackProductEvent({
+    type:       'onboarding_step_completed',
+    actorEmail: sessionUser.email,
+    payload:    { step: 'calendar', provider },
+  });
 
   return Response.json({ ok: true, connected: true, provider });
 }

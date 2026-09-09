@@ -4,6 +4,10 @@ import { getServiceRoleClient } from '../../../../lib/supabase/admin';
 import { upsertFirm } from '../../../../lib/firmStore';
 import type { FirmTypeValue, FirmSizeValue } from '../../../../lib/supabase/database.types';
 import { provisionAccountInvite, splitFullName, sanitizeName } from '../../../../lib/accountProvisioning';
+import { isPublicEmailDomain } from '../../../../lib/emailDomains';
+import { startTrial } from '../../../../lib/entitlements';
+import { getAuthUserIdByEmail } from '../../../../lib/supabase/admin';
+import { randomBytes } from 'crypto';
 
 // Wire shape consumed by app/admin/requests/page.tsx — kept stable.
 interface AccessRequest {
@@ -136,8 +140,28 @@ export async function POST(request: NextRequest): Promise<Response> {
     );
   }
 
-  const domain = email.split('@')[1]?.toLowerCase() ?? '';
-  if (!domain) return Response.json({ error: 'invalid_email' }, { status: 400 });
+  const emailDomain = email.split('@')[1]?.toLowerCase() ?? '';
+  if (!emailDomain) return Response.json({ error: 'invalid_email' }, { status: 400 });
+
+  const trial = b.trial === true;
+
+  // A personal address (Gmail, Outlook…) can never stand for an organization
+  // (lib/emailDomains.ts). Such a requester can only be approved as a TRIAL in
+  // a generated organization of their own; approving them as a customer needs
+  // a real firm domain, which this form does not have.
+  let domain = emailDomain;
+  if (isPublicEmailDomain(emailDomain)) {
+    if (!trial) {
+      return Response.json(
+        {
+          error:   'personal_email_domain',
+          message: 'This request comes from a personal email address. Approve it as a trial account, or ask the requester for a work email.',
+        },
+        { status: 400 },
+      );
+    }
+    domain = `trial-${randomBytes(3).toString('hex')}.expertmatch.fit`;
+  }
 
   // Organizations are billed per active seat (lib/pricing.ts); there is no
   // plan to choose. Apply the admin's corrected firm name before provisioning.
@@ -159,6 +183,13 @@ export async function POST(request: NextRequest): Promise<Response> {
 
   if (!result.ok) {
     return Response.json({ error: result.error, message: result.message }, { status: result.status });
+  }
+
+  if (trial) {
+    const adminId = await getAuthUserIdByEmail(session.email).catch(() => null);
+    if (!(await startTrial(result.organizationId, adminId))) {
+      console.error('[admin/requests] approved but the trial flag could not be written');
+    }
   }
 
   // Carry the requester's two firm answers onto the organization now that it
@@ -183,6 +214,7 @@ export async function POST(request: NextRequest): Promise<Response> {
   return Response.json({
     ok:        true,
     emailSent: result.emailSent,
+    ...(trial ? { trial: true } : {}),
     ...(result.emailSent ? {} : { warning: 'Invite created, but the email could not be delivered.' }),
   });
 }

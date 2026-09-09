@@ -43,12 +43,28 @@ const REVEAL_INDEX = EXPERT_STATUSES.indexOf(REVEAL_AT);
  */
 const NEVER_REVEALED = new Set<ExpertStatus>(['rejected', 'rejected_after_outreach']);
 
-/** True once a client is entitled to the expert's real identity. */
-export function isIdentityRevealed(status: ExpertStatus): boolean {
+/** The two facts the reveal is decided from. */
+export type RevealSubject = Pick<ProjectExpert, 'status' | 'booking' | 'zoomMeetingId'>;
+
+/**
+ * True once a client is entitled to the expert's real identity.
+ *
+ * THE SERVER DECIDES, NOT THE STATUS FIELD. `status` alone used to be enough,
+ * and `status` is a field a project owner can write through
+ * PUT /api/projects/[id]/experts/[eid] — so one request could reveal an expert
+ * nobody had booked. The reveal now also needs evidence a call was actually
+ * booked: `booking` (written only by lib/bookCall.ts when Zoom + ICS go out)
+ * or, for engagements booked before Phase 2, the legacy `zoomMeetingId`.
+ * Neither is accepted from a client request (the PUT route's allowlist), so a
+ * client cannot manufacture the reveal condition.
+ */
+export function isIdentityRevealed(subject: RevealSubject): boolean {
+  const { status } = subject;
   if (NEVER_REVEALED.has(status)) return false;
   const index = EXPERT_STATUSES.indexOf(status);
   // An unrecognised status fails closed — stay anonymized.
-  return index >= 0 && index >= REVEAL_INDEX;
+  if (index < 0 || index < REVEAL_INDEX) return false;
+  return Boolean(subject.booking?.bookedAt) || Boolean(subject.zoomMeetingId);
 }
 
 // ─── Field stripping ──────────────────────────────────────────────────────────
@@ -101,6 +117,13 @@ const INTERNAL_PROJECT_EXPERT_KEYS: readonly (keyof ProjectExpert)[] = [
   'screeningNotes',
   'outreachSubject',
   'outreachDraft',
+  // The expert's own words and addresses from the scheduling flow. The raw
+  // free text they typed into the picker (or into a reply) can carry their
+  // name, employer or phone number; the Google account they connected IS an
+  // email address; a Calendly link is a direct booking path around Matchy.
+  'availabilityRaw',
+  'calendarEmail',
+  'calendlyUrl',
   // Credentials and tokens — never leave the server
   'availabilityTokenHash',
   'calendarAccessToken',
@@ -213,7 +236,7 @@ export function redactExpertForViewer(pe: ProjectExpert, viewer: Viewer): Projec
     ...matchyOutcomeOf(pe),
     ...redactScheduling(pe.scheduling),
   };
-  if (isIdentityRevealed(pe.status)) return stripped;
+  if (isIdentityRevealed(pe)) return stripped;
 
   return { ...stripped, expert: anonymizeExpert(pe.expert) };
 }

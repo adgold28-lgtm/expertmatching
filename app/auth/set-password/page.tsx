@@ -1,5 +1,4 @@
-import { verifySignupToken, hashToken, tokenRedisKey } from '../../../lib/signupToken';
-import { getUpstashClient } from '../../../lib/upstashRedis';
+import { verifySignupToken } from '../../../lib/signupToken';
 import { getUser } from '../../../lib/firmStore';
 import SetPasswordForm from './SetPasswordForm';
 
@@ -36,17 +35,16 @@ function ErrorPage({
   );
 }
 
-/** 'valid' — unused link · 'spent' — consumed/expired · 'unavailable' — Redis is down. */
-type TokenState = 'valid' | 'spent' | 'unavailable';
-
 export default async function SetPasswordPage({
   searchParams,
 }: {
-  searchParams: { token?: string };
+  searchParams: { token?: string; th?: string };
 }) {
-  const rawToken = searchParams.token ?? '';
+  const rawToken    = searchParams.token ?? '';
+  const hashedToken = searchParams.th    ?? '';
 
-  // Verify HMAC + expiry
+  // Verify HMAC + expiry — stateless, so a tampered or stale link is refused
+  // before anything is looked up.
   const verified = verifySignupToken(rawToken);
 
   if (!verified.valid) {
@@ -67,45 +65,21 @@ export default async function SetPasswordPage({
   }
 
   const { email, firmName, kind } = verified;
-  const hash     = hashToken(rawToken);
-  const redisKey = tokenRedisKey(kind, hash);
 
-  // Redis: the token must not yet be consumed. A storage outage is its own
-  // state — telling someone their invitation was "already used" when we simply
-  // could not look it up sends them to their admin for nothing.
-  let tokenState: TokenState;
-  try {
-    const redis = getUpstashClient();
-    if (!redis) {
-      tokenState = 'unavailable';
-    } else {
-      const stored = await redis.get(redisKey);
-      tokenState = stored !== null ? 'valid' : 'spent';
-    }
-  } catch {
-    tokenState = 'unavailable';
-  }
-
-  if (tokenState === 'unavailable') {
-    return (
-      <ErrorPage
-        title="We couldn’t check your link"
-        body="We couldn’t check your invitation just now — try again in a minute. Nothing has been used up."
-        retryHref={`/auth/set-password?token=${encodeURIComponent(rawToken)}`}
-      />
-    );
-  }
-
-  if (tokenState === 'spent') {
+  // Whether the link is still UNUSED is Supabase's to say (lib/authLinks.ts):
+  // the recovery token is redeemed — and burned — when the form is submitted,
+  // so the page cannot peek without spending it. A link without that half is
+  // from before single use moved off Redis; it cannot be redeemed.
+  if (!hashedToken) {
     return kind === 'reset' ? (
       <ErrorPage
-        title="Reset link already used"
-        body="This password reset link has already been used or has expired. You can request a new one from the sign-in page."
+        title="Reset link no longer valid"
+        body="This reset link is from an older email. Request a new one from the sign-in page."
       />
     ) : (
       <ErrorPage
-        title="Invitation already used"
-        body="This invitation link has already been used to create an account."
+        title="Invitation no longer valid"
+        body="This invitation is from an older email. Ask your administrator to resend it."
       />
     );
   }
@@ -116,6 +90,7 @@ export default async function SetPasswordPage({
   return (
     <SetPasswordForm
       token={rawToken}
+      hashedToken={hashedToken}
       email={email}
       firmName={invitee?.firmName || firmName}
       firstName={invitee?.firstName ?? ''}

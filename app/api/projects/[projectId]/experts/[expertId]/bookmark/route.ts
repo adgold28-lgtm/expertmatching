@@ -55,6 +55,7 @@ import { classifySeniority, TIER_PRICING } from '../../../../../../../lib/senior
 import { clientRateFor, expertRateFor, clampClientRateToBand } from '../../../../../../../lib/pricing';
 import { getFirm } from '../../../../../../../lib/firmStore';
 import { isWalkthrough } from '../../../../../../../lib/walkthrough';
+import { trackProductEvent } from '../../../../../../../lib/productEvents';
 import type { ExpertStatus, ProjectExpert } from '../../../../../../../types';
 
 const ID_RE        = /^[a-f0-9]{24}$/;
@@ -160,6 +161,13 @@ export async function POST(
         type:      'bookmarked',
         payload:   { tier, expertRate, clientRate },
       });
+      void trackProductEvent({
+        type:           'candidate_bookmarked',
+        actorEmail:     email,
+        organizationId: orgId,
+        projectId:      params.projectId,
+        payload:        { expertId: params.expertId, tier, walkthrough: held },
+      });
     }
 
     // 7. Contact. With an address on file the intro goes now (below). Without
@@ -260,6 +268,7 @@ export async function POST(
       token:     current.outreachToken ?? '',
       firmType:  firm?.firmType ?? null,
       firmSize:  firm?.firmSize ?? null,
+      firmName:  firm?.name ?? null,
       draftOnly,
     });
 

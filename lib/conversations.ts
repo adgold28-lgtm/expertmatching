@@ -115,14 +115,24 @@ export interface ViewerMessage {
 
 export interface MessageViewer {
   role:   'admin' | 'user';
-  /** The expert's current status — decides whether identities are revealed. */
-  status: ExpertStatus;
+  /**
+   * Whether identities are revealed on this engagement — the caller computes it
+   * with lib/redactExpert.isIdentityRevealed(projectExpert), which needs the
+   * server-written booking record, not just a status a client can write.
+   */
+  revealed: boolean;
   /**
    * The expert's real full name, when the caller has it. Pre-reveal it is
    * masked out of the body, which catches the commonest leak the screen does
    * not flag on an inbound message: the expert signing their own name.
    */
   expertFullName?: string;
+  /**
+   * The expert's employer, when the caller has it. Pre-reveal it is masked the
+   * same way — "I ran ops at Acme for ten years" gives the person away as
+   * surely as a surname does.
+   */
+  expertCompany?: string;
 }
 
 /** The one-line read the Matches / Conversations cards show. */
@@ -405,8 +415,8 @@ export function redactMessageForViewer(
   message: ConversationMessageRow,
   viewer: MessageViewer,
 ): ViewerMessage {
-  const stored  = toStoredScreenResult(message.screen_result);
-  const revealed = isIdentityRevealed(viewer.status);
+  const stored   = toStoredScreenResult(message.screen_result);
+  const revealed = viewer.revealed;
 
   let body = message.body_clean ?? '';
 
@@ -419,8 +429,10 @@ export function redactMessageForViewer(
       // 2. Anything it did not — a signature line added after the screen ran,
       //    a link in a format the screen's host list does not know.
       body = maskContactDetails(body);
-      // 3. The expert's own name, while the identity is still anonymized.
+      // 3. The expert's own name and employer, while the identity is still
+      //    anonymized.
       if (!revealed && viewer.expertFullName) body = maskName(body, viewer.expertFullName);
+      if (!revealed && viewer.expertCompany)  body = maskCompany(body, viewer.expertCompany);
     } else if (message.author === 'matchy') {
       // Matchy's own outbound copy is written FOR THE EXPERT and quotes
       // `expertRate` (lib/matchyTemplates.buildFollowUpEmail). The client is
@@ -431,9 +443,12 @@ export function redactMessageForViewer(
     }
   }
 
-  const summary = viewer.role === 'admin' || !message.summary
-    ? message.summary
-    : maskContactDetails(message.summary);
+  let summary = message.summary;
+  if (viewer.role !== 'admin' && summary) {
+    summary = maskContactDetails(summary);
+    if (!revealed && viewer.expertFullName) summary = maskName(summary, viewer.expertFullName);
+    if (!revealed && viewer.expertCompany)  summary = maskCompany(summary, viewer.expertCompany);
+  }
 
   return {
     id:        message.id,
@@ -468,6 +483,43 @@ function maskName(text: string, fullName: string): string {
     patterns.push(new RegExp(`\\b${escape(last)}\\s*,\\s*${escape(first)}\\b`, 'gi'));
   }
   if (last.length >= 3) patterns.push(new RegExp(`\\b${escape(last)}\\b`, 'gi'));
+
+  let out = text;
+  for (const pattern of patterns) out = out.replace(pattern, '[removed]');
+  return out;
+}
+
+/**
+ * Words too generic to identify an employer on their own. A company called
+ * "Global Partners Group" is masked as a phrase, but the bare word "global" in
+ * an unrelated sentence is left alone.
+ */
+const GENERIC_COMPANY_WORDS = new Set([
+  'inc', 'llc', 'ltd', 'plc', 'corp', 'corporation', 'company', 'co', 'group', 'holdings',
+  'partners', 'capital', 'ventures', 'labs', 'technologies', 'technology', 'systems',
+  'solutions', 'services', 'international', 'global', 'national', 'american', 'european',
+  'the', 'and', 'of', 'for', 'at', 'in', 'on', 'a', 'an', 'health', 'medical', 'consulting',
+  'advisors', 'advisory', 'management', 'industries', 'enterprises', 'associates', 'limited',
+]);
+
+/**
+ * Replaces the expert's employer with `[removed]`: the full name as written,
+ * and any distinctive word of it (4+ letters, not a generic business word) on
+ * its own, so "Acme" is caught when the expert writes "back when I was at
+ * Acme". Pure; never throws.
+ */
+export function maskCompany(text: string, company: string): string {
+  const clean = company.trim();
+  if (!clean) return text;
+
+  const escape = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const patterns: RegExp[] = [new RegExp(`\\b${escape(clean)}(?:'s)?\\b`, 'gi')];
+
+  for (const word of clean.split(/[\s,&/-]+/)) {
+    const bare = word.replace(/[^A-Za-z0-9]/g, '');
+    if (bare.length < 4 || GENERIC_COMPANY_WORDS.has(bare.toLowerCase())) continue;
+    patterns.push(new RegExp(`\\b${escape(bare)}(?:'s)?\\b`, 'gi'));
+  }
 
   let out = text;
   for (const pattern of patterns) out = out.replace(pattern, '[removed]');

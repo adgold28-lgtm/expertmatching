@@ -50,6 +50,7 @@ import { getFirm, getUser } from './firmStore';
 import { appendMessage } from './conversations';
 import { emitEngagementEvent } from './engagementEvents';
 import { createZoomMeeting, updateZoomMeeting } from './createZoomMeeting';
+import { getEntitlementsForProject, recordRestrictedAttempt } from './entitlements';
 import { sendBookingEmail } from './sendAvailabilityRequest';
 import { getFromAddress, bareAddress } from './mailFrom';
 import { getCalendarConnection, normalizeTimezone } from './calendarConnections';
@@ -91,7 +92,7 @@ export interface RebookCallInput {
 
 export type BookCallResult =
   | { ok: true;  booking: BookingState; joinUrl: string | null; project: Project }
-  | { ok: false; reason: 'not_found' | 'invalid_time' | 'nothing_booked' | 'write_failed' };
+  | { ok: false; reason: 'not_found' | 'invalid_time' | 'nothing_booked' | 'write_failed' | 'activation_required' };
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -188,6 +189,14 @@ export async function bookCall(input: BookCallInput): Promise<BookCallResult> {
 
   const pe = project.experts.find(e => e.expert.id === expertId);
   if (!pe) return { ok: false, reason: 'not_found' };
+
+  // Account boundary (lib/entitlements.ts): no card on file, no Zoom meeting,
+  // no invite, no booking. Checked before the first third-party call.
+  const entitlements = await getEntitlementsForProject(projectId);
+  if (!entitlements.canScheduleCalls) {
+    await recordRestrictedAttempt(entitlements, { action: 'book_call', projectId, expertId });
+    return { ok: false, reason: 'activation_required' };
+  }
 
   // ONE CALL, EVER. Callers decide book-vs-move from the ProjectExpert they
   // loaded, which can be stale: the expert can answer the email with a pick
@@ -306,6 +315,12 @@ export async function rebookCall(input: RebookCallInput): Promise<BookCallResult
 
   const previous = pe.booking;
   if (!previous) return { ok: false, reason: 'nothing_booked' };
+
+  const entitlements = await getEntitlementsForProject(projectId);
+  if (!entitlements.canScheduleCalls) {
+    await recordRestrictedAttempt(entitlements, { action: 'rebook_call', projectId, expertId });
+    return { ok: false, reason: 'activation_required' };
+  }
 
   const durationMin = Math.max(15, previous.durationMin || CALL_DURATION_MIN);
   const startUtc = new Date(startMs).toISOString();
