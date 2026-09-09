@@ -15,6 +15,20 @@
 // app_metadata is writable ONLY by the service role — unlike user_metadata,
 // which end users can rewrite via supabase.auth.updateUser() — so it is the
 // only safe home for authorization data.
+//
+// WHERE RLS IS BYPASSED. Every module below holds this client, and therefore
+// every row it touches is read/written with no policy in the way. Anything on
+// this list must do its own tenant scoping in application code (grep, Sept 2026):
+//   lib/firmStore, lib/projectStore, lib/conversations, lib/orgBilling,
+//   lib/entitlements, lib/productEvents, lib/engagementEvents, lib/attention,
+//   lib/expertPayout, lib/calendarConnections, lib/outreachSuppressions,
+//   lib/zoomLookup, lib/authLinks
+//   app/api/auth/set-password, app/api/request-access, app/api/admin/requests,
+//   app/api/settings/payment-method, app/api/jobs/reconcile,
+//   app/api/jobs/schedule-nudges, scripts/seed-admin
+// Two of those are reachable WITHOUT a session — /api/request-access (public)
+// and /api/auth/set-password (token-gated) — so their input validation is the
+// only thing standing between an anonymous caller and a privileged write.
 
 import { randomBytes } from 'crypto';
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';

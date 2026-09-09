@@ -7,9 +7,12 @@
 // Uses the cookies() API from next/headers (App Router, Node runtime only).
 // Do NOT import from Edge Runtime code paths (middleware.ts, etc.).
 //
-// NOTE: This is Stage 1 infrastructure only.  The current app auth (HMAC
-// session cookies + Upstash Redis) remains unchanged.  This client will be
-// wired into the auth flow in a future migration step.
+// STATUS (Sept 2026): live, but with exactly one caller — components/NavBar.tsx
+// reads the signed-in user to decide which navigation to render. Route handlers
+// use lib/auth.ts instead (it takes the NextRequest, so it also works in the
+// Edge middleware bundle), and privileged server work uses the service-role
+// client in lib/supabase/admin.ts. This client carries the PUBLISHABLE key, so
+// everything it reads is still subject to RLS as the session user.
 
 import { cookies } from 'next/headers';
 import { createServerClient } from '@supabase/ssr';

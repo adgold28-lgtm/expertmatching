@@ -1,5 +1,18 @@
 'use client';
 
+// /login — the only sign-in surface. Public; middleware.ts bounces an already
+// authenticated, fully-onboarded visitor straight to /app, so this page is only
+// ever rendered for someone without a usable session.
+//
+// Posts to /api/auth/login, which sets the Supabase session cookies on the
+// response. On success the router push is followed by router.refresh() so the
+// Server Components re-render with the new cookies rather than the signed-out
+// cache. Password recovery lives at /auth/reset; there is no self-registration
+// (access is invite-only — see /request-access).
+//
+// Copy discipline: the failure branch never distinguishes "no such account"
+// from "wrong password"; only 429 and 403 messages are surfaced verbatim.
+
 import { useState, useRef, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';

@@ -156,6 +156,13 @@ export function hashToken(token: string): string {
 }
 
 /**
+ * STATUS: tokenRedisKey and tokenTtlSeconds have no production callers left —
+ * only scripts/test-signup-token.ts. Single use moved to Supabase recovery
+ * tokens (lib/authLinks.ts) so an Upstash rate-limit could no longer stop an
+ * invitee from setting a password; nothing writes or reads these keys any more.
+ * The HMAC token itself is still very much live: it carries email, orgId, kind
+ * and expiry, and is what /auth/set-password verifies before touching storage.
+ *
  * Redis key a token's single-use marker lives under. Invites and resets are
  * kept in separate namespaces so a reset link can never be replayed as an
  * invite (or vice versa) even if the hashes were somehow known.

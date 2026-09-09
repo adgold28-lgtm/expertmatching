@@ -14,6 +14,18 @@
 // content-type check exempts a DELETE that carries no body at all; see
 // checkContentType for why that is safe.
 //
+// WHAT THESE GUARDS DO NOT DO: neither guardReadRequest nor guardMutatingRequest
+// looks at WHO is calling or WHAT they are reaching for. checkAuth returns null
+// outright whenever global auth is on, because middleware.ts has already proved
+// a session exists. Per-resource authorization is a separate, later step and is
+// the caller's job in this order:
+//   1. getProjectForUser(projectId, session)  → 404 if not a member (never 403,
+//      so a project you cannot reach is never confirmed to exist)
+//   2. requireProjectOwner(project, session)  → 403 for a collaborator on any
+//      action that spends money or leaves the platform
+// A route that calls guardMutatingRequest and stops there is unauthorized-by-
+// omission, not protected.
+//
 // NEVER log: project names, research questions, expert names, confidential
 // notes, or the value of x-projects-token.
 

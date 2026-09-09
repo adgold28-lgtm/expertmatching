@@ -1,5 +1,21 @@
 'use client';
 
+// The password form for BOTH halves of account entry: accepting an invitation
+// ('invite' — creates the account and then starts onboarding) and recovering a
+// forgotten password ('reset' — changes nothing but the password). The parent
+// server component (page.tsx) has already verified the HMAC token's signature
+// and expiry; this component holds the two token halves and posts them back.
+//
+// Submitting SPENDS the link: /api/auth/set-password redeems the Supabase
+// recovery token, which Supabase burns. That is why every failure branch below
+// tells the user to request a NEW link rather than to retry this one — and why
+// the form must not be resubmitted after a success.
+//
+// `signedIn: false` means the password was saved but the automatic sign-in did
+// not take. The hard redirect to /login?ready=1 (not router.push) is
+// deliberate: without session cookies, pushing to a guarded route would bounce
+// the user straight back out.
+
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 

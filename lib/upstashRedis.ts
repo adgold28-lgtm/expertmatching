@@ -1,5 +1,29 @@
 // Minimal Upstash Redis REST client — no external dependencies.
 // Uses the Upstash Redis HTTP pipeline API for all operations.
+//
+// Redis is EPHEMERAL infrastructure here, never a source of truth: Supabase
+// Postgres owns all durable data. Everything below is a counter, a cache entry
+// or a short-lived lock, and every caller is expected to keep working when
+// getUpstashClient() returns null or a call throws (Upstash is on a plan that
+// gets rate-limited, which is exactly why single-use invite tokens were moved
+// off Redis and onto Supabase recovery tokens — see lib/authLinks.ts).
+//
+// Key families written by the auth batch:
+//   login-rl:<ip>                     login throttle, 15-min window  (app/api/auth/login)
+//   invite-rl:<sha256(token)[0..16]>  set-password attempt cap, 1 h  (app/api/auth/set-password)
+//   reset-rl:{ip|email}:<hmac>        password-reset request cap, 1 h (lib/passwordReset)
+//   access-rl:{ip|email}:<hmac>       access-request cap, 1 h        (app/api/request-access)
+//   seat-claim:<domain>:<email>       5-10 s NX lock against a double invite (lib/firmStore)
+//   rl:*                              enrichment / token-route limiter keys (lib/rateLimiter)
+//
+// Every operation goes through pipeline(), which has a 5 s AbortController
+// timeout and THROWS on transport errors, HTTP errors and per-command errors —
+// including Upstash's account-level {"error": ...} shape. Callers decide the
+// policy; every one of them fails open.
+//
+// STATUS: getAndDel, sadd, srem, smembers, sismember and scard currently have
+// no callers (they served the Redis-era single-use token flow); keys() and
+// delMany() are used only by scripts/wipe-projects.ts.
 
 interface PipelineEntry {
   result: unknown;

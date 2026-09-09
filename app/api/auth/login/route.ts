@@ -3,14 +3,37 @@ import { createServerClient } from '@supabase/ssr';
 import { getUpstashClient } from '../../../../lib/upstashRedis';
 import { trackProductEvent } from '../../../../lib/productEvents';
 
+// POST /api/auth/login — the ONE login path. Public (middleware PUBLIC_PATHS).
+//
 // Supabase Auth is the only login path. On success the @supabase/ssr client
 // writes the session cookies onto the response; authorization metadata
 // (role / status / firm / onboarding) rides in the JWT's app_metadata.
+//
+// Sequence: body-size guard → JSON parse → per-IP throttle → Supabase
+// signInWithPassword → app_metadata.status check → capture Set-Cookie →
+// product event. From here the browser's next request goes through
+// middleware.ts, which refreshes the cookie (lib/supabase/middleware.updateSession)
+// and applies the disabled / admin-only / onboarding gates.
+//
+// Two deliberate properties worth knowing before changing anything here:
+//   - A wrong password and an unknown address both answer 401 invalid_credentials,
+//     so this route never confirms an address has an account. A DISABLED account
+//     is the one exception (403 account_disabled) — the password was correct, so
+//     nothing is leaked to someone who does not already hold it.
+//   - The throttle is per-IP only, 10 attempts / 15 min, and FAILS OPEN: no
+//     Upstash, or an Upstash error, means no cap at all. There is no per-account
+//     lockout, so credential stuffing spread across IPs is not slowed here.
+//     See the report's audit section.
 
 const MAX_BODY         = 4 * 1024;                 // 4 KB — email+password only
 const LOGIN_RATE_LIMIT = 10;                       // attempts per window per IP
 const LOGIN_WINDOW_MS  = 15 * 60 * 1000;           // 15 minutes
 
+// Redis key family: `login-rl:<ip>` (15-minute INCR window).
+// NOTE the raw IP is the key material here. Every other limiter in the repo
+// (lib/rateLimiter.rlKey, lib/passwordReset.rlKey, app/api/request-access)
+// HMACs the value with LOG_HASH_SECRET first, precisely so an address or IP
+// never sits in a Redis key name. This one is the outlier.
 function loginRlKey(ip: string): string {
   return `login-rl:${ip}`;
 }

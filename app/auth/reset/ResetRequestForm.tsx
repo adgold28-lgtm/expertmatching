@@ -3,9 +3,11 @@
 import { useState } from 'react';
 import Link from 'next/link';
 
-// The endpoint lives under /api/auth/set-password/ because middleware already
-// treats that prefix as public; /api/auth/reset is the same handler and becomes
-// usable the moment that path is added to middleware's PUBLIC_PATHS.
+// Signed-out form: /api/auth/reset is listed in middleware.ts PUBLIC_PATHS, so
+// an anonymous POST reaches the handler (lib/passwordReset.handlePasswordResetRequest).
+// The handler answers { ok: true } for every well-formed address, which is why
+// the success copy below must stay neutral — the UI is the last place that
+// could leak whether an address has an account.
 const RESET_ENDPOINT = '/api/auth/reset';
 
 const NEUTRAL_CONFIRMATION =

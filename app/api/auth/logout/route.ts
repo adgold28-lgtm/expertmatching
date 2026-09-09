@@ -1,3 +1,17 @@
+// POST /api/auth/logout — end the session. Public (middleware PUBLIC_PATHS), and
+// also reachable mid-onboarding, so a half-onboarded user is never trapped.
+//
+// Called from components/SignOutButton.tsx and the app shell. Always answers
+// { ok: true }: a logout that reports failure would leave the user with no way
+// out. The three steps below are deliberately belt-and-braces — step 3 exists
+// because a surviving Supabase refresh cookie is silently re-minted by
+// middleware's updateSession on the very next request.
+//
+// Scope note: this ends the session in THIS browser. It does not revoke the
+// user's other sessions — that is done by disabling the account
+// (app_metadata.status = 'disabled', enforced in middleware.ts and the
+// lib/auth.ts guards).
+
 import { NextRequest, NextResponse } from 'next/server';
 import { createServerClient } from '@supabase/ssr';
 import { LEGACY_COOKIE_NAME } from '../../../../lib/auth';

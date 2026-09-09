@@ -1,3 +1,21 @@
+// POST /api/request-access — the public front door. Unauthenticated by design
+// (middleware.ts PUBLIC_PATHS), so treat every field as hostile input.
+//
+// It grants NOTHING. The whole job is: validate, rate-limit, file one
+// access_requests row (kind='access', status defaults to 'requested') with the
+// service-role client, and email the platform admins. Account creation happens
+// later and only through a human approval at /admin/requests, which is the one
+// caller of lib/accountProvisioning.provisionAccountInvite.
+//
+// Depends on: Supabase (service role — access_requests has no authenticated RLS
+// policies), Upstash Redis (rate limit, fail-open), Resend (admin notification).
+// If Redis is down the endpoint is uncapped; if Supabase is down the row is
+// dropped but the admin email still lands, which is why the email carries the
+// full submission rather than a link to the row.
+//
+// Never returns anything but { ok: true } on the happy path: the response must
+// not reveal whether the firm, the domain or the account already exists.
+
 import { NextRequest } from 'next/server';
 import { Resend } from 'resend';
 import { createHmac } from 'crypto';
@@ -65,6 +83,11 @@ function escapeHtml(s: string): string {
 
 // Admin recipients for access-request notifications. Both addresses are
 // notified so a request is never missed if one inbox is unattended.
+//
+// These are hardcoded, unlike every other admin notification in the repo, which
+// reads ADMIN_NOTIFICATION_EMAIL (see lib/firmStore.sendSeatLimitNotification).
+// Changing who is notified therefore requires a deploy, and the founder's
+// personal addresses sit in version control.
 const ADMIN_NOTIFY_EMAILS = ['adgold28@colby.edu', 'ashergoldsteinbusiness@gmail.com'];
 
 // Public, unauthenticated endpoint: cap submissions per IP and per email so it

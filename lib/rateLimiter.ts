@@ -2,7 +2,17 @@ import { createHmac } from 'crypto';
 import { getUpstashClient, type UpstashRedis } from './upstashRedis';
 import type { ActiveProviderName } from './contactProviders/types';
 
-// Rate limiter abstraction for /api/enrich-contact.
+// Rate limiter abstraction, originally written for /api/enrich-contact.
+//
+// STATUS (verified by grep, Sept 2026): app/api/enrich-contact no longer
+// exists. createRateLimiterStore() is still live and is the shared store for
+// five public, token-gated routes — /api/schedule/[token],
+// /api/availability/[token]/google-auth, /api/expert-onboarding/[token],
+// /api/inbound-email and /api/outreach/unsubscribe. The three tier functions
+// below (checkRequestThrottle, checkCreditLimits, checkAndIncrementGlobalBudget)
+// and incrementProviderDailyCount have NO remaining callers; the waterfall they
+// describe lives on in lib/contactProviders. Treat the tier commentary as
+// history, not as a description of current behaviour.
 //
 // Three separate functions with intentionally different call sites:
 //   checkRequestThrottle        — cheap per-IP check, BEFORE cache read (prevents spam)

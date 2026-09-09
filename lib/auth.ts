@@ -7,6 +7,26 @@
 // Everything here uses @supabase/ssr with fetch under the hood — safe in both
 // the Node and Edge runtimes. Middleware session *refresh* (cookie writes) is
 // handled separately by lib/supabase/middleware.ts.
+//
+// WHICH GUARD A ROUTE SHOULD CALL
+//   routeAuthGuard  — any signed-in user. Checks a session exists and
+//                     status !== 'disabled'. Nothing else. It does NOT check
+//                     onboarding_complete and does NOT reject status 'pending'
+//                     (middleware.ts owns the onboarding gate; a pending
+//                     account has no password yet, so it cannot sign in).
+//   adminGuard      — platform staff only (app_metadata.role === 'admin').
+//                     /api/admin/* runs this AND is shadowed by middleware's
+//                     admin-only 404, deliberately twice.
+//   orgAdminGuard   — the Team API. Platform admin OR org_admin with an org_id;
+//                     additionally rejects 'pending'. Returns the SessionUser so
+//                     the caller does not re-read the session.
+// None of these check project ownership — that is getProjectForUser (404 on no
+// access) followed by lib/projectsGuard.requireProjectOwner (403), in that order.
+//
+// Each guard performs its own getUser() round-trip to the Supabase auth server,
+// so a handler that calls a guard and then getSessionUser() makes two. That is
+// the accepted cost of never trusting a locally-decoded JWT: getUser()
+// revalidates, so a just-disabled account cannot ride an unexpired token.
 
 import type { NextRequest } from 'next/server';
 import { createServerClient } from '@supabase/ssr';
@@ -115,6 +135,10 @@ export async function getSessionUser(request: NextRequest): Promise<SessionUser>
   const user = await getSupabaseSessionUser(request);
   if (!user) {
     // Should not happen if a guard ran first; return a safe default.
+    // The empty email is load-bearing: it matches no profile and no
+    // project.ownerEmail, so an ownership comparison downstream fails closed
+    // rather than granting access. Callers must still run a guard first —
+    // this value is a floor, not authorization.
     return { role: 'user', email: '', firmDomain: '' };
   }
   return sessionUserFromAuthUser(user);

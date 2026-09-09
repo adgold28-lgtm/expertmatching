@@ -146,7 +146,16 @@ export async function getOrgEntitlements(organizationId: string | null | undefin
   }
 }
 
-/** Entitlements for the organization a user belongs to (first active membership). */
+/**
+ * Entitlements for the organization a user belongs to (first active membership).
+ *
+ * NOTE the membership choice differs from lib/firmStore.getMembership, which
+ * takes the OLDEST membership whatever its status and is what feeds
+ * app_metadata / the guards. For a profile in two organizations the two can
+ * name different orgs. Only one caller uses this
+ * (app/api/onboarding/profile); every other path resolves the org first and
+ * calls getOrgEntitlements, which has no such ambiguity.
+ */
 export async function getEntitlementsForUser(email: string): Promise<Entitlements> {
   const client = db();
   if (!client || !email) return NO_ORG_ENTITLEMENTS;

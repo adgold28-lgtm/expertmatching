@@ -143,7 +143,18 @@ interface MembershipContext {
   org:        OrganizationRow | null;
 }
 
-/** First membership (+ its org) for a profile. Most users have exactly one. */
+/**
+ * First membership (+ its org) for a profile. Most users have exactly one.
+ *
+ * "Oldest membership wins" is the single-organization assumption the whole
+ * account model rests on: it decides the firmDomain / orgId / status that
+ * getUser returns, which syncUserMetadata then stamps onto app_metadata, which
+ * middleware.ts and orgAdminGuard read on every request. A profile with two
+ * memberships is therefore only ever seen inside its first organization —
+ * including when the first one is disabled and the second is active.
+ * lib/entitlements.getEntitlementsForUser deliberately prefers an ACTIVE
+ * membership instead, so the two can disagree for such a profile.
+ */
 async function getMembership(profileId: string): Promise<MembershipContext> {
   const db = getServiceRoleClient();
   if (!db) return { membership: null, org: null };
@@ -446,6 +457,14 @@ export async function upsertUser(email: string, fields: UpsertUserInput): Promis
   }
 
   // 4. Mirror onto app_metadata (best-effort).
+  //
+  // This is the ONLY thing that makes a status or role change visible to
+  // middleware.ts and the lib/auth.ts guards — they read app_metadata and never
+  // the tables. Swallowing the error keeps the DB write authoritative, but it
+  // means a failed sync leaves a just-disabled or just-demoted user carrying
+  // the old claims until the next successful upsertUser for that account. The
+  // self-heal path is GET /api/org/membership, which re-syncs when it notices
+  // missing org claims; there is no periodic reconciler for status.
   await syncUserMetadata(e).catch(() => {});
 
   // 5. A membership that became active / disabled changes the org's billable

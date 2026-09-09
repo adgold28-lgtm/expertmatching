@@ -1,5 +1,20 @@
 'use client';
 
+// The public "Request Access" form. It creates NO account and grants nothing:
+// it posts to /api/request-access, which files an access_requests row
+// (kind='access') and emails the platform admins. A human approves from
+// /admin/requests, and only that approval calls provisionAccountInvite.
+//
+// Auto-approval by email domain used to exist and was removed — see the comment
+// in app/api/request-access/route.ts. Do not reintroduce a client-side hint
+// about whether a firm is known: the API answers identically for every address
+// precisely so this form cannot be used to enumerate customers.
+//
+// firmType / firmSize feed the anonymized phrase Matchy uses to describe the
+// client to an expert ("a mid-size PE firm"), so they are optional here rather
+// than required — an unanswered question falls back to generic wording instead
+// of blocking the request.
+
 import { useState } from 'react';
 import Link from 'next/link';
 

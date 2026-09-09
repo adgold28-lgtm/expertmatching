@@ -61,6 +61,11 @@ export function emailDomainOf(email: string): string {
  * True for a consumer / freemail / disposable domain — one that many
  * unrelated people share, so it can never identify an organization.
  */
+// Callers: lib/accountProvisioning (refuses to create an org on a freemail
+// domain), lib/firmStore.isApprovedDomain (a consumer domain is never approved,
+// whatever rows exist), app/api/request-access and the admin users/requests
+// routes. This is the choke point that closed the gmail.com open-registration
+// hole, so a `false` returned here is a security decision, not a UI nicety.
 export function isPublicEmailDomain(domain: string): boolean {
   const d = normalizeEmailDomain(domain);
   if (!d) return true;

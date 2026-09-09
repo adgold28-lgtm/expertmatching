@@ -254,6 +254,13 @@ export async function PATCH(request: NextRequest): Promise<Response> {
     }
 
     // Never let an organization lose its last admin.
+    //
+    // Scope note: the only check on the TARGET is that they belong to this
+    // organization. A member whose PLATFORM role is 'admin' (ExpertMatch staff
+    // holding a seat in a customer org) is an ordinary target here, so an
+    // org_admin can disable or demote them. There is no "you may not act on a
+    // platform admin" rule, and the last-admin guard counts org_admins, not
+    // platform admins.
     const currentOrgRole = member.orgRole ?? 'org_member';
     const losesAdmin =
       currentOrgRole === 'org_admin' && (orgRole === 'org_member' || status === 'disabled');
