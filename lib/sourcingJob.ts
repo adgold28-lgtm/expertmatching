@@ -32,6 +32,12 @@ export interface SourcingJob {
 }
 
 /** A run still marked 'running' after this long is treated as timed out. */
+// Read in three places: the start route (lets a new run replace a dead one), the
+// project page (renders the 'stale' state), and GET /api/jobs/reconcile, the
+// daily cron that actually flips an abandoned 'running' row to 'failed'. Nothing
+// sweeps at the 15-minute mark itself — between staleness and the next reconcile
+// pass the project stays 'running' in the database and merely looks stale to the
+// UI, so this constant is a display/eligibility threshold, not a timeout.
 export const SOURCING_STALE_MS = 15 * 60 * 1000;
 
 // ─── QStash scheduling ────────────────────────────────────────────────────────
@@ -105,6 +111,12 @@ function buildBriefContext(project: Project, expertTypeOverride?: string): Brief
  * Never throws — every exit path leaves sourcingStatus at 'completed' or
  * 'failed' so the UI can never be stranded on a spinner.
  */
+// NOT IDEMPOTENT. addExpertsToProject() below APPENDS, and nothing keys off a
+// job id, so running the same SourcingJob twice adds a second copy of the same
+// candidates. The only thing standing between that and a QStash redelivery is
+// that the worker route returns 200 for handled failures — a run that times out
+// or crashes mid-flight is redelivered and re-executed from the top, having
+// possibly already written experts.
 export async function runSourcingJob(job: SourcingJob): Promise<void> {
   const startedAtMs = Date.now();
   try {

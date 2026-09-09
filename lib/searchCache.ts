@@ -5,6 +5,21 @@
 //
 // Cache key = HMAC-SHA256(normalized query string) — raw query text is NEVER
 // stored in Redis key names.
+//
+// Called only from lib/generateExperts.ts runSearchQuery(). Two consequences of
+// the key shape worth knowing before changing anything here:
+//   • The key covers the query text alone — not the provider and not maxResults.
+//     Switching SEARCH_PROVIDER keeps serving the previous provider's results for
+//     the remaining TTL, and the stored `provider` field records who really
+//     produced them.
+//   • The 7-day TTL is what keeps provider spend down on re-runs of the same
+//     brief; there is no explicit invalidation, so a re-source of an unchanged
+//     brief inside a week costs zero search credits (and finds nothing new).
+//
+// Fail-open by design: no Upstash client (dev), a Redis read error, an expired
+// entry, or unparseable JSON all return null and the caller pays for a live
+// search. Write failures are logged and ignored. Cache trouble degrades cost and
+// latency, never correctness.
 
 import { createHmac } from 'crypto';
 import { getUpstashClient } from './upstashRedis';

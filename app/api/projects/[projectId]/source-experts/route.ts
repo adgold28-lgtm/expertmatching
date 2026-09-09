@@ -43,7 +43,11 @@ export async function POST(
     return NextResponse.json({ error: 'invalid_project_id' }, { status: 400 });
   }
 
-  // 3. Body — optional brief overrides
+  // 3. Body — optional brief overrides.
+  //    These are for THIS RUN ONLY: they travel in the QStash job payload and
+  //    are never written back to the project, so the saved brief and the inputs
+  //    a run actually used can differ. The 5000-char clamp is the only bound on
+  //    text that ends up inside an Anthropic prompt downstream.
   let body: Record<string, unknown> = {};
   try {
     body = await request.json() as Record<string, unknown>;

@@ -1,3 +1,42 @@
+// -----------------------------------------------------------------------------
+// Expert sourcing pipeline — where every candidate expert in the product is born
+//
+// Called ONLY by lib/sourcingJob.ts (the QStash-backed background worker); no
+// route imports it directly. One call runs this pipeline end to end:
+//
+//   Step 0  inferValueChain()          — Claude Haiku: turn the brief into the
+//                                        real supply-chain expert pools
+//   Step 1  query generation           — Claude Haiku: 3 natural-language Exa
+//                                        queries (Operator / Advisor / Outsider);
+//                                        falls back to buildSearchQueriesFromBrief()
+//   Step 2  runWithOptionalComparison() — at most 3 web searches (Exa by default),
+//                                        each cached 7 days in Upstash
+//   Step 3-4 dedupe + compact source context (title/URL/snippet only)
+//   Step 5  extraction                 — Claude Opus: read the search snippets,
+//                                        extract real people, score, tier, and
+//                                        write the ANONYMIZED descriptor fields
+//   Step 6-7 parse + validate          — structural normalize, hedge filter,
+//                                        full-name resolution, conflict filter,
+//                                        same-source clustering, tier split
+//
+// DATA ORIGIN: every expert here comes from the PUBLIC WEB (search-provider
+// snippets), never from a private roster. Nothing is written to the database in
+// this file — lib/sourcingJob.ts persists the result onto the project.
+//
+// Providers / env vars:
+//   Anthropic  ANTRHOPICKEYREAL (note the misspelling — it is the real name)
+//              claude-haiku-4-5 for steps 0 and 1, claude-opus-4-6 for step 5.
+//   Search     EXA_API_KEY | TAVILY_API_KEY | SCRAPINGBEE_KEY via
+//              lib/searchProviders. None of these is in validateEnv, so a
+//              missing key surfaces at run time as GenerateExpertsError
+//              'no_search_provider' (503), not at boot.
+//   Cache      UPSTASH_REDIS_REST_URL / _TOKEN + LOG_HASH_SECRET (searchCache).
+//
+// SECURITY: BriefContext and the research question are client-confidential.
+// Nothing in this file may log query text, brief fields, or expert names —
+// counts, codes, and shapes only.
+// -----------------------------------------------------------------------------
+
 import Anthropic, {
   RateLimitError,
   InternalServerError,
@@ -20,6 +59,10 @@ import {
   MAX_JUSTIFICATION_LEN,
 } from './anonymizeExpert';
 
+// Module-level Anthropic client, constructed at import time. apiKey is read
+// once: changing ANTRHOPICKEYREAL requires a redeploy, and an unset key does not
+// fail here — it fails on the first messages.create() with a 401 that lands in
+// the generic 'generation_failed' bucket.
 const client = new Anthropic({ apiKey: process.env.ANTRHOPICKEYREAL });
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -178,6 +221,18 @@ function extractJSON(raw: string): unknown {
 // ─── Per-expert normalization ─────────────────────────────────────────────────
 // Sanitizes a raw candidate object. Returns null if required fields are missing.
 // Malformed evidenceItems or source_links are discarded but the expert is kept.
+//
+// Scope of the guarantee: this is a STRUCTURAL check on a handful of fields, not
+// a schema validation. The `...e` spread at the bottom passes every other key the
+// model emitted through untouched and untyped (hence the `any` return), so
+// `title`, `company`, `location`, `justification`, `tier`, `valueChainLabel` and
+// anything unexpected reach the caller exactly as the LLM wrote them. The real
+// field-level gate is validateProjectExpert() in lib/projectValidation.ts, which
+// lib/sourcingJob.ts runs before anything is persisted.
+//
+// Note the second-order effect of seniorityTier: it is computed here from the
+// LLM's `title` and PERSISTED, because lib/redactExpert.ts blanks `title` for
+// pre-scheduling viewers — see the comment at the classifySeniority call.
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function normalizeExpert(raw: unknown): any | null {
@@ -492,6 +547,10 @@ briefType options:
     }
 
     // DIAGNOSTIC: log raw response shape (no content)
+    // CAVEAT: `firstChars` is the first 40 characters of the model's JSON, which
+    // begins with "endMarket" — a value derived from the client's brief. This log
+    // is NOT dev-gated, so those characters reach production logs. Treat it as a
+    // temporary diagnostic, not as the file's logging standard.
     console.log('[generate-experts] vci-llm-response', JSON.stringify({
       responseLength:  block.text.length,
       startsWithBrace: block.text.trim().startsWith('{'),
@@ -756,9 +815,18 @@ function logPerf(log: PerfLog): void {
 // ─── Search helpers ───────────────────────────────────────────────────────────
 
 const MAX_RESULTS_PER_QUERY = 10;
+// NOTE (stale sizing): 160 was chosen when every generated query was executed.
+// runWithOptionalComparison() now caps execution at one query per category
+// (3 total), so the real ceiling is ~30 results and this cap never binds. Left
+// as-is because raising the executed-query count is the intended future change.
 const MAX_TOTAL_RESULTS     = 160; // up to 16 queries × 10 (niche technical briefs need broader search)
 const MAX_ADJACENT          = 6;   // adjacent experts are supplementary — cap to avoid overwhelming core results
 
+// One cached web search. The cache (lib/searchCache.ts) is keyed on the
+// normalized query text ONLY — not the provider and not maxResults — so a run
+// that switches SEARCH_PROVIDER still reads the previous provider's results for
+// up to 7 days. Cache misses cost a provider credit; cache write failures are
+// swallowed (fail-open: a broken Upstash slows sourcing, never breaks it).
 async function runSearchQuery(query: string): Promise<SearchResult[]> {
   const cached = await getCachedSearchPage(query);
   if (cached) {
@@ -1126,6 +1194,22 @@ Return ONLY valid JSON, no markdown, no prose:
     // ── Step 5: Extraction LLM call — extract, score, rank, and format ──────
     // Receives the full brief and compact source context; outputs complete
     // experts JSON in one shot. (Steps 0 and 1 precede this with VCI + query gen.)
+    //
+    // This is the single most expensive call in the product: claude-opus-4-6,
+    // max_tokens 12000, up to 2 retries (see callWithRetry below). It does five
+    // jobs at once — extract people, score them 0-100, split core vs adjacent,
+    // attach evidence items, and WRITE THE ANONYMIZED DESCRIPTOR that clients see
+    // before a call is scheduled (rules imported from lib/anonymizeExpert.ts, so
+    // the prompt and the server-side backfill can never diverge).
+    //
+    // PROMPT-INJECTION SURFACE: `formattedResults` below is attacker-influenced
+    // text — titles and snippets scraped from third-party web pages are
+    // interpolated straight into the prompt with no delimiting or escaping. A
+    // crafted page could try to steer scoring or inject a fabricated candidate.
+    // The downstream defences are structural, not semantic: normalizeExpert()
+    // requires a real http source_url, the hedge filter, isFullHumanName(), the
+    // conflict filter and the score floor. None of them stops a plausible-looking
+    // fake person on an attacker-controlled page from being surfaced.
     const extractionPrompt = `You are an expert sourcing analyst. Extract REAL, verifiable people from the search results below. Apply strict evidence standards — do not include weak or inferred matches.
 
 Business Question: "${query.trim()}"
@@ -1426,6 +1510,14 @@ RELEVANCE SCORING GUIDANCE (0–100):
     const rawCandidates: unknown[] = Array.isArray(extractedData.experts) ? extractedData.experts : [];
 
     // ── Step 7: Multi-stage validation pipeline ──────────────────────────────
+    // Everything the model returned is untrusted. Stages run in order and each
+    // records why it dropped a candidate into `discardReasons`, which is the only
+    // place the reject breakdown is visible (dev-only perf log, Step 8):
+    //   7a structural + hedge-language filter   7b full-name identity (may spend
+    //   up to 3 extra searches resolving "J. Subbiah")   7c conflict companies
+    //   from the brief   7d same-source clustering   7e already-found names
+    //   7e(bis) score floor + core/adjacent tier split.
+    // Nothing here is persisted; lib/sourcingJob.ts does the writing.
     const conflictCompanies                    = extractConflictCompanies(briefContext);
     const discardReasons: Record<string, number> = {};
     let identityResolvedCount       = 0;

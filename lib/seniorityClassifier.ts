@@ -1,3 +1,25 @@
+// -----------------------------------------------------------------------------
+// Seniority tiering, tier pricing, and the shared expert sort order.
+//
+// One tier decision drives three things: what the expert is offered
+// (expertRate), what the client is billed (callRate), and where the expert sorts
+// in a list. Keeping them in one file is why the pricing page, the expert cards,
+// the sourcing pipeline and the redactor all agree on the number.
+//
+// classifySeniority() is keyword matching on a job title, first match wins, and
+// executive keywords are tested before senior ones. It is deliberately dumb and
+// deterministic — no LLM, no network — so it can run in a client component.
+//
+// IMPORTANT: callers must classify from the RAW title and persist the result.
+// lib/redactExpert.ts blanks `title` for viewers who may not see the expert's
+// identity yet, so classifying at render time on a redacted expert silently
+// returns 'mid' for everyone (see the note in lib/generateExperts.ts
+// normalizeExpert, which is where the tier is computed and stored).
+//
+// Rates here are opening offers, not a price list — see RATE_DISCLAIMER at the
+// bottom, which every surface showing a rate is expected to render.
+// -----------------------------------------------------------------------------
+
 import type { SeniorityTier, TierPricing } from '../types';
 
 export type { SeniorityTier, TierPricing };

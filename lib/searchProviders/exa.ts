@@ -33,6 +33,10 @@ export const exaProvider: SearchProvider = {
 
     async function attempt(): Promise<SearchResult[]> {
       // Temporary diagnostic — remove after confirming queries and result counts
+      // WARNING: this prints the full query, and sourcing queries are built from
+      // the client's brief (expertType, industry, research question). Every other
+      // module in the sourcing path documents "never log brief content"; this
+      // line is the one place that does, in production as well as dev.
       console.log('[exa] query:', query);
       // Inline call so TypeScript infers the conditional return type with highlights
       const raw = await exa.searchAndContents(query, {
@@ -61,6 +65,10 @@ export const exaProvider: SearchProvider = {
       });
     }
 
+    // Unlike tavily.ts and scrapingbee.ts, this provider sets NO request timeout
+    // — the exa-js SDK call can hang for as long as the socket stays open, and a
+    // 429 doubles that. Nothing above it imposes a deadline either, so a slow Exa
+    // stalls the whole sourcing job until the platform kills the function.
     try {
       return await attempt();
     } catch (err) {

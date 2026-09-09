@@ -1,3 +1,19 @@
+// -----------------------------------------------------------------------------
+// Search-provider selection for the two web-search callers in the app:
+// lib/generateExperts.ts (expert sourcing) and lib/contactPathResolver.ts.
+//
+// Live path in production: Exa. Tavily and ScrapingBee are implemented and
+// reachable, but only if their key is set AND either SEARCH_PROVIDER names them
+// or Exa is unconfigured (ScrapingBee additionally serves as the opt-in fallback
+// below). None of EXA_API_KEY / TAVILY_API_KEY / SCRAPINGBEE_KEY appears in
+// .env.example or lib/validateEnv.ts, so a deployment missing all three boots
+// fine and fails only when a user starts sourcing.
+//
+// Cost note: every call that misses lib/searchCache.ts spends a provider credit.
+// There is no per-project or per-day search budget here — the only throttle is
+// the 3-queries-per-run cap in generateExperts' runWithOptionalComparison().
+// -----------------------------------------------------------------------------
+
 import { tavilyProvider }      from './tavily';
 import { scrapingbeeProvider } from './scrapingbee';
 import { exaProvider }         from './exa';
