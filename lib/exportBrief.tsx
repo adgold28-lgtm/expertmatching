@@ -456,6 +456,21 @@ function BriefDocument({ project, today }: { project: Project; today: string }) 
 
 // ─── Public API ───────────────────────────────────────────────────────────────
 
+/**
+ * Renders the brief and triggers the browser download.
+ *
+ * WHAT ENDS UP IN THE FILE IS WHATEVER THE CALLER HOLDS. There is no redaction
+ * step here and there must not be one — the workspace's `project` came from the
+ * API already filtered for this viewer (lib/redactExpert.ts), so a client's PDF
+ * shows "Scott S." and a descriptor while a staff export shows the real name,
+ * and `screeningNotes` renders in the screening section only because an admin's
+ * copy still carries it. Handing this function a raw Project (a server render,
+ * a future admin fetch that skips the redactor) would put staff-only material
+ * into a file the client keeps.
+ *
+ * Known rough edge: the object URL is revoked in the same tick as the click, so
+ * some browsers cancel the download. Left as-is; noted in the 2026-09-08 audit.
+ */
 export async function downloadProjectBriefPdf(project: Project): Promise<void> {
   const today = new Date().toLocaleDateString('en-US', {
     year: 'numeric', month: 'long', day: 'numeric',

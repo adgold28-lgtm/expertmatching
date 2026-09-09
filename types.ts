@@ -450,7 +450,7 @@ export interface ProjectExpert {
   // Zoom meeting fields — zoomStartUrl is host-only, never exposed to frontend
   zoomMeetingId?:      string | null;
   zoomJoinUrl?:        string | null;
-  zoomStartUrl?:       string | null;  // host link — stored in Redis only, never sent to frontend
+  zoomStartUrl?:       string | null;  // host link — lives in project_experts.data; stripped by lib/redactExpert, never sent to the frontend
   zoomMeetingStarted?: boolean;
   zoomMeetingEndedAt?: number | null;  // Unix ms timestamp
   actualDurationMin?:  number | null;  // from Zoom webhook, overrides manual callDurationMin

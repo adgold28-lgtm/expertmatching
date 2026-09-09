@@ -1,3 +1,24 @@
+// GET  /api/projects — the project list behind /app
+// POST /api/projects — create a project (the "New research" modal)
+//
+// Identity comes from the session, never from the body: getSessionUser gives
+// the email and role, createProject resolves that email to a profile and to the
+// one organization it belongs to, and the owner/organization/firmDomain of the
+// new project are derived from that. A caller cannot name an owner, an org, or
+// a collaborator here — collaborators are added later through
+// /api/projects/[id]/collaborators.
+//
+// WALKTHROUGH IS THE DEFAULT. validateCreateProjectInput only carries the flag
+// through when the client sent an explicit boolean; an absent flag stays absent
+// and lib/walkthrough.isWalkthrough reads that as walkthrough, so a project that
+// has never been switched live can never send an email.
+//
+// Both responses go through the redaction chokepoint (lib/redactExpert.ts).
+// Access scoping lives in projectStore.listProjectsForUser (owner or explicit
+// collaborator; admins see everything) — this route adds no filtering of its own.
+//
+// Never logs: project names, research questions, expert data.
+
 import { NextRequest } from 'next/server';
 import { createProject, listProjectsForUser } from '../../../lib/projectStore';
 import { guardReadRequest, guardMutatingRequest } from '../../../lib/projectsGuard';

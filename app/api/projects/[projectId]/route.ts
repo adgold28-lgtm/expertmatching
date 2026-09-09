@@ -1,3 +1,29 @@
+// GET | PUT | PATCH | DELETE  /api/projects/[projectId]
+//
+// The project workspace's own endpoint: load the brief and every expert on it,
+// save the brief, flip the Matchy settings, delete the project.
+//
+// ACCESS, in this order everywhere below:
+//   1. guardReadRequest / guardMutatingRequest (kill switch, auth, content-type,
+//      body size — lib/projectsGuard.ts)
+//   2. getProjectForUser → null means 404, so an inaccessible project is
+//      indistinguishable from one that does not exist
+//   3. for PUT and DELETE only: owner-or-admin. A shared project is READ-ONLY
+//      for collaborators (docs/MATCHY_SPEC.md, founder answer 5) — they may
+//      write per-expert notes through the experts/[expertId] route, nothing here.
+//
+// Every `{ project }` body is passed through redactProjectForViewer first, so a
+// non-admin never receives contact paths, expertRate, tokens or an unrevealed
+// expert's real name (lib/redactExpert.ts).
+//
+// THREE SEPARATE GATES SIT ON THE PUT and are easy to confuse:
+//   - the owner check       — who may write at all
+//   - entitlements          — whether this org may leave walkthrough (a card on
+//                             file; lib/entitlements.ts)
+//   - the brief version     — whether the brief moved under the writer (409)
+//
+// Never logs: project names, research questions, confidential notes, expert data.
+
 import { NextRequest } from 'next/server';
 import { getProject, getProjectForUser, updateProject, deleteProject } from '../../../../lib/projectStore';
 import { guardReadRequest, guardMutatingRequest } from '../../../../lib/projectsGuard';
@@ -243,6 +269,17 @@ export async function PUT(
     }
     const briefVersionPatch = touchesBrief ? { briefUpdatedAt: Date.now() } : {};
 
+    // READ-MODIFY-WRITE OF THE WHOLE PROJECT. `project` here is the RAW row we
+    // loaded above (never the redacted copy — redaction happens only on the way
+    // out), and projectStore.updateProject rewrites the entire `brief` jsonb
+    // from this object. So every key the spread does not overwrite is written
+    // back verbatim, and any brief key another writer changed between the load
+    // and this line is lost. `briefVersion` only guards the fields in
+    // BRIEF_FIELDS; unpromoted keys written by background work (sourcingStatus,
+    // sourcingAdjacent, walkthrough) are not versioned and can be clobbered by a
+    // concurrent save. Each `...(typeof body.x === 'string' && {...})` below is
+    // therefore both the sanitizer AND the allow-list: a key with no clause here
+    // cannot be written through this route at all.
     const updated = await updateProject({
       ...project,
       ...matchySettings.patch,

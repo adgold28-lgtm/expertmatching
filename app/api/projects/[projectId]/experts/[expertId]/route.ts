@@ -101,6 +101,18 @@ const COLLABORATOR_FIELDS: ReadonlySet<string> = new Set([
   'rejectionNotes',
   'rejectedAt',
 ]);
+/**
+ * OWNER-OR-ADMIN, NOT ADMIN-ONLY. `requireProjectOwner` passes for a role
+ * 'user' who owns the project, so everything in this list — and everything else
+ * outside COLLABORATOR_FIELDS — is writable by the CLIENT who created the
+ * project, not just by staff. That includes `expertRate` (which drives both the
+ * card charge in .../complete and the Connect payout in lib/expertPayout.ts),
+ * `paymentStatus` (lib/createAndSendInvoice.ts skips charging when it already
+ * reads 'paid'), and `contactEmail` (the address Matchy's intro is sent to).
+ * The staff console is the only UI that sends these, but the route does not
+ * require staff. Flagged in the 2026-09-08 architecture audit; documented here
+ * so nobody reads this list as "staff only".
+ */
 const OWNER_ONLY_FIELDS: readonly string[] = [
   'status',
   'screeningStatus',

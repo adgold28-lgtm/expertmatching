@@ -1,3 +1,24 @@
+// POST | DELETE  /api/projects/[projectId]/collaborators — project sharing.
+//
+// A collaborator gets READ access to the whole project (brief, candidates,
+// conversation) and may keep their own notes on an expert; every acting verb —
+// bookmark, send, rate, delete, edit the brief — stays with the owner
+// (docs/MATCHY_SPEC.md, founder answer 5). Membership itself is a row in
+// project_members, written by lib/projectStore.addCollaborator.
+//
+// THE SAME-ORGANIZATION RULE IS CHECKED THREE TIMES on purpose, and each layer
+// exists for a different reason:
+//   1. here, against lib/firmStore.getUser — an active account whose firmDomain
+//      matches the project's, so the UI gets a clean 422 with a sentence;
+//   2. projectStore.addCollaborator, against organization_members — the real
+//      check, because firmDomain is derived and membership is authoritative;
+//   3. a database trigger, which is what actually makes cross-org sharing
+//      impossible if either application check is ever bypassed.
+// Both application layers throw/return CollaboratorNotInOrganizationError-shaped
+// 422s, so the client handles one error code.
+//
+// Responses are redacted like any other `{ project }` body.
+
 import { NextRequest } from 'next/server';
 import {
   getProjectForUser,

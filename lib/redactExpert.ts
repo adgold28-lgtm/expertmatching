@@ -149,6 +149,25 @@ const INTERNAL_PROJECT_EXPERT_KEYS: readonly (keyof ProjectExpert)[] = [
 ];
 
 /**
+ * NOT on the list above, as of the 2026-09-08 audit — a reader looking for them
+ * should know they reach the client today rather than assume an omission:
+ *   - the staff screening record: `screeningStatus`, `vettingQuestions`,
+ *     `knowledgeFit`, `communicationQuality`, `conflictRisk`,
+ *     `recommendToClient`, `valueChainPosition`. Verdicts, not identity — the
+ *     client-ready card renders some of them on purpose.
+ *   - `rateExpectation` and `availability`: free text a staffer typed while
+ *     screening. Both can carry the expert's own words, and `rateExpectation`
+ *     is an expert-side number in prose form, which the `expertRate` rule above
+ *     otherwise keeps from the client.
+ *   - `conflictNote`: read off the expert's reply, but written by
+ *     lib/matchyClassify.ts through screenAndMask, so it arrives masked.
+ *   - `nudges`: `linesUsed` holds Matchy's own outbound lines, not the
+ *     expert's. Harmless, but it is outreach plumbing on a client payload.
+ * None of these can identify an unrevealed expert on their own, which is why
+ * they were left; `rateExpectation` is the one worth revisiting.
+ */
+
+/**
  * Project fields a non-admin must never receive. `clientAvailabilityTokenHash`
  * is deliberately NOT here: it is a SHA-256 digest (not a usable credential)
  * and the client scheduling UI reads its presence to render the

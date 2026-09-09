@@ -242,6 +242,25 @@ export interface ProjectCreateData {
 
 export interface FieldError { field: string; error: string; }
 
+/**
+ * Shapes the POST /api/projects body into the store's CreateProjectInput.
+ *
+ * Nothing about IDENTITY is read here: owner, organization and firmDomain all
+ * come from the session in projectStore.createProject, so a body claiming an
+ * owner or a collaborator is ignored rather than rejected.
+ *
+ * Three behaviours worth knowing:
+ *   - `expertType` WINS over `function`. The two-field brief asks "who do you
+ *     want to talk to" and that answer is stored in both places, so a project
+ *     created by the modal has function === expertType.
+ *   - the name is derived, never required: the trimmed name, else the first 80
+ *     characters of the research question, else a dated placeholder. The
+ *     `!name` check below can therefore never fire — it is a guard against a
+ *     future edit that drops the fallback.
+ *   - an expert entry that fails validateProjectExpert is SKIPPED silently, so
+ *     a partly malformed payload creates a project with fewer experts rather
+ *     than a 400. Only an over-long array is an error.
+ */
 export function validateCreateProjectInput(
   body: Record<string, unknown>,
 ): { errors: FieldError[] } | { data: ProjectCreateData } {

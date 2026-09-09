@@ -35,6 +35,13 @@ import type { Expert } from '../../../../../types';
 
 const ID_RE = /^[a-f0-9]{24}$/;
 
+// NOTE ON THE GUARD. This route uses routeAuthGuard + a raw request.json(),
+// not guardMutatingRequest like its neighbours, so it gets no PROJECTS_ENABLED
+// kill switch, no content-type check and no 250 KB body cap. Access to the
+// project is still enforced (getProjectForUser below, 404 on inaccessible), and
+// any project MEMBER may generate a guide — this is a read of material the
+// viewer already has, not an action on the expert, so no owner check. It does
+// spend an OpenAI call per request with nothing throttling it.
 export async function POST(
   request: NextRequest,
   { params }: { params: { projectId: string } },

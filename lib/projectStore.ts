@@ -3,10 +3,17 @@
 // `project_experts` (one row per expert), `project_members` (sharing).
 // Development fallback: in-memory Map with clear warning (process-local only).
 //
-// Access control mirrors the schema's RLS model: owner or explicit
-// collaborator only (admins see everything). This layer uses the service-role
-// client, so the email-based checks here are the enforcement for API routes;
-// RLS is defense in depth beneath it.
+// Access control is owner or explicit collaborator only (admins see
+// everything), enforced by the email checks in this file.
+//
+// AND ONLY BY THEM, as of 20260908000000_identity_boundary_trial_events.sql:
+// that migration drops every policy on projects, project_members,
+// project_experts and conversation_messages without recreating any, so those
+// tables are service-role-only and RLS grants nobody anything. This layer holds
+// the service-role client, which bypasses RLS regardless. (An earlier version
+// of this header called RLS "defense in depth beneath" these checks — that was
+// true of the pre-20260908 schema and is not true now.) The database still
+// backstops the same-organization rule on sharing via a trigger.
 //
 // NEVER log: project names, research questions, confidential notes, or expert names.
 
@@ -413,6 +420,45 @@ class InMemoryProjectStore implements ProjectStore {
 }
 
 // ─── Supabase Postgres (production) ──────────────────────────────────────────
+//
+// HOW A Project MAPS ONTO ROWS. Two tables and two jsonb documents:
+//
+//   projects
+//     id, name, research_question            → Project.id / .name / .researchQuestion
+//     owner_id, organization_id              → resolved to ownerEmail / firmDomain
+//                                              through profiles + organizations
+//                                              (contextFor), never stored as text
+//     review_first, client_rate_min/max      → reviewFirst / clientRateMin / Max
+//     created_at, updated_at                 → createdAt / updatedAt (ms)
+//     brief  (jsonb)                         → EVERY other Project key. Anything
+//                                              not in PROMOTED_PROJECT_KEYS —
+//                                              industry, geography, the brief
+//                                              text fields, walkthrough,
+//                                              briefUpdatedAt, sourcing*, the
+//                                              client scheduling/Stripe fields —
+//                                              lands here with no migration.
+//   project_members                          → Project.collaborators (one row
+//                                              per profile; the owner's own row
+//                                              is filtered out)
+//   project_experts (one row per expert)
+//     status, contact_email                  → the two promoted ProjectExpert
+//                                              fields (PROMOTED_EXPERT_KEYS)
+//     data (jsonb)                           → the whole rest of ProjectExpert,
+//                                              INCLUDING the nested `expert`
+//                                              object and scheduling/booking/
+//                                              nudges
+//     updated_at                             → the optimistic-concurrency token
+//                                              mutateExpert compares against
+//
+// So `Project.experts` is assembled, not stored: assemble() reads the expert
+// rows and the membership/organization context and rebuilds the object.
+//
+// RLS DOES NOT APPLY HERE. Every query below runs on the service-role client
+// (getServiceRoleClient), which bypasses row-level security. The email checks in
+// canAccess / getProjectForUser / addCollaborator ARE the access control for
+// anything that goes through this module; the RLS policies in the migrations
+// only protect paths that use a session-scoped client. A route that calls the
+// unscoped getProject / listProjects has therefore checked nothing.
 
 // Project fields promoted to real columns; everything else lives in `brief`.
 const PROMOTED_PROJECT_KEYS = new Set([
@@ -516,7 +562,16 @@ class SupabaseProjectStore implements ProjectStore {
     return new Map((data ?? []).map(p => [p.id, p.email]));
   }
 
-  /** Owner email, collaborator emails, and org domain for one project row. */
+  /**
+   * Owner email, collaborator emails, and org domain for one project row.
+   *
+   * The Project type talks in EMAILS while the schema stores profile ids, so
+   * every load pays for this translation: up to four round trips (members,
+   * owner profile, organization, then the collaborators' profiles, which cannot
+   * start until the member ids are known). assemble() runs it once per project,
+   * which is why the list views go through summarize() instead — it batches the
+   * same lookups across every row.
+   */
   private async contextFor(row: ProjectRow): Promise<ProjectContext> {
     const [{ data: members }, emailById, { data: org }] = await Promise.all([
       this.db.from('project_members').select('profile_id').eq('project_id', row.id),
@@ -700,6 +755,16 @@ class SupabaseProjectStore implements ProjectStore {
 
   // Updates project-level fields only (name, research question, brief).
   // Experts and collaborators are managed by their dedicated methods.
+  //
+  // LAST WRITE WINS, WHOLE DOCUMENT. `brief` is rebuilt from the caller's
+  // in-memory Project and overwrites the stored jsonb outright — there is no
+  // `updated_at` guard like mutateExpert's. A caller that loaded the project,
+  // did some work, and calls this puts back every brief key as it was at load
+  // time, so a concurrent write to an unrelated brief key (sourcingStatus from
+  // the sourcing job, walkthrough from the settings strip) is lost. The PUT
+  // route's `briefVersion` check narrows the window for the fields a human
+  // edits; nothing protects the rest. Prefer updateProjectFields, which merges
+  // only the keys it was given.
   async updateProject(project: Project): Promise<Project> {
     const { data: row, error } = await this.db
       .from('projects')
@@ -748,6 +813,18 @@ class SupabaseProjectStore implements ProjectStore {
     return this.assemble((await this.getRow(id)) ?? row);
   }
 
+  // THE ONLY SAFE WAY TO WRITE AN EXPERT. Everything that moves an engagement
+  // — bookmark, contact discovery, the outreach steps, the reply classifier,
+  // scheduling, booking, invoicing, payouts — funnels through here, because the
+  // `data` blob is rewritten whole and two writers racing on different fields
+  // would otherwise silently drop one.
+  //
+  // `mutate` is re-run against freshly read state on every attempt, so it must
+  // derive from `current` rather than close over a copy read earlier, and must
+  // be safe to run more than once. After EXPERT_WRITE_RETRIES losses it throws
+  // 'expert_update_conflict', which no caller catches — the route
+  // turns it into a 500 and the client retries by hand.
+  //
   // Read-merge-write on one project_experts row, with optimistic concurrency:
   // the whole `data` blob is rewritten, so the UPDATE only applies if
   // `updated_at` still matches what we read (the row's trigger bumps it on
@@ -905,6 +982,20 @@ function getProjectStore(): ProjectStore {
 }
 
 // ─── Public API ───────────────────────────────────────────────────────────────
+//
+// TWO FAMILIES, AND THE DIFFERENCE MATTERS. `getProjectForUser` /
+// `listProjectsForUser` take the caller's identity and enforce owner-or-
+// collaborator; `getProject` / `listProjects` and every mutator below take a
+// project id and enforce NOTHING. Because this module holds the service-role
+// client, RLS will not catch the difference either. A mutator is safe only
+// because its API route has already run getProjectForUser (404) and, where the
+// action costs money or leaves the platform, requireProjectOwner (403) —
+// lib/projectsGuard.ts. Server-internal callers (webhooks, QStash jobs, ICS and
+// invoice generation) use the unscoped reads deliberately: they have no session.
+//
+// None of these functions redact. Raw identity, contact paths and expertRate
+// come back in full, and the route is responsible for passing the result
+// through lib/redactExpert.ts before it reaches a browser.
 
 export function createProject(input: CreateProjectInput, ownerEmail: string): Promise<Project> {
   return getProjectStore().createProject(input, ownerEmail);

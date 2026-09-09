@@ -1,3 +1,20 @@
+// POST /api/projects/[projectId]/experts — add sourced candidates to a project.
+//
+// Called by the workspace's Source panel when the client keeps one of the
+// adjacent candidates the last sourcing run turned up. The main sourcing path
+// does NOT come through here: lib/sourcingJob.ts writes its results straight
+// through projectStore.addExpertsToProject.
+//
+// Two defences worth knowing about, both below:
+//   - the posted Expert is only used when the server has no copy of that id.
+//     A non-admin's browser holds the ANONYMIZED candidate, so echoing it back
+//     would overwrite the stored identity with "Scott S." and a blank title.
+//   - a client may only seed 'discovered' / 'shortlisted'. Later statuses are
+//     the engagement's own progress, and 'scheduled'/'completed' are half of
+//     the identity-reveal condition (lib/redactExpert.isIdentityRevealed).
+//
+// Adding candidates is an owner action; collaborators read (spec, answer 5).
+
 import { NextRequest } from 'next/server';
 import { addExpertsToProject, getProjectForUser } from '../../../../../lib/projectStore';
 import { guardMutatingRequest, requireProjectOwner } from '../../../../../lib/projectsGuard';

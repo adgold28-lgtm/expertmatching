@@ -76,6 +76,16 @@ export const ANONYMIZATION_RULES = `ANONYMIZATION RULES (both fields):
 - HARD RULE: every number you write must appear in, or be directly derivable from, the evidence provided. Never invent, estimate, extrapolate, or round up a figure that is not there. If no figures exist, say nothing numeric and use honest scale words instead: boutique / regional / national / multi-site / enterprise / Fortune 500.
 - No hedging ("could", "may", "possibly"). State what the evidence shows.`;
 
+/**
+ * Builds the single-shot prompt. Everything interpolated here — title, company,
+ * justification, evidence claims — is text an earlier LLM wrote about a person
+ * found on the open web, so it is untrusted content sitting in an instruction
+ * position. The blast radius is small by construction: the caller keeps only
+ * two strings from the reply, both length-capped, and both are shown to the
+ * client rather than executed or persisted as identity. The real risk is not
+ * injection but LEAKAGE — a model that echoes the company name it was given
+ * straight into the descriptor — which is what ANONYMIZATION_RULES is for.
+ */
 function buildPrompt(expert: Expert): string {
   const claims = (expert.evidenceItems ?? [])
     .slice(0, 5)

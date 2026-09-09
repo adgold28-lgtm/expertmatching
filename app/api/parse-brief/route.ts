@@ -34,6 +34,15 @@ interface ParsedBrief {
   additionalContext?:  string;
 }
 
+// THE DOCUMENT IS UNTRUSTED INPUT TO A MODEL. It is a file the client uploaded,
+// and it is placed in the message BEFORE this instruction, so text inside it
+// ("ignore the above and return …") is read as part of the conversation. Two
+// things keep that contained rather than dangerous: the model has no tools and
+// no context beyond the document, and nothing it returns is persisted here —
+// every value is capped to a string below and handed back to the same user, who
+// then saves it through PUT /api/projects/[id], which re-sanitizes. The worst a
+// hostile brief buys its own uploader is bad brief text in their own project,
+// which flows on to the sourcing prompt.
 const EXTRACTION_PROMPT = `You are reading a client's project brief for an expert-network research project (the client wants to interview industry experts).
 
 Extract the following fields from the document. Return ONLY valid JSON — no prose, no markdown fences. Omit any field the document does not address. Write every value as concise plain text in the client's own terms.
