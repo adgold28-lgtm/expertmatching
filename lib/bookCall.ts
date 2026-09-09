@@ -14,10 +14,12 @@
 //                  keep step with `booking` rather than being superseded by it.
 //   3. The thread— one Matchy line, two sentences at most, so the client sees
 //                  what happened without opening a calendar.
-//   4. The email — expert and client each get their own copy with the SAME .ics
-//                  attached: same UID, SEQUENCE incremented on every move. That
-//                  is what makes a reschedule land as a MOVE in Outlook, Apple
-//                  Mail and Google Calendar rather than as a second event.
+//   4. The email — expert and client each get their own copy, and their own
+//                  .ics: same UID, SEQUENCE incremented on every move, but an
+//                  ATTENDEE list naming only that one recipient. The shared UID
+//                  and SEQUENCE are what make a reschedule land as a MOVE in
+//                  Outlook, Apple Mail and Google Calendar rather than as a
+//                  second event; the attendee list plays no part in that.
 //
 // IDENTITY REVEAL. Booking sets the status to 'scheduled', which is exactly the
 // index at which lib/redactExpert.ts stops anonymizing the expert. So the
@@ -129,7 +131,9 @@ async function clientFirstNameOf(project: Project): Promise<string> {
 }
 
 /**
- * The ICS both parties receive.
+ * The shared body of both parties' invites. Callers never build one directly:
+ * they go through expertIcsEvent or clientIcsEvent, which is what decides the
+ * ATTENDEE list.
  *
  * IDENTITY REVEAL BOUNDARY: this is built at or after 'scheduled', so the
  * expert's real name belongs in the description. The PROJECT NAME does not —
@@ -166,6 +170,57 @@ function buildIcsEvent(args: {
 }
 
 const NO_LINK = 'Video call, link to follow';
+
+/**
+ * THE RULE, both here and in bookingIcsEvent below: each recipient's invite
+ * lists only that recipient as an ATTENDEE, with the ExpertMatch sending
+ * address as ORGANIZER. Neither side is ever told the other's email through an
+ * attachment — lib/redactExpert.ts strips `contactEmail` from every
+ * client-facing response, and an .ics must not be the hole in that.
+ *
+ * Both copies still share `uid` and `sequence`, which is all a calendar needs
+ * to move an existing event instead of adding a second one (RFC 5545 keys an
+ * update on UID + SEQUENCE, never on the attendee list).
+ */
+
+/** The expert's copy: ATTENDEE is the expert alone. */
+export function expertIcsEvent(args: {
+  pe:      ProjectExpert;
+  booking: BookingState;
+  joinUrl: string | null;
+}): IcsEvent {
+  return buildIcsEvent({
+    expertName: args.pe.expert.name,
+    startUtc:   args.booking.startUtc,
+    endUtc:     args.booking.endUtc,
+    joinUrl:    args.joinUrl ?? NO_LINK,
+    uid:        args.booking.icsUid,
+    sequence:   args.booking.icsSequence,
+    attendees:  [args.pe.contactEmail ?? ''],
+  });
+}
+
+/**
+ * The client's copy: ATTENDEE is the client alone. The emailed copy and the
+ * on-demand download (bookingIcsEvent) both come through here, so their
+ * ATTENDEE lines are byte-identical.
+ */
+export function clientIcsEvent(args: {
+  project: Project;
+  pe:      ProjectExpert;
+  booking: BookingState;
+  joinUrl: string | null;
+}): IcsEvent {
+  return buildIcsEvent({
+    expertName: args.pe.expert.name,
+    startUtc:   args.booking.startUtc,
+    endUtc:     args.booking.endUtc,
+    joinUrl:    args.joinUrl ?? NO_LINK,
+    uid:        args.booking.icsUid,
+    sequence:   args.booking.icsSequence,
+    attendees:  [clientAddressOf(args.project)],
+  });
+}
 
 // ─── Book ─────────────────────────────────────────────────────────────────────
 
@@ -431,27 +486,11 @@ async function sendConfirmations(input: ConfirmationInput): Promise<void> {
     : clientZone;
 
   const clientEmail = clientAddressOf(project);
-  // ONE ICS OBJECT, TWO RECIPIENTS. The identical event is attached to both
-  // copies so the two calendars agree on UID and SEQUENCE (that is what makes a
-  // later move land as an update rather than a second event). The price of
-  // sharing it is that the ATTENDEE list is shared too: each side's invite
-  // carries the other side's address. That is a wider disclosure than either
-  // email body — the expert's copy names no client, and lib/redactExpert.ts
-  // strips `contactEmail` from every client-facing API response at every status,
-  // including after the identity reveal. The on-demand copy the client
-  // downloads (bookingIcsEvent, below) lists the client alone, so the two paths
-  // do not agree; treat that as the intended shape when changing this.
-  const attendees   = [pe.contactEmail ?? '', clientEmail].filter(a => a.trim().length > 0);
 
-  const ics = buildIcsEvent({
-    expertName: pe.expert.name,
-    startUtc:   booking.startUtc,
-    endUtc:     booking.endUtc,
-    joinUrl:    joinUrl ?? NO_LINK,
-    uid:        booking.icsUid,
-    sequence:   booking.icsSequence,
-    attendees,
-  });
+  // TWO INVITES, ONE EVENT. Each recipient's invite lists only that recipient;
+  // the shared UID and SEQUENCE are what make a later move an update.
+  const expertIcs = expertIcsEvent({ pe, booking, joinUrl });
+  const clientIcs = clientIcsEvent({ project, pe, booking, joinUrl });
 
   // ── The expert's copy. Never names the client or the project. ──────────
   if (pe.contactEmail) {
@@ -471,7 +510,7 @@ async function sendConfirmations(input: ConfirmationInput): Promise<void> {
       });
 
     await sendBookingEmail(
-      pe.contactEmail, email.subject, email.text, email.html, ics,
+      pe.contactEmail, email.subject, email.text, email.html, expertIcs,
       { recipient: 'expert', projectId },
     );
   }
@@ -496,7 +535,7 @@ async function sendConfirmations(input: ConfirmationInput): Promise<void> {
       });
 
     await sendBookingEmail(
-      clientEmail, email.subject, email.text, email.html, ics,
+      clientEmail, email.subject, email.text, email.html, clientIcs,
       { recipient: 'client', projectId },
     );
   }
@@ -508,17 +547,18 @@ async function sendConfirmations(input: ConfirmationInput): Promise<void> {
  * The current booking as a downloadable calendar event, for
  * GET /api/projects/[projectId]/experts/[expertId]/booking/ics. Null when
  * nothing is booked.
+ *
+ * The same clientIcsEvent the confirmation email attaches, so the downloaded
+ * copy and the mailed one carry identical ATTENDEE lines as well as the same
+ * UID and SEQUENCE: importing both updates one event rather than making two.
  */
 export function bookingIcsEvent(project: Project, pe: ProjectExpert): IcsEvent | null {
   if (!pe.booking) return null;
 
-  return buildIcsEvent({
-    expertName: pe.expert.name,
-    startUtc:   pe.booking.startUtc,
-    endUtc:     pe.booking.endUtc,
-    joinUrl:    pe.zoomJoinUrl ?? NO_LINK,
-    uid:        pe.booking.icsUid,
-    sequence:   pe.booking.icsSequence,
-    attendees:  [clientAddressOf(project)].filter(a => a.length > 0),
+  return clientIcsEvent({
+    project,
+    pe,
+    booking: pe.booking,
+    joinUrl: pe.zoomJoinUrl ?? null,
   });
 }
