@@ -1,36 +1,51 @@
 // PUT | PATCH  — update one expert on a project
 // DELETE       — remove one expert from a project
 //
-// WHO MAY WHAT (docs/MATCHY_SPEC.md, founder answer 5: a shared project is
-// read-only for collaborators, and only the owner or staff acts on an expert):
+// WHO MAY WHAT — THREE TIERS, checked in that order (docs/MATCHY_SPEC.md,
+// founder answer 5: a shared project is read-only for collaborators, and only
+// the owner or staff acts on an expert):
 //
-//   open to any project member — the notes a reader keeps for themselves, and
-//   the reason they think an expert is wrong:
-//       note, userNotes, rejectionReason, rejectionNotes, rejectedAt
+//   1. STAFF ONLY (STAFF_ONLY_FIELDS) — role 'admin', and NOT the owner.
+//      Money, Stripe, the contact path, tokens, calendar and Zoom credentials,
+//      scheduling, booking and nudges: derived state that the server writes
+//      (createAndSendInvoice, the Stripe and Zoom webhooks, contact discovery,
+//      bookCall, the nudge job), never a client. A body carrying one of these
+//      from a non-admin — INCLUDING the project owner — is refused
+//      403 { error: 'read_only', field }. This check runs BEFORE the owner
+//      check, because owning a project must not buy the right to set your own
+//      price (audit C-1) or to redirect Matchy's intro email (audit H-1).
 //
-//   OWNER OR ADMIN ONLY (see OWNER_ONLY_FIELDS) — anything that moves the
-//   engagement or touches money:
-//       status, screeningStatus, expertRate, expertCounterRate,
-//       callDurationMin, invoiceAmount, paymentStatus, paidAt,
-//       stripePaymentLinkId, stripePaymentLinkUrl, stripePaymentIntentId
+//   2. OWNER OR ADMIN (OWNER_FIELDS) — what moves the engagement without
+//      touching money or the contact path: status (a non-admin is narrowed
+//      further to CLIENT_WRITABLE_STATUSES), screeningStatus and the rest of
+//      the screening material, the outreach draft, and the discovered
+//      contact-path candidates. Enforced by requireProjectOwner.
+//
+//   3. ANY PROJECT MEMBER (COLLABORATOR_FIELDS) — the notes a reader keeps for
+//      themselves, and the reason they think an expert is wrong:
+//      note, userNotes, rejectionReason, rejectionNotes, rejectedAt.
 //
 //   DELETE is owner-or-admin outright — removing an expert throws away the
 //   whole engagement.
 //
-// The owner check always runs AFTER getProjectForUser, so a project the caller
+// The tier checks always run AFTER getProjectForUser, so a project the caller
 // cannot reach still answers 404 and never confirms that it exists.
 //
-// MONEY: `expertRate` is never written on its own. projectStore.rateFieldsFor
-// derives `clientRate` from it in the same write, so the number the client is
-// billed can never drift from the number the expert accepted.
+// MONEY: `expertRate` is admin-only here and is never written on its own.
+// projectStore.rateFieldsFor derives `clientRate` from it in the same write, so
+// the number the client is billed can never drift from the number the expert
+// accepted. A client never writes `expertRate`; they move a rate through
+// .../rate-decision or through the per-expert `clientRate` below.
 //
 // MATCHY 2.0 — THE PER-EXPERT RATE. The owner may set `clientRate` (their
 // number, fee included) for one engagement: it must sit on the $50 grid,
 // inside the project's band, and the rate must not be agreed yet
 // (`rateAgreedAt`, or a status past the negotiation). The expert-side figure is
 // derived in the same write (lib/pricing.expertRateFor → rateFieldsFor), the
-// mirror of the staff-side `expertRate` write above. Nothing is sent: the next
-// message to the expert carries the new number.
+// mirror of the staff-side `expertRate` write above, so the two numbers still
+// come out of one conversion and `clientRate` is the ONLY money field a
+// non-admin may send. Nothing is sent: the next message to the expert carries
+// the new number.
 //
 // A client's "pass" on an expert Matchy has already written to lands on
 // `rejected_after_outreach` (the server maps it), so the thread's Pass reads
@@ -45,6 +60,10 @@ import { sanitizeText, LIMITS } from '../../../../../../lib/projectValidation';
 import { EXPERT_STATUSES } from '../../../../../../lib/expertPipeline';
 import { redactProjectForViewer } from '../../../../../../lib/redactExpert';
 import { trackProductEvent } from '../../../../../../lib/productEvents';
+// The three write tiers (staff-only / owner / collaborator) live outside this
+// route because Next 14 forbids a route.ts from exporting anything besides its
+// HTTP handlers and the small config allow-list.
+import { STAFF_ONLY_FIELDS, OWNER_FIELDS, classifyBodyFields, normalizeContactEmail } from '../../../../../../lib/expertFieldTiers';
 import type { ExpertStatus, RejectionReason, ValueChainPosition, ScreeningStatus, ContactStatus, SuggestedDomain, PublicContactEmail } from '../../../../../../types';
 
 const ID_RE        = /^[a-f0-9]{24}$/;
@@ -85,48 +104,9 @@ const VALID_EMAIL_VERIFICATION_STATUSES = new Set<ContactStatus>([
 ]);
 const VALID_EMAIL_PROVIDERS = new Set(['hunter', 'snov', 'none']);
 
-/**
- * Body keys only the project owner (or a platform admin) may send: the
- * engagement's stage, the screening verdict, and every field that decides what
- * anyone gets charged or paid. A collaborator sending one of these gets 403;
- * a body without any of them is a note or a rejection reason and goes through.
- */
-// Fields a COLLABORATOR may write. Everything else on this route is owner or
-// platform-admin only: contact details, drafts, availability, screening
-// material and every money field move the engagement or steer outreach.
-const COLLABORATOR_FIELDS: ReadonlySet<string> = new Set([
-  'note',
-  'userNotes',
-  'rejectionReason',
-  'rejectionNotes',
-  'rejectedAt',
-]);
-/**
- * OWNER-OR-ADMIN, NOT ADMIN-ONLY. `requireProjectOwner` passes for a role
- * 'user' who owns the project, so everything in this list — and everything else
- * outside COLLABORATOR_FIELDS — is writable by the CLIENT who created the
- * project, not just by staff. That includes `expertRate` (which drives both the
- * card charge in .../complete and the Connect payout in lib/expertPayout.ts),
- * `paymentStatus` (lib/createAndSendInvoice.ts skips charging when it already
- * reads 'paid'), and `contactEmail` (the address Matchy's intro is sent to).
- * The staff console is the only UI that sends these, but the route does not
- * require staff. Flagged in the 2026-09-08 architecture audit; documented here
- * so nobody reads this list as "staff only".
- */
-const OWNER_ONLY_FIELDS: readonly string[] = [
-  'status',
-  'screeningStatus',
-  'clientRate',
-  'expertRate',
-  'expertCounterRate',
-  'callDurationMin',
-  'invoiceAmount',
-  'paymentStatus',
-  'paidAt',
-  'stripePaymentLinkId',
-  'stripePaymentLinkUrl',
-  'stripePaymentIntentId',
-];
+// The three write tiers (STAFF_ONLY_FIELDS, OWNER_FIELDS, classifyBodyFields,
+// normalizeContactEmail) are defined in lib/expertFieldTiers.ts and imported
+// above — Next 14 does not allow this file to export them itself.
 
 export async function PUT(
   request: NextRequest,
@@ -150,12 +130,23 @@ export async function PUT(
     const accessible = await getProjectForUser(params.projectId, email, role);
     if (!accessible) return Response.json({ error: 'not_found' }, { status: 404 });
 
-    // Stage and money are the owner's to move; notes are not.
-    // Anything outside the collaborator allowlist is owner-or-admin only.
-    const writesOwnerField = Object.keys(body).some(
-      field => body[field] !== undefined && !COLLABORATOR_FIELDS.has(field),
-    );
-    if (writesOwnerField || OWNER_ONLY_FIELDS.some(field => body[field] !== undefined)) {
+    // Tier 1 before tier 2: money, Stripe, the contact path, tokens and the
+    // scheduling records are staff-only, so the OWNER is refused them with the
+    // same 403 a collaborator gets. Owning the project is not a licence to set
+    // your own price (C-1) or to redirect Matchy's intro (H-1).
+    const { staffOnly, ownerOnly } = classifyBodyFields(body, role);
+    if (staffOnly.length > 0) {
+      return Response.json(
+        {
+          error:   'read_only',
+          field:   staffOnly[0],
+          message: 'ExpertMatch sets that field. Reach out to us if it looks wrong.',
+        },
+        { status: 403 },
+      );
+    }
+    // Tier 2: stage and screening are the owner's to move; notes are not.
+    if (ownerOnly.length > 0) {
       const ownerErr = requireProjectOwner(accessible, { email, role });
       if (ownerErr) return ownerErr;
     }
@@ -211,7 +202,14 @@ export async function PUT(
       input.rejectedAt = body.rejectedAt;
     }
 
-    if (typeof body.contactEmail    === 'string') input.contactEmail    = sanitizeText(body.contactEmail,    LIMITS.contactEmail);
+    // Staff-only by the tier check above. Validated as an address rather than
+    // as free text, and lower-cased, so the suppression list and the contact
+    // cache cannot be side-stepped by casing (H-1).
+    if (body.contactEmail !== undefined) {
+      const contactEmail = normalizeContactEmail(body.contactEmail);
+      if (!contactEmail) return Response.json({ error: 'invalid_contact_email' }, { status: 400 });
+      input.contactEmail = contactEmail;
+    }
     if (typeof body.contactedAt === 'number' && Number.isFinite(body.contactedAt) && body.contactedAt > 0) {
       input.contactedAt = body.contactedAt;
     }
