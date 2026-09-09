@@ -1,6 +1,18 @@
 // Compute scheduling overlap between expert and client availability slots.
 // No external date libraries — uses Node built-ins (Intl, Date) only.
 // Never logs slot contents or personal data.
+//
+// WHAT IS STILL LIVE IN HERE. This module predates Matchy Phase 2 and is now
+// used mostly as a library of primitives rather than for its headline function:
+//   resolveTimezone / slotToUtcRange / extractTimezone → lib/matchyScheduling.ts
+//   resolveTimezone                                    → lib/bookCall.ts
+//   localToUtc                                         → scripts/test-scheduling.ts
+// `computeOverlap()` itself, and therefore scoreSlot() and formatInTimezone(),
+// have no callers left in app/, lib/ or components/: the overlap that matters
+// is now computed as absolute UTC ranges in lib/matchyScheduling.intersectRanges,
+// and the retired lib/triggerOverlapCheck.ts was this function's last consumer.
+// Read the pair before touching either — they answer the same question with
+// different arithmetic.
 
 import type { AvailabilitySlot, OverlapResult, OverlapSlot } from '../types';
 
@@ -75,7 +87,14 @@ export function localToUtc(
 
 const DAY_NAMES = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
 
-/** Find the next occurrence of `targetDay` (e.g. "Monday") within the next 14 days. */
+/**
+ * Find the next occurrence of `targetDay` (e.g. "Monday") within the next 14
+ * days. The weekday is read in UTC, not in the slot's own zone, so a bare
+ * "Monday" resolved close to midnight can land on the neighbouring date for a
+ * far-from-UTC reader. Dated slots (`slot.date`) never take this path, and
+ * every slot lib/availabilityWindows.ts produces is dated — this is only
+ * reached for a weekday-only window, which is what the LLM reply parser emits.
+ */
 function nextOccurrenceOfDay(targetDay: string): { year: number; month: number; day: number } | null {
   const target = DAY_NAMES.findIndex(d => d.toLowerCase() === targetDay.toLowerCase());
   if (target === -1) return null;

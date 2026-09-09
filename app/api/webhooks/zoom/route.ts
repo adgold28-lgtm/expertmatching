@@ -1,6 +1,29 @@
-// POST — public, no routeAuthGuard.
-// Handles Zoom webhook events with v2 signature verification.
-// Uses timingSafeEqual for signature comparison.
+// POST /api/webhooks/zoom — the end of the engagement, driven by Zoom.
+//
+// Public, no routeAuthGuard: the caller is Zoom's server, and the only proof of
+// identity is the v2 HMAC signature checked below. Two events matter, both
+// emitted for meetings created by lib/createZoomMeeting.ts during lib/bookCall:
+//
+//   meeting.started  → `zoomMeetingStarted: true` on the ProjectExpert, which is
+//                      what the Staff panel reads to show a call is live.
+//   meeting.ended    → the ACTUAL duration (end_time - start_time, rounded up,
+//                      floor of 1 minute), status → 'completed', and — when an
+//                      expertRate was agreed — the client's card is charged via
+//                      lib/createAndSendInvoice. This is the ONLY automatic path
+//                      from "a call happened" to "money moves".
+//
+// The meeting id is the only join key Zoom gives us; lib/zoomLookup.ts resolves
+// it back to { projectId, expertId } through `project_experts.data->>zoomMeetingId`.
+// A booking whose Zoom creation failed carries no meeting id, so no webhook can
+// ever land on it and the call will not bill itself (see lib/bookCall.ts).
+//
+// The billing amount is computed here from the STORED `pe.expertRate` and the
+// measured duration (lib/pricing.callChargeDollars) — never from anything in the
+// webhook payload, which is attacker-shaped data even after the signature check.
+//
+// NOT DONE HERE, deliberately or otherwise: no timestamp freshness window on
+// x-zm-request-timestamp, and no "already completed" guard before invoicing, so
+// idempotency rests entirely on whatever lib/createAndSendInvoice does.
 //
 // NEVER log: expert names, project names, meeting topics.
 // Meeting IDs and durations are safe to log.
@@ -40,7 +63,12 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ plainToken: payload.plainToken, encryptedToken: hash });
   }
 
-  // Verify signature for all other requests
+  // ── Signature ───────────────────────────────────────────────────────────
+  // Zoom signs `v0:{timestamp}:{raw body}` with the webhook secret token. The
+  // RAW text is required, which is why the body was read as text and parsed
+  // separately above rather than with request.json(). timingSafeEqual throws on
+  // a length mismatch, so the compare is wrapped: a wrong-length signature is a
+  // 400, not a 500.
   if (!secret || !zmSig) {
     return NextResponse.json({ error: 'missing_signature' }, { status: 400 });
   }
@@ -67,6 +95,13 @@ export async function POST(request: NextRequest) {
     }
   }
 
+  // ── meeting.ended: duration, completion, and the charge ─────────────────
+  // The billable minutes come from Zoom's own start/end stamps, falling back to
+  // "now" when end_time is absent. Everything downstream of the status write is
+  // money: lib/pricing.callChargeDollars applies the 15-minute minimum and the
+  // per-minute rate, and lib/createAndSendInvoice charges the client's saved
+  // card. An invoice failure is logged and swallowed so the completion still
+  // stands — a call that happened must never be un-completed by a Stripe blip.
   if (eventType === 'meeting.ended') {
     const startTs    = new Date(String(obj?.start_time ?? '')).getTime();
     const endTimeStr = obj?.end_time;

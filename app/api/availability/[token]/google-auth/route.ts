@@ -55,6 +55,17 @@ const STATE_SECRET_ENV = 'AVAILABILITY_TOKEN_SECRET'; // reuse existing secret f
 
 // ─── State HMAC ───────────────────────────────────────────────────────────────
 
+/**
+ * The CSRF state: `projectId:expertId:nonce:token` plus an HMAC over all four,
+ * base64url-encoded. The signature is what stops a caller inventing a state for
+ * someone else's engagement, and the nonce — written to `ProjectExpert.oauthState`
+ * just below and cleared by the callback — is what stops one being replayed.
+ *
+ * There is no timestamp in the payload and no expiry on the stored nonce, so a
+ * state stays usable until the next initiate overwrites it or the callback
+ * clears it. The picker token inside it carries its own 7-day expiry, which is
+ * the only clock bounding this round-trip.
+ */
 function buildState(projectId: string, expertId: string, nonce: string, token: string): string {
   const secret  = process.env[STATE_SECRET_ENV];
   if (!secret) throw new Error('[google-auth] AVAILABILITY_TOKEN_SECRET not set');

@@ -326,6 +326,14 @@ export async function rebookCall(input: RebookCallInput): Promise<BookCallResult
   const startUtc = new Date(startMs).toISOString();
   const endUtc   = new Date(startMs + durationMin * 60_000).toISOString();
 
+  // A move PATCHes the existing meeting and never creates one. When the
+  // original booking has no meeting id — Zoom was down at bookCall time, so the
+  // invite went out saying the link would follow — there is nothing to patch and
+  // nothing is created here either, so the engagement stays permanently without
+  // a join URL and without the id app/api/webhooks/zoom resolves through
+  // lib/zoomLookup.ts. The return value of updateZoomMeeting is deliberately
+  // ignored: the new time is already ours, and a failed PATCH leaves Zoom
+  // showing the old slot while everything else has moved.
   if (previous.zoomMeetingId) {
     await updateZoomMeeting(previous.zoomMeetingId, startUtc, durationMin);
   }
@@ -423,6 +431,16 @@ async function sendConfirmations(input: ConfirmationInput): Promise<void> {
     : clientZone;
 
   const clientEmail = clientAddressOf(project);
+  // ONE ICS OBJECT, TWO RECIPIENTS. The identical event is attached to both
+  // copies so the two calendars agree on UID and SEQUENCE (that is what makes a
+  // later move land as an update rather than a second event). The price of
+  // sharing it is that the ATTENDEE list is shared too: each side's invite
+  // carries the other side's address. That is a wider disclosure than either
+  // email body — the expert's copy names no client, and lib/redactExpert.ts
+  // strips `contactEmail` from every client-facing API response at every status,
+  // including after the identity reveal. The on-demand copy the client
+  // downloads (bookingIcsEvent, below) lists the client alone, so the two paths
+  // do not agree; treat that as the intended shape when changing this.
   const attendees   = [pe.contactEmail ?? '', clientEmail].filter(a => a.trim().length > 0);
 
   const ics = buildIcsEvent({

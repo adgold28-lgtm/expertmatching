@@ -388,6 +388,14 @@ async function handleUnavailable(
     });
     if (read.kind === 'unavailable') windows = read.windows;
 
+    // Windows the expert TYPED become their availability, which also flips
+    // `calendarProvider` to 'manual'. That last part is load-bearing and easy to
+    // miss: an expert who had linked Google and then writes "none of these work,
+    // try Tuesday" stops being a connected calendar as far as
+    // lib/matchyScheduling.expertHasConnectedCalendar is concerned, so later
+    // rounds read these sentences instead of their real free/busy. The Google
+    // ciphertext stays on the row, so re-linking is not required to recover it —
+    // only the provider flag moved.
     await writeExpert(project.id, pe.expert.id, {
       availabilityRaw:   text,
       replyIntent:       'time_unavailable',

@@ -111,6 +111,17 @@ async function exchangeCode(
   return res.json() as Promise<TokenResponse>;
 }
 
+/**
+ * The linked Google account's address, which is also the calendar id
+ * lib/fetchGoogleFreebusy.ts queries. Note what the initiate route asked for:
+ * `calendar.freebusy` ALONE, with no `openid`/`email` scope — the onboarding
+ * flow (app/api/onboarding/calendar/google) requests those two extra scopes and
+ * its own header calls this expert flow's calendar_email "unreliable" for
+ * exactly this reason. When userinfo refuses, this returns null, the field is
+ * left unset below, and lib/matchyScheduling.expertKnownWindows —which requires
+ * calendarEmail alongside the tokens — silently falls back to the expert's typed
+ * windows, so the connection they just granted is never actually read.
+ */
 async function fetchCalendarEmail(accessToken: string): Promise<string | null> {
   try {
     const res = await fetch(USERINFO_URL, {

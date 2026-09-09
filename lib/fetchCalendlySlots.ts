@@ -52,6 +52,13 @@ function parseCalendlyUrl(url: string): { username: string; eventSlug?: string }
 
 // ─── API fetchers ─────────────────────────────────────────────────────────────
 
+// Both calls below go to api.calendly.com with NO Authorization header and no
+// CALENDLY_* env var anywhere in the app, and both treat any non-OK response as
+// "no availability" rather than as an error. So a rejected request, a changed
+// API contract and a genuinely empty calendar are indistinguishable from the
+// outside: the caller sees [] and lib/matchyScheduling falls back to proposing
+// from the client's side alone. Anyone debugging "Calendly never yields times"
+// should start by logging the status codes here (never the URL — it is PII).
 async function fetchEventTypes(username: string): Promise<CalendlyEventType[]> {
   const res = await fetch(
     `https://api.calendly.com/event_types?organization=&user=https://api.calendly.com/users/${username}`,

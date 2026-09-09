@@ -101,6 +101,22 @@ async function queryFreebusy(
 
 const DAY_NAMES = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
 
+/**
+ * Google reports BUSY blocks; the scheduler wants FREE windows, so this walks
+ * each day of the horizon and returns the gaps.
+ *
+ * The frame it inverts inside is a FIXED 08:00–19:00 **UTC** band per calendar
+ * day, and the emitted slots are stamped `timezone: 'UTC'`. Nothing here knows
+ * the user's own zone: a Google connection has no timezone to consult at this
+ * layer. The consequence is worth understanding before changing anything —
+ * this band is an upper bound on everything Matchy can ever offer a user whose
+ * calendar is Google, and lib/matchyScheduling.pickProposals then intersects it
+ * with 09:00–17:00 in the OWNER's zone. For a UTC-ish user the two agree; the
+ * further the user's offset from UTC, the smaller the surviving intersection.
+ *
+ * Gaps shorter than a call are not filtered here — pickProposals enforces the
+ * duration, the half-hour grid, weekdays and the 24-hour lead.
+ */
 function invertBusyToFree(
   busyBlocks: Array<{ start: string; end: string }>,
   windowStart: Date,
