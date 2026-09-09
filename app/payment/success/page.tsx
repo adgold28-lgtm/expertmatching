@@ -1,3 +1,11 @@
+// /payment/success — where a Stripe payment link drops the client after they
+// pay a call invoice (the redirect URL is set in lib/createAndSendInvoice.ts).
+//
+// Purely cosmetic and public: it is reached from an emailed link with no
+// session, carries no projectId, and proves nothing. The authoritative record
+// of the payment is the checkout.session.completed webhook, which is what flips
+// paymentStatus to 'paid' and runs the expert payout — never this page.
+
 import Link from 'next/link';
 
 export default function PaymentSuccessPage() {

@@ -197,6 +197,14 @@ export async function runExpertPayout(projectId: string, expertId: string): Prom
             stripeConnectAccountId: connectAccountId,
           });
         } catch (transferErr) {
+          // TERMINAL BY DESIGN, AND UNWATCHED: both retry paths (the
+          // account.updated sweep below and the nightly reconcile job) select
+          // rows on expertOnboardingStatus = 'pending', so a row moved to
+          // 'failed' here is never retried automatically and no system_events
+          // row is written for it. If the transfer itself SUCCEEDED and only
+          // the updateExpertStatus above failed, the row also loses its
+          // stripeTransferId — reconcile that case against Stripe by hand
+          // before re-running a payout.
           console.error('[stripe] transfer error:',
             transferErr instanceof Error ? transferErr.message.slice(0, 120) : 'unknown');
           await updateExpertStatus(projectId, expertId, {

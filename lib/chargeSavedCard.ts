@@ -152,6 +152,13 @@ export async function chargeSavedCard(params: ChargeSavedCardParams): Promise<Ch
         confirm:              true,
         metadata:             { projectId, expertId },
       },
+      // Scope of this key: ONE PaymentIntent per (project, expert) pair, for as
+      // long as Stripe remembers the key (~24h). It makes a webhook retry or a
+      // double-click safe. It is not a business rule — the durable double-bill
+      // guard is the paid/stripePaymentIntentId check in
+      // lib/createAndSendInvoice.ts, and a SECOND genuine call with the same
+      // expert on the same project inside the window would replay this intent
+      // rather than raise a new charge.
       { idempotencyKey: `charge:${projectId}:${expertId}` },
     );
 

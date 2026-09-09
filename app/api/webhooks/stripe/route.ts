@@ -104,6 +104,22 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: 'invalid_signature' }, { status: 400 });
   }
 
+  // Signature verified — everything below writes. Deliberate properties of
+  // this handler, worth knowing before adding a branch:
+  //   * NO EVENT DE-DUPLICATION. event.id is never stored, so every branch must
+  //     be safe to run twice. Today they are: the paid/failed writes are
+  //     last-writer-wins on the same values, and runExpertPayout guards on the
+  //     stored stripeTransferId plus a deterministic transfer idempotency key.
+  //   * NO ORDERING GUARANTEE. Stripe may deliver out of order, so a late
+  //     customer.subscription.updated can overwrite a 'past_due' mirrored from
+  //     invoice.payment_failed; organization_billing is a hint for the UI, not
+  //     the ledger — Stripe is.
+  //   * NO REFUND BRANCH. charge.refunded / charge.dispute.* are not handled
+  //     anywhere in this codebase: a refunded call keeps paymentStatus 'paid'
+  //     and the expert payout is not clawed back.
+  //   * ALWAYS 200. A branch that fails logs and is dropped, rather than asking
+  //     Stripe to redeliver.
+
   // ── Checkout (payment-link path) ────────────────────────────────────────
   if (event.type === 'checkout.session.completed') {
     const session   = event.data.object as Stripe.Checkout.Session;

@@ -1,3 +1,16 @@
+// lib/stripe.ts — the ONLY place a Stripe client is constructed.
+//
+// Every money path in the app (per-seat subscriptions in lib/orgBilling.ts,
+// off-session call charges in lib/chargeSavedCard.ts, payment links in
+// lib/createAndSendInvoice.ts, Connect payouts in lib/stripeConnect.ts, and
+// webhook signature verification in app/api/webhooks/stripe/route.ts) imports
+// from here so the secret key is read once and the pinned apiVersion is
+// identical everywhere — a version skew between modules would change how
+// Stripe shapes the objects those modules read money out of.
+//
+// Must never be constructed at module load: STRIPE_SECRET_KEY is absent during
+// `next build`, so the getters below defer it to the first request.
+
 import Stripe from 'stripe';
 
 let _stripe: Stripe | null = null;

@@ -2,9 +2,11 @@
 
 // /settings → Payment method. Organization-level, like the rest of billing.
 //
-// READ: GET /api/settings/payment-method returns brand, last4, expiry and who
-// added it. Every member of the firm sees it — a colleague who did not add the
-// card still needs to know it is there and who to ask about it.
+// READ: GET /api/settings/payment-method. Card details (brand, last4, expiry,
+// who added it) go ONLY to the firm's champion (org_role 'org_admin') or a
+// platform admin; every other member gets { restricted: true, orgName } and is
+// rendered the 'restricted' state below — the firm's economics are not the
+// whole team's business.
 //
 // REPLACE: the firm champion (org_admin) only, reusing the onboarding routes rather than a
 // second copy of the Stripe logic:

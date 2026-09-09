@@ -66,6 +66,10 @@ export async function createOnboardingLink(
 
 // ─── Onboarding status check ──────────────────────────────────────────────────
 
+// `details_submitted` means the expert finished the hosted onboarding form — it
+// is NOT the same as `payouts_enabled` (Stripe may still be verifying). The
+// webhook's account.updated branch treats either signal as worth a retry sweep
+// and lets the transfer itself be the final arbiter.
 export async function isOnboardingComplete(accountId: string): Promise<boolean> {
   const account = await stripe.accounts.retrieve(accountId);
   return account.details_submitted === true;
@@ -83,10 +87,14 @@ export async function transferExpertPayout(
     throw new Error(`[stripeConnect] payout too small: ${amountCents} cents`);
   }
 
-  // One payout per project+expert, forever: the key is deterministic, so a
-  // retried webhook (or the account.updated retry sweep) replays the original
-  // transfer instead of sending the expert's money twice. The stored
-  // stripeTransferId is the first guard; this is the one that survives a race.
+  // Deterministic key per project+expert: a webhook retry, or the
+  // account.updated retry sweep, replays the ORIGINAL transfer instead of
+  // sending the expert's money twice. Note the limit — Stripe only remembers an
+  // idempotency key for ~24 hours, so this guard covers the racing/replay
+  // window, NOT "forever". The durable guard is the stored stripeTransferId
+  // that lib/expertPayout.ts checks before it ever gets here; anything that
+  // loses that id (a failed write after a successful transfer) is outside both
+  // guards and must be reconciled by hand.
   const transfer = await stripe.transfers.create(
     {
       amount:      amountCents,

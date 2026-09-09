@@ -4,6 +4,16 @@
 //
 // Rate limit: 10 req/hr per token (prevents link-generation abuse).
 // Token must belong to a 'scheduled' expert — prevents reuse.
+//
+// The token IS the authentication: it is an HMAC-signed (projectId, expertId)
+// pair from lib/availabilityToken.ts, minted by lib/expertPayout.ts when a
+// payout goes pending. There is no session here — an expert has no account.
+//
+// Side effect worth knowing: the Connect account created here is recorded ONLY
+// in Redis (lib/stripeConnect.setConnectAccountId, keyed by HMAC of the email).
+// It is not written back onto the project_experts row; lib/expertPayout.ts
+// looks it up by email when the account.updated webhook sweeps pending payouts,
+// so a Redis outage at that moment strands the payout in 'pending'.
 
 import { NextRequest, NextResponse } from 'next/server';
 import { createHmac } from 'crypto';
