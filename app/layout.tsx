@@ -49,6 +49,12 @@ export const metadata: Metadata = {
   },
 };
 
+// -----------------------------------------------------------------------------
+// RootLayout — wraps every route in the app (App Router root layout).
+// Loads the two Google fonts as CSS variables (consumed by tailwind.config.js
+// fontFamily.display/body) and sets the site-wide <head> metadata above.
+// Renders no providers/nav/chrome of its own — those live in nested layouts.
+// -----------------------------------------------------------------------------
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="en" className={`${spectral.variable} ${libreFranklin.variable}`}>

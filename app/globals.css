@@ -1,3 +1,7 @@
+/* Global stylesheet, imported once from app/layout.tsx.
+   :root custom properties mirror the palette in tailwind.config.js theme.colors
+   (navy/gold/cream/muted/border) — duplicated by hand, not generated from one
+   source, so a palette change must be made in both files. */
 @tailwind base;
 @tailwind components;
 @tailwind utilities;

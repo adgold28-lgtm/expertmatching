@@ -1,3 +1,8 @@
+# On-demand Claude assistant: triggers when a PR/issue comment or review
+# mentions "@claude", then runs anthropics/claude-code-action to act on the
+# comment (e.g. answer a question, make a follow-up commit). Requires the
+# CLAUDE_CODE_OAUTH_TOKEN repo secret. CI-only tooling, unrelated to the app's
+# own runtime/deploy.
 name: Claude Code
 
 on:

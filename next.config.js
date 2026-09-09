@@ -1,5 +1,7 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
+  // Enables instrumentation.ts's register() hook (Next 14 requires this flag;
+  // the hook itself runs lib/validateEnv.ts at server boot — see that file).
   experimental: {
     instrumentationHook: true,
   },

@@ -1,3 +1,30 @@
+// -----------------------------------------------------------------------------
+// Shared TypeScript types for the whole app (client + server + scripts).
+// This file has no single storage backing — it mixes three kinds of shape:
+//
+//   Row-backed        — one interface maps to one Postgres row, but only a few
+//                       fields are real columns; the rest ride in a jsonb blob
+//                       (supabase/migrations/*.sql, lib/projectStore.ts):
+//                         Project        → `projects` row: id/name/research
+//                                          question/owner/org are columns,
+//                                          everything else is in `brief` jsonb.
+//                         ProjectExpert  → `project_experts` row: status and
+//                                          contact_email are columns, every
+//                                          other field is in `data` jsonb.
+//                         ProjectSummary → a narrower read shape of `projects`.
+//   jsonb-embedded    — nested objects stored INSIDE one of those blobs, never
+//                       their own row: Expert, SchedulingState, BookingState,
+//                       NudgeState, ContactCandidate, AvailabilitySlot,
+//                       OverlapSlot/OverlapResult. Adding a key needs no
+//                       migration; RLS applies to the parent row only.
+//   API-only / in-memory — never persisted as-is; shapes a request/response
+//                       or a function's return value: QueryAnalysis,
+//                       InsufficientExperts, ExpertResponse, SuggestedDomain,
+//                       PublicContactEmail, ContactPathSuggestion.
+//
+// When touching a field here, check lib/projectStore.ts PROMOTED_PROJECT_KEYS
+// and supabase/migrations before assuming a rename or type change is free.
+// -----------------------------------------------------------------------------
 export interface QueryAnalysis {
   industry: string;
   function: string;

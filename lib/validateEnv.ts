@@ -3,6 +3,10 @@
 //
 // In production: throws if any required variable is missing.
 // In non-production: logs a warning for each missing variable.
+//
+// Never reads or logs a variable's VALUE — only presence/absence. Also backs
+// GET /api/admin/env-status, which reports the same
+// PRESENT/MISSING state to the founder without exposing secrets.
 
 /**
  * Every variable the app refuses to boot without in production.

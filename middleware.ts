@@ -2,6 +2,29 @@ import { NextRequest, NextResponse } from 'next/server';
 import { isAuthEnabled } from './lib/auth';
 import { updateSession } from './lib/supabase/middleware';
 
+// -----------------------------------------------------------------------------
+// Edge middleware — the single routing/auth gate in front of every request
+// (matcher below excludes only _next/static, _next/image, favicon.ico).
+// Decision order, evaluated top to bottom, first match wins:
+//   1. PUBLIC_PREFIXES  -> pass through, no session lookup at all (see each
+//      entry below for what protects that prefix instead of a session: a
+//      signed token, a webhook signature, or route-level token gating).
+//   2. updateSession()  -> refreshes/reads the Supabase session
+//      (lib/supabase/middleware.ts). Role/status/
+//      onboarding flags are read from user.app_metadata, which only the
+//      service-role client can write (never client-settable).
+//   3. isAuthEnabled() false (dev only) -> everything passes, no gating.
+//   4. Signed-in user: disabled -> /login; admin-only path + non-admin ->
+//      404 (never 403, so the console's existence isn't confirmed) with
+//      X-Robots-Tag noindex on admin success; onboarding incomplete -> only
+//      /onboarding, /api/onboarding, /api/auth/me, /api/auth/logout allowed,
+//      everything else redirected/403'd; fully onboarded -> bounce off
+//      APP_REDIRECT_PATHS ('/' and '/login') to /app, else pass.
+//   5. No session: PUBLIC_PATHS pass; admin-only paths still 404 for
+//      anonymous traffic; unauthenticated API calls get 401 JSON; unauthenticated
+//      pages redirect to /login?next=<path>.
+// -----------------------------------------------------------------------------
+
 // Paths that bypass auth entirely — keep this list minimal.
 const PUBLIC_PATHS = new Set([
   '/login',

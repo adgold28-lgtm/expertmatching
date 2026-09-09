@@ -1,3 +1,7 @@
+# Automated PR review: runs the anthropics/claude-code-action's `code-review`
+# plugin against every opened/updated PR, posting review comments back to
+# GitHub. Requires the CLAUDE_CODE_OAUTH_TOKEN repo secret. Unrelated to the
+# app's own runtime/deploy — CI-only tooling.
 name: Claude Code Review
 
 on:

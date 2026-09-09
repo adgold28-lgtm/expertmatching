@@ -1,4 +1,8 @@
 /** @type {import('tailwindcss').Config} */
+// Design tokens (navy/gold/cream palette, Spectral/Libre Franklin fonts) for the
+// "premium B2B, not a hackathon project" look described in CLAUDE.md. The same
+// hex values are duplicated as CSS custom properties in app/globals.css :root —
+// keep both in sync by hand if a color changes (no shared source of truth).
 module.exports = {
   content: [
     './pages/**/*.{js,ts,jsx,tsx,mdx}',
