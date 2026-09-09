@@ -8,6 +8,20 @@ behind any claim that one client cannot see another client's data.
 RLS VERIFY: 135 passed, 0 failed
 ```
 
+> **Status note (2026-09-08) — this page describes the pre-`20260908000000`
+> model and is now partly stale.** Migration
+> `20260908000000_identity_boundary_trial_events.sql` drops every
+> `authenticated` policy on `projects`, `project_members`, `project_experts`
+> and `conversation_messages` without recreating any, making those four tables
+> service-role only. `verify.sql` was updated to match (it now asserts **zero
+> rows and zero policies** for the project family, and carries 153 assertions,
+> not 135), so wherever the tables below say a user "sees PA1 + PA2" or "can
+> share PA2 inside the org", the current suite asserts a denial or 0 rows
+> instead. One assertion — `B1: sees only own project` — was missed in that
+> update and still expects 1 row, so a run reports 1 failure until it is
+> changed to 0. The `anon`, profile, membership, organization and
+> service-role-table claims below are unchanged and still accurate.
+
 ## Run it locally
 
 ```bash

@@ -87,7 +87,12 @@ create table if not exists public.system_events (
   -- 'system_failure' today. A column rather than a check constraint so a later
   -- kind ('system_recovered', say) needs no migration to start writing.
   kind            text not null,
-  -- Which subsystem: seat_sync | payout | mail | sourcing | invoice.
+  -- Which subsystem. The authoritative list is lib/engagementEvents.
+  -- SystemFailureArea, which now reads:
+  --   seat_sync | payout | mail | sourcing | invoice | nudge
+  -- ('nudge' was added with Matchy Phase 2.) Deliberately no check constraint:
+  -- a new area must never be able to turn a swallowed failure into a second,
+  -- louder failure at insert time.
   area            text not null,
   -- Short, PII-free reason. lib/engagementEvents.ts caps this and strips
   -- Stripe object ids before the insert — never a raw exception, never an

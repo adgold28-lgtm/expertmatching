@@ -32,6 +32,16 @@
 //              says so rather than quietly reporting them as fine. An
 //              unverifiable check is never printed as a pass.
 //
+// PARSER LIMITATION worth knowing before you wire up a SQL rpc: the parser
+// below is ADDITIVE ONLY. It records `create policy`, `create table`,
+// `add column` and `create index`, and has no notion of `drop policy` /
+// `drop table` / `drop column`. Migration 20260908000000 drops 13 project-
+// family policies without recreating them, so the day a SQL rpc exists this
+// script would read those 13 `create policy` statements out of the earlier
+// migrations, fail to find them in pg_policies, and report a correct database
+// as MISSING (exit 1). Teach it to subtract before you trust its policy
+// column. Tables/columns are unaffected — nothing in this repo drops one.
+//
 // Read-only: every query is a `limit 1` select. It writes nothing and creates
 // nothing.
 //

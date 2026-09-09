@@ -17,6 +17,18 @@
 --
 -- Idempotent: drops every check constraint on engagement_events that mentions
 -- the type column (whatever Postgres named it), then adds the one below.
+--
+-- ORDERING: engagement_events is created by 20260907000000_matchy_phase1.sql,
+-- and the do-block below resolves 'public.engagement_events'::regclass — so
+-- this file FAILS with "relation does not exist" if phase 1 has not been
+-- applied. Apply the migrations in filename order.
+--
+-- HOW TO APPLY
+--   The Supabase CLI is not linked to this project. PASTE THIS WHOLE FILE INTO
+--   THE SUPABASE STUDIO SQL EDITOR and run it. There is no column or table to
+--   probe afterwards (this only widens a check constraint), so verify it by
+--   emitting one of the three new kinds and confirming lib/engagementEvents.ts
+--   logs no "dropped" warning.
 
 begin;
 

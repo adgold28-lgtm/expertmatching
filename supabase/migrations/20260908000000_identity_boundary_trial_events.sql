@@ -58,6 +58,27 @@ begin;
 -- ═════════════════════════════════════════════════════════════════════════
 -- 1. Project-family tables: service-role only
 -- ═════════════════════════════════════════════════════════════════════════
+--
+-- NET EFFECT, stated plainly, because this section only DROPS: nothing below
+-- is recreated. After this migration the four tables have RLS enabled and
+-- ZERO policies, so `anon` and `authenticated` read and write nothing at all
+-- on them; only the service role (which bypasses RLS) can. Concretely, these
+-- 13 policies from 20260831000000 / 20260902000000 / 20260907000000 cease to
+-- exist and have no replacement:
+--   projects:              select / insert / update / delete
+--   project_members:       select / insert / update / delete
+--   project_experts:       select / insert / update / delete
+--   conversation_messages: select
+-- This is strictly a TIGHTENING — no actor gains a read or a write. The
+-- previous grants (owner or explicit collaborator, via has_project_access)
+-- are simply withdrawn; the org/profile/membership policies are untouched.
+--
+-- CONSEQUENCE TO UNDERSTAND BEFORE RELYING ON IT: RLS is no longer a second
+-- opinion on project access. `canAccess` / `getProjectForUser` in
+-- lib/projectStore.ts is now the ONLY thing standing between one client and
+-- another client's project, because every query the app makes runs as the
+-- service role. The database still backstops the ORGANIZATION boundary on
+-- sharing (trg_project_members_same_org, kept deliberately).
 
 -- projects
 drop policy if exists projects_select on public.projects;

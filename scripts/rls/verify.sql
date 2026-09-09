@@ -402,6 +402,10 @@ select public._rls_verify_rows('A1: cannot update own project''s experts directl
   format('update public.project_experts set status = %L where project_id = %L', 'scheduled', :'PA1'), 0::bigint);
 select public._rls_verify_rows('A1: cannot delete own project''s experts directly',
   format('delete from public.project_experts where project_id = %L', :'PA1'), 0::bigint);
+-- NOTE: section 1 inserts no conversation_messages fixtures, so this assertion
+-- passes whether or not the policy was dropped — it is a structural claim in
+-- behavioural clothing. The real proof for that table is the "zero policies"
+-- assertion above; a message fixture would make this one mean something.
 select public._rls_verify_eq('A1: sees no conversation_messages',
   (select count(*) from public.conversation_messages where project_id in (:'PA1', :'PA2'))::bigint, 0::bigint);
 select public._rls_verify_eq('A1: sees no org-B experts',
@@ -549,6 +553,11 @@ select public._rls_verify_eq('B1: sees only org B',
   (select count(*) from public.organizations where id in (:'ORG_A', :'ORG_B', :'ORG_C'))::bigint, 1::bigint);
 select public._rls_verify_eq('B1: the visible organization is B',
   (select id from public.organizations where id in (:'ORG_A', :'ORG_B', :'ORG_C'))::text, (:'ORG_B')::text);
+-- STALE AS OF 20260908 (documented, deliberately not changed by the annotation
+-- pass): projects now has zero policies, so an `authenticated` B1 sees 0 rows,
+-- not 1 — every other project assertion in this file was updated to expect 0
+-- and this one was missed. It is the single assertion that will report
+-- `expected '1', got '0'` and make scripts/rls-verify.sh exit non-zero.
 select public._rls_verify_eq('B1: sees only own project',
   (select count(*) from public.projects where id in (:'PA1', :'PA2', :'PB1', :'PC1'))::bigint, 1::bigint);
 select public._rls_verify_eq('B1: cannot see org-A profiles',
