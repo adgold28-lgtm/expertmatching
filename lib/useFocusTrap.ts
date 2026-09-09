@@ -1,5 +1,11 @@
 'use client';
 
+// lib/useFocusTrap.ts — keyboard focus trap for modal dialogs.
+// Used by app/projects/[projectId]/page.tsx to keep Tab cycling inside an
+// open dialog and Escape closing it, instead of leaking focus to the page
+// behind it. Pure client-side DOM/keyboard behaviour — never touches
+// network, auth, or project data.
+
 import { useEffect, RefObject } from 'react';
 
 const FOCUSABLE =

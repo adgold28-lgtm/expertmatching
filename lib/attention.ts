@@ -273,8 +273,9 @@ async function stalledNudgeItems(limit: number, now: number): Promise<AttentionI
 /**
  * The current attention list, newest first, capped at `limit`.
  *
- * The three sources are read in parallel and merged; any that fails contributes
- * nothing rather than failing the call. Never throws.
+ * The four sources (system failures, stuck sourcing, past-due billing, stalled
+ * nudges) are read in parallel and merged; any that fails contributes nothing
+ * rather than failing the call. Never throws.
  */
 export async function listAttentionItems(limit: number = DEFAULT_LIMIT): Promise<AttentionItem[]> {
   const capped = Math.min(Math.max(Math.trunc(limit) || DEFAULT_LIMIT, 1), MAX_LIMIT);
