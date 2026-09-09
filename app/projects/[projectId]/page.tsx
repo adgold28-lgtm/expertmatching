@@ -20,6 +20,22 @@ import { useFocusTrap } from '../../../lib/useFocusTrap';
 import { hasConversation } from '../../../components/matchyStatus';
 import { isWalkthrough } from '../../../lib/walkthrough';
 
+// -----------------------------------------------------------------------------
+// /projects/:projectId — the single project workspace. One client component
+// covering all three client-facing steps (Brief / Matches / Conversations,
+// docs/MATCHY_SPEC.md); see the section banners below for where each lives.
+// All server calls go through `fetch(...)` against /api/projects/:projectId
+// and its subroutes (this file does not use lib/matchyClient.ts directly for
+// project-level reads/writes, only ConversationsPanel/ConversationThread do
+// for the relay itself). `refreshProject()` polls every 5s while sourcing or
+// an engagement is in flight so async server work (contact discovery,
+// scoring) shows up without a manual reload — see the polling effect further
+// down. `currentUserRole`/`currentUserEmail` (from /api/auth/me) gate a few
+// UI affordances (the admin-only Staff panel inside a thread, owner-only
+// send/bookmark buttons) but every one of those actions is re-checked
+// server-side; nothing here is the actual authorization boundary.
+// -----------------------------------------------------------------------------
+
 // ─── Workflow step config ─────────────────────────────────────────────────────
 
 // The client's workflow is Brief -> Matches -> Conversations

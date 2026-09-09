@@ -2,6 +2,16 @@ import Link from 'next/link';
 import { createClient } from '../lib/supabase/server';
 import SignOutButton from './SignOutButton';
 
+// -----------------------------------------------------------------------------
+// Marketing-site header (server component)
+// Rendered at the top of the public pages (app/page.tsx, /pricing, /terms,
+// /privacy, /contact). Reads the Supabase session to switch the CTA between
+// "Sign In" and "Open ExpertMatch" and to greet the user by first name; never
+// throws if auth lookup fails (falls back to signed-out state). Carries no
+// PII beyond the session's own email/first name, both already visible to the
+// signed-in user.
+// -----------------------------------------------------------------------------
+
 const GOLD = '#C6A75E';
 const NAVY = '#0B1F3B';
 

@@ -5,6 +5,18 @@ import { isLinkedInProfileUrl } from '../lib/domainSuggestions';
 import { classifySeniority, RATE_DISCLAIMER, TIER_PRICING } from '../lib/seniorityClassifier';
 import IdentityProtectedLabel, { isAnonymized } from './IdentityProtectedLabel';
 
+// -----------------------------------------------------------------------------
+// Search-result / Matches card for one expert. Renders whatever fields are on
+// `expert` — it never itself decides what a client may see. The blinding
+// boundary is server-side (lib/redactExpert.ts): for a non-admin viewer before
+// `scheduled`, `title`/`company`/`location` arrive already stripped, so
+// `isAnonymized()` here is purely a display switch (descriptor + lock icon vs.
+// real fields), not a security control. `showRate` renders the *tier's*
+// opening `expertRate`-derived price (TIER_PRICING), which is a staff/pricing
+// reference number, not the client's `clientRate` for a specific engagement —
+// ProjectExpertCard renders that separately and turns this off.
+// -----------------------------------------------------------------------------
+
 interface QuickActions {
   isShortlisted: boolean;
   isRejected: boolean;

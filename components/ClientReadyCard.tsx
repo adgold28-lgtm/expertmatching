@@ -3,6 +3,16 @@
 import type { ProjectExpert, ValueChainPosition } from '../types';
 import IdentityProtectedLabel, { isAnonymized } from './IdentityProtectedLabel';
 
+// -----------------------------------------------------------------------------
+// Client-facing expert summary card shown once a project is marked
+// client-ready (staff/admin surface, but the fields rendered here are exactly
+// what a client is allowed to see). `isAnonymized()` is a display check only —
+// it decides whether to show the descriptor+lock or the real title/company; it
+// does not redact anything itself. The actual blinding happens server-side in
+// lib/redactExpert.ts, which strips `title`/`company` before this component
+// ever receives the expert for a non-revealed engagement.
+// -----------------------------------------------------------------------------
+
 // ─── Display metadata ─────────────────────────────────────────────────────────
 
 const VALUE_CHAIN_LABEL: Record<ValueChainPosition, string> = {

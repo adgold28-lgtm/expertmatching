@@ -6,6 +6,19 @@ import { useRouter } from 'next/navigation';
 import { ProjectSummary, ExpertStatus } from '../../types';
 import { summaryStage, type SummaryStage } from '../../lib/expertPipeline';
 
+// -----------------------------------------------------------------------------
+// /app — the client's project dashboard: list of projects (GET /api/projects),
+// trial/welcome banners driven by /api/auth/me's `account` field, and the
+// "New Project" modal (POST /api/projects) that decides whether the project
+// starts in walkthrough or live mode. All authorization is server-side —
+// /api/projects returns only the caller's own organization's projects; this
+// page renders whatever it is given and never filters by role itself. Team
+// visibility (`canManageTeam`) is copy-only, mirroring the same pattern used
+// in app/settings/page.tsx and app/settings/team/page.tsx: the link is hidden
+// for members who cannot use it, but /api/org/members is what actually
+// enforces the admin/champion check.
+// -----------------------------------------------------------------------------
+
 /**
  * ProjectSummary does not carry per-status counts yet — lib/projectStore only
  * derives `expertCount` and `shortlistedCount`, and `shortlisted` is a status

@@ -4,6 +4,17 @@ import { useCallback, useEffect, useState } from 'react';
 import Link from 'next/link';
 import { formatUsdFromCents } from '../../../lib/pricing';
 
+// -----------------------------------------------------------------------------
+// /settings/team — org-admin ("champion") seat management: invite, disable/
+// enable, promote/demote, and remove teammates, plus the seat-tier billing
+// summary (lib/pricing.ts SEAT_TIERS). Every mutation goes through
+// /api/org/members (POST invite, PATCH status/role, DELETE); this page adds
+// no authorization of its own — a 401/403 from that route flips `denied` and
+// swaps in the "ask your champion" panel, so the real gate lives server-side
+// and this is purely the UI reaction to it. Never renders another org's data:
+// GET /api/org/members scopes to the caller's own organization.
+// -----------------------------------------------------------------------------
+
 // ─── Types (mirror /api/org/members) ──────────────────────────────────────────
 
 type OrgRole    = 'org_admin' | 'org_member';

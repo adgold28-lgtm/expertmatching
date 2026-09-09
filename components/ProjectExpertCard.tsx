@@ -18,6 +18,22 @@ import {
   schedulingLine,
 } from '../lib/matchyClient';
 
+// -----------------------------------------------------------------------------
+// Matches-tab card for one expert inside a project. Owns bookmark/unbookmark
+// (the action that starts a Matchy engagement), status changes, rejection
+// reasons, and free-text notes — each a PUT/POST to
+// /api/projects/:id/experts/:expertId (via lib/matchyClient.ts or a raw
+// fetch in patchExpert()). `isAdmin` here is a UI convenience, not a security
+// boundary: the contactEmail badge and status-machinery <select> it gates are
+// only ever rendered for a viewer the caller has already determined is staff,
+// and the server independently strips `contactEmail` for non-admins
+// (lib/redactExpert.ts) and re-checks ownership/role on every write — this
+// component must never be the only thing standing between a client and an
+// expert's address.
+// -----------------------------------------------------------------------------
+
+// The reason list and the "needs a note" subset are shared with the thread's
+// own Pass control (lib/rejectionReasons.ts), so both spell them the same way.
 import { REJECTION_REASONS, REASONS_WITH_NOTES } from '../lib/rejectionReasons';
 
 // Full status list, in pipeline order. Derived so the controlled <select> always
