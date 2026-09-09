@@ -6,7 +6,8 @@
 //   1. SAVED CARD — the FIRM that owns the project has a default payment method
 //      (falling back to the project owner's legacy per-user card). Charge it
 //      off-session (lib/chargeSavedCard.ts) and email a receipt. Idempotent per
-//      (projectId, expertId).
+//      (projectId, expertId, callId): one charge per CALL, so a repeat
+//      consultation with the same expert on the same project bills again.
 //   2. PAYMENT LINK — no saved card, or the card needs SCA / was declined.
 //      Create a Stripe product + price + payment link, mark the engagement
 //      'invoice_sent', and email a pay-now invoice. This is the pre-existing
@@ -23,8 +24,10 @@
 // Amounts and projectId are safe to log.
 
 import { Resend } from 'resend';
+import type { ProjectExpert } from '../types';
 import { getStripe } from './stripe';
 import { getProject, updateExpertStatus, updateProjectFields } from './projectStore';
+import type { UpdateExpertInput } from './projectStore';
 import { chargeSavedCard } from './chargeSavedCard';
 import { getEntitlementsForProject, recordRestrictedAttempt } from './entitlements';
 import { getFromAddress } from './mailFrom';
@@ -218,6 +221,62 @@ async function sendClientEmail(params: SendEmailParams): Promise<void> {
   });
 }
 
+// ─── The per-call double-bill guard (pure) ────────────────────────────────────
+
+/** The only fields the durable guard reads. */
+export type BillingGuardView = Pick<
+  ProjectExpert,
+  'paymentStatus' | 'stripePaymentIntentId' | 'billedCallId'
+>;
+
+/**
+ * Identity of the call being billed: what the caller passed, else the booking's
+ * ICS uid, else the Zoom meeting id, else the id the manual complete route
+ * invented for a call that had neither. Null when nothing identifies the call.
+ */
+export function resolveCallId(
+  pe:     Pick<ProjectExpert, 'booking' | 'zoomMeetingId' | 'callId'>,
+  passed?: string | null,
+): string | null {
+  return passed ?? pe.booking?.icsUid ?? pe.zoomMeetingId ?? pe.callId ?? null;
+}
+
+/**
+ * Durable double-bill guard, keyed on the CALL rather than on
+ * (projectId, expertId) — H-8. Stripe's idempotency key only covers ~24 hours,
+ * so this is what stops a re-completion, a replayed Zoom webhook or a manual
+ * completion of an already-billed call from charging the client twice.
+ *
+ * Skip when the row is already billed (paid, or an auto-charge is in flight)
+ * AND that billing belongs to THIS call. A different billedCallId means a
+ * genuine second call, which is billed again.
+ *
+ * Migration-free compatibility: rows written before `billedCallId` existed have
+ * none, and there is no backfill. An already-billed row with no billedCallId is
+ * therefore treated as billed for whatever call is being asked about, so
+ * nothing already charged is re-charged on deploy; the field starts being
+ * written the next time a charge succeeds. A call that nothing identifies
+ * (callId null) is treated the same way, because "this is a new call" cannot be
+ * proved and money is a fail-closed path.
+ */
+export function shouldSkipBilling(pe: BillingGuardView, callId: string | null): boolean {
+  const alreadyBilled = pe.paymentStatus === 'paid' || !!pe.stripePaymentIntentId;
+  if (!alreadyBilled) return false;
+  if (pe.billedCallId === undefined || pe.billedCallId === null) return true;
+  if (!callId) return true;
+  return pe.billedCallId === callId;
+}
+
+/**
+ * True when the row is already billed but for a DIFFERENT call — the repeat
+ * consultation case, where the stale `paid` has to be cleared before charging
+ * so the payment webhook's `paid` write refers to the new call.
+ */
+export function isRepeatCallForBilledRow(pe: BillingGuardView, callId: string | null): boolean {
+  const alreadyBilled = pe.paymentStatus === 'paid' || !!pe.stripePaymentIntentId;
+  return alreadyBilled && !shouldSkipBilling(pe, callId);
+}
+
 // ─── Public API ───────────────────────────────────────────────────────────────
 
 export interface InvoiceResult {
@@ -237,12 +296,17 @@ export interface InvoiceResult {
  * manual payment link so
  * the client can always pay. Returns null only when the project or expert
  * cannot be loaded, or the payment link could not be created.
+ *
+ * `callId` identifies the call being billed and is optional: callers that do
+ * not pass one (the Zoom webhook) get it derived from the row — see
+ * resolveCallId. Only the manual complete route has to invent one.
  */
 export async function createAndSendInvoice(
   projectId:     string,
   expertId:      string,
   invoiceAmount: number,  // already-computed dollar amount
   durationMin:   number,
+  callId?:       string | null,
 ): Promise<InvoiceResult | null> {
   try {
     // 1. Load project and find expert
@@ -267,19 +331,27 @@ export async function createAndSendInvoice(
       return null;
     }
 
-    // 2. Durable double-bill guard. The Stripe idempotency key below only
-    //    covers a 24-hour window, so a re-completion after that would charge
-    //    the client a second time. An engagement that is already paid, or that
-    //    already has an auto-charge in flight, is never billed again.
-    //    (An 'invoice_sent' engagement with no intent still re-runs, so a lost
-    //    payment-link email can be regenerated.)
-    if (pe.paymentStatus === 'paid' || pe.stripePaymentIntentId) {
+    // 2. Durable double-bill guard, per CALL — see shouldSkipBilling above.
+    //    An engagement already billed for THIS call is never billed again; a
+    //    genuine second call with the same expert is. (An 'invoice_sent'
+    //    engagement with no intent still re-runs, so a lost payment-link email
+    //    can be regenerated.)
+    const resolvedCallId = resolveCallId(pe, callId);
+    if (shouldSkipBilling(pe, resolvedCallId)) {
       console.log('[stripe] already-billed-skip', { projectId });
       return {
         charged:         !!pe.stripePaymentIntentId && !pe.stripePaymentLinkUrl,
         paymentLinkUrl:  pe.stripePaymentLinkUrl ?? null,
         paymentIntentId: pe.stripePaymentIntentId ?? null,
       };
+    }
+
+    // A repeat call on a row that still carries the previous call's 'paid':
+    //    clear it before charging so the payment_intent.succeeded write that
+    //    follows this charge refers to the NEW call, not the old one.
+    if (isRepeatCallForBilledRow(pe, resolvedCallId)) {
+      await updateExpertStatus(projectId, expertId, { paymentStatus: 'unpaid' });
+      console.log('[stripe] repeat-call-rebill', { projectId });
     }
 
     const clientName    = project.clientName ?? 'there';
@@ -294,16 +366,20 @@ export async function createAndSendInvoice(
       expertId,
       ownerEmail: project.ownerEmail,
       amount:     invoiceAmount,
+      callId:     resolvedCallId,
     });
 
     if (charge.outcome === 'charged') {
       // Persist the intent id immediately so a webhook retry, or a later
-      // reconciliation, can always tie the charge back to this engagement.
-      // paymentStatus is advanced to 'paid' by the payment_intent.succeeded
-      // webhook, which also runs the expert payout.
-      await updateExpertStatus(projectId, expertId, {
+      // reconciliation, can always tie the charge back to this engagement, and
+      // the call it belongs to alongside it so the guard above can tell this
+      // call from the next one. paymentStatus is advanced to 'paid' by the
+      // payment_intent.succeeded webhook, which also runs the expert payout.
+      const chargePatch: UpdateExpertInput = {
         stripePaymentIntentId: charge.paymentIntentId,
-      });
+        billedCallId:          resolvedCallId,
+      };
+      await updateExpertStatus(projectId, expertId, chargePatch);
 
       await sendClientEmail({
         to:      recipientEmail,
@@ -369,11 +445,16 @@ export async function createAndSendInvoice(
     });
 
     // 4. Persist payment link to expert record
-    await updateExpertStatus(projectId, expertId, {
+    // The call id is recorded on this path too: when the client pays the link,
+    // the webhook writes 'paid' onto a row that already knows which call it was,
+    // so the NEXT call is still billable.
+    const linkPatch: UpdateExpertInput = {
       stripePaymentLinkId:  paymentLink.id,
       stripePaymentLinkUrl: paymentLink.url,
       paymentStatus:        'invoice_sent',
-    });
+      billedCallId:         resolvedCallId,
+    };
+    await updateExpertStatus(projectId, expertId, linkPatch);
 
     // 5. Send invoice email via Resend (if not suppressed)
     if (project.clientEmail) {

@@ -44,6 +44,13 @@ export interface ChargeSavedCardParams {
   ownerEmail: string;
   /** Whole dollars, already server-recomputed by the caller. */
   amount:     number;
+  /**
+   * Identity of the CALL being billed (booking.icsUid, else the Zoom meeting
+   * id, else the manual id the complete route invents). Optional so a caller
+   * that cannot identify the call still charges — such a charge simply shares
+   * the per-(project, expert) key it used before.
+   */
+  callId?:    string | null;
 }
 
 /**
@@ -72,6 +79,19 @@ function readStripeError(err: unknown): { code: string; paymentIntentId: string 
     code:            typeof e.code === 'string' ? e.code : '',
     paymentIntentId: typeof pid === 'string' ? pid : null,
   };
+}
+
+/**
+ * Stripe idempotency key for one call's charge. The call component is what
+ * makes a SECOND genuine call with the same expert on the same project a new
+ * charge rather than a replay of the first PaymentIntent (H-8).
+ */
+export function chargeIdempotencyKey(
+  projectId: string,
+  expertId:  string,
+  callId:    string | null | undefined,
+): string {
+  return `charge:${projectId}:${expertId}:${callId ?? 'nocall'}`;
 }
 
 /**
@@ -121,12 +141,13 @@ async function resolvePayerCustomerId(
  * Never throws — every failure is reported as an outcome so the caller can fall
  * back to the manual payment-link flow.
  *
- * Idempotency: the key is derived from projectId + expertId, so a webhook retry
- * or a re-completion of the same engagement returns the original PaymentIntent
- * instead of charging the client twice.
+ * Idempotency: the key is derived from projectId + expertId + callId, so a
+ * webhook retry or a re-completion of the SAME call returns the original
+ * PaymentIntent instead of charging the client twice, while a second genuine
+ * call raises a new charge.
  */
 export async function chargeSavedCard(params: ChargeSavedCardParams): Promise<ChargeResult> {
-  const { projectId, expertId, ownerEmail, amount } = params;
+  const { projectId, expertId, ownerEmail, amount, callId } = params;
 
   // A payer needs either a project (→ its organization's card) or an owner
   // email (→ the legacy per-user card). Stripe's minimum charge is $0.50.
@@ -152,14 +173,13 @@ export async function chargeSavedCard(params: ChargeSavedCardParams): Promise<Ch
         confirm:              true,
         metadata:             { projectId, expertId },
       },
-      // Scope of this key: ONE PaymentIntent per (project, expert) pair, for as
-      // long as Stripe remembers the key (~24h). It makes a webhook retry or a
-      // double-click safe. It is not a business rule — the durable double-bill
-      // guard is the paid/stripePaymentIntentId check in
-      // lib/createAndSendInvoice.ts, and a SECOND genuine call with the same
-      // expert on the same project inside the window would replay this intent
-      // rather than raise a new charge.
-      { idempotencyKey: `charge:${projectId}:${expertId}` },
+      // Scope of this key: ONE PaymentIntent per (project, expert, call), for
+      // as long as Stripe remembers the key (~24h). It makes a webhook retry or
+      // a double-click safe, and a SECOND genuine call with the same expert
+      // carries a different callId so it raises its own charge. It is not the
+      // business rule — that is the durable per-call guard (shouldSkipBilling)
+      // in lib/createAndSendInvoice.ts.
+      { idempotencyKey: chargeIdempotencyKey(projectId, expertId, callId) },
     );
 
     if (intent.status === 'succeeded' || intent.status === 'processing') {

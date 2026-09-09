@@ -131,6 +131,12 @@ export interface UpdateExpertInput {
   stripePaymentIntentId?: string | null;
   paymentStatus?:        'unpaid' | 'invoice_sent' | 'paid' | 'failed' | null;
   paidAt?:               number | null;
+  // Identifies which call the current payment fields refer to — see
+  // lib/createAndSendInvoice.ts and types.ts ProjectExpert.
+  callId?:               string | null;
+  // Identifies which call the current payment fields were billed for — see
+  // lib/createAndSendInvoice.ts and types.ts ProjectExpert.
+  billedCallId?:         string | null;
   // Zoom meeting fields — zoomStartUrl is host-only, never exposed to frontend
   zoomMeetingId?:      string | null;
   zoomJoinUrl?:        string | null;

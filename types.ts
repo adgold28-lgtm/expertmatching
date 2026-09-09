@@ -447,6 +447,15 @@ export interface ProjectExpert {
   stripePaymentIntentId?: string | null;
   paymentStatus?:        'unpaid' | 'invoice_sent' | 'paid' | 'failed' | null;
   paidAt?:               number | null;
+  // The CALL the current paymentStatus / stripePaymentIntentId refer to
+  // (booking.icsUid, else zoomMeetingId, else the manual id below). Written by
+  // lib/createAndSendInvoice when it charges; a second genuine call with the
+  // same expert carries a different id and is billed again. Absent on rows
+  // written before per-call billing existed — see the guard's compatibility rule.
+  billedCallId?:         string | null;
+  // Call identity invented by the manual complete route when an engagement has
+  // neither a booking nor a Zoom meeting ('manual:<projectId>:<expertId>:<ms>').
+  callId?:               string | null;
   // Zoom meeting fields — zoomStartUrl is host-only, never exposed to frontend
   zoomMeetingId?:      string | null;
   zoomJoinUrl?:        string | null;

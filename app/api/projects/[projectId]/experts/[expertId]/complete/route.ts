@@ -8,6 +8,13 @@
 // owner check runs AFTER getProjectForUser so an inaccessible project still
 // 404s rather than confirming it exists.
 //
+// Billing identity: a call is billed once per CALL, not once per engagement
+// (lib/createAndSendInvoice.ts). The call is identified by the booking's ICS
+// uid, else the Zoom meeting id; a manually completed call has neither, so this
+// route mints `manual:<projectId>:<expertId>:<ms>` once, persists it on the row
+// and passes it down. Re-completing the same call reuses the persisted id and
+// is therefore a no-op for billing; a genuine second call mints a new one.
+//
 // NEVER log: expert names, client names, emails, or card details.
 // Amounts are safe to log.
 
@@ -16,6 +23,7 @@ import { callChargeDollars } from '../../../../../../../lib/pricing';
 import { routeAuthGuard, getSessionUser } from '../../../../../../../lib/auth';
 import { requireProjectOwner } from '../../../../../../../lib/projectsGuard';
 import { getProjectForUser, updateExpertStatus } from '../../../../../../../lib/projectStore';
+import type { UpdateExpertInput } from '../../../../../../../lib/projectStore';
 import { createAndSendInvoice } from '../../../../../../../lib/createAndSendInvoice';
 import { getEntitlementsForProject, activationRequired } from '../../../../../../../lib/entitlements';
 import { getAuthUserIdByEmail } from '../../../../../../../lib/supabase/admin';
@@ -102,18 +110,29 @@ export async function POST(
     return NextResponse.json({ error: 'invoice_amount_mismatch' }, { status: 400 });
   }
 
+  // 5b. The identity of the call being billed. A booked call already has one;
+  //     a manual completion of a call that was never booked through the
+  //     platform mints one and keeps it, so a re-completion bills nothing.
+  const existingCallId = pe.booking?.icsUid ?? pe.zoomMeetingId ?? pe.callId ?? null;
+  const callId = existingCallId
+    ?? `manual:${params.projectId}:${params.expertId}:${Date.now()}`;
+
   try {
-    // 6. Persist completion status, duration, and invoice amount
-    await updateExpertStatus(params.projectId, params.expertId, {
+    // 6. Persist completion status, duration, and invoice amount — plus the
+    //    minted call id, so the next completion of this same call resolves to
+    //    it instead of minting a second one.
+    const completionPatch: UpdateExpertInput = {
       status:        'completed',
       callDurationMin,
       invoiceAmount: serverAmount,
-    });
+      ...(existingCallId ? {} : { callId }),
+    };
+    await updateExpertStatus(params.projectId, params.expertId, completionPatch);
 
     // 7. Bill the call via the shared helper — charges the client's saved card
     //    off-session when one exists, otherwise creates a payment link and
     //    emails a pay-now invoice.
-    const result = await createAndSendInvoice(params.projectId, params.expertId, serverAmount, callDurationMin);
+    const result = await createAndSendInvoice(params.projectId, params.expertId, serverAmount, callDurationMin, callId);
     if (!result) {
       return NextResponse.json({ error: 'invoice_failed', message: 'Failed to create invoice' }, { status: 500 });
     }
