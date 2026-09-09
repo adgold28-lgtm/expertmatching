@@ -1,3 +1,9 @@
+// scripts/font-mocks.js — offline replacement for Google Fonts CSS during a
+// no-network build. Consumed via NEXT_FONT_GOOGLE_MOCKED_RESPONSES (set by
+// the `build:local` script in package.json), which next/font/google reads to
+// stub out its usual fetch to fonts.googleapis.com. Keys are the exact
+// stylesheet URLs next/font/google requests; values are canned @font-face CSS
+// pointing at a fake mock.local host. Not a test — never run directly.
 module.exports={
  "https://fonts.googleapis.com/css2?family=Spectral:ital,wght@0,300;0,400;0,500;0,600;0,700;0,800;1,300;1,400;1,500;1,600;1,700;1,800&display=swap": "@font-face{font-family:'Spectral';font-style:normal;font-weight:0;font-display:swap;src:url(https://mock.local/Spectral-0.woff2) format('woff2');unicode-range:U+0000-00FF;}",
  "https://fonts.googleapis.com/css2?family=Libre+Franklin:wght@300;400;500;600&display=swap": "@font-face{font-family:'Libre Franklin';font-style:normal;font-weight:300;font-display:swap;src:url(https://mock.local/LibreFranklin-300.woff2) format('woff2');unicode-range:U+0000-00FF;}\n@font-face{font-family:'Libre Franklin';font-style:normal;font-weight:400;font-display:swap;src:url(https://mock.local/LibreFranklin-400.woff2) format('woff2');unicode-range:U+0000-00FF;}\n@font-face{font-family:'Libre Franklin';font-style:normal;font-weight:500;font-display:swap;src:url(https://mock.local/LibreFranklin-500.woff2) format('woff2');unicode-range:U+0000-00FF;}\n@font-face{font-family:'Libre Franklin';font-style:normal;font-weight:600;font-display:swap;src:url(https://mock.local/LibreFranklin-600.woff2) format('woff2');unicode-range:U+0000-00FF;}"

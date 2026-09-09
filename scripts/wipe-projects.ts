@@ -1,3 +1,15 @@
+// scripts/wipe-projects.ts — DESTRUCTIVE. Deletes every project, project
+// index/lock, access-request, and signup-token/rate-limit key in the target
+// Upstash Redis (the pre-Supabase project store; see lib/upstashRedis.ts).
+// No confirmation prompt and no filtering by environment — it wipes whatever
+// UPSTASH_REDIS_REST_URL / UPSTASH_REDIS_REST_TOKEN point at, so pointing it
+// at production Upstash creds deletes production project data.
+//
+//   npx tsx scripts/wipe-projects.ts
+//
+// No dotenv load here — vars must already be in the environment (e.g. via
+// `set -a && source .env.local && set +a` first), which is the only guard
+// against running this against the wrong environment by accident.
 import { getUpstashClient } from '../lib/upstashRedis';
 
 async function main() {
