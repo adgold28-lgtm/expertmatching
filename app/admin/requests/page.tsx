@@ -756,6 +756,9 @@ function MemberRow({ user, onChanged }: { user: UserInfo; onChanged: () => void 
     }
   }
 
+  // Permanent delete (confirmed via confirmDelete below, no undo). Hits
+  // DELETE /api/admin/users, which cascades the Supabase auth user to
+  // profiles + organization_members and re-syncs the org's Stripe seat count.
   async function remove() {
     setBusy('delete');
     setErrMsg('');
@@ -1163,6 +1166,9 @@ function FirmRow({ firm, onUpdated }: { firm: FirmInfo; onUpdated: () => void })
     }
   }
 
+  // Permanent org delete (confirmed via confirmRemove below). The API cancels
+  // any live Stripe subscription first and refuses the delete (409) if that
+  // fails, so this never leaves a canceled org still being billed.
   async function remove() {
     if (domain === null) return;
     setLoading(true);
