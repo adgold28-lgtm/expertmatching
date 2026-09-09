@@ -414,6 +414,15 @@ export async function discoverContact(input: DiscoverContactInput): Promise<Disc
   }
 
   // ── Provider chain ────────────────────────────────────────────────────────
+  // Order is hardcoded here, NOT read from EMAIL_PROVIDER_ORDER — the
+  // lib/contactProviders/index.buildProviderWaterfall() that honours that env
+  // var has no callers. The provider names also feed the cache key, so adding a
+  // provider changes the key and old not_found entries stop suppressing the
+  // fuller chain (see lib/contactCache.makeCacheKey).
+  //
+  // No spend guard runs here: lib/rateLimiter.checkAndIncrementGlobalBudget and
+  // ENRICHMENT_DAILY_BUDGET are not wired into this path, so the only thing
+  // bounding credit use is the cache plus the bookmark route's own status gate.
   const providers = [snovProvider, hunterProvider].filter(p => p.isConfigured());
 
   const store    = cacheStoreOrNull();
@@ -678,6 +687,13 @@ export async function runContactDiscoveryJob(job: ContactDiscoveryJob): Promise<
 
     // Already have an address (the bookmark raced us, or a human filled it in):
     // skip discovery entirely and go straight to the intro. No credit spent.
+    //
+    // NOTE the race this opens: nothing here checks whether an intro has already
+    // gone out. Two jobs for the same expert (the client bookmarks again while
+    // the first job is still running, since status is still 'bookmarked' and the
+    // bookmark route lets that through) can both reach runSequenceStep('intro')
+    // and send two cold emails. runSequenceStep has no send-once guard either.
+    // The single-attempt QStash publish prevents redelivery, not re-bookmarking.
     if (!contactEmail) {
       const result = await discoverContact({
         projectId,

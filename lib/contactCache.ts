@@ -9,9 +9,22 @@ import { getUpstashClient, type UpstashRedis } from './upstashRedis';
 //   are NEVER stored in Redis key names.
 // Development: in-memory Map with TTL (local-process only).
 //
-// In production without UPSTASH_REDIS_REST_URL, createCacheStore() throws —
-// the route.ts fail-closed check prevents this from being reached.
+// In production without UPSTASH_REDIS_REST_URL, createCacheStore() throws. The
+// only caller (lib/contactDiscovery.cacheStoreOrNull) catches that and runs the
+// chain WITHOUT a cache rather than failing the job — discovery still works, it
+// just cannot remember, so every re-bookmark re-spends a provider credit.
+//
+// WHAT IS STORED: the Redis KEY is an HMAC of name|domain|providers|version, but
+// the VALUE is a plain ContactEnrichment JSON that contains the discovered email
+// address in clear text (see lib/contactDiscovery.writeCache). Anyone with the
+// Upstash token can read addresses; the hashing protects key names only.
+//
+// Read/written by: lib/contactDiscovery.ts only. Never touched from a client
+// component — this module is server-side.
 
+// acquireLock/releaseLock are optional and NOTHING calls them today: the
+// discovery chain does not take a lock around a lookup, so two jobs for the same
+// person that start before either writes the cache will both spend a credit.
 export interface CacheStore {
   get(key: string): Promise<ContactEnrichment | null>;
   set(key: string, value: ContactEnrichment, ttlMs: number): Promise<void>;
@@ -24,6 +37,9 @@ export interface CacheStore {
 // ─── Pseudonymization helpers ────────────────────────────────────────────────
 
 // 12-char HMAC truncation for audit log identifiers.
+// Exported but currently unused — app/api/inbound-email/route.ts defines its own
+// identical local copy rather than importing this one. Kept as the canonical
+// implementation (it is the one that hard-fails in production without a secret).
 export function pseudonymize(value: string): string {
   const secret = process.env.LOG_HASH_SECRET;
   if (!secret) {

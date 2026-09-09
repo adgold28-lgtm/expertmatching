@@ -1,3 +1,12 @@
+// ─────────────────────────────────────────────────────────────────────────────
+// STATUS: NOT REACHABLE FROM ANY ROUTE (verified by grep, Sept 2026).
+// Nothing in app/, components/, lib/ or scripts/ imports this module — the
+// /api/resolve-contact-paths route it was written for has been deleted. The
+// live "find an address" path is lib/contactDiscovery.ts, which uses only the
+// local heuristic (deriveCompanyDomain) plus Hunter's domain-search and never
+// calls a search provider. Keep or delete deliberately; do not assume it runs.
+// ─────────────────────────────────────────────────────────────────────────────
+//
 // Contact path resolver — finds official domains and public contact emails
 // for experts at small, obscure, or non-obvious companies.
 //

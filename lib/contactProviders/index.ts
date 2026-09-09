@@ -1,3 +1,17 @@
+// -----------------------------------------------------------------------------
+// Contact-provider registry.
+//
+// The ONLY thing the live code path uses from this module today is the
+// `export { snovProvider, hunterProvider }` line below: lib/contactDiscovery.ts
+// imports the two providers directly and builds its own chain as
+// `[snovProvider, hunterProvider].filter(p => p.isConfigured())`.
+//
+// parseProviderOrder / buildProviderWaterfall / getContactProvider are NOT
+// called from anywhere in the repo (the old /api/enrich-contact route that used
+// them is gone). Consequence worth knowing before you set it: the
+// EMAIL_PROVIDER_ORDER env var currently has no effect on discovery order.
+// -----------------------------------------------------------------------------
+
 import { snovProvider }   from './snov';
 import { hunterProvider } from './hunter';
 import type { ContactProvider, ActiveProviderName } from './types';
@@ -55,6 +69,9 @@ export function buildProviderWaterfall(): ContactProvider[] {
   return waterfall;
 }
 
+// Identical to PROVIDER_MAP above — kept as a second copy only because
+// getContactProvider() was written against it. Both are unused; if either is
+// revived, collapse them into one map first.
 const ACTIVE_PROVIDERS: Record<ActiveProviderName, ContactProvider> = {
   snov:   snovProvider,
   hunter: hunterProvider,

@@ -1,3 +1,22 @@
+// -----------------------------------------------------------------------------
+// Company-domain heuristics and the "never use this host" blocklist.
+//
+// Pure — no network, no env, no secrets — which is why it is safe to import
+// from both server and client code.
+//
+// Live consumers:
+//   normalizeDomain / isDisallowedDomain — lib/contactDiscovery.ts, to turn an
+//     expert's source links into a mail domain and to reject LinkedIn, news and
+//     webmail hosts before a provider credit is spent on them.
+//   isLinkedInProfileUrl               — components/ExpertCard.tsx.
+//   suggestDomainsForExpert            — only lib/contactPathResolver.ts, which
+//     is itself unreachable; treat this export as dormant.
+//
+// Must never do: return a webmail or directory host as a company domain. A
+// wrong domain here means a real cold email to a real stranger at the wrong
+// company, so every path adds through add()/isDisallowedDomain.
+// -----------------------------------------------------------------------------
+
 import type { Expert, SuggestedDomain } from '../types';
 
 // Re-export SuggestedDomain so existing imports of it from this file keep working.

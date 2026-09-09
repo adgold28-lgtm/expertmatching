@@ -1,5 +1,12 @@
 // Snov.io provider — emails-by-domain-by-name v2 (start/poll pattern).
-// All Snov-specific API logic lives here; the route sees only ContactProvider.
+// All Snov-specific API logic lives here; lib/contactDiscovery.ts sees only the
+// ContactProvider interface.
+//
+// Snov is the FIRST link in the chain, so it is the one that most often spends
+// a credit: start the task, then poll for the result (up to 8 × ~800 ms) until
+// the caller's AbortSignal fires. Costs one credit per findProfessionalEmail.
+// A poll that runs out of attempts returns [] — indistinguishable from a real
+// "nobody there", so a slow Snov can put a false not_found into the cache.
 
 import type { ContactProvider, ContactLookupInput, ProviderEmailResult } from './types';
 import { WEBMAIL_DOMAINS } from './types';
@@ -49,6 +56,9 @@ function boundedController(timeoutMs: number, external?: AbortSignal): {
 
 // ─── Token cache — server-side only, NEVER sent to client ─────────────────────
 
+// Module-level, so it is shared by every request handled by one serverless
+// instance and lost when that instance is recycled — a cold start just
+// re-authenticates. Never returned to a caller and never logged.
 let cachedToken: string | null = null;
 let tokenExpiresAt = 0;
 

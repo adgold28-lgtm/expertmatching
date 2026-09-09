@@ -1,4 +1,9 @@
-// Hunter.io Email Finder provider.
+// Hunter.io Email Finder provider — one of the two links in the discovery
+// chain (lib/contactDiscovery.ts), plus the domain-search fallback that runs
+// when the local heuristic cannot derive a company domain.
+//
+// Costs: findProfessionalEmail spends one email-finder credit per call;
+// hunterDomainSearch does not.
 // API key is server-side only — NEVER exposed to client or logs.
 // API docs: https://hunter.io/api-documentation/v2#email-finder
 
@@ -65,11 +70,12 @@ function boundedController(timeoutMs: number, external?: AbortSignal): {
 }
 
 /**
- * One Hunter GET. The key rides in the Authorization header — never in the
- * query string, so it cannot land in a proxy or access log. Hunter's older
- * documented scheme is the `api_key` query parameter, so a 401 (and ONLY a
- * 401) retries once that way rather than failing the whole lookup on an auth
- * scheme difference. The key is never logged either way.
+ * One Hunter GET. The key rides in the Authorization header on the first
+ * attempt, so in the normal case it cannot land in a proxy or access log.
+ * Hunter's older documented scheme is the `api_key` query parameter, so a 401
+ * (and ONLY a 401) retries once that way rather than failing the whole lookup
+ * on an auth-scheme difference — meaning on that retry path the key IS in the
+ * URL and can reach an intermediary's logs. The key is never logged by us.
  */
 async function hunterGet(
   path:   string,
@@ -140,7 +146,9 @@ export const hunterProvider: ContactProvider = {
 
     try {
       const params = new URLSearchParams({ domain, first_name: firstName, last_name: lastName });
-      // API key sent as Authorization header — NEVER in the query string
+      // Key rides in the Authorization header. NOTE: hunterGet falls back to an
+      // `api_key=` query parameter if (and only if) that first call 401s, so the
+      // key is not unconditionally kept out of the URL — see hunterGet above.
       const res = await hunterGet('email-finder', params, apiKey, controller.signal);
 
       if (res.status === 429) {
@@ -151,6 +159,10 @@ export const hunterProvider: ContactProvider = {
         throw Object.assign(new Error('Insufficient Hunter credits'), { code: 'not_enough_credits' });
       }
 
+      // A 401 here means the header AND the query-parameter scheme both failed:
+      // the key is wrong, not the auth style. Throwing (rather than returning [])
+      // keeps a bad key out of the negative cache — discoverContact only caches
+      // 'not_found' when a provider actually answered not_found.
       if (res.status === 401) {
         throw new Error('Hunter API key invalid or revoked');
       }

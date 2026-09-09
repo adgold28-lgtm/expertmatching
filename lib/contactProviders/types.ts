@@ -1,5 +1,11 @@
 // Provider abstraction for professional email lookup.
-// Add new providers here; the route and cache layers are provider-agnostic.
+// Add new providers here; the discovery chain and cache layers are
+// provider-agnostic.
+//
+// The only consumer is lib/contactDiscovery.ts (called from the QStash worker
+// app/api/jobs/contact-discovery/route.ts). Comments below that say "the route"
+// mean that chain — the standalone /api/enrich-contact route they were written
+// for no longer exists.
 
 // 'none' is only used in ContactEnrichment.provider to mean "no provider found anything".
 // Real provider implementations use ActiveProviderName.
@@ -39,19 +45,26 @@ export interface ProviderEmailResult {
 export interface ContactProvider {
   readonly name: ActiveProviderName;
   // Returns true when the required env vars for this provider are present.
-  // Route checks this before building the waterfall — unconfigured providers are skipped.
+  // lib/contactDiscovery.discoverContact() filters the chain on this, so an
+  // unconfigured provider is skipped rather than throwing mid-lookup.
   isConfigured(): boolean;
   // Returns filtered, classified email candidates (no webmail, no raw API response).
   // Returns an empty array when no professional email is found (not_found).
   // Throws with { code: 'not_enough_credits' } or { code: 'provider_rate_limited' }
-  // on provider-level quota/rate errors so the route can return the right HTTP status.
+  // on provider-level quota/rate errors. discoverContact() catches these and
+  // records the code as the attempt outcome, then moves to the next provider —
+  // an exhausted quota must not look like "this person has no address", because
+  // only a genuine not_found is allowed into the negative cache.
   findProfessionalEmail(input: ContactLookupInput): Promise<ProviderEmailResult[]>;
-  // Returns the expected credit cost for one lookup (used in audit logs).
+  // Expected credit cost of one lookup. Nothing calls this today (both
+  // providers return 1); it exists for a future cost-aware chain.
   estimateCreditsPerLookup(input: ContactLookupInput): number;
 }
 
-// Shared webmail/personal domain blocklist — used by providers to filter results
-// and by the route to reject webmail company domains at input validation time.
+// Shared webmail/personal domain blocklist. Each provider filters its own
+// results against it, so a webmail address can never reach the caller even if
+// the provider fails to flag it. lib/domainSuggestions.ts keeps a second,
+// broader list (social/news/directory hosts too) for domain derivation.
 export const WEBMAIL_DOMAINS = new Set([
   'gmail.com', 'googlemail.com', 'yahoo.com', 'ymail.com',
   'outlook.com', 'hotmail.com', 'live.com', 'msn.com',
