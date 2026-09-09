@@ -64,7 +64,20 @@ import type { NudgeState, ProjectExpert } from '../../../../types';
 // 60 s is the same ceiling the other long jobs in this app use.
 export const maxDuration = 60;
 
-/** Safety rail, so one pathological morning cannot run for an hour. */
+/**
+ * Safety rail, so one pathological morning cannot run for an hour.
+ *
+ * It is a CEILING, not a page. The scan below has no `.order()` and no cursor,
+ * so once the waiting set exceeds this the 500 rows Postgres happens to return
+ * are the 500 that get considered, and the rest are silently not nudged that
+ * day — with nothing in the response distinguishing "500 waiting" from "5000
+ * waiting". The same is true of the 60 s `maxDuration`: each engagement costs a
+ * project read, a calendar read, a thread read, a QStash publish and a write,
+ * all sequential and none of them checking the clock, so a long morning is
+ * truncated mid-scan by the platform rather than by this loop. Both truncations
+ * are safe (a skipped engagement is nudged tomorrow, and nothing was sent) but
+ * neither is visible, which is the thing to fix first if the set ever grows.
+ */
 const MAX_ROWS = 500;
 
 /** The statuses worth scanning for at all — the keys of NUDGE_STATUSES. */

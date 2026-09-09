@@ -141,6 +141,26 @@ interface PayoutState {
  * onboarding link, but runExpertPayout has not written the id back yet) is not
  * picked up here — that case is exactly what the account.updated webhook
  * handles, and it fires the moment the account becomes usable.
+ *
+ * TWO CONSEQUENCES A READER SHOULD EXPECT, neither of them obvious from the
+ * name of this function:
+ *
+ *   IT SENDS EMAIL. retryPendingPayoutsForAccount calls runExpertPayout, and
+ *   runExpertPayout's "account exists but onboarding is not finished" branch
+ *   re-sends the payout onboarding link (lib/expertPayout.sendOnboardingLink).
+ *   Because this sweep runs nightly and nothing here counts or throttles that
+ *   branch, an expert who never finishes Stripe onboarding is written to once
+ *   every night for as long as the row stays 'pending'. Money is safe — the
+ *   stripeTransferId guard plus a deterministic transfer idempotency key mean a
+ *   second payout cannot happen — but the mail is uncapped, unlike every other
+ *   outbound path in this app.
+ *
+ *   THE TWO BOUNDS DISAGREE. This query reads up to MAX_PENDING_PAYOUTS (500)
+ *   rows purely to collect the DISTINCT account ids; the actual paying is done
+ *   by retryPendingPayoutsForAccount, which re-runs its own query capped at
+ *   lib/expertPayout.MAX_PENDING_ROWS (200) once per account. So the scan is
+ *   O(accounts) full queries rather than one pass, and a pending row that sorts
+ *   past the 200th is discovered here but never paid there.
  */
 async function sweepPayouts(): Promise<{ attempted: number; paid: number }> {
   const db = getServiceRoleClient();
@@ -271,6 +291,17 @@ export async function GET(request: NextRequest): Promise<Response> {
   };
 
   // Each step is isolated: one failing sweep must not cost the other two.
+  //
+  // Isolation is against THROWING, not against time. The three sweeps share one
+  // `maxDuration = 60` budget, run strictly in this order, and none of them
+  // checks the clock — so the ordering is also a priority order. Every row is a
+  // sequential Stripe or Supabase round trip (up to MAX_ORGS seat syncs, then a
+  // query per payout account, then MAX_STUCK_PROJECTS), and when the total
+  // exceeds 60 s the platform kills the invocation mid-sweep: the later steps
+  // simply never run, `steps` stays 'skipped' for them, and no response and no
+  // system_events row records that. The sweeps are individually idempotent, so
+  // the cost of a truncated night is a delay rather than damage — but "seats
+  // are fine and payouts are silent" is what growth looks like here.
   try {
     result.seats       = await sweepSeats();
     result.steps.seats = 'ok';

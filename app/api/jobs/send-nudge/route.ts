@@ -182,6 +182,17 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
 
   const state: NudgeState | null = pe.nudges ?? null;
   // A second planner run superseded this job, or the state was cleared.
+  //
+  // The comparison is by DAY, which is what makes this an ordering check rather
+  // than an identity one. `nudges` holds no job id and lib/qstashPublish sets no
+  // Upstash-Deduplication-Id, so two jobs published for the SAME morning both
+  // match here and both pass. What actually stops the second one is the write at
+  // the end of a successful send, which clears scheduledFor — so the guard is
+  // "the first finisher wins", read-then-write with no compare-and-set. The
+  // planner makes that race hard to reach (a second run before delivery is
+  // refused with `already_queued`, and two jitters rarely land in the same
+  // second), but it is the reason this route must stay the ONLY sender and must
+  // keep Upstash-Retries at 0.
   if (!state || !state.scheduledFor || state.scheduledDay !== job.day) return skipped('superseded');
   if (state.stage !== job.stage || state.waitingSince !== job.waitingSince) return skipped('superseded');
   if (state.count >= MAX_NUDGES) return skipped('capped');
