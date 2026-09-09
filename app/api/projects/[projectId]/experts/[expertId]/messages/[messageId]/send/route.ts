@@ -140,6 +140,16 @@ export async function POST(
 
     // The stored body is the template's text with the CAN-SPAM footer already
     // stripped off, so the sender appends a fresh one for this recipient.
+    //
+    // The SendOutcome is discarded. A Resend failure throws and the catch
+    // answers 500 with nothing written, which is the safe half; but a
+    // chokepoint HOLD ('trial' / 'disabled') returns normally, and the code
+    // below then clears the pending flag, moves the expert to 'followup_sent'
+    // and emits `rate_offered` for a message that never left the building.
+    //
+    // The idempotency in the header is also read-then-write, not atomic: two
+    // POSTs racing both see `pending: true` before either clears it, so the
+    // expert can be mailed twice. Rare (one owner, one button) but real.
     await sendSequenceEmail(pe.contactEmail, subject, body, pe.outreachToken, 'followup_approved');
 
     // Clearing the flag is what makes this route idempotent.

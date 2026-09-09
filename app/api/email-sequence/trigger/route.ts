@@ -5,11 +5,14 @@
 // No auth guard — QStash retries must get through.
 // No rate limit — QStash delivers at most once per job.
 //
-// The human-clicked start of the sequence does NOT come through here: the UI
-// calls the session-authed
-//   POST /api/projects/:projectId/experts/:expertId/outreach/start
-// which runs the same lib/outreachSteps.ts implementation. This endpoint stays
-// QStash-only so a browser can never drive a scheduled step.
+// The human-clicked start of the sequence does NOT come through here. The
+// session-authed entry points are
+//   POST /api/projects/:projectId/experts/:expertId/bookmark          (auto-send)
+//   POST /api/projects/:projectId/experts/:expertId/outreach/approve  (review-first)
+// and both run the same lib/outreachSteps.runSequenceStep implementation. (An
+// earlier .../outreach/start route is referenced in older comments; it no
+// longer exists.) This endpoint stays QStash-only so a browser can never drive
+// a scheduled step.
 //
 // RETIRED, Matchy Phase 1 (docs/MATCHY_SPEC.md, "Phasing"): the timed cadence
 // is gone. lib/emailSequence.scheduleNextEmail no longer publishes anything, so
@@ -22,6 +25,17 @@
 //   email2 → acknowledged, not sent (retired)
 //   email3 → acknowledged, not sent (retired)
 //   email1 is still executed, for a queued retry of a human-clicked send.
+//
+// SO THE WHOLE ROUTE IS DEAD ONCE THE QUEUE DRAINS. No live path publishes an
+// 'email1' job either — bookmark and outreach/approve both use the 'intro'
+// step. After the last pre-Matchy job has retried out (~24h), this route,
+// lib/emailSequence.generateEmail1 and the 'email1' branch of runSequenceStep
+// are all removable together.
+//
+// NOTE ON INPUT VALIDATION: `step` is taken from the signed job body and passed
+// straight through after the email2/email3 filter, so a job could carry 'intro'
+// and run the Matchy intro here. Only Upstash can sign, so this is untidiness
+// rather than exposure — but the OutreachStep union is not actually enforced.
 
 import { NextRequest, NextResponse } from 'next/server';
 import { Receiver } from '@upstash/qstash';

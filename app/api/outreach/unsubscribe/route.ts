@@ -1,9 +1,17 @@
 // GET /api/outreach/unsubscribe?token=...
 //
 // Public one-click opt-out, linked from the footer of every expert-facing
-// email. The token is an HMAC of the recipient's address (lib/optOutToken.ts),
-// so the address never appears in the URL and nobody can unsubscribe a third
-// party by editing a query string.
+// email. The token is an HMAC-SIGNED payload (lib/optOutToken.ts) that CARRIES
+// the recipient's address base64url-encoded, plus a 1-year expiry and a nonce.
+// The signature is what matters: nobody can unsubscribe a third party by
+// editing the query string, because any edit invalidates the HMAC. But note
+// that base64url is encoding, not encryption — the address IS recoverable from
+// the link by anyone who has it (a mail gateway, a proxy log, a forwarded
+// email), so the URL should be treated as containing PII.
+//
+// GET, NOT POST. Some corporate mail scanners and link-prefetchers follow every
+// URL in a message, which records an opt-out the expert never asked for. RFC
+// 8058 one-click (List-Unsubscribe-Post) or a confirm button would fix it.
 //
 // On success the address lands on the global do-not-contact list
 // (public.outreach_suppressions, reason 'opt_out') and the browser is

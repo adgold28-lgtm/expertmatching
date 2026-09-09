@@ -147,6 +147,15 @@ export async function POST(
     //    on the thread, the send is skipped, and nothing throws. Same shape the
     //    bookmark route uses when there is nobody to write to. Walkthrough is
     //    the third way this can be a no-send.
+    //    ORDERING MATTERS: the send happens BEFORE the money is written, so a
+    //    Resend failure throws, the catch answers 500, and no rate is recorded
+    //    for a line nobody received. The reverse (money written, send failed)
+    //    would leave the engagement claiming an agreement the expert never saw.
+    //    The residual gap is a chokepoint HOLD rather than a throw: the
+    //    SendOutcome is discarded, so a 'trial' or 'disabled' hold still writes
+    //    the money, stores the line without a `held` flag and emits
+    //    `sent: true`. Only walkthrough is detected, and only because this
+    //    route checks it itself.
     const held = isWalkthrough(project);
     if (!held && pe.contactEmail && pe.outreachToken) {
       const base    = pe.outreachSubject?.trim() || 'Paid expert call';

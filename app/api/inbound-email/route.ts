@@ -280,6 +280,13 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
   }
 
   // ── 5. Idempotency — claim this delivery before any side effect ──────────
+  // NOTE THE TRADE-OFF this makes in the other direction. The id is claimed
+  // BEFORE the reply is processed, and every failure below is swallowed and
+  // answered 200, so a delivery that dies half-way (Supabase down after the
+  // message row, the model call throwing after the status write) is never
+  // retried by Resend and never re-processed: the reply is lost with a partial
+  // state left behind. Claiming AFTER a successful handleReply, or recording a
+  // completion marker alongside the claim, would make retries useful again.
   if (!(await claimDelivery(deliveryId(request, payload)))) {
     console.log('[inbound-email] duplicate delivery — already handled');
     return NextResponse.json({ ok: true, deduped: true });
@@ -332,6 +339,14 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
   }
 
   // ── 9. Sender check — only the address we mailed can move the thread ─────
+  // This compares the envelope/header From against `contactEmail`. It stops a
+  // forward or a colleague, which is what it is for. It is NOT an authentication
+  // of the sender: the header is attacker-controlled, and Resend's inbound
+  // payload carries SPF/DKIM results that this handler does not read. Anyone who
+  // obtained a reply token (a forwarded email, a leaked thread) could therefore
+  // mail reply+TOKEN@ with a spoofed From and decline, counter-rate or accept on
+  // the expert's behalf. Checking the auth results Resend supplies would close
+  // it.
   const fromAddress    = extractFromAddress(payload.from);
   const expectedSender = pe.contactEmail?.trim().toLowerCase() ?? '';
   if (!expectedSender || fromAddress !== expectedSender) {
@@ -795,6 +810,8 @@ async function advanceInterested(
     return;
   }
 
+  // The client's firm name is a deny term so a research question naming the
+  // client's own firm cannot be generalised into the follow-up's topic.
   const firm = await getFirm(project.firmDomain).catch(() => null);
   const email = buildFollowUpEmail({
     topic:           deriveTopic(project, { denyTerms: firm?.name ? [firm.name] : [] }),

@@ -186,6 +186,15 @@ export async function POST(
     // Walkthrough: the screen has already run (above) — only the send is
     // skipped. lib/emailSequence would hold it anyway; refusing here is what
     // lets the message be STORED as held rather than as sent.
+    //
+    // TWO GAPS A READER SHOULD KNOW ABOUT ON THIS PATH:
+    //   1. The SendOutcome is discarded. The chokepoint can also hold on
+    //      'trial' (no card on file) or 'disabled' (DISABLE_EMAILS), and this
+    //      route cannot see either — it stores the message with no `held` flag
+    //      and answers 201, so the thread shows a message the expert never got.
+    //   2. The global do-not-contact list is NOT consulted here, unlike
+    //      outreach/approve and messages/[id]/send. An expert who used the
+    //      footer opt-out mid-thread can still receive a client reply.
     const held = isWalkthrough(project);
     if (!held) {
       await sendSequenceEmail(pe.contactEmail, subject, text, pe.outreachToken, 'client_reply');

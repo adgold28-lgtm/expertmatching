@@ -70,9 +70,12 @@ function getResend(): Resend {
  *
  * Matchy replaces the cadence: a reply is read, summarized and answered on the
  * thread, and the follow-up goes out because the expert said yes, not because
- * a clock ran out. So this is a NO-OP. It is kept, rather than deleted, because
- * app/api/inbound-email still calls it, and a function that does nothing is a
- * smaller change than a half-migrated call site.
+ * a clock ran out. So this is a NO-OP.
+ *
+ * It NO LONGER HAS ANY CALLER — inbound-email used to call it and does not any
+ * more (grep: nothing in app/, lib/ or scripts/ references it). It is therefore
+ * dead code kept only as a landing pad in case a half-migrated call site turns
+ * up; deleting it is safe once that is confirmed.
  *
  * Nothing is published, nothing throws, and one line says so.
  */
@@ -174,9 +177,15 @@ export interface SendSequenceEmailOptions {
  * `held` is why it did not: 'walkthrough' when the project has not been
  * switched live (lib/walkthrough.ts), 'trial' when the organization has no card
  * on file (lib/entitlements.ts), 'disabled' when DISABLE_EMAILS is set.
- * Callers that ignore the return value still compile — but every caller in this
- * repo reads it, so the UI can show a held state rather than pretending
- * something was sent.
+ *
+ * CALLERS THAT IGNORE THIS STILL COMPILE, AND THREE OF THEM DO: the client
+ * reply in .../experts/[expertId]/messages/route.ts, the approved follow-up in
+ * .../messages/[messageId]/send/route.ts, and .../rate-decision/route.ts. Each
+ * of those checks isWalkthrough() itself, so they are right about walkthrough,
+ * but they cannot see a 'trial' or 'disabled' hold: they store the message
+ * unflagged and advance the engagement as if the expert had received it.
+ * lib/outreachSteps.ts, lib/matchyScheduling.ts, app/api/jobs/send-nudge and
+ * app/api/inbound-email DO read it and fall back to a drafted/held record.
  */
 export type SendOutcome =
   | { sent: true }
@@ -191,6 +200,15 @@ export type SendOutcome =
  * already has). It FAILS CLOSED: an unverifiable token or a missing project
  * throws rather than sending, because a message we cannot attribute to a
  * project is a message we cannot prove is allowed to go.
+ *
+ * WHAT THIS CHOKEPOINT DOES *NOT* CHECK: the global do-not-contact list. The
+ * suppression lookup (lib/outreachSuppressions.isSuppressed, fail-closed) lives
+ * at the call sites instead — bookmark, outreach/approve, messages/[id]/send,
+ * jobs/send-nudge and lib/contactDiscovery all run it, while the client-reply
+ * relay, rate-decision, inbound-email's auto follow-up and matchyScheduling do
+ * not. That is defensible for a reply on a thread the expert opened, but it
+ * means an expert who clicks the footer opt-out mid-thread can still receive
+ * those messages. Moving the check in here would close it for every path.
  *
  * Never logs: the recipient address, the subject, the body, or the token.
  */

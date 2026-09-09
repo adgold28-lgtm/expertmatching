@@ -1,5 +1,9 @@
 // Transactional email that is NOT part of Matchy's outreach thread.
 //
+// THE FILE NAME IS A MISNOMER. sendAvailabilityRequest() itself is gone (see
+// below); what survives here are the invite and booking senders. Renaming the
+// module is a mechanical follow-up nobody has done yet.
+//
 // Two senders live here and nothing else:
 //
 //   sendInviteEmail   — a new app user's "set up your account" link

@@ -196,6 +196,13 @@ export async function runSequenceStep(input: SequenceStepInput): Promise<Sequenc
         return { ok: true, project: await draft(projectId, expertId, activeToken, email.subject, email.text, introFields) };
       }
 
+      // ORDER OF WRITES AFTER A SUCCESSFUL SEND. The email is already gone, so
+      // everything from here is bookkeeping that must not be retried blindly:
+      // if the Redis index write or the status write throws, the catch below
+      // answers `step_failed` (500) while the expert has the intro in hand, and
+      // a caller that retries sends a second cold email. The index is
+      // best-effort by design — inbound-email falls back to the HMAC token
+      // payload when the key is missing — but the status write is not.
       const redis = getUpstashClient();
       if (redis) {
         await redis.set(
