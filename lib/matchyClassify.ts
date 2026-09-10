@@ -3,8 +3,9 @@
 // Job #2 in docs/MATCHY_SPEC.md: "intent, availability, rate position,
 // conflicts, next action. On the message and on the card." Every inbound email
 // costs exactly one call (spec, "Risks": cost). The classifier that used to run
-// here — lib/replyDetection.parseReply — returned intent only; this returns
-// intent AND the one line the client reads, so nothing needs a second call.
+// here — replyDetection.parseReply, deleted 2026-09-09 (W4-1) — returned intent
+// only; this returns intent AND the one line the client reads, so nothing needs
+// a second call.
 //
 // FOUR RULES THIS MODULE ENFORCES, none of them left to the model:
 //
@@ -84,7 +85,7 @@ export interface ClassifyInput {
 
 export const MAX_SUMMARY_CHARS = 160;
 export const MAX_NOTE_CHARS    = 200;
-/** Longest reply we send to the model. Matches lib/replyDetection.ts. */
+/** Longest reply we send to the model. */
 export const MAX_REPLY_CHARS   = 2000;
 
 const VALID_INTENTS: readonly ReplyIntent[] = [
@@ -93,8 +94,8 @@ const VALID_INTENTS: readonly ReplyIntent[] = [
 
 // ─── Prompt ───────────────────────────────────────────────────────────────────
 
-// The reply is untrusted text written by whoever hit reply. Same fencing
-// contract as lib/replyDetection.ts: everything between the markers is DATA.
+// The reply is untrusted text written by whoever hit reply. The fencing
+// contract: everything between the markers is DATA.
 const FENCE_OPEN  = '<<<UNTRUSTED_REPLY>>>';
 const FENCE_CLOSE = '<<<END_UNTRUSTED_REPLY>>>';
 
@@ -318,8 +319,8 @@ function firstSentence(text: string): string {
 /**
  * What Matchy reports when the model's answer was unusable.
  *
- * The intent is 'unclear' — the same failure contract lib/replyDetection.ts
- * has always had, so the pipeline treats an unreadable answer exactly like an
+ * The intent is 'unclear' — the failure contract this pipeline has always had,
+ * so it treats an unreadable answer exactly like an
  * unreadable reply: it lands on the thread, the stage becomes 'replied', and a
  * person looks at it. The summary is deterministic and quotes nothing: it says
  * a reply arrived and reproduces its opening, screened and masked like any

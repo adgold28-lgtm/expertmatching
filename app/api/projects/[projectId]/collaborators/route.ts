@@ -28,7 +28,7 @@ import {
 } from '../../../../../lib/projectStore';
 import { guardMutatingRequest } from '../../../../../lib/projectsGuard';
 import { getSessionUser } from '../../../../../lib/auth';
-import { getUser, isApprovedDomain } from '../../../../../lib/firmStore';
+import { getUser } from '../../../../../lib/firmStore';
 import { redactProjectForViewer } from '../../../../../lib/redactExpert';
 
 const ID_RE = /^[a-f0-9]{24}$/;

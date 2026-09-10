@@ -4,11 +4,12 @@
 //        — session-authed, Matchy's 'intro' step (the new template)
 //   POST /api/projects/:projectId/experts/:expertId/outreach/approve
 //        — session-authed, the review-first "send the intro" button
-//   POST /api/email-sequence/trigger
-//        — QStash-signed; the cadence is retired, so this only drains a queued
-//          email1 retry (it acknowledges email2/email3 without calling here)
 //
-// All of them call runSequenceStep() so there is exactly one implementation of
+// (The QStash-signed /api/email-sequence/trigger was the third entry point; it
+// and the 'email1' step it drained were removed 2026-09-09 (W4-1) once the
+// pre-Matchy queue had drained.)
+//
+// Both of them call runSequenceStep() so there is exactly one implementation of
 // "send this step and advance the status": one place that resolves the reply
 // token, claims the send with a compare-and-set status write, sends through
 // Resend and indexes the token in Redis for inbound lookup. The routes own
@@ -26,7 +27,7 @@
 
 import type { Project, ProjectExpert } from '../types';
 import { getProject, updateExpertStatus, type UpdateExpertInput } from './projectStore';
-import { generateEmail1, sendSequenceEmail, type SendOutcome } from './emailSequence';
+import { sendSequenceEmail, type SendOutcome } from './emailSequence';
 import {
   buildIntroEmail,
   clientDenyTermsFor,
@@ -54,19 +55,19 @@ const INTRO_LOCK_TTL_S = 120;
 /**
  * What this module can actually execute.
  *
- * Matchy's 'intro' replaces the legacy `email1` for anything that starts from a
- * bookmark. 'email1' survives only for a queued QStash retry. The cadence's
- * 'email2' / 'email3' are gone — they are still valid values on the QStash wire
- * (lib/emailSequence.EmailStep) but the trigger route acknowledges them and
- * never reaches here.
+ * Matchy's 'intro' is the only step. The legacy cadence's 'email1' / 'email2' /
+ * 'email3' were removed 2026-09-09 (W4-1) along with the QStash trigger route
+ * that drained them. `ProjectExpert.outreachStep` still STORES the string
+ * 'email1' — that is the persisted send-claim marker (see introAlreadySent),
+ * not a step this module can be asked to run.
  */
-export type OutreachStep = 'intro' | 'email1';
+export type OutreachStep = 'intro';
 
 export interface SequenceStepInput {
   projectId: string;
   expertId:  string;
   step:      OutreachStep;
-  token:     string;   // may be empty for email1/intro — one is generated
+  token:     string;   // may be empty — one is generated
   /**
    * 'intro' only. How Matchy names the client to the expert, from
    * organizations.firm_type / firm_size. Absent falls back to
@@ -93,8 +94,9 @@ export type SequenceStepError =
   | 'project_not_found'
   | 'expert_not_found'
   | 'no_contact_email'
+  // The intro quotes the expert-side rate, so a row with no rate is refused
+  // rather than mailed with a number nobody chose (docs/OUTREACH_EMAIL_RUBRIC.md).
   | 'expert_rate_not_set'
-  | 'unknown_step'
   | 'step_failed';
 
 export type SequenceStepResult =
@@ -152,198 +154,168 @@ export async function runSequenceStep(input: SequenceStepInput): Promise<Sequenc
   const expertEmail = pe.contactEmail;
   if (!expertEmail) return { ok: false, error: 'no_contact_email', status: 422 };
 
-  // Both steps quote a number, so both fail closed on a missing rate. There is
-  // no default: a cleared rate used to fall back to $500/hr, which meant a
-  // queued email could quote a number nobody chose. The bookmark route seeds
+  // The intro quotes the expert-side number (docs/OUTREACH_EMAIL_RUBRIC.md:
+  // the offer is part of the message), so it fails closed on a missing rate.
+  // There is no default: a cleared rate used to fall back to $500/hr, which
+  // meant an email could quote a number nobody chose. The bookmark route seeds
   // the intro's rate from the tier before calling.
   const rate = pe.expertRate ?? 0;
   if (rate <= 0) {
     return { ok: false, error: 'expert_rate_not_set', status: 422 };
   }
 
-  const query = project.researchQuestion;
-
   try {
     // ── Matchy's intro (docs/OUTREACH_EMAIL_RUBRIC.md) ──────────────────────
     // Anonymized client, the expert-side offer, one personal line — see
     // lib/matchyTemplates.ts. It reuses the same token, Redis index and status
-    // write as email1, so an expert reply lands on the thread exactly the way
-    // it always has.
-    if (step === 'intro') {
-      // SEND ONCE (H-2). One cold email per stranger is the product rule
-      // (docs/MATCHY_SPEC.md), and this is the only place that can enforce it:
-      // two bookmarks, a re-queued discovery job and a double-clicked approve
-      // all arrive here. Checked before the draft branch too — re-drafting an
-      // intro that already went out would drag the row back to
-      // 'outreach_drafted' and offer the client a button that sends a second.
-      if (introAlreadySent(pe)) {
-        console.info('[outreachSteps] intro already sent — nothing sent', JSON.stringify({ step }));
-        return { ok: true, project, alreadySent: true };
-      }
-
-      const activeToken = token || generateOutreachToken(projectId, expertId).token;
-      const arm         = pe.introArm ?? introArmFor(expertId);
-      const denyTerms   = clientDenyTermsFor(project, input.firmName);
-      const topic       = deriveTopic(project, { denyTerms: input.firmName ? [input.firmName] : [] });
-
-      // The personal line and the subject's domain. Whatever is already on
-      // the expert wins (staff may have written the line, or an earlier draft
-      // computed it); otherwise the deterministic pass, then one model call.
-      // Nothing here ever fabricates a sentence — see lib/introPersonalization.
-      const resolved = await resolveWhyThem(pe, { industry: project.industry, denyTerms });
-      const whyThem  = resolved.whyThem;
-      const domain   = resolved.domain ?? topic;
-
-      // Personalization is a rubric hard rule, not a nicety. With no line
-      // Matchy trusts, the intro waits at 'outreach_drafted' for a person to
-      // write it, whatever `draftOnly` says. Nothing leaves the building.
-      if (!whyThem) {
-        return { ok: true, project: await hold(projectId, expertId, activeToken, { introArm: arm, introDomain: domain }) };
-      }
-
-      const introFields: UpdateExpertInput = {
-        introArm:          arm,
-        whyThem,
-        introDomain:       domain,
-        introNeedsWhyThem: false,
-      };
-
-      let email: MatchyEmail;
-      try {
-        email = buildIntroEmail({
-          arm,
-          domain,
-          whyThem,
-          firmType:        input.firmType ?? null,
-          firmSize:        input.firmSize ?? null,
-          topic,
-          expertRate:      rate,
-          expertFirstName: pe.expert.name,
-          recipientEmail:  expertEmail,
-        });
-      } catch (err) {
-        // The assembled message broke a hard rule (an em dash or a banned
-        // phrase in the line, or a body over 90 words). Same answer as no
-        // line at all: hold it for a person, never send it.
-        if (!(err instanceof IntroRubricError)) throw err;
-        console.warn('[outreachSteps] intro held: rubric', JSON.stringify({ rule: err.rule }));
-        return { ok: true, project: await hold(projectId, expertId, activeToken, introFields) };
-      }
-
-      // Review-first (or walkthrough): write the draft and stop. Nothing
-      // leaves the building.
-      if (input.draftOnly) {
-        return { ok: true, project: await draft(projectId, expertId, activeToken, email.subject, email.text, introFields) };
-      }
-
-      // TWO CLAIMS, AND THEY DO DIFFERENT JOBS.
-      //
-      // The Redis SET NX below is the ATOMIC one: it is what makes two callers
-      // that both read an unclaimed row disagree about who is sending. Exactly
-      // one gets the key; the other returns `alreadySent` having sent nothing.
-      // `updateExpertStatus`, a compare-and-set on the row's updated_at, is not
-      // enough on its own — lib/projectStore.mutateExpert RE-READS and retries
-      // on a lost CAS, so the loser's second attempt would write over the
-      // winner's claim and go on to send. Redis being unavailable falls back to
-      // the row check alone (the local store has no Redis at all), which is the
-      // pre-existing behaviour rather than a new opening.
-      //
-      // The status write is the DURABLE one: it is what stops the second email
-      // an hour later, after the lock has expired, and it is written BEFORE the
-      // send so that a claim we could not record means not sending at all.
-      // Both are released again (releaseClaim) when the send is held or throws,
-      // so a genuine failure leaves the expert exactly where they were.
-      const lock = await claimIntroLock(projectId, expertId);
-      if (lock === 'held_by_other') {
-        console.info('[outreachSteps] intro already in flight — nothing sent', JSON.stringify({ step }));
-        return { ok: true, project, alreadySent: true };
-      }
-
-      let claimed: Project;
-      try {
-        claimed = await updateExpertStatus(projectId, expertId, {
-          // The rubric fields ride on the claim, so the arm, the line and the
-          // domain that produced THIS email are recorded in the same write
-          // that says it went (docs/OUTREACH_EMAIL_RUBRIC.md).
-          ...introFields,
-          status:          'contacted',
-          outreachStep:    'email1',
-          outreachSubject: email.subject,
-          outreachDraft:   email.text,
-          email1SentAt:    Date.now(),
-          contactedAt:     pe.contactedAt ?? Date.now(),
-          outreachToken:   activeToken,
-        });
-      } catch (err) {
-        await releaseIntroLock(projectId, expertId);
-        console.error('[outreachSteps] intro claim failed — nothing sent:',
-          err instanceof Error ? err.message.slice(0, 120) : 'unknown');
-        return { ok: false, error: 'step_failed', status: 500 };
-      }
-
-      // buildIntroEmail returns a complete message, CAN-SPAM footer included,
-      // so the sender must not append a second one.
-      let introOutcome: SendOutcome;
-      try {
-        introOutcome = await sendSequenceEmail(expertEmail, email.subject, email.text, activeToken, 'intro', {
-          footerIncluded: true,
-          html:           email.html,
-        });
-      } catch (err) {
-        // Resend refused. Release both claims so the client can try again, then
-        // report the failure the way this function always has.
-        await releaseClaim(projectId, expertId, pe);
-        await releaseIntroLock(projectId, expertId);
-        console.error('[outreachSteps] intro send failed:',
-          err instanceof Error ? err.message.slice(0, 120) : 'unknown');
-        return { ok: false, error: 'step_failed', status: 500 };
-      }
-
-      // The chokepoint held it (walkthrough, DISABLE_EMAILS, no card on file,
-      // or the do-not-contact list). Nothing left the building, so the claim is
-      // released and the row lands on exactly the state the draftOnly branch
-      // writes rather than claiming 'contacted'.
-      if (!introOutcome.sent) {
-        await releaseClaim(projectId, expertId, pe);
-        await releaseIntroLock(projectId, expertId);
-        return { ok: true, project: await draft(projectId, expertId, activeToken, email.subject, email.text, introFields) };
-      }
-
-      // The email is gone and the claim that records it is already durable. The
-      // Redis reply-token index is best-effort by design — inbound-email falls
-      // back to the HMAC token payload when the key is missing — so a failure
-      // here must not undo a delivered email or answer `step_failed`.
-      try {
-        const redis = getUpstashClient();
-        if (redis) {
-          await redis.set(
-            `reply-token:${activeToken}`,
-            JSON.stringify({ projectId, expertId }),
-            { ex: REPLY_TOKEN_TTL_S },
-          );
-        }
-      } catch (err) {
-        console.warn('[outreachSteps] reply-token index not written',
-          JSON.stringify({ reason: err instanceof Error ? err.message.slice(0, 80) : 'unknown' }));
-      }
-
-      return { ok: true, project: claimed };
+    // write the retired cadence used, so an expert reply lands on the thread
+    // the way it always has.
+    //
+    // SEND ONCE (H-2). One cold email per stranger is the product rule
+    // (docs/MATCHY_SPEC.md), and this is the only place that can enforce it:
+    // two bookmarks, a re-queued discovery job and a double-clicked approve
+    // all arrive here. Checked before the draft branch too — re-drafting an
+    // intro that already went out would drag the row back to
+    // 'outreach_drafted' and offer the client a button that sends a second.
+    if (introAlreadySent(pe)) {
+      console.info('[outreachSteps] intro already sent — nothing sent', JSON.stringify({ step }));
+      return { ok: true, project, alreadySent: true };
     }
 
-    if (step === 'email1') {
-      // Generate a fresh outreach reply token when the caller has none yet.
-      const activeToken = token || generateOutreachToken(projectId, expertId).token;
+    const activeToken = token || generateOutreachToken(projectId, expertId).token;
+    const arm         = pe.introArm ?? introArmFor(expertId);
+    const denyTerms   = clientDenyTermsFor(project, input.firmName);
+    const topic       = deriveTopic(project, { denyTerms: input.firmName ? [input.firmName] : [] });
 
-      const { subject, body } = await generateEmail1(pe.expert, query, rate);
-      const outcome = await sendSequenceEmail(expertEmail, subject, body, activeToken, 'email1');
+    // The personal line and the subject's domain. Whatever is already on
+    // the expert wins (staff may have written the line, or an earlier draft
+    // computed it); otherwise the deterministic pass, then one model call.
+    // Nothing here ever fabricates a sentence — see lib/introPersonalization.
+    const resolved = await resolveWhyThem(pe, { industry: project.industry, denyTerms });
+    const whyThem  = resolved.whyThem;
+    const domain   = resolved.domain ?? topic;
 
-      // Same safety net on the legacy retry path: a held send is a draft, never
-      // a 'contacted'.
-      if (!outcome.sent) {
-        return { ok: true, project: await draft(projectId, expertId, activeToken, subject, body) };
-      }
+    // Personalization is a rubric hard rule, not a nicety. With no line
+    // Matchy trusts, the intro waits at 'outreach_drafted' for a person to
+    // write it, whatever `draftOnly` says. Nothing leaves the building, so
+    // no claim is taken either.
+    if (!whyThem) {
+      return { ok: true, project: await hold(projectId, expertId, activeToken, { introArm: arm, introDomain: domain }) };
+    }
 
-      // Store reply-token index in Redis for inbound-email lookup
+    const introFields: UpdateExpertInput = {
+      introArm:          arm,
+      whyThem,
+      introDomain:       domain,
+      introNeedsWhyThem: false,
+    };
+
+    let email: MatchyEmail;
+    try {
+      email = buildIntroEmail({
+        arm,
+        domain,
+        whyThem,
+        firmType:        input.firmType ?? null,
+        firmSize:        input.firmSize ?? null,
+        topic,
+        expertRate:      rate,
+        expertFirstName: pe.expert.name,
+        recipientEmail:  expertEmail,
+      });
+    } catch (err) {
+      // The assembled message broke a hard rule (an em dash or a banned
+      // phrase in the line, or a body over 90 words). Same answer as no
+      // line at all: hold it for a person, never send it.
+      if (!(err instanceof IntroRubricError)) throw err;
+      console.warn('[outreachSteps] intro held: rubric', JSON.stringify({ rule: err.rule }));
+      return { ok: true, project: await hold(projectId, expertId, activeToken, introFields) };
+    }
+
+    // Review-first (or walkthrough): write the draft and stop. Nothing
+    // leaves the building.
+    if (input.draftOnly) {
+      return { ok: true, project: await draft(projectId, expertId, activeToken, email.subject, email.text, introFields) };
+    }
+
+    // TWO CLAIMS, AND THEY DO DIFFERENT JOBS.
+    //
+    // The Redis SET NX below is the ATOMIC one: it is what makes two callers
+    // that both read an unclaimed row disagree about who is sending. Exactly
+    // one gets the key; the other returns `alreadySent` having sent nothing.
+    // `updateExpertStatus`, a compare-and-set on the row's updated_at, is not
+    // enough on its own — lib/projectStore.mutateExpert RE-READS and retries
+    // on a lost CAS, so the loser's second attempt would write over the
+    // winner's claim and go on to send. Redis being unavailable falls back to
+    // the row check alone (the local store has no Redis at all), which is the
+    // pre-existing behaviour rather than a new opening.
+    //
+    // The status write is the DURABLE one: it is what stops the second email
+    // an hour later, after the lock has expired, and it is written BEFORE the
+    // send so that a claim we could not record means not sending at all.
+    // Both are released again (releaseClaim) when the send is held or throws,
+    // so a genuine failure leaves the expert exactly where they were.
+    const lock = await claimIntroLock(projectId, expertId);
+    if (lock === 'held_by_other') {
+      console.info('[outreachSteps] intro already in flight — nothing sent', JSON.stringify({ step }));
+      return { ok: true, project, alreadySent: true };
+    }
+
+    let claimed: Project;
+    try {
+      claimed = await updateExpertStatus(projectId, expertId, {
+        // The rubric fields ride on the claim, so the arm, the line and the
+        // domain that produced THIS email are recorded in the same write that
+        // says it went (docs/OUTREACH_EMAIL_RUBRIC.md).
+        ...introFields,
+        status:          'contacted',
+        outreachStep:    'email1',
+        outreachSubject: email.subject,
+        outreachDraft:   email.text,
+        email1SentAt:    Date.now(),
+        contactedAt:     pe.contactedAt ?? Date.now(),
+        outreachToken:   activeToken,
+      });
+    } catch (err) {
+      await releaseIntroLock(projectId, expertId);
+      console.error('[outreachSteps] intro claim failed — nothing sent:',
+        err instanceof Error ? err.message.slice(0, 120) : 'unknown');
+      return { ok: false, error: 'step_failed', status: 500 };
+    }
+
+    // buildIntroEmail returns a complete message, CAN-SPAM footer included,
+    // so the sender must not append a second one.
+    let introOutcome: SendOutcome;
+    try {
+      introOutcome = await sendSequenceEmail(expertEmail, email.subject, email.text, activeToken, 'intro', {
+        footerIncluded: true,
+        html:           email.html,
+      });
+    } catch (err) {
+      // Resend refused. Release both claims so the client can try again, then
+      // report the failure the way this function always has.
+      await releaseClaim(projectId, expertId, pe);
+      await releaseIntroLock(projectId, expertId);
+      console.error('[outreachSteps] intro send failed:',
+        err instanceof Error ? err.message.slice(0, 120) : 'unknown');
+      return { ok: false, error: 'step_failed', status: 500 };
+    }
+
+    // The chokepoint held it (walkthrough, DISABLE_EMAILS, no card on file,
+    // or the do-not-contact list). Nothing left the building, so the claim is
+    // released and the row lands on exactly the state the draftOnly branch
+    // writes rather than claiming 'contacted'.
+    if (!introOutcome.sent) {
+      await releaseClaim(projectId, expertId, pe);
+      await releaseIntroLock(projectId, expertId);
+      return { ok: true, project: await draft(projectId, expertId, activeToken, email.subject, email.text, introFields) };
+    }
+
+    // The email is gone and the claim that records it is already durable. The
+    // Redis reply-token index is best-effort by design — inbound-email falls
+    // back to the HMAC token payload when the key is missing — so a failure
+    // here must not undo a delivered email or answer `step_failed`.
+    try {
       const redis = getUpstashClient();
       if (redis) {
         await redis.set(
@@ -352,18 +324,12 @@ export async function runSequenceStep(input: SequenceStepInput): Promise<Sequenc
           { ex: REPLY_TOKEN_TTL_S },
         );
       }
-
-      const updated = await updateExpertStatus(projectId, expertId, {
-        status:        'contacted',
-        outreachStep:  'email1',
-        email1SentAt:  Date.now(),
-        contactedAt:   pe.contactedAt ?? Date.now(),
-        outreachToken: activeToken,
-      });
-      return { ok: true, project: updated };
+    } catch (err) {
+      console.warn('[outreachSteps] reply-token index not written',
+        JSON.stringify({ reason: err instanceof Error ? err.message.slice(0, 80) : 'unknown' }));
     }
 
-    return { ok: false, error: 'unknown_step', status: 400 };
+    return { ok: true, project: claimed };
   } catch (err) {
     console.error('[outreachSteps] step failed:',
       err instanceof Error ? err.message.slice(0, 120) : 'unknown');

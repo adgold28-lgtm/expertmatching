@@ -29,7 +29,7 @@
 // Never logs: project names, research questions, confidential notes, expert data.
 
 import { NextRequest } from 'next/server';
-import { getProject, getProjectForUser, updateProject, deleteProject, PROJECT_UPDATE_CONFLICT } from '../../../../lib/projectStore';
+import { getProjectForUser, updateProject, deleteProject, PROJECT_UPDATE_CONFLICT } from '../../../../lib/projectStore';
 import { guardReadRequest, guardMutatingRequest } from '../../../../lib/projectsGuard';
 import { sanitizeText, LIMITS, VALID_PERSPECTIVES } from '../../../../lib/projectValidation';
 import { getSessionUser } from '../../../../lib/auth';

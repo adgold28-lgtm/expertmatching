@@ -1,12 +1,11 @@
 // Outreach email sending.
 //
 // The 3-email cadence is GONE. Matchy answers a reply on the thread instead of
-// firing a follow-up on a timer, so email 2 (conflicts + rate) and email 3
-// (scheduling link) no longer exist: their generators are deleted and
-// scheduleNextEmail() publishes nothing. What is left is
+// firing a follow-up on a timer. Removed 2026-09-09 (W4-1) with the last of the
+// cadence: the no-op scheduleNextEmail(), the LLM-written generateEmail1() and
+// the QStash SequenceJob/EmailStep wire types, which went with
+// /api/email-sequence/trigger. What is left is
 //
-//   generateEmail1   — the legacy interest check, still reachable through a
-//                      queued QStash retry of a send that was already accepted
 //   sendSequenceEmail — the single Resend sender, shared with Matchy's own
 //                      templates (lib/matchyTemplates.ts) and the thread relay
 //
@@ -14,7 +13,6 @@
 //
 // Required env vars:
 //   RESEND_API_KEY, OUTREACH_FROM_EMAIL
-//   QSTASH_TOKEN
 //   NEXT_PUBLIC_BASE_URL (defaults to https://expertmatch.fit)
 // Optional:
 //   OUTREACH_POSTAL_ADDRESS — physical address rendered in the CAN-SPAM footer.
@@ -22,8 +20,6 @@
 //                             always present. See lib/outreachFooter.ts.
 
 import { Resend } from 'resend';
-import type { Expert } from '../types';
-import { openai } from './openai';
 import { buildOutreachFooter } from './outreachFooter';
 import { getFromAddress } from './mailFrom';
 import { verifyOutreachToken } from './outreachToken';
@@ -31,23 +27,6 @@ import { getProject } from './projectStore';
 import { isWalkthrough, type HeldReason } from './walkthrough';
 import { getEntitlementsForProject, recordRestrictedAttempt } from './entitlements';
 import { isSuppressed, type SuppressionCheck } from './outreachSuppressions';
-
-/**
- * The step field on a QStash job. 'email2' and 'email3' are retired and nothing
- * publishes them any more, but they stay in the union because it describes the
- * WIRE FORMAT: /api/email-sequence/trigger must still be able to recognise a
- * job that QStash accepted before the cadence was removed, acknowledge it, and
- * send nothing. lib/outreachSteps.OutreachStep is the narrower type of what can
- * actually be executed.
- */
-export type EmailStep = 'email1' | 'email2' | 'email3';
-
-export interface SequenceJob {
-  projectId: string;
-  expertId:  string;
-  step:      EmailStep;
-  token:     string;  // HMAC-signed outreach reply token
-}
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -62,107 +41,14 @@ function getResend(): Resend {
 }
 
 
-// ─── QStash scheduling ────────────────────────────────────────────────────────
-
-/**
- * RETIRED — Matchy Phase 1 (docs/MATCHY_SPEC.md, "Phasing"). This used to
- * publish a delayed QStash job that fired email2 (conflict + rate) and email3
- * (scheduling link) at the expert on a timer.
- *
- * Matchy replaces the cadence: a reply is read, summarized and answered on the
- * thread, and the follow-up goes out because the expert said yes, not because
- * a clock ran out. So this is a NO-OP.
- *
- * It NO LONGER HAS ANY CALLER — inbound-email used to call it and does not any
- * more (grep: nothing in app/, lib/ or scripts/ references it). It is therefore
- * dead code kept only as a landing pad in case a half-migrated call site turns
- * up; deleting it is safe once that is confirmed.
- *
- * Nothing is published, nothing throws, and one line says so.
- */
-export async function scheduleNextEmail(job: SequenceJob): Promise<void> {
-  console.log('[emailSequence] cadence retired — not scheduling',
-    JSON.stringify({ step: job.step }));
-}
-
-// ─── Email generation ─────────────────────────────────────────────────────────
-
-const SYSTEM_PROMPT_BASE = `You write cold outreach emails for a research firm.
-RULES — non-negotiable:
-- No em dashes anywhere. Use commas or periods instead.
-- No "I wanted to reach out", "hope this finds you well", "touch base", "pick your brain"
-- No exclamation marks
-- No corporate filler, no padding
-- Plain text only — no markdown, no links (unless explicitly instructed to include one)
-- Sound like a sharp 30-year-old analyst, not a recruiter
-- Short sentences
-- Never reveal the client firm name unless explicitly told to`;
-
-export async function generateEmail1(
-  expert: Expert,
-  query: string,
-  rate: number,
-): Promise<{ subject: string; body: string }> {
-  const firstName = expert.name.split(' ')[0] ?? expert.name;
-
-  const userPrompt = `Write Email 1 in a 3-part outreach sequence to ${expert.name}, ${expert.title} at ${expert.company}.
-
-Research topic: "${query}"
-Compensation: $${rate}/hr, billed per minute.
-
-Requirements:
-- Subject line, then the email body
-- Greet by first name (${firstName})
-- Ask if they would be open to a paid consulting call ($${rate}/hr, billed per minute) about ${query}
-- One sentence connecting their role at ${expert.company} to the topic
-- Use only the facts provided above. Do not invent details about this person's background, work, or publications; if you lack a specific detail, keep the sentence general.
-- Soft close — no pressure
-- No firm name. No links. Plain text only.
-- Max 100 words in the body.
-
-Format:
-Subject: [subject line]
-
-[body]`;
-
-  const response = await openai.chat.completions.create({
-    model:       'gpt-4o-mini',
-    max_tokens:  400,
-    temperature: 0.6,
-    messages: [
-      { role: 'system', content: SYSTEM_PROMPT_BASE },
-      { role: 'user',   content: userPrompt },
-    ],
-  });
-
-  return parseEmailResponse(response.choices[0].message.content ?? '');
-}
-
-// ─── Parse GPT response ───────────────────────────────────────────────────────
-
-function parseEmailResponse(text: string): { subject: string; body: string } {
-  const trimmed = text.trim();
-  const subjectMatch = trimmed.match(/^Subject:\s*(.+?)(?:\n|$)/im);
-  const subject = subjectMatch?.[1]?.trim() ?? 'Following up';
-
-  // Everything after the subject line and first blank line is the body
-  const bodyStart = trimmed.indexOf('\n');
-  let body = bodyStart !== -1 ? trimmed.slice(bodyStart).trim() : trimmed;
-
-  // Remove a leading blank line if present
-  if (body.startsWith('\n')) body = body.slice(1).trim();
-
-  return { subject, body };
-}
-
 // ─── Send via Resend ──────────────────────────────────────────────────────────
 
 export interface SendSequenceEmailOptions {
   /**
    * Set when `body` ALREADY ends with the CAN-SPAM footer, so this function
    * does not append a second one. lib/matchyTemplates.ts builds complete
-   * messages, footer included; the legacy generateEmailN prompts return a bare
-   * body and rely on the append below.
+   * messages, footer included; a caller that passes a bare body relies on the
+   * append below.
    */
   footerIncluded?: boolean;
   /**

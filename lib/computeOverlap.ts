@@ -2,19 +2,20 @@
 // No external date libraries — uses Node built-ins (Intl, Date) only.
 // Never logs slot contents or personal data.
 //
-// WHAT IS STILL LIVE IN HERE. This module predates Matchy Phase 2 and is now
-// used mostly as a library of primitives rather than for its headline function:
+// WHAT THIS MODULE IS NOW. It predates Matchy Phase 2 and is a library of
+// timezone primitives, not an overlap engine:
 //   resolveTimezone / slotToUtcRange / extractTimezone → lib/matchyScheduling.ts
 //   resolveTimezone                                    → lib/bookCall.ts
-//   localToUtc                                         → scripts/test-scheduling.ts
-// `computeOverlap()` itself, and therefore scoreSlot() and formatInTimezone(),
-// have no callers left in app/, lib/ or components/: the overlap that matters
-// is now computed as absolute UTC ranges in lib/matchyScheduling.intersectRanges,
-// and the retired lib/triggerOverlapCheck.ts was this function's last consumer.
-// Read the pair before touching either — they answer the same question with
-// different arithmetic.
+//   localToUtc / slotToUtcRange                        → scripts/test-scheduling.ts,
+//                                                        scripts/test-freebusy-inversion.ts
+//
+// Removed 2026-09-09 (W4-1): computeOverlap(), scoreSlot() and
+// formatInTimezone(), plus the OverlapResult / OverlapSlot types they returned.
+// They lost their last caller when lib/triggerOverlapCheck.ts was retired. The
+// overlap that matters is computed as absolute UTC ranges in
+// lib/matchyScheduling.intersectRanges — that is the one engine now.
 
-import type { AvailabilitySlot, OverlapResult, OverlapSlot } from '../types';
+import type { AvailabilitySlot } from '../types';
 
 // ─── Timezone normalization ───────────────────────────────────────────────────
 
@@ -152,125 +153,10 @@ export function slotToUtcRange(
   return { start, end };
 }
 
-// ─── Scoring ──────────────────────────────────────────────────────────────────
-
-function scoreSlot(
-  slot: OverlapSlot,
-  expertTzIana: string,
-  clientTzIana: string,
-): number {
-  let score = 0;
-  const startUtc = new Date(slot.startUtc);
-
-  // Business hours check for both parties (9am–6pm local)
-  const expertHour = parseInt(
-    new Intl.DateTimeFormat('en-US', {
-      timeZone: expertTzIana, hour: 'numeric', hour12: false,
-    }).format(startUtc),
-    10,
-  ) % 24;
-  const clientHour = parseInt(
-    new Intl.DateTimeFormat('en-US', {
-      timeZone: clientTzIana, hour: 'numeric', hour12: false,
-    }).format(startUtc),
-    10,
-  ) % 24;
-
-  if (expertHour >= 9 && expertHour < 18 && clientHour >= 9 && clientHour < 18) score += 30;
-
-  // Within next 7 days
-  if (startUtc.getTime() - Date.now() < 7 * 24 * 60 * 60_000) score += 20;
-
-  // Duration >= 60 min
-  if (slot.durationMin >= 60) score += 20;
-
-  // Avoid Monday 9am or Friday 4pm+ (expert's local time)
-  const dayOfWeek = new Intl.DateTimeFormat('en-US', {
-    timeZone: expertTzIana, weekday: 'long',
-  }).format(startUtc);
-
-  if (!(dayOfWeek === 'Monday' && expertHour === 9) &&
-      !(dayOfWeek === 'Friday' && expertHour >= 16)) {
-    score += 30;
-  }
-
-  return score;
-}
-
-// ─── Format helper ────────────────────────────────────────────────────────────
-
-export function formatInTimezone(utcDate: Date, tzIana: string): string {
-  return new Intl.DateTimeFormat('en-US', {
-    timeZone:    tzIana,
-    weekday:     'short',
-    month:       'short',
-    day:         'numeric',
-    hour:        'numeric',
-    minute:      '2-digit',
-    hour12:      true,
-  }).format(utcDate);
-}
-
 // ─── Timezone extraction helper ───────────────────────────────────────────────
 
 /** The first zone any slot in the list names, resolved to IANA. 'UTC' when none. */
 export function extractTimezone(slots: AvailabilitySlot[]): string {
   const tz = slots.find(s => s.timezone)?.timezone ?? 'UTC';
   return resolveTimezone(tz);
-}
-
-// ─── Public API ───────────────────────────────────────────────────────────────
-
-export async function computeOverlap(
-  expertSlots:    AvailabilitySlot[],
-  clientSlots:    AvailabilitySlot[],
-  expertTimezone: string,
-  clientTimezone: string,
-): Promise<OverlapResult> {
-  const expertTzIana = resolveTimezone(expertTimezone);
-  const clientTzIana = resolveTimezone(clientTimezone);
-
-  const overlaps: OverlapSlot[] = [];
-
-  for (const es of expertSlots) {
-    const eRange = slotToUtcRange(es, expertTzIana);
-    if (!eRange) continue;
-
-    for (const cs of clientSlots) {
-      const cRange = slotToUtcRange(cs, clientTzIana);
-      if (!cRange) continue;
-
-      const overlapStart = new Date(Math.max(eRange.start.getTime(), cRange.start.getTime()));
-      const overlapEnd   = new Date(Math.min(eRange.end.getTime(),   cRange.end.getTime()));
-
-      const durationMs = overlapEnd.getTime() - overlapStart.getTime();
-      if (durationMs < 30 * 60_000) continue;  // need at least 30 minutes
-
-      const durationMin = Math.floor(durationMs / 60_000);
-
-      const overlapSlot: OverlapSlot = {
-        startUtc:    overlapStart.toISOString(),
-        endUtc:      overlapEnd.toISOString(),
-        startExpert: formatInTimezone(overlapStart, expertTzIana),
-        startClient: formatInTimezone(overlapStart, clientTzIana),
-        durationMin,
-        score:       0,
-      };
-
-      overlapSlot.score = scoreSlot(overlapSlot, expertTzIana, clientTzIana);
-      overlaps.push(overlapSlot);
-    }
-  }
-
-  // Sort by score descending, take top 5
-  overlaps.sort((a, b) => b.score - a.score);
-  const topSlots = overlaps.slice(0, 5);
-
-  return {
-    found:          topSlots.length > 0,
-    slots:          topSlots,
-    bestSlot:       topSlots[0] ?? null,
-    expertTimezone: expertTzIana,
-    clientTimezone: clientTzIana,
-  };
 }

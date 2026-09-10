@@ -1,6 +1,7 @@
 // -----------------------------------------------------------------------------
-// Search-provider selection for the two web-search callers in the app:
-// lib/generateExperts.ts (expert sourcing) and lib/contactPathResolver.ts.
+// Search-provider selection for the one web-search caller in the app:
+// lib/generateExperts.ts (expert sourcing). The second caller,
+// lib/contactPathResolver.ts, was removed 2026-09-09 (W4-1) as dead code.
 //
 // Live path in production: Exa. Tavily and ScrapingBee are implemented and
 // reachable, but only if their key is set AND either SEARCH_PROVIDER names them

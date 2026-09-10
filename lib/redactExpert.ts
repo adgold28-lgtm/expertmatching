@@ -69,7 +69,11 @@ export function isIdentityRevealed(subject: RevealSubject): boolean {
 
 // ─── Field stripping ──────────────────────────────────────────────────────────
 
-function omitKeys<T extends object>(obj: T, keys: readonly (keyof T)[]): T {
+// `keys` is PropertyKey[] rather than (keyof T)[] so a LEGACY key — one that no
+// longer exists on the type but can still sit in a jsonb blob written before it
+// was removed — can be stripped by name. The typed constants below are what
+// actually enforce correctness; this function only deletes.
+function omitKeys<T extends object>(obj: T, keys: readonly PropertyKey[]): T {
   const out = { ...obj } as Record<string, unknown>;
   for (const key of keys) delete out[key as string];
   return out as T;
@@ -91,7 +95,6 @@ function omitKeys<T extends object>(obj: T, keys: readonly (keyof T)[]): T {
 const INTERNAL_PROJECT_EXPERT_KEYS: readonly (keyof ProjectExpert)[] = [
   // Contact path — the whole point of the platform is that clients don't get this
   'contactEmail',
-  'contactCandidates',
   'emailVerificationStatus',
   'emailProvider',
   'emailCheckedAt',
@@ -152,6 +155,19 @@ const INTERNAL_PROJECT_EXPERT_KEYS: readonly (keyof ProjectExpert)[] = [
   'stripeTransferId',
   'expertPaidAt',
   'expertOnboardingStatus',
+];
+
+/**
+ * Keys that are no longer on the ProjectExpert type but may still sit in a
+ * `project_experts.data` blob written before they were removed. They are
+ * stripped by name, so a legacy row cannot leak what a current one cannot hold.
+ *
+ *   contactCandidates — every address discovery turned up. The field was
+ *     removed 2026-09-09 (W4-1); nothing had written it since discovery moved
+ *     to a single `contactEmail`. Stripping it stays unconditional.
+ */
+const LEGACY_INTERNAL_PROJECT_EXPERT_KEYS: readonly string[] = [
+  'contactCandidates',
 ];
 
 /**
@@ -274,7 +290,7 @@ export function redactExpertForViewer(pe: ProjectExpert, viewer: Viewer): Projec
   if (viewer.role === 'admin') return pe;
 
   const stripped = {
-    ...omitKeys(pe, INTERNAL_PROJECT_EXPERT_KEYS),
+    ...omitKeys(pe, [...INTERNAL_PROJECT_EXPERT_KEYS, ...LEGACY_INTERNAL_PROJECT_EXPERT_KEYS]),
     ...matchyOutcomeOf(pe),
     ...redactScheduling(pe.scheduling),
   };

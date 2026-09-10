@@ -62,10 +62,10 @@
 **Fix:** Added `OUTREACH_FROM_EMAIL` to required vars list.
 
 ### L-3: `enrich-contact` audit log logs full event object
-**Status:** FALSE POSITIVE — `AuditEvent` type contains only HMAC hashes and numeric counts by design. No PII present.
+**Status:** FALSE POSITIVE — `AuditEvent` type contains only HMAC hashes and numeric counts by design. No PII present. (Route removed 2026-09-09.)
 
 ### L-4: `contactPathResolver.ts` logs full resolver result
-**Status:** FALSE POSITIVE — logs only `domainSuggestionsCount`, `publicContactEmailCount`, `usedSearchProvider`, and cache hit/miss. No PII present.
+**Status:** FALSE POSITIVE — logs only `domainSuggestionsCount`, `publicContactEmailCount`, `usedSearchProvider`, and cache hit/miss. No PII present. (Module removed 2026-09-09.)
 
 ### L-5: `sendAvailabilityRequest` success log has no correlation ID
 **Status:** Deferred — low operational impact. Add pseudonymized recipient hash if log tracing becomes a need.
@@ -117,11 +117,11 @@
 **Detail:** `OUTREACH_FROM_EMAIL` is required for sending availability request emails via Resend, but missing from the `validateEnv` list. A missing value causes silent email failures at runtime.
 
 #### L-3: `enrich-contact` audit log logs full event object
-**File:** `app/api/enrich-contact/route.ts` line 75  
+**File:** `app/api/enrich-contact/route.ts` line 75 — route removed 2026-09-09  
 **Detail:** `console.log('[enrich-contact]', JSON.stringify(event))` logs the full audit event. Confirm this event object never contains email addresses or expert names before treating as safe.
 
 #### L-4: `contactPathResolver.ts` logs full resolver result
-**File:** `lib/contactPathResolver.ts` lines 191, 302  
+**File:** `lib/contactPathResolver.ts` lines 191, 302 — module removed 2026-09-09  
 **Detail:** `console.log(JSON.stringify({...}))` at resolution boundaries — confirm the logged objects don't include raw email addresses or personal names.
 
 #### L-5: `sendAvailabilityRequest.ts` logs `status: 'ok'` without any identifier
@@ -161,7 +161,7 @@ Run with: `npm run security`
 
 #### KNOWN — `dev-insecure-fallback` in multiple lib files [FALSE POSITIVE]
 
-**Files:** `lib/rateLimiter.ts`, `lib/contactPathResolver.ts`, `lib/searchCache.ts`, `lib/stripeConnect.ts`, `app/api/resolve-contact-paths/route.ts`, `app/api/expert-onboarding/[token]/route.ts`  
+**Files:** `lib/searchCache.ts`, `lib/stripeConnect.ts`, `app/api/expert-onboarding/[token]/route.ts`. (Removed 2026-09-09: `lib/contactPathResolver.ts` and `app/api/resolve-contact-paths/route.ts` as dead code, and the fallback in `lib/rateLimiter.ts` with the unused `rlKey()` helper.)  
 **Detail:** These files use `process.env.LOG_HASH_SECRET ?? 'dev-insecure-fallback'` for HMAC pseudonymization in non-production mode. `lib/contactCache.ts` (the canonical implementation) throws in production when `LOG_HASH_SECRET` is absent. `LOG_HASH_SECRET` is validated at startup by `validateEnv.ts`, so production deployments cannot reach the fallback.  
 **Status:** No action required — fallback is unreachable in production.
 

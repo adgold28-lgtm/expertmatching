@@ -14,9 +14,9 @@
 //                         ProjectSummary → a narrower read shape of `projects`.
 //   jsonb-embedded    — nested objects stored INSIDE one of those blobs, never
 //                       their own row: Expert, SchedulingState, BookingState,
-//                       NudgeState, ContactCandidate, AvailabilitySlot,
-//                       OverlapSlot/OverlapResult. Adding a key needs no
-//                       migration; RLS applies to the parent row only.
+//                       NudgeState, ContactCandidate, AvailabilitySlot.
+//                       Adding a key needs no migration; RLS applies to the
+//                       parent row only.
 //   API-only / in-memory — never persisted as-is; shapes a request/response
 //                       or a function's return value: QueryAnalysis,
 //                       InsufficientExperts, ExpertResponse, SuggestedDomain,
@@ -133,9 +133,13 @@ export interface EnrichedEmail {
 
 /**
  * One address Matchy found for an expert during contact discovery, with how it
- * was found and whether mail to it has bounced. STAFF-ONLY: stripped from every
- * client-facing response by lib/redactExpert.ts. Matchy sends to at most one of
- * these; a bounce moves it to the next candidate.
+ * was found and whether mail to it has bounced.
+ *
+ * LEGACY as of 2026-09-09 (W4-1): the `ProjectExpert.contactCandidates` field
+ * that held these is gone — discovery writes a single `contactEmail`. This
+ * shape is kept only to describe what a pre-2026-09-09 `project_experts.data`
+ * row may still contain under that key, which lib/redactExpert.ts strips by
+ * name so it can never reach a client.
  */
 export interface ContactCandidate {
   email:              string;
@@ -331,23 +335,6 @@ export interface AvailabilitySlot {
   confidence?: 'high' | 'medium' | 'low';       // LLM parsing confidence
 }
 
-export interface OverlapSlot {
-  startUtc:    string;  // ISO 8601
-  endUtc:      string;  // ISO 8601
-  startExpert: string;  // formatted in expert's timezone
-  startClient: string;  // formatted in client's timezone
-  durationMin: number;
-  score:       number;
-}
-
-export interface OverlapResult {
-  found:          boolean;
-  slots:          OverlapSlot[];
-  bestSlot:       OverlapSlot | null;
-  expertTimezone: string;
-  clientTimezone: string;
-}
-
 export interface ProjectExpert {
   expert: Expert;
   status: ExpertStatus;
@@ -367,9 +354,10 @@ export interface ProjectExpert {
    */
   matchyOutcome?: MatchyOutcome;
   contactedAt?: number;     // unix ms timestamp when status first became 'contacted'
-  // Every address discovery turned up, best-first. Staff-only — never sent to
-  // a client (lib/redactExpert.ts strips it).
-  contactCandidates?: ContactCandidate[] | null;
+  // `contactCandidates` (every address discovery turned up, best-first) was
+  // removed 2026-09-09 (W4-1): nothing has written it since discovery moved to
+  // a single address. lib/redactExpert.ts still strips the key by name so a
+  // legacy row cannot leak one — see LEGACY_INTERNAL_PROJECT_EXPERT_KEYS there.
   // Contact path discovery (resolver results — never passed to email providers)
   suggestedDomains?: SuggestedDomain[];
   publicContactEmails?: PublicContactEmail[];
@@ -406,11 +394,11 @@ export interface ProjectExpert {
   calendlyUrl?:             string;    // Calendly scheduling link provided by expert
   calendlyAccessToken?:     string;    // reserved for future Calendly OAuth
   oauthState?:              string | null;  // HMAC-signed nonce for Google OAuth CSRF protection; null after callback
-  // Overlap engine results
-  overlapResult?:    OverlapSlot | null;
+  // Overlap engine results. `overlapResult` and its OverlapSlot type were
+  // removed 2026-09-09 (W4-1) with the retired overlap engine; rows written
+  // before then may still carry the key in project_experts.data, unread.
   overlapCheckedAt?: number;
   calendarEventId?:  string;
-  agreedRate?: number;
   // Email sequence fields
   outreachToken?:        string;
   outreachStep?:         'email1' | 'email2' | 'email3';

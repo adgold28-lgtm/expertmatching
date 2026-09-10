@@ -123,14 +123,14 @@ path except `_next/*`.
 | `app/api/projects/[projectId]/vetting-questions/route.ts` | POST | `routeAuthGuard` + `getProjectForUser` | OK |
 | `app/api/projects/[projectId]/request-client-availability/route.ts` | POST | `routeAuthGuard` + `getProjectForUser` + rate limit | OK |
 | `app/api/projects/[projectId]/collaborators/route.ts` | POST, DELETE | session + `getProjectForUser` + owner-only check | **Finding 1** (cross-org invitee) |
-| `app/api/generate-experts`, `rank-experts`, `screen-expert`, `generate-outreach`, `enrich-contact`, `parse-brief` | POST | `routeAuthGuard`; stateless compute, no project row is read or written (`parse-brief` returns fields the client persists through the ownership-checked PUT) | OK |
-| `app/api/resolve-contact-paths/route.ts` | POST | origin check + session (`isAuthEnabled`, else `CONTACT_ENRICHMENT_ADMIN_TOKEN`) + rate limit; no project access | OK |
+| `app/api/generate-experts`, `rank-experts`, `screen-expert`, `generate-outreach`, `parse-brief` | POST | `routeAuthGuard`; stateless compute, no project row is read or written (`parse-brief` returns fields the client persists through the ownership-checked PUT) | OK |
+| ~~`app/api/enrich-contact`~~, ~~`app/api/resolve-contact-paths`~~ | — | routes no longer exist; the resolver module behind them was removed 2026-09-09 | n/a |
 | `app/api/availability/[token]/route.ts` | POST | HMAC availability token → `projectId` **from the token**; per-token rate limit; client tokens re-checked against a stored hash (revocable) | OK |
 | `app/api/availability/[token]/google-auth/route.ts` | GET | same signed token, project id from the token | OK |
 | `app/api/availability/oauth/google/callback/route.ts` | GET | HMAC state + stored nonce (replay/state-swap resistant), ids from the state | OK |
 | `app/api/expert-onboarding/[token]/route.ts` | GET | HMAC token (`type === 'expert'`), ids from the token | OK |
 | `app/api/inbound-email/route.ts` | POST | Resend/svix signature + HMAC outreach token; project id from the token | OK |
-| `app/api/email-sequence/trigger/route.ts` | POST | QStash signature (enforced whenever `NODE_ENV=production`, and fails closed if the keys are absent); project id from the signed job | OK |
+| ~~`app/api/email-sequence/trigger/route.ts`~~ | — | route removed 2026-09-09 with the retired email cadence; nothing publishes those QStash jobs any more | n/a |
 | `app/api/webhooks/stripe`, `app/api/webhooks/zoom` | POST | provider signature (`constructEvent`; Zoom v0 HMAC with `timingSafeEqual`, missing secret ⇒ 400) | OK |
 | `app/api/admin/**` | all | `adminGuard` (explicit `role === 'admin'`, fails closed) | OK |
 | `app/api/onboarding/**`, `app/api/auth/me` | all | `routeAuthGuard` + `getSessionUser`, all writes scoped to the caller | OK |

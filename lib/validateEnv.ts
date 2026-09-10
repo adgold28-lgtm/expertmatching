@@ -15,6 +15,15 @@
  * from one list — a second hand-kept copy in the route would drift the moment
  * a variable is added here.
  */
+/*
+ * Removed 2026-09-09 (W4-1, M-50): GOOGLE_CALENDAR_REFRESH_TOKEN and
+ * STRIPE_CONNECT_CLIENT_ID. A repository-wide grep for `process.env.<NAME>`
+ * finds no read of either — the app's own Google Calendar writes were retired
+ * and Stripe Connect Express needs no client id in this integration shape — yet
+ * both sat here and could fail a production boot for a variable nothing uses.
+ * SESSION_SECRET and CONTACT_ENRICHMENT_ADMIN_TOKEN were the same story in
+ * .env.example and went with them.
+ */
 export const REQUIRED_VARS = [
   'AVAILABILITY_TOKEN_SECRET',
   'SIGNUP_TOKEN_SECRET',
@@ -27,7 +36,6 @@ export const REQUIRED_VARS = [
   'ZOOM_ACCOUNT_ID',
   'GOOGLE_CLIENT_ID',
   'GOOGLE_CLIENT_SECRET',
-  'GOOGLE_CALENDAR_REFRESH_TOKEN',
   'RESEND_API_KEY',
   'OUTREACH_FROM_EMAIL',
   'UPSTASH_REDIS_REST_URL',
@@ -40,8 +48,6 @@ export const REQUIRED_VARS = [
   'QSTASH_CURRENT_SIGNING_KEY',
   'QSTASH_NEXT_SIGNING_KEY',
   'RESEND_WEBHOOK_SECRET',
-  // Phase 6 — Stripe Connect
-  'STRIPE_CONNECT_CLIENT_ID',
   // Supabase — auth + source-of-truth Postgres
   'NEXT_PUBLIC_SUPABASE_URL',
   'NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY',
@@ -82,6 +88,40 @@ export const OPTIONAL_VARS = [
   // Which of the three to try first, and whether to fall through to the others
   'SEARCH_PROVIDER',
   'SEARCH_FALLBACK_ENABLED',
+  // Run a second provider alongside the first and log how the two compare.
+  // Diagnostics only; off unless 'true' (lib/generateExperts.ts).
+  'SEARCH_COMPARE_PROVIDERS',
+  // ── Added 2026-09-09 (W4-1, M-51): read by the running code but invisible to
+  // the admin env-status console until now. Two of them are kill switches.
+  // Kill switch: 'false' makes every /api/projects route answer 503 (lib/projectsGuard.ts)
+  'PROJECTS_ENABLED',
+  // Bearer token that lets a non-session caller through the projects guard (lib/projectsGuard.ts)
+  'PROJECTS_ADMIN_TOKEN',
+  // 'true' turns on session authentication for the app (lib/auth.ts)
+  'APP_AUTH_ENABLED',
+  // Where new-account and access-request notifications go (lib/firmStore.ts)
+  'ADMIN_NOTIFICATION_EMAIL',
+  // Kill switch: 'true' suppresses every outbound email, everywhere
+  'DISABLE_EMAILS',
+  // Absolute origin used to build links inside emails and job callbacks;
+  // falls back to NEXT_PUBLIC_APP_URL and then to https://expertmatch.fit
+  'NEXT_PUBLIC_BASE_URL',
+  // Bumping this string invalidates every cached contact lookup (lib/contactCache.ts)
+  'CONTACT_CACHE_VERSION',
+  // Comma-separated email-provider order. Read by lib/contactProviders/index.ts,
+  // but the live discovery path hardcodes its provider list, so it has no
+  // effect today (M-23) — listed so the console does not hide it.
+  'EMAIL_PROVIDER_ORDER',
+  // Global daily provider-credit budget; defaults to 500 (lib/rateLimiter.ts).
+  // Documented in .env.example but absent from both lists until 2026-09-09, so
+  // the console could not show it — the same defect M-51 names, two variables
+  // its list missed because they were already in .env.example.
+  'ENRICHMENT_DAILY_BUDGET',
+  // Sent to the browser so the onboarding billing step can mount Stripe
+  // Elements. Deliberately NOT in REQUIRED_VARS: unset makes
+  // POST /api/onboarding/billing answer 503 billing_unavailable rather than
+  // failing the production boot. Listed here for visibility only.
+  'NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY',
 ] as const;
 
 /**

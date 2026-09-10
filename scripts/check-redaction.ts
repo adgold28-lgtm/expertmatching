@@ -79,6 +79,15 @@ const SAMPLE_EXPERT: Expert = {
   seniorityTier:       'executive',
 };
 
+/**
+ * Read a key that is no longer on the ProjectExpert type but can still sit in a
+ * legacy `project_experts.data` blob. lib/redactExpert.ts strips these by name;
+ * this is how the checks below observe that it did.
+ */
+function legacyKey(pe: ProjectExpert, key: string): unknown {
+  return (pe as unknown as Record<string, unknown>)[key];
+}
+
 function projectExpertAt(status: ExpertStatus): ProjectExpert {
   return {
     expert:                  SAMPLE_EXPERT,
@@ -88,13 +97,17 @@ function projectExpertAt(status: ExpertStatus): ProjectExpert {
     emailVerificationStatus: 'verified',
     emailProvider:           'snov',
     contactStatus:           'reached',
-    contactCandidates:       [{
+    // LEGACY key (W4-1): `contactCandidates` is no longer on ProjectExpert, but
+    // a row written before 2026-09-09 can still carry it in project_experts.data
+    // and redactExpertForViewer must still strip it. Attached off-type on
+    // purpose — putting it back on the type is what these checks guard against.
+    ...({ contactCandidates: [{
       email:              'scott@bayviewvet.example',
       source:             'snov',
       verificationStatus: 'verified',
       confidence:         'high',
       bounced:            false,
-    }],
+    }] } as Partial<ProjectExpert>),
     expertRate:              650,
     clientRate:              1300,
     screeningNotes:          'Strong on ops, weak on M&A pricing.',
@@ -197,7 +210,7 @@ check('valueChainLabel kept',          ce.valueChainLabel === 'Veterinary servic
 
 check('contactEmail absent',            contacted.contactEmail            === undefined);
 check('contactCandidates absent — every discovered address is staff-only',
-      contacted.contactCandidates === undefined);
+      legacyKey(contacted, 'contactCandidates') === undefined);
 check('expertRate absent — the expert-side number never reaches a client',
       contacted.expertRate === undefined);
 check('clientRate KEPT — what the client pays is client-facing',
@@ -236,7 +249,7 @@ check('source_links restored', scheduled.expert.source_links.length === 2);
 check('contactEmail STILL absent — the platform keeps the contact path',
       scheduled.contactEmail === undefined);
 check('contactCandidates STILL absent after the reveal',
-      scheduled.contactCandidates === undefined);
+      legacyKey(scheduled, 'contactCandidates') === undefined);
 check('expertRate STILL absent after the reveal — the two rates never share an audience',
       scheduled.expertRate === undefined);
 check('clientRate still shown after the reveal', scheduled.clientRate === 1300);
@@ -348,7 +361,8 @@ for (const status of ['contacted', 'scheduled', 'rejected'] as const) {
   check(`${status}: name intact`,           asAdmin.expert.name === 'Scott Smithers');
   check(`${status}: contactEmail intact`,   asAdmin.contactEmail === 'scott@bayviewvet.example');
   check(`${status}: expertRate intact`,     asAdmin.expertRate === 650);
-  check(`${status}: contactCandidates intact`, asAdmin.contactCandidates?.length === 1);
+  check(`${status}: contactCandidates intact`,
+        (legacyKey(asAdmin, 'contactCandidates') as unknown[] | undefined)?.length === 1);
   check(`${status}: rateExpectation intact`,   asAdmin.rateExpectation?.startsWith('Wants') === true);
   check(`${status}: availability intact`,      asAdmin.availability?.startsWith('Tuesdays') === true);
   check(`${status}: whyThem intact`,        asAdmin.whyThem?.startsWith('You scaled Bayview') === true);

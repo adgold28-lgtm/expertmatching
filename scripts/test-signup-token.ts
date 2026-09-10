@@ -18,8 +18,6 @@ import {
   generateSignupToken,
   verifySignupToken,
   hashToken,
-  tokenRedisKey,
-  tokenTtlSeconds,
 } from '../lib/signupToken';
 
 let failures = 0;
@@ -89,17 +87,6 @@ section('Round trip — reset with orgId');
   check('orgId',       verified.orgId, ORG);
   check('minted kind', minted.kind,    'reset');
   check('1h expiry',   Math.round((minted.expiry - Date.now()) / 60000), 60);
-}
-
-// ── Storage keys are namespaced by kind ──────────────────────────────────────
-section('Redis key namespacing');
-{
-  const hash = 'a'.repeat(64);
-  check('invite key', tokenRedisKey('invite', hash), `invite-token:${hash}`);
-  check('reset key',  tokenRedisKey('reset',  hash), `reset:${hash}`);
-  check('invite ttl capped at 24h', tokenTtlSeconds('invite', Date.now() + 48 * 3600_000), 24 * 3600);
-  check('reset ttl capped at 1h',   tokenTtlSeconds('reset',  Date.now() + 48 * 3600_000), 3600);
-  check('ttl floor is 60s',         tokenTtlSeconds('reset',  Date.now() - 5_000), 60);
 }
 
 // ── Tamper detection ─────────────────────────────────────────────────────────

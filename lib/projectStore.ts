@@ -18,7 +18,7 @@
 // NEVER log: project names, research questions, confidential notes, or expert names.
 
 import { randomBytes } from 'crypto';
-import type { Expert, Project, ProjectExpert, ProjectSummary, ExpertStatus, ReplyIntent, RejectionReason, ValueChainPosition, ScreeningStatus, SuggestedDomain, PublicContactEmail, AvailabilitySlot, OverlapSlot, SchedulingState, BookingState, NudgeState, IntroArm } from '../types';
+import type { Expert, Project, ProjectExpert, ProjectSummary, ExpertStatus, ReplyIntent, RejectionReason, ValueChainPosition, ScreeningStatus, SuggestedDomain, PublicContactEmail, AvailabilitySlot, SchedulingState, BookingState, NudgeState, IntroArm } from '../types';
 import { getServiceRoleClient } from './supabase/admin';
 import type { Database, ProjectRow, ProjectExpertRow } from './supabase/database.types';
 import type { SupabaseClient } from '@supabase/supabase-js';
@@ -107,8 +107,7 @@ export interface UpdateExpertInput {
   calendlyUrl?:             string;
   calendlyAccessToken?:     string;
   oauthState?:              string | null;
-  // Overlap engine results
-  overlapResult?:    OverlapSlot | null;
+  // Overlap engine results (`overlapResult` removed 2026-09-09 with the engine)
   overlapCheckedAt?: number;
   calendarEventId?:  string;
   // Matchy Phase 2 — all three ride in project_experts.data (no migration).

@@ -1,13 +1,16 @@
-// Signup token — HMAC-SHA256, self-describing, single-use.
+// Signup token — HMAC-SHA256, self-describing.
 //
 // Token format:
 //   base64url(JSON({ email, firmName, expiry, nonce, orgId?, kind? })) + "." +
 //   base64url(HMAC-SHA256(payload, secret))
 //
 // JSON payload avoids colon-separator ambiguity with email/firmName values.
-// Single-use enforcement: SHA-256(rawToken) stored in Redis under the key from
-// tokenRedisKey(kind, hash). The hash is stored at generation time (by the
-// caller) and deleted on use.
+//
+// SINGLE USE is Supabase's job, not this module's: lib/authLinks.ts redeems a
+// Supabase recovery token, which can only be spent once. The Redis marker this
+// module used to key (tokenRedisKey / tokenTtlSeconds) was removed 2026-09-09
+// (W4-1) — nothing had written or read it since that move, and an Upstash
+// rate-limit could stop an invitee from setting a password.
 //
 // `orgId` pins the invite to the organization that minted it, so accepting an
 // invite can never re-home the account onto a different organization derived
@@ -153,27 +156,4 @@ export function verifySignupToken(token: string): VerifySignupTokenResult {
 
 export function hashToken(token: string): string {
   return createHash('sha256').update(token, 'utf8').digest('hex');
-}
-
-/**
- * STATUS: tokenRedisKey and tokenTtlSeconds have no production callers left —
- * only scripts/test-signup-token.ts. Single use moved to Supabase recovery
- * tokens (lib/authLinks.ts) so an Upstash rate-limit could no longer stop an
- * invitee from setting a password; nothing writes or reads these keys any more.
- * The HMAC token itself is still very much live: it carries email, orgId, kind
- * and expiry, and is what /auth/set-password verifies before touching storage.
- *
- * Redis key a token's single-use marker lives under. Invites and resets are
- * kept in separate namespaces so a reset link can never be replayed as an
- * invite (or vice versa) even if the hashes were somehow known.
- */
-export function tokenRedisKey(kind: SignupTokenKind, hash: string): string {
-  return kind === 'reset' ? `reset:${hash}` : `invite-token:${hash}`;
-}
-
-/** Seconds a freshly minted token of this kind should live in Redis. */
-export function tokenTtlSeconds(kind: SignupTokenKind, expiry: number): number {
-  const max       = kind === 'reset' ? RESET_EXPIRY_MS : INVITE_EXPIRY_MS;
-  const remaining = Math.floor((expiry - Date.now()) / 1000);
-  return Math.max(60, Math.min(remaining, Math.floor(max / 1000)));
 }

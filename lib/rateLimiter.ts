@@ -1,26 +1,24 @@
 import { createHmac } from 'crypto';
 import { getUpstashClient, type UpstashRedis } from './upstashRedis';
-import type { ActiveProviderName } from './contactProviders/types';
 
 // Rate limiter abstraction, originally written for /api/enrich-contact.
 //
-// STATUS (verified by grep, Sept 2026): app/api/enrich-contact no longer
-// exists. createRateLimiterStore() is still live and is the shared store for
-// five public, token-gated routes — /api/schedule/[token],
-// /api/availability/[token]/google-auth, /api/expert-onboarding/[token],
-// /api/inbound-email and /api/outreach/unsubscribe. The three tier functions
-// below (checkRequestThrottle, checkCreditLimits, checkAndIncrementGlobalBudget)
-// and incrementProviderDailyCount have NO remaining callers; the waterfall they
-// describe lives on in lib/contactProviders. Treat the tier commentary as
-// history, not as a description of current behaviour.
+// THREE THINGS LIVE HERE, and only three:
+//   createRateLimiterStore — the shared store for five public, token-gated
+//     routes: /api/schedule/[token], /api/availability/[token]/google-auth,
+//     /api/expert-onboarding/[token], /api/inbound-email and
+//     /api/outreach/unsubscribe. Also the store passed to the budget check.
+//   checkAndIncrementGlobalBudget — the global daily provider-spend cap, called
+//     once per provider attempt in lib/contactDiscovery.ts (H-13) so a Snov +
+//     Hunter waterfall consumes two credits from the budget, not one.
+//   checkDraftLimits — the two windows on Matchy's composer draft (Matchy 2.0).
 //
-// Three separate functions with intentionally different call sites:
-//   checkRequestThrottle        — cheap per-IP check, BEFORE cache read (prevents spam)
-//   checkCreditLimits           — per-IP/day + per-key/day, AFTER cache read
-//                                 (never counts cache hits against budgets)
-//   checkAndIncrementGlobalBudget — global daily budget, called BEFORE each provider API
-//                                   call inside performLookup so each waterfall step
-//                                   (Snov, Hunter) decrements the budget separately
+// Removed 2026-09-09 (W4-1): checkRequestThrottle, checkCreditLimits and
+// incrementProviderDailyCount. They served /api/enrich-contact, which no longer
+// exists, and had no callers. The per-request throttling they describe now
+// lives in the routes' own createRateLimiterStore() use. `rlKey` survived them:
+// the draft limiter keys on a user's email and a project id, and neither may
+// sit in Redis in the clear.
 //
 // Production: Upstash Redis — durable, multi-instance.
 // Development: in-memory Map — local-process only, resets on cold start.
@@ -73,53 +71,19 @@ export function createRateLimiterStore(): RateLimiterStore {
   return new InMemoryRateLimiterStore();
 }
 
-// ─── Key helpers (no PII in Redis key names) ──────────────────────────────────
+// ─── Key helper (no PII in Redis key names) ───────────────────────────────────
 
 function rlKey(prefix: string, value: string): string {
   const secret = process.env.LOG_HASH_SECRET ?? 'dev-insecure-fallback';
   return `${prefix}:${createHmac('sha256', secret).update(value).digest('hex').slice(0, 16)}`;
 }
 
-const TEN_MIN_MS    = 10 * 60 * 1000;
 const TWENTY_FOUR_H = 24 * 60 * 60 * 1000;
 
-// ─── Tier 1: request throttle (BEFORE cache read) ─────────────────────────────
-// Purpose: prevent request spam regardless of cache state.
-
-export async function checkRequestThrottle(
-  store: RateLimiterStore,
-  ip: string,
-): Promise<{ allowed: boolean; retryAfterMs?: number }> {
-  const { count, ttlMs } = await store.increment(rlKey('rl:ip:10m', ip), TEN_MIN_MS);
-  if (count > 10) return { allowed: false, retryAfterMs: ttlMs };
-  return { allowed: true };
-}
-
-// ─── Tier 2: per-IP and per-key credit limits (AFTER cache read) ──────────────
-// Purpose: enforce per-user and per-target quotas.
-// Global budget is intentionally NOT incremented here — that happens per provider
-// call inside performLookup so each waterfall step counts separately.
-
-export async function checkCreditLimits(
-  store: RateLimiterStore,
-  ip: string,
-  cacheKey: string,
-): Promise<{ allowed: boolean; retryAfterMs?: number }> {
-  // Per-IP daily: 25 lookups / 24 h
-  const { count: c1, ttlMs: t1 } = await store.increment(rlKey('rl:ip:24h',  ip),       TWENTY_FOUR_H);
-  if (c1 > 25) return { allowed: false, retryAfterMs: t1 };
-
-  // Per normalized lookup key: 3 / 24 h (prevents re-querying the same person repeatedly).
-  // Checked before global budget so rejected per-key requests don't consume global counter.
-  const { count: c3, ttlMs: t3 } = await store.increment(rlKey('rl:key:24h', cacheKey), TWENTY_FOUR_H);
-  if (c3 > 3) return { allowed: false, retryAfterMs: t3 };
-
-  return { allowed: true };
-}
-
-// ─── Tier 3: global provider budget (called BEFORE each provider API call) ────
-// Called once per provider inside performLookup so a Snov + Hunter waterfall
-// consumes 2 credits from the budget, not 1.
+// ─── Global provider budget (called BEFORE each provider API call) ───────────
+// Called once per provider attempt in lib/contactDiscovery.ts so a Snov +
+// Hunter waterfall consumes 2 credits from the budget, not 1. The caller
+// fails OPEN when Redis is unreachable — a spend cap must not stop discovery.
 
 export async function checkAndIncrementGlobalBudget(
   store: RateLimiterStore,
@@ -128,16 +92,6 @@ export async function checkAndIncrementGlobalBudget(
   const { count, ttlMs } = await store.increment('rl:global:24h', TWENTY_FOUR_H);
   if (count > dailyBudget) return { allowed: false, retryAfterMs: ttlMs };
   return { allowed: true };
-}
-
-// ─── Informational: per-provider daily counter ────────────────────────────────
-// No hard limit — used for monitoring how many credits each provider consumes.
-
-export async function incrementProviderDailyCount(
-  store: RateLimiterStore,
-  provider: ActiveProviderName,
-): Promise<void> {
-  await store.increment(`rl:provider:${provider}:24h`, TWENTY_FOUR_H);
 }
 
 // ─── Matchy composer: "write the reply for me" ────────────────────────────────

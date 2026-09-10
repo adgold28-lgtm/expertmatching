@@ -259,9 +259,6 @@ export default function ProjectExpertCard({
           >
             {formatRate(clientRate)}/hr · includes ExpertMatch fee
           </span>
-          {projectExpert.agreedRate != null && (
-            <span className="text-[9px] text-amber-700 font-medium">Agreed: {formatRate(projectExpert.agreedRate)}/hr</span>
-          )}
         </div>
 
         {/* ── The booked call, one line ── */}
