@@ -13,6 +13,11 @@
 //      'invoice_sent', and email a pay-now invoice. This is the pre-existing
 //      behaviour, unchanged.
 //
+// TEST SEAM: createAndSendInvoice(projectId, expertId, amount, minutes, callId)
+// behaves exactly as before; an optional sixth argument replaces the Stripe
+// client, the store writes and the mailer with stubs so
+// scripts/test-stripe-flows.ts can drive both paths offline (see InvoiceDeps).
+//
 // Required env vars:
 //   STRIPE_SECRET_KEY    — server-side Stripe key
 //   RESEND_API_KEY       — invoice / receipt email (optional; skipped if absent)
@@ -24,12 +29,15 @@
 // Amounts and projectId are safe to log.
 
 import { Resend } from 'resend';
+import type Stripe from 'stripe';
 import type { ProjectExpert } from '../types';
-import { getStripe } from './stripe';
+import { stripe } from './stripe';
 import { getProject, updateExpertStatus, updateProjectFields } from './projectStore';
 import type { UpdateExpertInput } from './projectStore';
 import { chargeSavedCard } from './chargeSavedCard';
+import type { ChargeResult, ChargeSavedCardParams } from './chargeSavedCard';
 import { getEntitlementsForProject, recordRestrictedAttempt } from './entitlements';
+import type { Entitlements, RefusalContext } from './entitlements';
 import { getFromAddress } from './mailFrom';
 
 // ─── Email HTML/text builders (shared with complete route) ────────────────────
@@ -221,6 +229,68 @@ async function sendClientEmail(params: SendEmailParams): Promise<void> {
   });
 }
 
+// ─── Test seam ────────────────────────────────────────────────────────────────
+
+/**
+ * The slice of the Stripe SDK the payment-link path uses. Narrow on purpose:
+ * the real client satisfies it structurally and a stub implements four calls.
+ */
+export interface InvoiceStripeClient {
+  customers:    { create(params: Stripe.CustomerCreateParams):       Promise<{ id: string }> };
+  products:     { create(params: Stripe.ProductCreateParams):        Promise<{ id: string }> };
+  prices:       { create(params: Stripe.PriceCreateParams):          Promise<{ id: string }> };
+  paymentLinks: { create(params: Stripe.PaymentLinkCreateParams):    Promise<{ id: string; url: string }> };
+}
+
+/** The parts of a Project this module reads. A real Project satisfies it. */
+export interface InvoiceProjectView {
+  name:              string;
+  ownerEmail:        string;
+  clientName?:       string | null;
+  clientEmail?:      string | null;
+  stripeCustomerId?: string | null;
+  experts: Array<
+    Pick<
+      ProjectExpert,
+      'paymentStatus' | 'stripePaymentIntentId' | 'stripePaymentLinkUrl'
+      | 'billedCallId' | 'booking' | 'zoomMeetingId' | 'callId'
+    > & { expert: { id: string; name: string } }
+  >;
+}
+
+/**
+ * Everything this module reaches outside itself. Production never passes it —
+ * createAndSendInvoice() with its five original arguments behaves exactly as
+ * before; only scripts/test-stripe-flows.ts substitutes parts of it. Declared
+ * with method syntax so a stub may narrow a parameter type.
+ */
+export interface InvoiceDeps {
+  stripe: InvoiceStripeClient;
+  getProject(projectId: string): Promise<InvoiceProjectView | null>;
+  updateExpertStatus(projectId: string, expertId: string, patch: UpdateExpertInput): Promise<unknown>;
+  updateProjectFields(projectId: string, patch: { stripeCustomerId?: string | null }): Promise<unknown>;
+  chargeSavedCard(params: ChargeSavedCardParams): Promise<ChargeResult>;
+  getEntitlementsForProject(projectId: string): Promise<Entitlements>;
+  recordRestrictedAttempt(ent: Entitlements, ctx: RefusalContext): Promise<void>;
+  sendEmail(params: SendEmailParams): Promise<void>;
+}
+
+/** The real client, store, charger and mailer. Built lazily so the Stripe
+ *  getters are not touched at module load (STRIPE_SECRET_KEY is absent during
+ *  `next build`). */
+function defaultInvoiceDeps(): InvoiceDeps {
+  return {
+    stripe,
+    getProject,
+    updateExpertStatus,
+    updateProjectFields,
+    chargeSavedCard,
+    getEntitlementsForProject,
+    recordRestrictedAttempt,
+    sendEmail: sendClientEmail,
+  };
+}
+
 // ─── The per-call double-bill guard (pure) ────────────────────────────────────
 
 /** The only fields the durable guard reads. */
@@ -307,10 +377,13 @@ export async function createAndSendInvoice(
   invoiceAmount: number,  // already-computed dollar amount
   durationMin:   number,
   callId?:       string | null,
+  /** Test seam only — see InvoiceDeps. Production omits it. */
+  deps?:         Partial<InvoiceDeps>,
 ): Promise<InvoiceResult | null> {
+  const d = { ...defaultInvoiceDeps(), ...deps };
   try {
     // 1. Load project and find expert
-    const project = await getProject(projectId);
+    const project = await d.getProject(projectId);
     if (!project) {
       console.error('[stripe] createAndSendInvoice: project not found');
       return null;
@@ -324,10 +397,10 @@ export async function createAndSendInvoice(
     // Account boundary (lib/entitlements.ts): an organization with no card on
     // file is never charged and never emailed an invoice. A trial cannot book
     // a call in the first place; this is the backstop for every caller.
-    const entitlements = await getEntitlementsForProject(projectId);
+    const entitlements = await d.getEntitlementsForProject(projectId);
     if (!entitlements.canCharge) {
       console.warn('[stripe] createAndSendInvoice refused: activation required', { projectId });
-      await recordRestrictedAttempt(entitlements, { action: 'charge_card', projectId, expertId });
+      await d.recordRestrictedAttempt(entitlements, { action: 'charge_card', projectId, expertId });
       return null;
     }
 
@@ -350,7 +423,7 @@ export async function createAndSendInvoice(
     //    clear it before charging so the payment_intent.succeeded write that
     //    follows this charge refers to the NEW call, not the old one.
     if (isRepeatCallForBilledRow(pe, resolvedCallId)) {
-      await updateExpertStatus(projectId, expertId, { paymentStatus: 'unpaid' });
+      await d.updateExpertStatus(projectId, expertId, { paymentStatus: 'unpaid' });
       console.log('[stripe] repeat-call-rebill', { projectId });
     }
 
@@ -361,7 +434,7 @@ export async function createAndSendInvoice(
     const recipientEmail = project.clientEmail ?? project.ownerEmail;
 
     // ─── Path 1: charge the saved card off-session ─────────────────────────
-    const charge = await chargeSavedCard({
+    const charge = await d.chargeSavedCard({
       projectId,
       expertId,
       ownerEmail: project.ownerEmail,
@@ -379,9 +452,9 @@ export async function createAndSendInvoice(
         stripePaymentIntentId: charge.paymentIntentId,
         billedCallId:          resolvedCallId,
       };
-      await updateExpertStatus(projectId, expertId, chargePatch);
+      await d.updateExpertStatus(projectId, expertId, chargePatch);
 
-      await sendClientEmail({
+      await d.sendEmail({
         to:      recipientEmail,
         subject: 'Receipt for your expert call',
         html:    buildReceiptHtml(clientName, pe.expert.name, durationMin, invoiceAmount),
@@ -405,18 +478,16 @@ export async function createAndSendInvoice(
       });
     }
 
-    const stripe = getStripe();
-
     // 2. Create/retrieve Stripe customer for the project
     let stripeCustomerId = project.stripeCustomerId ?? null;
     if (!stripeCustomerId && project.clientEmail) {
-      const customer = await stripe.customers.create({
+      const customer = await d.stripe.customers.create({
         email:    project.clientEmail,
         name:     project.clientName ?? undefined,
         metadata: { projectId },
       });
       stripeCustomerId = customer.id;
-      await updateProjectFields(projectId, { stripeCustomerId });
+      await d.updateProjectFields(projectId, { stripeCustomerId });
     }
 
     // 3. Create Stripe product + price + payment link
@@ -424,8 +495,8 @@ export async function createAndSendInvoice(
     // receipts, which are not covered by the platform's identity-reveal rules.
     // The project name is enough for the client to reconcile the charge.
     const productName = `Expert Call — ${project.name}`;
-    const product = await stripe.products.create({ name: productName });
-    const price   = await stripe.prices.create({
+    const product = await d.stripe.products.create({ name: productName });
+    const price   = await d.stripe.prices.create({
       product:     product.id,
       unit_amount: invoiceAmount * 100,
       currency:    'usd',
@@ -435,7 +506,7 @@ export async function createAndSendInvoice(
       ? `${process.env.NEXT_PUBLIC_APP_URL}/payment/success`
       : 'https://expertmatch.fit/payment/success';
 
-    const paymentLink = await stripe.paymentLinks.create({
+    const paymentLink = await d.stripe.paymentLinks.create({
       line_items: [{ price: price.id, quantity: 1 }],
       metadata:   { projectId, expertId },
       after_completion: {
@@ -454,11 +525,11 @@ export async function createAndSendInvoice(
       paymentStatus:        'invoice_sent',
       billedCallId:         resolvedCallId,
     };
-    await updateExpertStatus(projectId, expertId, linkPatch);
+    await d.updateExpertStatus(projectId, expertId, linkPatch);
 
     // 5. Send invoice email via Resend (if not suppressed)
     if (project.clientEmail) {
-      await sendClientEmail({
+      await d.sendEmail({
         to:      project.clientEmail,
         subject: 'Invoice for your expert call',
         html:    buildInvoiceHtml(clientName, pe.expert.name, durationMin, invoiceAmount, paymentLink.url),

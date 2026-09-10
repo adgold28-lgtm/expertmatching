@@ -20,6 +20,12 @@
 // (membership changes, webhooks): those catch and log. Functions that gate a
 // user-visible step (onboarding) throw so the route can 500 honestly.
 //
+// TEST SEAM: syncOrgSeatQuantity(organizationId) behaves exactly as before; an
+// optional second argument replaces the Stripe client, the billing-row reads
+// and writes and the seat-price lookup with stubs so
+// scripts/test-stripe-flows.ts can drive create / adopt / resize / cancel-at-
+// zero offline (see SeatSyncDeps).
+//
 // NEVER log: emails, names, Stripe customer / subscription / payment-method
 // ids. Org ids, seat counts, and amounts are safe.
 
@@ -185,6 +191,72 @@ export function stripeFailureReason(err: unknown): string {
 }
 
 type BillingPatch = Database['public']['Tables']['organization_billing']['Update'];
+
+// ─── Test seam ────────────────────────────────────────────────────────────────
+
+/** A subscription as the seat sync reads it — a Stripe.Subscription satisfies it. */
+export interface SeatSubscriptionView extends AdoptableSubscriptionView {
+  cancel_at_period_end?: boolean | null;
+}
+
+/**
+ * The slice of the Stripe SDK the seat sync uses. Narrow on purpose: the real
+ * client satisfies it structurally and a stub implements five calls.
+ */
+export interface SeatSyncStripeClient {
+  subscriptions: {
+    retrieve(id: string): Promise<SeatSubscriptionView>;
+    list(params: Stripe.SubscriptionListParams): Promise<{ data: SeatSubscriptionView[] }>;
+    create(
+      params:   Stripe.SubscriptionCreateParams,
+      options?: { idempotencyKey?: string },
+    ): Promise<SeatSubscriptionView>;
+    update(id: string, params: Stripe.SubscriptionUpdateParams): Promise<SeatSubscriptionView>;
+  };
+  subscriptionItems: {
+    update(id: string, params: Stripe.SubscriptionItemUpdateParams): Promise<unknown>;
+  };
+}
+
+/** The billing-row columns the seat sync reads. A real row satisfies it. */
+export type SeatSyncBillingRow = Pick<
+  OrganizationBillingRow,
+  'billing_complete' | 'stripe_customer_id' | 'stripe_subscription_id'
+  | 'stripe_subscription_item_id' | 'seat_quantity_synced' | 'subscription_status'
+>;
+
+/**
+ * Everything syncOrgSeatQuantity reaches outside itself. Production never
+ * passes it. A caller that substitutes `stripe` should substitute
+ * `ensureSeatPrice` too: the default one talks to the real Stripe and caches
+ * the price id per process. Method syntax so a stub may narrow a parameter.
+ */
+export interface SeatSyncDeps {
+  stripe: SeatSyncStripeClient;
+  countActiveSeats(organizationId: string): Promise<number>;
+  getOrgBillingRow(organizationId: string): Promise<SeatSyncBillingRow | null>;
+  patchBillingRow(organizationId: string, patch: BillingPatch): Promise<boolean>;
+  patchBillingRowWithRetry(organizationId: string, patch: BillingPatch): Promise<boolean>;
+  ensureSeatPrice(): Promise<string>;
+  recordSystemFailure(input: {
+    area:            'seat_sync';
+    reason:          string;
+    organizationId?: string;
+  }): Promise<void>;
+}
+
+/** The real client, the real row access and the real price lookup. */
+function defaultSeatSyncDeps(): SeatSyncDeps {
+  return {
+    stripe,
+    countActiveSeats,
+    getOrgBillingRow,
+    patchBillingRow,
+    patchBillingRowWithRetry,
+    ensureSeatPrice,
+    recordSystemFailure,
+  };
+}
 
 /** Patches the org's billing row. Returns false (and logs) on failure. */
 async function patchBillingRow(organizationId: string, patch: BillingPatch): Promise<boolean> {
@@ -582,9 +654,12 @@ export async function ensureSeatPrice(): Promise<string> {
 }
 
 /** Retrieves a subscription, or null when Stripe no longer knows it. */
-async function retrieveSubscription(subscriptionId: string): Promise<Stripe.Subscription | null> {
+async function retrieveSubscription(
+  subscriptionId: string,
+  client:         SeatSyncStripeClient = stripe,
+): Promise<SeatSubscriptionView | null> {
   try {
-    return await stripe.subscriptions.retrieve(subscriptionId);
+    return await client.subscriptions.retrieve(subscriptionId);
   } catch (err) {
     if (stripeErrorCode(err) === 'resource_missing') return null;
     throw err;
@@ -614,19 +689,24 @@ async function retrieveSubscription(subscriptionId: string): Promise<Stripe.Subs
  * the new quantity in one update; if the subscription has already ended, the
  * next sync creates a fresh one.
  */
-export async function syncOrgSeatQuantity(organizationId: string): Promise<SeatSyncResult> {
-  const activeSeats = await countActiveSeats(organizationId);
+export async function syncOrgSeatQuantity(
+  organizationId: string,
+  /** Test seam only — see SeatSyncDeps. Production calls this with one argument. */
+  deps?:          Partial<SeatSyncDeps>,
+): Promise<SeatSyncResult> {
+  const d = { ...defaultSeatSyncDeps(), ...deps };
+  const activeSeats = await d.countActiveSeats(organizationId);
   const base = { organizationId, activeSeats } as const;
 
   try {
-    const row = await getOrgBillingRow(organizationId);
+    const row = await d.getOrgBillingRow(organizationId);
     if (!row || !row.billing_complete || !row.stripe_customer_id) {
       return { ...base, outcome: 'skipped' };
     }
 
-    const priceId = await ensureSeatPrice();
+    const priceId = await d.ensureSeatPrice();
     const subscription = row.stripe_subscription_id
-      ? await retrieveSubscription(row.stripe_subscription_id)
+      ? await retrieveSubscription(row.stripe_subscription_id, d.stripe)
       : null;
 
     let live =
@@ -648,7 +728,7 @@ export async function syncOrgSeatQuantity(organizationId: string): Promise<SeatS
       // subscriptions we must not create one, and the outer catch turns that
       // into 'error' plus a system_events row (which is a delay, whereas
       // double-billing a firm is a refund and an apology).
-      const existing = await stripe.subscriptions.list({
+      const existing = await d.stripe.subscriptions.list({
         customer: row.stripe_customer_id,
         status:   'all',
         limit:    20,
@@ -658,13 +738,13 @@ export async function syncOrgSeatQuantity(organizationId: string): Promise<SeatS
       if (adopted) {
         const adoptedItem =
           adopted.items.data.find(i => i.price?.id === priceId) ?? adopted.items.data[0] ?? null;
-        const recorded = await patchBillingRowWithRetry(organizationId, {
+        const recorded = await d.patchBillingRowWithRetry(organizationId, {
           stripe_subscription_id:      adopted.id,
           stripe_subscription_item_id: adoptedItem?.id ?? null,
           subscription_status:         adopted.status,
         });
         if (!recorded) {
-          await recordSystemFailure({
+          await d.recordSystemFailure({
             area:   'seat_sync',
             reason: `subscription_adopted_but_unrecorded:${stripeIdTail(adopted.id)}`,
             organizationId,
@@ -685,7 +765,7 @@ export async function syncOrgSeatQuantity(organizationId: string): Promise<SeatS
         ? `seat-sub:${organizationId}:${row.stripe_subscription_id}`
         : `seat-sub:${organizationId}`;
 
-      const created = await stripe.subscriptions.create(
+      const created = await d.stripe.subscriptions.create(
         {
           customer:           row.stripe_customer_id,
           items:              [{ price: priceId, quantity: activeSeats }],
@@ -701,14 +781,14 @@ export async function syncOrgSeatQuantity(organizationId: string): Promise<SeatS
       // retried and, if it still fails, recorded as a failure an operator can
       // act on before the next nightly sweep runs (the id's last four
       // characters locate it in the dashboard without logging the id itself).
-      const recorded = await patchBillingRowWithRetry(organizationId, {
+      const recorded = await d.patchBillingRowWithRetry(organizationId, {
         stripe_subscription_id:      created.id,
         stripe_subscription_item_id: created.items.data[0]?.id ?? null,
         subscription_status:         created.status,
         seat_quantity_synced:        activeSeats,
       });
       if (!recorded) {
-        await recordSystemFailure({
+        await d.recordSystemFailure({
           area:   'seat_sync',
           reason: `subscription_created_but_unrecorded:${stripeIdTail(created.id)}`,
           organizationId,
@@ -727,7 +807,7 @@ export async function syncOrgSeatQuantity(organizationId: string): Promise<SeatS
 
     if (!item) {
       console.error('[orgBilling] subscription has no items', { organizationId });
-      await recordSystemFailure({
+      await d.recordSystemFailure({
         area:   'seat_sync',
         reason: 'subscription has no seat line item',
         organizationId,
@@ -738,17 +818,17 @@ export async function syncOrgSeatQuantity(organizationId: string): Promise<SeatS
     // ── Zero seats → stop billing at the end of the paid period ─────────────
     if (activeSeats === 0) {
       if (live.cancel_at_period_end) {
-        await patchBillingRow(organizationId, {
+        await d.patchBillingRow(organizationId, {
           subscription_status:  live.status,
           seat_quantity_synced: 0,
         });
         return { ...base, outcome: 'unchanged' };
       }
-      const canceling = await stripe.subscriptions.update(live.id, {
+      const canceling = await d.stripe.subscriptions.update(live.id, {
         cancel_at_period_end: true,
         proration_behavior:   'none',
       });
-      await patchBillingRow(organizationId, {
+      await d.patchBillingRow(organizationId, {
         subscription_status:  canceling.status,
         seat_quantity_synced: 0,
       });
@@ -758,12 +838,12 @@ export async function syncOrgSeatQuantity(organizationId: string): Promise<SeatS
 
     // ── Seats returned while the subscription was winding down ──────────────
     if (live.cancel_at_period_end) {
-      const resumed = await stripe.subscriptions.update(live.id, {
+      const resumed = await d.stripe.subscriptions.update(live.id, {
         cancel_at_period_end: false,
         items:                [{ id: item.id, quantity: activeSeats }],
         proration_behavior:   'create_prorations',
       });
-      await patchBillingRow(organizationId, {
+      await d.patchBillingRow(organizationId, {
         stripe_subscription_id:      resumed.id,
         stripe_subscription_item_id: item.id,
         subscription_status:         resumed.status,
@@ -776,11 +856,11 @@ export async function syncOrgSeatQuantity(organizationId: string): Promise<SeatS
     // ── Ordinary quantity change ────────────────────────────────────────────
     const stripeQuantity = item.quantity ?? 0;
     if (stripeQuantity !== activeSeats) {
-      await stripe.subscriptionItems.update(item.id, {
+      await d.stripe.subscriptionItems.update(item.id, {
         quantity:           activeSeats,
         proration_behavior: 'create_prorations',
       });
-      await patchBillingRow(organizationId, {
+      await d.patchBillingRow(organizationId, {
         stripe_subscription_id:      live.id,
         stripe_subscription_item_id: item.id,
         subscription_status:         live.status,
@@ -797,7 +877,7 @@ export async function syncOrgSeatQuantity(organizationId: string): Promise<SeatS
       || row.subscription_status !== live.status
       || row.stripe_subscription_item_id !== item.id
     ) {
-      await patchBillingRow(organizationId, {
+      await d.patchBillingRow(organizationId, {
         stripe_subscription_item_id: item.id,
         subscription_status:         live.status,
         seat_quantity_synced:        activeSeats,
@@ -809,7 +889,7 @@ export async function syncOrgSeatQuantity(organizationId: string): Promise<SeatS
     // Every caller of this function swallows a failure so a membership change
     // never fails on billing. Recording it here — once, at the source — is what
     // stops that from meaning nobody ever finds out.
-    await recordSystemFailure({
+    await d.recordSystemFailure({
       area:   'seat_sync',
       reason: stripeFailureReason(err),
       organizationId,

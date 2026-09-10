@@ -18,9 +18,15 @@
 // Required env vars:
 //   STRIPE_SECRET_KEY  — server-side Stripe key
 //
+// TEST SEAM: every caller in the app calls chargeSavedCard(params) unchanged;
+// an optional second argument replaces the Stripe client and the two lookups
+// with stubs so scripts/test-stripe-flows.ts can drive the charge, decline and
+// no-card paths without a Stripe account (see ChargeDeps).
+//
 // NEVER log: emails, names, customer ids, payment method ids, or card details.
 // Amounts and projectId are safe to log.
 
+import type Stripe from 'stripe';
 import { stripe } from './stripe';
 import { getUser } from './firmStore';
 import { getBillingCustomerForProject } from './orgBilling';
@@ -51,6 +57,47 @@ export interface ChargeSavedCardParams {
    * the per-(project, expert) key it used before.
    */
   callId?:    string | null;
+}
+
+// ─── Test seam ────────────────────────────────────────────────────────────────
+
+/**
+ * The slice of the Stripe SDK this module touches. Narrow on purpose: the real
+ * client satisfies it structurally, and a test stub only has to implement three
+ * calls instead of the whole SDK.
+ */
+export interface ChargeStripeClient {
+  customers: {
+    retrieve(id: string): Promise<Stripe.Customer | Stripe.DeletedCustomer>;
+  };
+  paymentMethods: {
+    list(params: Stripe.PaymentMethodListParams): Promise<{ data: Array<{ id: string }> }>;
+  };
+  paymentIntents: {
+    create(
+      params:   Stripe.PaymentIntentCreateParams,
+      options?: { idempotencyKey?: string },
+    ): Promise<{ id: string; status: string }>;
+  };
+}
+
+/**
+ * Everything this module reaches outside itself. Production never passes it —
+ * chargeSavedCard() with one argument behaves exactly as before; only
+ * scripts/test-stripe-flows.ts substitutes parts of it.
+ */
+export interface ChargeDeps {
+  stripe: ChargeStripeClient;
+  getBillingCustomerForProject: (projectId: string) => Promise<string | null>;
+  getUser: (email: string) => Promise<
+    { stripeCustomerId?: string | null; billingComplete?: boolean } | null
+  >;
+}
+
+/** The real client and the real lookups. Built lazily: touching `stripe`'s
+ *  getters would construct the SDK, which must not happen at module load. */
+function defaultChargeDeps(): ChargeDeps {
+  return { stripe, getBillingCustomerForProject, getUser };
 }
 
 /**
@@ -99,14 +146,17 @@ export function chargeIdempotencyKey(
  * invoice_settings by the billing confirm route, falling back to the customer's
  * most recent saved card (covers cards attached outside that flow).
  */
-async function resolveDefaultPaymentMethod(customerId: string): Promise<string | null> {
-  const customer = await stripe.customers.retrieve(customerId);
+async function resolveDefaultPaymentMethod(
+  customerId: string,
+  client:     ChargeStripeClient,
+): Promise<string | null> {
+  const customer = await client.customers.retrieve(customerId);
   if ('deleted' in customer) return null;
 
   const fromSettings = toId(customer.invoice_settings?.default_payment_method);
   if (fromSettings) return fromSettings;
 
-  const methods = await stripe.paymentMethods.list({
+  const methods = await client.paymentMethods.list({
     customer: customerId,
     type:     'card',
     limit:    1,
@@ -122,12 +172,13 @@ async function resolveDefaultPaymentMethod(customerId: string): Promise<string |
 async function resolvePayerCustomerId(
   projectId:  string,
   ownerEmail: string,
+  deps:       ChargeDeps,
 ): Promise<string | null> {
-  const orgCustomerId = await getBillingCustomerForProject(projectId);
+  const orgCustomerId = await deps.getBillingCustomerForProject(projectId);
   if (orgCustomerId) return orgCustomerId;
 
   if (!ownerEmail) return null;
-  const payer = await getUser(ownerEmail);
+  const payer = await deps.getUser(ownerEmail);
   if (!payer?.stripeCustomerId || !payer.billingComplete) return null;
   return payer.stripeCustomerId;
 }
@@ -146,8 +197,13 @@ async function resolvePayerCustomerId(
  * PaymentIntent instead of charging the client twice, while a second genuine
  * call raises a new charge.
  */
-export async function chargeSavedCard(params: ChargeSavedCardParams): Promise<ChargeResult> {
+export async function chargeSavedCard(
+  params: ChargeSavedCardParams,
+  /** Test seam only — see ChargeDeps. Production calls this with one argument. */
+  deps?:  Partial<ChargeDeps>,
+): Promise<ChargeResult> {
   const { projectId, expertId, ownerEmail, amount, callId } = params;
+  const d = { ...defaultChargeDeps(), ...deps };
 
   // A payer needs either a project (→ its organization's card) or an owner
   // email (→ the legacy per-user card). Stripe's minimum charge is $0.50.
@@ -156,13 +212,13 @@ export async function chargeSavedCard(params: ChargeSavedCardParams): Promise<Ch
   }
 
   try {
-    const customerId = await resolvePayerCustomerId(projectId, ownerEmail);
+    const customerId = await resolvePayerCustomerId(projectId, ownerEmail, d);
     if (!customerId) return { outcome: 'no_saved_card' };
 
-    const paymentMethodId = await resolveDefaultPaymentMethod(customerId);
+    const paymentMethodId = await resolveDefaultPaymentMethod(customerId, d.stripe);
     if (!paymentMethodId) return { outcome: 'no_saved_card' };
 
-    const intent = await stripe.paymentIntents.create(
+    const intent = await d.stripe.paymentIntents.create(
       {
         customer:             customerId,
         amount:               Math.round(amount * 100),

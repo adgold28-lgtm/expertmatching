@@ -7,7 +7,14 @@
 //   - NEVER log accountId, transferId, or email
 //   - Log only expertId and projectId for transfer operations
 //   - Redis keys use HMAC-hashed email (no PII in key names)
+//
+// TEST SEAM: isOnboardingComplete() and transferExpertPayout() take an optional
+// trailing Stripe client, defaulting to the real one, so
+// scripts/test-stripe-flows.ts can assert the transferred amount and the
+// idempotency key without a Stripe account. Every caller in the app is
+// unchanged.
 
+import type Stripe from 'stripe';
 import { stripe } from './stripe';
 import { getUpstashClient } from './upstashRedis';
 import { createHmac } from 'crypto';
@@ -64,14 +71,34 @@ export async function createOnboardingLink(
   return link.url;
 }
 
+// ─── Test seam ────────────────────────────────────────────────────────────────
+
+/**
+ * The slice of the Stripe SDK the payout path uses. Narrow on purpose: the real
+ * client satisfies it structurally and a stub implements two calls.
+ */
+export interface ConnectStripeClient {
+  accounts:  { retrieve(id: string): Promise<{ details_submitted?: boolean | null }> };
+  transfers: {
+    create(
+      params:   Stripe.TransferCreateParams,
+      options?: { idempotencyKey?: string },
+    ): Promise<{ id: string }>;
+  };
+}
+
 // ─── Onboarding status check ──────────────────────────────────────────────────
 
 // `details_submitted` means the expert finished the hosted onboarding form — it
 // is NOT the same as `payouts_enabled` (Stripe may still be verifying). The
 // webhook's account.updated branch treats either signal as worth a retry sweep
 // and lets the transfer itself be the final arbiter.
-export async function isOnboardingComplete(accountId: string): Promise<boolean> {
-  const account = await stripe.accounts.retrieve(accountId);
+export async function isOnboardingComplete(
+  accountId: string,
+  /** Test seam only — see the header. */
+  client:    ConnectStripeClient = stripe,
+): Promise<boolean> {
+  const account = await client.accounts.retrieve(accountId);
   return account.details_submitted === true;
 }
 
@@ -101,6 +128,8 @@ export async function transferExpertPayout(
   expertId:    string,
   /** The call this payout is for; see payoutIdempotencyKey. */
   callId:      string | null = null,
+  /** Test seam only — see the header. */
+  client:      ConnectStripeClient = stripe,
 ): Promise<string> {
   if (amountCents < 50) {
     throw new Error(`[stripeConnect] payout too small: ${amountCents} cents`);
@@ -113,7 +142,7 @@ export async function transferExpertPayout(
   // window, NOT "forever". The durable guard is the stored paidCallIds list
   // that lib/expertPayout.ts checks before it ever gets here, and which is now
   // written in its own database call the moment the transfer returns.
-  const transfer = await stripe.transfers.create(
+  const transfer = await client.transfers.create(
     {
       amount:      amountCents,
       currency:    'usd',

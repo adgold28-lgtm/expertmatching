@@ -4,12 +4,19 @@
 // carry no usable duration? Both are money decisions, so both are tested by
 // scripts/test-zoom-webhook.ts.
 //
+// It also owns the SIGNATURE itself (zoomSignature / verifyZoomWebhook): the
+// route reads the headers and answers, this file decides — which is what lets
+// scripts/test-webhook-signature.ts check the v0 HMAC and the replay window
+// against real fixtures instead of trusting the route's inline copy.
+//
 // WHY THIS FILE EXISTS RATHER THAN LIVING IN route.ts: Next's App Router
 // type-checks a `route.ts` against a closed set of exports (the HTTP verbs plus
 // the route segment config), so exporting a helper VALUE from it fails
 // `next build`. Types may be exported from a route file; functions and consts
 // may not. Colocating them here keeps them testable and keeps the route file
 // legal. No I/O, no clock of its own, no env: `now` is always supplied.
+
+import { createHmac, timingSafeEqual } from 'crypto';
 
 /**
  * How old a signed Zoom delivery may be before it is refused, in seconds.
@@ -93,4 +100,63 @@ export function resolveMeetingEnd(
   }
 
   return { skip: true, reason: 'no_duration' };
+}
+
+// ─── Signature (v0 HMAC) ──────────────────────────────────────────────────────
+
+/**
+ * Zoom's `x-zm-signature` value for a delivery: `v0=` plus the hex
+ * HMAC-SHA256, keyed with the webhook secret token, over the exact string
+ * `v0:{timestamp}:{raw body}`. The RAW body matters — re-serialising the parsed
+ * JSON changes the bytes and therefore the signature. Pure.
+ */
+export function zoomSignature(secret: string, timestamp: string, rawBody: string): string {
+  return 'v0=' + createHmac('sha256', secret).update(`v0:${timestamp}:${rawBody}`).digest('hex');
+}
+
+/**
+ * The answer to Zoom's `endpoint.url_validation` handshake: the hex HMAC of the
+ * plainToken under the same secret. That handshake carries no signature of its
+ * own, which is why it is answered before the checks below. Pure.
+ */
+export function zoomUrlValidationHash(secret: string, plainToken: string): string {
+  return createHmac('sha256', secret).update(plainToken).digest('hex');
+}
+
+export type ZoomVerifyResult =
+  | { ok: true }
+  | { ok: false; error: 'missing_signature' | 'invalid_signature' | 'stale_timestamp' };
+
+/**
+ * Whether a signed Zoom delivery may be acted on, in the order the route
+ * answers: a missing secret or header is 'missing_signature'; a signature that
+ * does not match (including a wrong-length one, which makes timingSafeEqual
+ * throw) is 'invalid_signature'; a correctly signed but old or future-dated
+ * delivery is 'stale_timestamp' (C-4 — a captured body stays validly signed
+ * forever, so the signature alone proves authorship, never freshness).
+ *
+ * Pure apart from the HMAC: `now` is always supplied by the caller.
+ */
+export function verifyZoomWebhook(input: {
+  secret:    string | undefined;
+  timestamp: string | null | undefined;
+  signature: string | null | undefined;
+  rawBody:   string;
+  now:       number;
+}): ZoomVerifyResult {
+  const { secret, timestamp, signature, rawBody, now } = input;
+  if (!secret || !signature) return { ok: false, error: 'missing_signature' };
+
+  const expected = zoomSignature(secret, String(timestamp ?? ''), rawBody);
+  try {
+    if (!timingSafeEqual(Buffer.from(signature), Buffer.from(expected))) {
+      return { ok: false, error: 'invalid_signature' };
+    }
+  } catch {
+    // Length mismatch — timingSafeEqual throws rather than returning false.
+    return { ok: false, error: 'invalid_signature' };
+  }
+
+  if (!isFreshTimestamp(timestamp, now)) return { ok: false, error: 'stale_timestamp' };
+  return { ok: true };
 }

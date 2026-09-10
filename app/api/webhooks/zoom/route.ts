@@ -32,16 +32,21 @@
 // NEVER log: expert names, project names, meeting topics.
 // Meeting IDs and durations are safe to log.
 
-import { createHmac, timingSafeEqual } from 'crypto';
 import { callChargeDollars } from '../../../../lib/pricing';
 import { NextRequest, NextResponse } from 'next/server';
 import { getProject, updateExpertStatus } from '../../../../lib/projectStore';
 import { recordSystemFailure } from '../../../../lib/engagementEvents';
 import { findProjectExpertByZoomMeetingId } from '../../../../lib/zoomLookup';
-// The two pure decisions on this path live next door so they can be unit
-// tested: a route.ts may not export helper values (Next type-checks its
-// exports). See ./meetingEnd.ts and scripts/test-zoom-webhook.ts.
-import { isFreshTimestamp, resolveMeetingEnd } from './meetingEnd';
+// The pure decisions on this path — the v0 signature, the replay window and
+// what a meeting.ended means — live next door so they can be unit tested: a
+// route.ts may not export helper values (Next type-checks its exports). See
+// ./meetingEnd.ts, scripts/test-zoom-webhook.ts and
+// scripts/test-webhook-signature.ts.
+import {
+  resolveMeetingEnd,
+  verifyZoomWebhook,
+  zoomUrlValidationHash,
+} from './meetingEnd';
 
 // ─── Route handler ────────────────────────────────────────────────────────────
 
@@ -66,37 +71,27 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'missing_signature' }, { status: 400 });
     }
     const payload = body.payload as Record<string, unknown>;
-    const hash = createHmac('sha256', secret)
-      .update(String(payload.plainToken))
-      .digest('hex');
+    const hash    = zoomUrlValidationHash(secret, String(payload.plainToken));
     return NextResponse.json({ plainToken: payload.plainToken, encryptedToken: hash });
   }
 
-  // ── Signature ───────────────────────────────────────────────────────────
-  // Zoom signs `v0:{timestamp}:{raw body}` with the webhook secret token. The
-  // RAW text is required, which is why the body was read as text and parsed
-  // separately above rather than with request.json(). timingSafeEqual throws on
-  // a length mismatch, so the compare is wrapped: a wrong-length signature is a
-  // 400, not a 500.
-  if (!secret || !zmSig) {
-    return NextResponse.json({ error: 'missing_signature' }, { status: 400 });
-  }
-  const message  = `v0:${ts}:${rawBody}`;
-  const expected = 'v0=' + createHmac('sha256', secret).update(message).digest('hex');
-  try {
-    const sigOk = timingSafeEqual(Buffer.from(zmSig), Buffer.from(expected));
-    if (!sigOk) return NextResponse.json({ error: 'invalid_signature' }, { status: 400 });
-  } catch {
-    return NextResponse.json({ error: 'invalid_signature' }, { status: 400 });
-  }
-
-  // ── Replay window ───────────────────────────────────────────────────────
-  // The signature proves authorship, never freshness: the same signed body
-  // replays forever. Every SIGNED event must therefore also be recent. The
-  // url_validation handshake above is exempt (it is answered before this point
-  // and Zoom sends it out of band).
-  if (!isFreshTimestamp(ts, Date.now())) {
-    return NextResponse.json({ error: 'stale_timestamp' }, { status: 400 });
+  // ── Signature and replay window ─────────────────────────────────────────
+  // Zoom signs `v0:{timestamp}:{raw body}` with the webhook secret token, which
+  // is why the body was read as text and parsed separately above rather than
+  // with request.json(). The signature proves authorship, never freshness — a
+  // captured body stays validly signed forever — so verifyZoomWebhook also
+  // requires the delivery to be recent. Same three error strings and the same
+  // 400 as before. The url_validation handshake is exempt: it is answered above
+  // and Zoom sends it out of band.
+  const verified = verifyZoomWebhook({
+    secret,
+    timestamp: ts,
+    signature: zmSig,
+    rawBody,
+    now:       Date.now(),
+  });
+  if (!verified.ok) {
+    return NextResponse.json({ error: verified.error }, { status: 400 });
   }
 
   const eventType = body.event as string;

@@ -33,6 +33,12 @@
 // (app/api/jobs/reconcile/route.ts). A row is retried at most
 // MAX_PAYOUT_ATTEMPTS times.
 //
+// TEST SEAM: runExpertPayout(projectId, expertId) behaves exactly as before; an
+// optional third argument replaces the store reads/writes, the Connect calls
+// and the reminder email with stubs so scripts/test-stripe-flows.ts can assert
+// the transferred amount, the idempotency key and the write ORDER without a
+// Stripe account or a database (see PayoutDeps).
+//
 // Required env vars:
 //   RESEND_API_KEY        — payout onboarding email (optional; skipped if absent)
 //   OUTREACH_FROM_EMAIL   — sender address (optional; skipped if absent)
@@ -267,6 +273,69 @@ export function payoutSuccessPatches(
   ];
 }
 
+// ─── Test seam ────────────────────────────────────────────────────────────────
+
+/** The parts of a Project runExpertPayout reads. A real Project satisfies it. */
+export interface PayoutProjectView {
+  experts: Array<
+    PayoutGuardView
+    & ReminderView
+    & Pick<
+        ProjectExpert,
+        'contactEmail' | 'expertRate' | 'actualDurationMin' | 'callDurationMin'
+        | 'stripeConnectAccountId' | 'payoutAttempts'
+      >
+    & { expert: { id: string; name: string } }
+  >;
+}
+
+/**
+ * Everything runExpertPayout reaches outside itself. Production never passes
+ * it. Declared with method syntax so a stub may narrow a parameter type.
+ */
+export interface PayoutDeps {
+  getProject(projectId: string): Promise<PayoutProjectView | null>;
+  updateExpertStatus(projectId: string, expertId: string, patch: UpdateExpertInput): Promise<unknown>;
+  getConnectAccountId(email: string): Promise<string | null>;
+  isOnboardingComplete(accountId: string): Promise<boolean>;
+  transferExpertPayout(
+    accountId:   string,
+    amountCents: number,
+    projectId:   string,
+    expertId:    string,
+    callId:      string | null,
+  ): Promise<string>;
+  recordSystemFailure(input: {
+    area:            'payout';
+    reason:          unknown;
+    projectId?:      string;
+    expertId?:       string;
+  }): Promise<void>;
+  generateAvailabilityToken(projectId: string, expertId: string): { token: string };
+  sendPayoutOnboardingEmail(
+    expertEmail:       string,
+    expertFirstName:   string,
+    expertAmountCents: number,
+    onboardingUrl:     string,
+  ): Promise<void>;
+  now(): number;
+}
+
+/** The real store, Connect client and mailer. */
+function defaultPayoutDeps(): PayoutDeps {
+  return {
+    getProject,
+    updateExpertStatus,
+    getConnectAccountId,
+    isOnboardingComplete,
+    transferExpertPayout,
+    recordSystemFailure,
+    generateAvailabilityToken,
+    sendPayoutOnboardingEmail,
+    now: Date.now,
+  };
+}
+
 // ─── Public API ───────────────────────────────────────────────────────────────
 
 /**
@@ -277,9 +346,15 @@ export function payoutSuccessPatches(
  * recorded with recordSystemFailure({ area: 'payout' }) so they reach the admin
  * attention list (lib/attention.ts) instead of only a deploy log.
  */
-export async function runExpertPayout(projectId: string, expertId: string): Promise<void> {
+export async function runExpertPayout(
+  projectId: string,
+  expertId:  string,
+  /** Test seam only — see PayoutDeps. Production calls this with two arguments. */
+  deps?:     Partial<PayoutDeps>,
+): Promise<void> {
+  const d = { ...defaultPayoutDeps(), ...deps };
   try {
-    const project     = await getProject(projectId);
+    const project     = await d.getProject(projectId);
     const pe          = project?.experts.find(e => e.expert.id === expertId);
     const expertEmail = pe?.contactEmail;
 
@@ -312,14 +387,14 @@ export async function runExpertPayout(projectId: string, expertId: string): Prom
 
     // Check if expert has a Connect account and onboarding is complete
     const connectAccountId = pe.stripeConnectAccountId
-      ?? (await getConnectAccountId(expertEmail));
+      ?? (await d.getConnectAccountId(expertEmail));
 
     if (connectAccountId) {
-      const onboardingDone = await isOnboardingComplete(connectAccountId);
+      const onboardingDone = await d.isOnboardingComplete(connectAccountId);
       if (onboardingDone && expertAmountCents >= 50) {
         let transferId: string;
         try {
-          transferId = await transferExpertPayout(
+          transferId = await d.transferExpertPayout(
             connectAccountId,
             expertAmountCents,
             projectId,
@@ -339,8 +414,8 @@ export async function runExpertPayout(projectId: string, expertId: string): Prom
             payoutAttempts:         (pe.payoutAttempts ?? 0) + 1,
             stripeConnectAccountId: connectAccountId,
           };
-          await updateExpertStatus(projectId, expertId, failPatch).catch(() => {});
-          await recordSystemFailure({
+          await d.updateExpertStatus(projectId, expertId, failPatch).catch(() => {});
+          await d.recordSystemFailure({
             area:   'payout',
             reason: transferErr,
             projectId,
@@ -362,14 +437,14 @@ export async function runExpertPayout(projectId: string, expertId: string): Prom
           connectAccountId,
           callId,
           pe.paidCallIds,
-          Date.now(),
+          d.now(),
         );
         try {
-          await updateExpertStatus(projectId, expertId, moneyPatch);
+          await d.updateExpertStatus(projectId, expertId, moneyPatch);
         } catch (writeErr) {
           console.error('[stripe] transfer-id write failed:',
             writeErr instanceof Error ? writeErr.message.slice(0, 120) : 'unknown');
-          await recordSystemFailure({
+          await d.recordSystemFailure({
             area:   'payout',
             reason: 'transfer_sent_but_unrecorded',
             projectId,
@@ -379,13 +454,13 @@ export async function runExpertPayout(projectId: string, expertId: string): Prom
         }
 
         try {
-          await updateExpertStatus(projectId, expertId, bookkeepingPatch);
+          await d.updateExpertStatus(projectId, expertId, bookkeepingPatch);
         } catch (writeErr) {
           // Cosmetic by comparison: the transfer id is already stored, so the
           // guard above holds. Recorded so the row is still visibly odd.
           console.error('[stripe] payout bookkeeping write failed:',
             writeErr instanceof Error ? writeErr.message.slice(0, 120) : 'unknown');
-          await recordSystemFailure({
+          await d.recordSystemFailure({
             area:   'payout',
             reason: 'payout_recorded_without_completion_fields',
             projectId,
@@ -398,18 +473,18 @@ export async function runExpertPayout(projectId: string, expertId: string): Prom
       if (!onboardingDone) {
         // Account exists but onboarding not complete — re-send the link, at
         // most weekly and four times in total (H-9).
-        await updateExpertStatus(projectId, expertId, {
+        await d.updateExpertStatus(projectId, expertId, {
           expertOnboardingStatus: 'pending',
           stripeConnectAccountId: connectAccountId,
         });
-        await sendOnboardingLink(projectId, expertId, pe, expertEmail, expertFirstName, expertAmountCents);
+        await sendOnboardingLink(projectId, expertId, pe, expertEmail, expertFirstName, expertAmountCents, d);
       }
       return;
     }
 
     // No Connect account yet — send onboarding email (same weekly cap).
-    await updateExpertStatus(projectId, expertId, { expertOnboardingStatus: 'pending' });
-    await sendOnboardingLink(projectId, expertId, pe, expertEmail, expertFirstName, expertAmountCents);
+    await d.updateExpertStatus(projectId, expertId, { expertOnboardingStatus: 'pending' });
+    await sendOnboardingLink(projectId, expertId, pe, expertEmail, expertFirstName, expertAmountCents, d);
   } catch (err) {
     // Never throw — payment is already recorded
     console.error('[stripe] payout error:', err instanceof Error ? err.message.slice(0, 120) : String(err));
@@ -549,12 +624,13 @@ async function sendOnboardingLink(
   expertEmail:       string,
   expertFirstName:   string,
   expertAmountCents: number,
+  deps:              PayoutDeps,
 ): Promise<void> {
   if (process.env.DISABLE_EMAILS === 'true') return;
 
   // H-9: the nightly sweep calls this every night for as long as the row stays
   // pending. Counted and dated on the row so it stops after four, a week apart.
-  const now = Date.now();
+  const now = deps.now();
   if (!shouldSendPayoutReminder(pe, now)) {
     console.log('[stripe] payout-reminder-throttled', {
       projectId,
@@ -569,10 +645,10 @@ async function sendOnboardingLink(
   };
   // Stamped BEFORE the send: a send that throws must not license a second
   // attempt every night. The cap is on attempts, not on deliveries.
-  await updateExpertStatus(projectId, expertId, reminderPatch).catch(() => {});
+  await deps.updateExpertStatus(projectId, expertId, reminderPatch).catch(() => {});
 
-  const { token }     = generateAvailabilityToken(projectId, expertId);
+  const { token }     = deps.generateAvailabilityToken(projectId, expertId);
   const baseUrl       = process.env.NEXT_PUBLIC_BASE_URL ?? process.env.NEXT_PUBLIC_APP_URL ?? 'https://expertmatch.fit';
   const onboardingUrl = `${baseUrl}/expert-onboarding/${token}`;
-  await sendPayoutOnboardingEmail(expertEmail, expertFirstName, expertAmountCents, onboardingUrl);
+  await deps.sendPayoutOnboardingEmail(expertEmail, expertFirstName, expertAmountCents, onboardingUrl);
 }
