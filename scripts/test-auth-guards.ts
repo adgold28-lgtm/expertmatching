@@ -1,8 +1,9 @@
-// scripts/test-auth-guards.ts — the auth hardening from Wave 2 brief W2-D.
+// scripts/test-auth-guards.ts — the auth hardening from Wave 2 brief W2-D,
+// extended in Wave 4 (W4-0) for the admin/users delete-outcome fix.
 //
 //   npx tsx scripts/test-auth-guards.ts
 //
-// Four things, all of them pure or driven through injected fakes: no Supabase,
+// Five things, all of them pure or driven through injected fakes: no Supabase,
 // no Upstash, no HTTP server, no env vars.
 //
 //   1. lib/loginThrottle   — the two-counter login decision (audit H-14, H-15),
@@ -18,6 +19,11 @@
 //                            reimplemented here as the same predicate the route
 //                            uses. See the note above that section.
 //   4. lib/membershipReconcile — the nightly revocation repair (audit H-16).
+//   5. app/api/admin/users — the DELETE outcome decision table (audit M-46):
+//                            an owner-with-projects target is refused before
+//                            deleteUser is ever called, and no other refusal
+//                            is reported as ok:true. See the note above that
+//                            section for why it is reimplemented here too.
 //
 // Exits non-zero on the first failing assertion set, so it can gate a deploy.
 
@@ -356,6 +362,93 @@ async function runSweepCases(): Promise<void> {
   eq('no disabled memberships is a clean zero result',
     `${empty.scanned}/${empty.repaired}/${empty.errors}`, '0/0/0');
 }
+
+// ── 5. Admin-users DELETE outcome (M-46) ─────────────────────────────────────
+//
+// NOTE ON WHAT IS TESTED HERE. The decision table lives in
+// app/api/admin/users/route.ts as `classifyDeleteOutcome`, and it is not
+// exported: a Next.js app-router route.ts may only export the HTTP method
+// handlers plus a small config allowlist — the framework's generated route
+// typecheck rejects any other named export (confirmed while writing this
+// fix; `npx tsc --noEmit` fails on an exported helper with "is not
+// assignable to type 'never'"). Rather than move the rule out of the route
+// into an importable module, it is restated here verbatim and asserted
+// against every combination. If the route's copy is edited, this must be
+// edited with it.
+//
+// The rule: an owner-with-projects target is refused with 409 before
+// deleteUser is ever called (so the FK RESTRICT never fires and the account
+// is never touched); any OTHER delete refusal is 500, never a silent
+// ok:true (the exact gap M-46 describes — deleteUser/deleteSupabaseUser
+// report a refusal as `deleted: false` rather than throwing, and the old
+// route discarded that signal outright).
+
+section('DELETE /api/admin/users outcome decision table (M-46)');
+
+type DeleteUserOutcome =
+  | { status: 200; body: { ok: true } }
+  | { status: 409; body: { error: 'owns_projects'; count: number; projectNames: string[] } }
+  | { status: 500; body: { error: 'delete_failed' } };
+
+function classifyDeleteOutcome(input: {
+  ownedProjectNames: string[];
+  deleted: boolean;
+}): DeleteUserOutcome {
+  if (input.ownedProjectNames.length > 0) {
+    return {
+      status: 409,
+      body: {
+        error:        'owns_projects',
+        count:        input.ownedProjectNames.length,
+        projectNames: input.ownedProjectNames,
+      },
+    };
+  }
+  if (!input.deleted) {
+    return { status: 500, body: { error: 'delete_failed' } };
+  }
+  return { status: 200, body: { ok: true } };
+}
+
+const noProjectsDeleted   = classifyDeleteOutcome({ ownedProjectNames: [], deleted: true });
+eq('no owned projects and a successful delete is 200', noProjectsDeleted.status, 200);
+
+const ownsOneProject = classifyDeleteOutcome({
+  ownedProjectNames: ['Q3 Buyer Diligence'],
+  deleted: false,
+});
+eq('an owner of one project is refused, not deleted', ownsOneProject.status, 409);
+check('the 409 names the error as owns_projects',
+  ownsOneProject.status === 409 && ownsOneProject.body.error === 'owns_projects');
+check('the 409 carries the count',
+  ownsOneProject.status === 409 && ownsOneProject.body.count === 1);
+check('the 409 names the blocking project',
+  ownsOneProject.status === 409 &&
+  ownsOneProject.body.projectNames[0] === 'Q3 Buyer Diligence');
+
+const ownsThreeProjects = classifyDeleteOutcome({
+  ownedProjectNames: ['Alpha', 'Beta', 'Gamma'],
+  deleted: false,
+});
+check('the count matches the number of owned projects',
+  ownsThreeProjects.status === 409 && ownsThreeProjects.body.count === 3);
+
+const refusedForOtherReason = classifyDeleteOutcome({ ownedProjectNames: [], deleted: false });
+eq('a refusal that is NOT project ownership is 500, never ok:true',
+  refusedForOtherReason.status, 500);
+check('the 500 names the error as delete_failed',
+  refusedForOtherReason.status === 500 && refusedForOtherReason.body.error === 'delete_failed');
+
+// Owned projects are checked first: even a `deleted: true` alongside owned
+// projects (should never happen — the route never calls deleteUser in that
+// case — but the table itself must not be able to answer ok:true here) is
+// still refused as owns_projects.
+const ownsProjectsEvenIfDeletedTrue = classifyDeleteOutcome({
+  ownedProjectNames: ['Orphan Risk Project'],
+  deleted: true,
+});
+eq('owned-projects refusal takes priority over any deleted flag',
+  ownsProjectsEvenIfDeletedTrue.status, 409);
 
 // ── Run the async sections, then report ──────────────────────────────────────
 

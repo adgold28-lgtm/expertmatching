@@ -3,7 +3,8 @@ import { adminGuard, getSessionUser } from '../../../../lib/auth';
 import { provisionAccountInvite } from '../../../../lib/accountProvisioning';
 import { emailDomainOf, isPublicEmailDomain } from '../../../../lib/emailDomains';
 import { startTrial } from '../../../../lib/entitlements';
-import { getAuthUserIdByEmail } from '../../../../lib/supabase/admin';
+import { getAuthUserIdByEmail, getServiceRoleClient } from '../../../../lib/supabase/admin';
+import { recordSystemFailure } from '../../../../lib/engagementEvents';
 import { randomBytes } from 'crypto';
 
 /**
@@ -31,6 +32,46 @@ const VALID_STATUSES = new Set<UserStatus>(['active', 'disabled']);
 async function syncSeats(organizationId: string | undefined): Promise<void> {
   if (!organizationId) return;
   try { await syncOrgSeatQuantity(organizationId); } catch { /* best effort */ }
+}
+
+/**
+ * Pure decision table for DELETE's response, so it is testable without a
+ * database (scripts/test-auth-guards.ts).
+ *
+ * `deleted: true` is answered only when the auth user is actually gone
+ * (audit M-46): a project-owning target is refused before deleteUser is even
+ * called (projects.owner_id references profiles(id) ON DELETE RESTRICT would
+ * otherwise surface as an opaque `deleted: false`), and any OTHER refusal
+ * (deleteUser/deleteSupabaseUser returning false) is a 500, never a 200.
+ */
+type DeleteUserOutcome =
+  | { status: 200; body: { ok: true } }
+  | { status: 409; body: { error: 'owns_projects'; count: number; projectNames: string[] } }
+  | { status: 500; body: { error: 'delete_failed' } };
+
+// NOT exported: Next.js's app-router route files may only export the HTTP
+// method handlers (and a small allowlist of config values) — an extra named
+// export here fails the framework's generated route typecheck. The mirrored
+// decision table this helper implements is asserted directly in
+// scripts/test-auth-guards.ts instead (see its header comment there).
+function classifyDeleteOutcome(input: {
+  ownedProjectNames: string[];
+  deleted: boolean;
+}): DeleteUserOutcome {
+  if (input.ownedProjectNames.length > 0) {
+    return {
+      status: 409,
+      body: {
+        error:        'owns_projects',
+        count:        input.ownedProjectNames.length,
+        projectNames: input.ownedProjectNames,
+      },
+    };
+  }
+  if (!input.deleted) {
+    return { status: 500, body: { error: 'delete_failed' } };
+  }
+  return { status: 200, body: { ok: true } };
 }
 
 // GET ?all=true          — list all users across every organization (admin panel)
@@ -141,6 +182,14 @@ export async function POST(request: NextRequest): Promise<Response> {
 }
 
 // PATCH { email, status } — update membership status (active | disabled)
+//
+// Revocation that does not reach app_metadata is NOT success (audit H-16):
+// the guards read the JWT claims, never the tables, so a disable whose
+// upsertUser sync failed leaves the account working while the row says
+// 'disabled'. Mirrors app/api/org/members/route.ts PATCH exactly: answer
+// 200 { ok: true, warning: 'metadata_sync_failed' } and record a
+// 'membership' system failure so it lands on the attention feed and the
+// nightly reconcile repairs it.
 export async function PATCH(request: NextRequest): Promise<Response> {
   const err = await adminGuard(request);
   if (err) return err;
@@ -168,10 +217,19 @@ export async function PATCH(request: NextRequest): Promise<Response> {
     const user = await getUser(email);
     if (!user) return Response.json({ error: 'user_not_found' }, { status: 404 });
 
-    await upsertUser(email, { status: status as UserStatus });
+    const { metadataSynced } = await upsertUser(email, { status: status as UserStatus });
 
     // The organization's billable seat count changed.
     await syncSeats(user.orgId);
+
+    if (!metadataSynced) {
+      await recordSystemFailure({
+        area:           'membership',
+        reason:         'app_metadata sync failed after an admin status change; JWT claims are stale',
+        organizationId: user.orgId ?? null,
+      });
+      return Response.json({ ok: true, warning: 'metadata_sync_failed' });
+    }
 
     return Response.json({ ok: true });
   } catch {
@@ -181,6 +239,16 @@ export async function PATCH(request: NextRequest): Promise<Response> {
 }
 
 // DELETE { email } — permanently remove a user
+//
+// projects.owner_id references profiles(id) ON DELETE RESTRICT, so deleting a
+// user who owns any project would otherwise fail at the foreign-key layer
+// with no admin-visible cause: deleteUser/deleteSupabaseUser report that
+// refusal as `deleted: false` rather than throwing (audit M-46). This route
+// checks ownership up front, via the service-role client, and names the
+// blocking projects with 409 { error: 'owns_projects', count, projectNames }
+// before ever calling deleteUser. Any OTHER refusal (deleted: false for a
+// reason other than owned projects) is 500 { error: 'delete_failed' } — this
+// route never answers ok:true unless the auth user is actually gone.
 export async function DELETE(request: NextRequest): Promise<Response> {
   const err = await adminGuard(request);
   if (err) return err;
@@ -210,12 +278,41 @@ export async function DELETE(request: NextRequest): Promise<Response> {
     const user = await getUser(email);
     if (!user) return Response.json({ error: 'user_not_found' }, { status: 404 });
 
-    await deleteUser(email);
+    // Pre-check owned projects before ever attempting the delete — see the
+    // header comment above. Best-effort resolution: if the profile id or the
+    // service-role client can't be reached here, ownedProjectNames stays
+    // empty and the delete attempt below still catches a real FK refusal via
+    // classifyDeleteOutcome's `deleted: false` -> 500 branch.
+    let ownedProjectNames: string[] = [];
+    const profileId = await getAuthUserIdByEmail(email).catch(() => null);
+    if (profileId) {
+      const db = getServiceRoleClient();
+      if (db) {
+        const { data: owned } = await db
+          .from('projects')
+          .select('name')
+          .eq('owner_id', profileId);
+        ownedProjectNames = (owned ?? []).map(p => p.name);
+      }
+    }
+
+    const { deleted } = ownedProjectNames.length > 0
+      ? { deleted: false }
+      : await deleteUser(email);
+
+    const outcome = classifyDeleteOutcome({ ownedProjectNames, deleted });
+
+    if (outcome.status !== 200) {
+      if (outcome.status === 500) {
+        console.error('[admin/users] delete refused; auth user still live');
+      }
+      return Response.json(outcome.body, { status: outcome.status });
+    }
 
     // Removing a membership frees a billable seat.
     await syncSeats(user.orgId);
 
-    return Response.json({ ok: true });
+    return Response.json(outcome.body);
   } catch {
     console.error('[admin/users] failed to delete user');
     return Response.json({ error: 'Failed to delete user' }, { status: 500 });
