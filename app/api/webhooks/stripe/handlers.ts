@@ -16,6 +16,7 @@
 // and no Redis.
 
 import type Stripe from 'stripe';
+import { randomUUID } from 'crypto';
 import type { ProjectExpert } from '../../../../types';
 import { stripe } from '../../../../lib/stripe';
 import { updateExpertStatus, getProject } from '../../../../lib/projectStore';
@@ -191,8 +192,10 @@ export interface StripeWebhookDeps {
     projectId?: string;
     expertId?:  string;
   }): Promise<void>;
-  /** Claims one event id so its branches run once. See claimStripeEvent. */
-  claimEvent(eventId: string): Promise<EventDedupDecision>;
+  /** Checks completed work and acquires a short processing lease. */
+  claimEvent(eventId: string, owner: string): Promise<EventDedupDecision | 'busy'>;
+  completeEvent(eventId: string): Promise<void>;
+  releaseEvent(eventId: string, owner: string): Promise<void>;
   now(): number;
 }
 
@@ -206,26 +209,43 @@ function defaultWebhookDeps(): StripeWebhookDeps {
     recordSubscriptionStatus,
     recordSystemFailure,
     claimEvent: claimStripeEvent,
+    completeEvent: completeStripeEvent,
+    releaseEvent: releaseStripeEvent,
     now: Date.now,
   };
 }
 
-/**
- * Claims one event id in Redis so its branches run once. Fail-open: see
- * decideEventDedup for why processing twice is the safe direction here.
- */
-export async function claimStripeEvent(eventId: string): Promise<EventDedupDecision> {
+// v2 ignores the old pre-processing markers: they may represent lost work.
+const doneKey = (id: string) => `stripe-done:v2:${id}`;
+const lockKey = (id: string) => `stripe-processing:v2:${id}`;
+
+export async function claimStripeEvent(eventId: string, owner: string): Promise<EventDedupDecision | 'busy'> {
   const redis = getUpstashClient();
-  if (!redis) return decideEventDedup(null, false);
+  if (!redis) return 'process';
   try {
-    const result = await redis.set(stripeEventKey(eventId), '1', {
-      nx: true,
-      ex: STRIPE_EVENT_TTL_SECONDS,
-    });
-    return decideEventDedup(result, true);
+    if (await redis.get(doneKey(eventId))) return 'duplicate';
+    const acquired = await redis.set(lockKey(eventId), owner, { nx: true, ex: 300 });
+    if (!acquired) return 'busy';
+    // A prior worker can finish between our first read and acquiring its lock.
+    if (await redis.get(doneKey(eventId))) {
+      await redis.releaseLockIfOwner(lockKey(eventId), owner);
+      return 'duplicate';
+    }
+    return 'process';
   } catch {
-    return decideEventDedup(null, false);
+    // Redis is optional. Durable payment state and Stripe idempotency still apply.
+    return 'process';
   }
+}
+
+async function completeStripeEvent(eventId: string): Promise<void> {
+  const redis = getUpstashClient();
+  if (redis) await redis.set(doneKey(eventId), '1', { ex: STRIPE_EVENT_TTL_SECONDS });
+}
+
+async function releaseStripeEvent(eventId: string, owner: string): Promise<void> {
+  const redis = getUpstashClient();
+  if (redis) await redis.releaseLockIfOwner(lockKey(eventId), owner);
 }
 
 /** Records a successful client payment, then pays out the expert. */
@@ -235,18 +255,12 @@ async function handlePaymentSucceeded(
   intentId:  string | null,
   deps:      StripeWebhookDeps,
 ): Promise<void> {
-  try {
-    await deps.updateExpertStatus(projectId, expertId, {
-      paymentStatus:         'paid',
-      paidAt:                deps.now(),
-      ...(intentId ? { stripePaymentIntentId: intentId } : {}),
-    });
-    console.log('[stripe] payment-succeeded', { projectId, expertId });
-  } catch (err) {
-    console.error('[stripe] webhook update error:', err instanceof Error ? err.message.slice(0, 120) : String(err));
-  }
-
-  // Never throws — the client payment is already recorded.
+  // Do not pay an expert until the client payment has been durably recorded.
+  await deps.updateExpertStatus(projectId, expertId, {
+    paymentStatus: 'paid',
+    paidAt: deps.now(),
+    ...(intentId ? { stripePaymentIntentId: intentId } : {}),
+  });
   await deps.runExpertPayout(projectId, expertId);
 }
 
@@ -255,12 +269,7 @@ async function handlePaymentFailed(
   expertId:  string,
   deps:      StripeWebhookDeps,
 ): Promise<void> {
-  try {
-    await deps.updateExpertStatus(projectId, expertId, { paymentStatus: 'failed' });
-    console.log('[stripe] payment-failed', { projectId, expertId });
-  } catch (err) {
-    console.error('[stripe] webhook update error:', err instanceof Error ? err.message.slice(0, 120) : String(err));
-  }
+  await deps.updateExpertStatus(projectId, expertId, { paymentStatus: 'failed' });
   // M-43: a completed call that was never paid for is money the platform is
   // owed and an expert who will never be paid, and it used to exist only as a
   // log line. Recording it puts the engagement on the admin attention list.
@@ -299,25 +308,12 @@ async function handleRefundOrDispute(
   deps: StripeWebhookDeps,
 ): Promise<void> {
   const { projectId, expertId } = ref;
-  let current: ProjectExpert['paymentStatus'] = null;
-  try {
-    const project = await deps.getProject(projectId);
-    const pe      = project?.experts.find(e => e.expert.id === expertId);
-    if (!pe) return;
-    current = pe.paymentStatus ?? null;
-  } catch (err) {
-    console.error('[stripe] refund lookup error:', err instanceof Error ? err.message.slice(0, 120) : String(err));
-  }
-
-  const decision = decideRefundTransition(current, kind);
+  const project = await deps.getProject(projectId);
+  const pe = project?.experts.find(e => e.expert.id === expertId);
+  if (!pe) return;
+  const decision = decideRefundTransition(pe.paymentStatus ?? null, kind);
   if (decision.write) {
-    try {
-      const patch: UpdateExpertInput = { paymentStatus: decision.paymentStatus };
-      await deps.updateExpertStatus(projectId, expertId, patch);
-      console.log('[stripe] refund-recorded', { projectId, expertId, kind });
-    } catch (err) {
-      console.error('[stripe] refund write error:', err instanceof Error ? err.message.slice(0, 120) : String(err));
-    }
+    await deps.updateExpertStatus(projectId, expertId, { paymentStatus: decision.paymentStatus });
   }
 
   await deps.recordSystemFailure({
@@ -344,13 +340,8 @@ async function engagementForCharge(
 
   const intentId = typeof paymentIntent === 'string' ? paymentIntent : paymentIntent?.id;
   if (!intentId) return null;
-  try {
-    const intent = await deps.stripe.paymentIntents.retrieve(intentId);
-    return engagementRefFromMetadata(intent.metadata);
-  } catch (err) {
-    console.error('[stripe] intent lookup error:', err instanceof Error ? err.message.slice(0, 120) : String(err));
-    return null;
-  }
+  const intent = await deps.stripe.paymentIntents.retrieve(intentId);
+  return engagementRefFromMetadata(intent.metadata);
 }
 
 /**
@@ -381,23 +372,26 @@ export interface StripeEventOutcome {
  * Runs the branches for one verified Stripe event.
  *
  * Deliberate properties of this handler, worth knowing before adding a branch:
- *   * DE-DUPLICATED, BUT NOT DEPENDENT ON IT. event.id is claimed in Redis
- *     with SET NX EX 7d, so a redelivery is answered 200 without running any
- *     branch. The claim FAILS OPEN (no Redis, or a throwing Redis, processes
- *     the event), so every branch must still be safe to run twice — and is:
- *     the paid/failed/refunded writes are last-writer-wins on the same
- *     values, and runExpertPayout guards on the stored paidCallIds plus a
- *     per-call transfer idempotency key.
+ *   * CLAIMED, THEN COMPLETED. event.id takes a short owner-safe processing
+ *     lease in Redis; the completed marker is written only after the work
+ *     succeeds, and a failed claim is released so the route can answer 500 and
+ *     Stripe can redeliver. A busy delivery (another worker holds the lease) is
+ *     also retried, never acknowledged. The claim FAILS OPEN (no Redis, or a
+ *     throwing Redis, processes the event), so every branch must still be safe
+ *     to run twice — and is: the paid/failed/refunded writes are last-writer-
+ *     wins on the same values, and runExpertPayout guards on the stored
+ *     paidCallIds plus a per-call transfer idempotency key.
  *   * NO ORDERING GUARANTEE. Stripe may deliver out of order, so a late
  *     customer.subscription.updated can overwrite a 'past_due' mirrored from
  *     invoice.payment_failed; organization_billing is a hint for the UI, not
  *     the ledger — Stripe is.
  *   * REFUNDS CHANGE STATE, NOT MONEY. charge.refunded and
  *     charge.dispute.created move the engagement to 'refunded' and raise a
- *     system_events row. The expert's payout is NOT reversed — see the
- *     FOUNDER DECISION note on handleRefundOrDispute.
- *   * ALWAYS 200. A branch that fails logs and is dropped, rather than asking
- *     Stripe to redeliver.
+ *     system_events row so an operator looks. The expert's payout is NOT
+ *     reversed — see the FOUNDER DECISION note on handleRefundOrDispute.
+ *   * CHECKOUT IS NOT SETTLEMENT. checkout.session.completed only counts as
+ *     paid when payment_status is 'paid'; delayed methods settle through
+ *     checkout.session.async_payment_succeeded.
  */
 export async function handleStripeEvent(
   event: Stripe.Event,
@@ -406,111 +400,126 @@ export async function handleStripeEvent(
 ): Promise<StripeEventOutcome> {
   const d = { ...defaultWebhookDeps(), ...deps };
 
-  if (await d.claimEvent(event.id) === 'duplicate') {
+  const owner = randomUUID();
+  const claim = await d.claimEvent(event.id, owner);
+  if (claim === 'busy') throw new Error('stripe_event_busy');
+  if (claim === 'duplicate') {
     console.log('[stripe] duplicate-event-skipped', { type: event.type });
     return { received: true, duplicate: true };
   }
 
-  // ── Checkout (payment-link path) ────────────────────────────────────────
-  if (event.type === 'checkout.session.completed') {
-    const session   = event.data.object as Stripe.Checkout.Session;
-    const projectId = session.metadata?.projectId;
-    const expertId  = session.metadata?.expertId;
-    const intentId  = typeof session.payment_intent === 'string'
-      ? session.payment_intent
-      : (session.payment_intent as Stripe.PaymentIntent | null)?.id ?? null;
+  try {
+    // ── Checkout (payment-link path) ────────────────────────────────────────
+    if (event.type === 'checkout.session.completed' || event.type === 'checkout.session.async_payment_succeeded') {
+      const session   = event.data.object as Stripe.Checkout.Session;
+      const projectId = session.metadata?.projectId;
+      const expertId  = session.metadata?.expertId;
+      const intentId  = typeof session.payment_intent === 'string'
+        ? session.payment_intent
+        : (session.payment_intent as Stripe.PaymentIntent | null)?.id ?? null;
 
-    if (projectId && expertId) {
-      await handlePaymentSucceeded(projectId, expertId, intentId, d);
+      if (projectId && expertId && session.payment_status === 'paid') {
+        await handlePaymentSucceeded(projectId, expertId, intentId, d);
+      }
     }
-  }
 
-  if (event.type === 'checkout.session.async_payment_failed') {
-    const session   = event.data.object as Stripe.Checkout.Session;
-    const projectId = session.metadata?.projectId;
-    const expertId  = session.metadata?.expertId;
+    if (event.type === 'checkout.session.async_payment_failed') {
+      const session   = event.data.object as Stripe.Checkout.Session;
+      const projectId = session.metadata?.projectId;
+      const expertId  = session.metadata?.expertId;
 
-    if (projectId && expertId) {
-      await handlePaymentFailed(projectId, expertId, d);
+      if (projectId && expertId) {
+        await handlePaymentFailed(projectId, expertId, d);
+      }
     }
-  }
 
-  // ── PaymentIntent (off-session auto-charge path) ────────────────────────
-  // Guard on metadata: intents created outside this flow are ignored.
-  if (event.type === 'payment_intent.succeeded') {
-    const intent    = event.data.object as Stripe.PaymentIntent;
-    const projectId = intent.metadata?.projectId;
-    const expertId  = intent.metadata?.expertId;
+    // ── PaymentIntent (off-session auto-charge path) ────────────────────────
+    // Guard on metadata: intents created outside this flow are ignored.
+    if (event.type === 'payment_intent.succeeded') {
+      const intent    = event.data.object as Stripe.PaymentIntent;
+      const projectId = intent.metadata?.projectId;
+      const expertId  = intent.metadata?.expertId;
 
-    if (projectId && expertId) {
-      await handlePaymentSucceeded(projectId, expertId, intent.id, d);
+      if (projectId && expertId) {
+        await handlePaymentSucceeded(projectId, expertId, intent.id, d);
+      }
     }
-  }
 
-  if (event.type === 'payment_intent.payment_failed') {
-    const intent    = event.data.object as Stripe.PaymentIntent;
-    const projectId = intent.metadata?.projectId;
-    const expertId  = intent.metadata?.expertId;
+    if (event.type === 'payment_intent.payment_failed') {
+      const intent    = event.data.object as Stripe.PaymentIntent;
+      const projectId = intent.metadata?.projectId;
+      const expertId  = intent.metadata?.expertId;
 
-    if (projectId && expertId) {
-      await handlePaymentFailed(projectId, expertId, d);
+      if (projectId && expertId) {
+        await handlePaymentFailed(projectId, expertId, d);
+      }
     }
-  }
 
-  // ── Refunds and chargebacks (H-7) ───────────────────────────────────────
-  // Both events carry the charge, not the engagement, so the projectId /
-  // expertId are read from the charge's metadata or from its PaymentIntent.
-  if (event.type === 'charge.refunded') {
-    const charge = event.data.object as Stripe.Charge;
-    const ref    = await engagementForCharge(charge.metadata, charge.payment_intent, d);
-    if (ref) await handleRefundOrDispute(ref, 'refund', d);
-  }
-
-  if (event.type === 'charge.dispute.created') {
-    const dispute = event.data.object as Stripe.Dispute;
-    const ref     = await engagementForCharge(dispute.metadata, dispute.payment_intent, d);
-    if (ref) await handleRefundOrDispute(ref, 'dispute', d);
-  }
-
-  // ── Per-seat subscription (organization billing) ────────────────────────
-  // Mirrored onto organization_billing so the app can tell a firm its billing
-  // needs attention without calling Stripe. recordSubscriptionStatus never
-  // throws and ignores subscriptions this deployment does not own.
-  if (event.type === 'customer.subscription.updated' || event.type === 'customer.subscription.deleted') {
-    const subscription = event.data.object as Stripe.Subscription;
-    await d.recordSubscriptionStatus(
-      subscription.id,
-      // A deleted subscription is terminal regardless of the status Stripe sent.
-      event.type === 'customer.subscription.deleted' ? 'canceled' : subscription.status,
-    );
-  }
-
-  if (event.type === 'invoice.payment_failed') {
-    const invoice = event.data.object as Stripe.Invoice;
-    const subscriptionId = subscriptionIdForInvoice(invoice);
-    // Only subscription invoices matter here; one-off call charges are tracked
-    // through payment_intent.payment_failed above.
-    if (subscriptionId) {
-      await d.recordSubscriptionStatus(subscriptionId, 'past_due');
+    // ── Refunds and chargebacks (H-7) ───────────────────────────────────────
+    // Both events carry the charge, not the engagement, so the projectId /
+    // expertId are read from the charge's metadata or from its PaymentIntent.
+    if (event.type === 'charge.refunded') {
+      const charge = event.data.object as Stripe.Charge;
+      const ref    = await engagementForCharge(charge.metadata, charge.payment_intent, d);
+      if (ref) await handleRefundOrDispute(ref, 'refund', d);
     }
-  }
 
-  // ── Connect account finished onboarding (expert payout) ─────────────────
-  // An expert who set up Stripe AFTER their call was billed has a payout sitting
-  // in 'pending'; nothing else ever retries it but the nightly sweep.
-  // isOnboardingComplete() (lib/stripeConnect.ts) treats details_submitted as
-  // the bar, and payouts_enabled is the stricter signal that money can actually
-  // move — either is worth a sweep, and runExpertPayout re-checks the account
-  // before transferring. Never throws; logs counts only.
-  if (event.type === 'account.updated') {
-    const account = event.data.object as Stripe.Account;
-    const ready =
-      account.payouts_enabled === true
-      || (account.details_submitted === true && account.charges_enabled === true);
-    if (ready && account.id) {
-      await d.retryPendingPayoutsForAccount(account.id);
+    if (event.type === 'charge.dispute.created') {
+      const dispute = event.data.object as Stripe.Dispute;
+      const ref     = await engagementForCharge(dispute.metadata, dispute.payment_intent, d);
+      if (ref) await handleRefundOrDispute(ref, 'dispute', d);
     }
-  }
 
-  return { received: true };
+    // ── Per-seat subscription (organization billing) ────────────────────────
+    // Mirrored onto organization_billing so the app can tell a firm its billing
+    // needs attention without calling Stripe. recordSubscriptionStatus never
+    // throws and ignores subscriptions this deployment does not own.
+    if (event.type === 'customer.subscription.updated' || event.type === 'customer.subscription.deleted') {
+      const subscription = event.data.object as Stripe.Subscription;
+      await d.recordSubscriptionStatus(
+        subscription.id,
+        // A deleted subscription is terminal regardless of the status Stripe sent.
+        event.type === 'customer.subscription.deleted' ? 'canceled' : subscription.status,
+      );
+    }
+
+    if (event.type === 'invoice.payment_failed') {
+      const invoice = event.data.object as Stripe.Invoice;
+      const subscriptionId = subscriptionIdForInvoice(invoice);
+      // Only subscription invoices matter here; one-off call charges are tracked
+      // through payment_intent.payment_failed above.
+      if (subscriptionId) {
+        await d.recordSubscriptionStatus(subscriptionId, 'past_due');
+      }
+    }
+
+    // ── Connect account finished onboarding (expert payout) ─────────────────
+    // An expert who set up Stripe AFTER their call was billed has a payout sitting
+    // in 'pending'; nothing else ever retries it but the nightly sweep.
+    // isOnboardingComplete() (lib/stripeConnect.ts) treats details_submitted as
+    // the bar, and payouts_enabled is the stricter signal that money can actually
+    // move — either is worth a sweep, and runExpertPayout re-checks the account
+    // before transferring. Never throws; logs counts only.
+    if (event.type === 'account.updated') {
+      const account = event.data.object as Stripe.Account;
+      const ready =
+        account.payouts_enabled === true
+        || (account.details_submitted === true && account.charges_enabled === true);
+      if (ready && account.id) {
+        await d.retryPendingPayoutsForAccount(account.id);
+      }
+    }
+
+    // Losing the optional dedupe cache must not undo successfully persisted work.
+    await d.completeEvent(event.id).catch(() => {});
+    return { received: true };
+  } catch {
+    const ref = engagementRefFromMetadata((event.data.object as { metadata?: Stripe$Metadata }).metadata);
+    await d.recordSystemFailure({
+      area: 'invoice', reason: `stripe_webhook_failed:${event.type}`, ...(ref ?? {}),
+    }).catch(() => {});
+    throw new Error('stripe_webhook_processing_failed');
+  } finally {
+    await d.releaseEvent(event.id, owner).catch(() => {});
+  }
 }

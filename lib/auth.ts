@@ -31,10 +31,8 @@
 // magic link, an SSO bridge, a set-password that signs in before upsertUser
 // finishes — would have handed a pending account every routeAuthGuard route.
 //
-// Each guard performs its own getUser() round-trip to the Supabase auth server,
-// so a handler that calls a guard and then getSessionUser() makes two. That is
-// the accepted cost of never trusting a locally-decoded JWT: getUser()
-// revalidates, so a just-disabled account cannot ride an unexpired token.
+// Guards and session reads share one verified getUser() result per request.
+// A new request always revalidates with Supabase; no JWT-only or cross-request cache.
 
 import type { NextRequest } from 'next/server';
 import { createServerClient } from '@supabase/ssr';
@@ -115,7 +113,17 @@ export function secretMatches(provided: string, expected: string): boolean {
  * Read-only — never writes cookies (middleware owns session refresh).
  * Fails closed: returns null on any error.
  */
-export async function getSupabaseSessionUser(request: NextRequest): Promise<User | null> {
+const verifiedUsers = new WeakMap<NextRequest, Promise<User | null>>();
+
+export function getSupabaseSessionUser(request: NextRequest): Promise<User | null> {
+  const existing = verifiedUsers.get(request);
+  if (existing) return existing;
+  const pending = readSupabaseSessionUser(request);
+  verifiedUsers.set(request, pending);
+  return pending;
+}
+
+async function readSupabaseSessionUser(request: NextRequest): Promise<User | null> {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
   const key = process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY;
   if (!url || !key) return null;

@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { isAuthEnabled } from './lib/auth';
+import { isAuthEnabled, statusMayUseProduct } from './lib/auth';
 import { updateSession } from './lib/supabase/middleware';
 
 // -----------------------------------------------------------------------------
@@ -112,9 +112,11 @@ export async function middleware(request: NextRequest): Promise<NextResponse> {
       role?:                string;
     };
 
-    // Disabled accounts are kicked to login.
-    if (meta.status === 'disabled') {
-      return NextResponse.redirect(new URL('/login', request.url));
+    // Keep the outer project-route gate consistent with the route guards.
+    if (!statusMayUseProduct(meta.status)) {
+      return pathname.startsWith('/api/')
+        ? NextResponse.json({ error: 'forbidden' }, { status: 403 })
+        : NextResponse.redirect(new URL('/login', request.url));
     }
 
     // Internal tools are admin-only and never indexed.

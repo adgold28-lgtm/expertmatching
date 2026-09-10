@@ -595,14 +595,14 @@ async function main(): Promise<void> {
           retrieve: async () => ({ metadata: opts.intentMetadata ?? null }),
         },
       },
-      // A faithful stand-in for SET NX EX: first claim wins, later ones are
-      // duplicates. redisDown models the documented fail-OPEN.
+      // Only successful processing marks an event done. Redis-down still processes.
       claimEvent: async eventId => {
         if (opts.redisDown) return 'process';
         if (claimed.has(eventId)) return 'duplicate';
-        claimed.add(eventId);
         return 'process';
       },
+      completeEvent: async eventId => { if (!opts.redisDown) claimed.add(eventId); },
+      releaseEvent: async () => {},
       updateExpertStatus: async (_p, _e, patch) => { env.patches.push(patch); return null; },
       getProject: async () => ({ experts: [{ expert: { id: EXPERT_ID }, paymentStatus: opts.paymentStatus ?? null }] }),
       runExpertPayout: async (projectId, expertId) => {
@@ -670,6 +670,7 @@ async function main(): Promise<void> {
     await handleStripeEvent(stripeEvent('evt_cs', 'checkout.session.completed', {
       metadata: { projectId: PROJECT_ID, expertId: EXPERT_ID },
       payment_intent: 'pi_link_1',
+      payment_status: 'paid',
     }), env.deps);
     eq('the payment-link path also records paid', env.patches[0]?.paymentStatus, 'paid');
     eq('with the session\'s intent id',           env.patches[0]?.stripePaymentIntentId, 'pi_link_1');
