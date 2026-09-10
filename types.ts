@@ -414,7 +414,7 @@ export interface ProjectExpert {
   // Email sequence fields
   outreachToken?:        string;
   outreachStep?:         'email1' | 'email2' | 'email3';
-  email1SentAt?:         number;
+  email1SentAt?:         number | null;
   email2SentAt?:         number;
   email3SentAt?:         number;
   replyDetectedAt?:      number;
@@ -445,7 +445,11 @@ export interface ProjectExpert {
   stripePaymentLinkId?:  string | null;
   stripePaymentLinkUrl?: string | null;
   stripePaymentIntentId?: string | null;
-  paymentStatus?:        'unpaid' | 'invoice_sent' | 'paid' | 'failed' | null;
+  // 'refunded' is written only by the Stripe webhook's charge.refunded /
+  // charge.dispute.created branches. It is terminal for the client side of the
+  // engagement; the expert payout is NOT reversed automatically (see the
+  // TODO(founder decision) in app/api/webhooks/stripe/route.ts).
+  paymentStatus?:        'unpaid' | 'invoice_sent' | 'paid' | 'failed' | 'refunded' | null;
   paidAt?:               number | null;
   // The CALL the current paymentStatus / stripePaymentIntentId refer to
   // (booking.icsUid, else zoomMeetingId, else the manual id below). Written by
@@ -468,6 +472,18 @@ export interface ProjectExpert {
   stripeTransferId?:        string;
   expertPaidAt?:            number;
   expertOnboardingStatus?:  'pending' | 'complete' | 'failed';
+  // Every CALL this expert has already been transferred for on this project
+  // (the same call identity the billing guard uses — see billedCallId above).
+  // A repeat consultation carries a new id and is paid again; rows written
+  // before this field existed have none and fall back to stripeTransferId.
+  paidCallIds?:             string[];
+  // Payout-onboarding email throttle (H-9): at most one every 7 days and four
+  // in total, instead of one every night for as long as the row stays pending.
+  payoutReminderSentAt?:    number;
+  payoutReminderCount?:     number;
+  // Failed transfer attempts. The nightly sweep retries 'failed' rows, so this
+  // is what stops a permanently broken payout being retried forever (cap 5).
+  payoutAttempts?:          number;
   // Matchy Phase 2 — scheduling, the booked call, and the follow-up nudges.
   scheduling?: SchedulingState | null;
   booking?:    BookingState | null;

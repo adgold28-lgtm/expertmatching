@@ -77,24 +77,42 @@ export async function isOnboardingComplete(accountId: string): Promise<boolean> 
 
 // ─── Expert payout transfer ───────────────────────────────────────────────────
 
+/**
+ * Idempotency key for one expert payout. Keyed on the CALL, not just on
+ * (project, expert): a repeat consultation with the same expert on the same
+ * project is a second, genuine payout and must not replay the first one's
+ * transfer. `null` (a call nothing identifies) keeps the legacy per-engagement
+ * key, which is the fail-closed choice — it can only ever suppress a second
+ * transfer, never cause one. Pure.
+ */
+export function payoutIdempotencyKey(
+  projectId: string,
+  expertId:  string,
+  callId:    string | null,
+): string {
+  const base = `expert-payout:${projectId}:${expertId}`;
+  return callId ? `${base}:${callId}` : base;
+}
+
 export async function transferExpertPayout(
   accountId:   string,
   amountCents: number,
   projectId:   string,
   expertId:    string,
+  /** The call this payout is for; see payoutIdempotencyKey. */
+  callId:      string | null = null,
 ): Promise<string> {
   if (amountCents < 50) {
     throw new Error(`[stripeConnect] payout too small: ${amountCents} cents`);
   }
 
-  // Deterministic key per project+expert: a webhook retry, or the
+  // Deterministic key per project+expert+call: a webhook retry, or the
   // account.updated retry sweep, replays the ORIGINAL transfer instead of
   // sending the expert's money twice. Note the limit — Stripe only remembers an
   // idempotency key for ~24 hours, so this guard covers the racing/replay
-  // window, NOT "forever". The durable guard is the stored stripeTransferId
-  // that lib/expertPayout.ts checks before it ever gets here; anything that
-  // loses that id (a failed write after a successful transfer) is outside both
-  // guards and must be reconciled by hand.
+  // window, NOT "forever". The durable guard is the stored paidCallIds list
+  // that lib/expertPayout.ts checks before it ever gets here, and which is now
+  // written in its own database call the moment the transfer returns.
   const transfer = await stripe.transfers.create(
     {
       amount:      amountCents,
@@ -102,7 +120,7 @@ export async function transferExpertPayout(
       destination: accountId,
       metadata:    { projectId, expertId }, // no PII in metadata
     },
-    { idempotencyKey: `expert-payout:${projectId}:${expertId}` },
+    { idempotencyKey: payoutIdempotencyKey(projectId, expertId, callId) },
   );
 
   // Log only safe identifiers — never log accountId or transferId

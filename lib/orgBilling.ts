@@ -119,6 +119,55 @@ export function orgCancelIdempotencyKey(organizationId: string): string {
   return `org-cancel:${organizationId}`;
 }
 
+/** The shape of a Stripe subscription this module needs in order to adopt it. */
+export interface AdoptableSubscriptionView {
+  id:     string;
+  status: string;
+  items:  { data: Array<{ id: string; price?: { id?: string } | null; quantity?: number | null }> };
+}
+
+/** Subscription statuses that still bill (or will bill) the customer. */
+const LIVE_SUBSCRIPTION_STATUSES = new Set([
+  'active', 'trialing', 'past_due', 'unpaid', 'incomplete', 'paused',
+]);
+
+/**
+ * H-23: the seat subscription this org ALREADY has at Stripe, if any.
+ *
+ * The create below carries idempotency key `seat-sub:<orgId>`, and Stripe only
+ * remembers a key for about 24 hours — exactly the interval the reconcile cron
+ * runs on. So if the row write after a successful create ever fails, the next
+ * night's sweep sees no recorded subscription, replays a key Stripe has already
+ * forgotten, and creates a SECOND live subscription for the same customer. This
+ * check is the fix: before creating, look at what the customer actually has and
+ * adopt it.
+ *
+ * A subscription qualifies when it is not canceled or expired AND it carries a
+ * line for the seat price. The first match wins; a customer with two of them is
+ * already the bug this prevents, and adopting one of them at least stops the
+ * count growing (the duplicate is a dashboard clean-up). Pure.
+ */
+export function pickAdoptableSubscription<T extends AdoptableSubscriptionView>(
+  subscriptions: T[],
+  priceId:       string,
+): T | null {
+  for (const sub of subscriptions) {
+    if (!LIVE_SUBSCRIPTION_STATUSES.has(sub.status)) continue;
+    const hasSeatLine = sub.items.data.some(item => item.price?.id === priceId);
+    if (hasSeatLine) return sub;
+  }
+  return null;
+}
+
+/**
+ * Last four characters of a Stripe id — enough to find the object in the
+ * dashboard, short enough not to be the id itself in a log or an events row.
+ * Pure.
+ */
+export function stripeIdTail(id: string): string {
+  return id.length <= 4 ? id : id.slice(-4);
+}
+
 /** Stripe object ids (sub_…, cus_…, acct_…) — stripped before a reason is surfaced. */
 const STRIPE_ID_RE = /\b(?:sub|cus|acct|price|prod|si|in|pi|seti|pm|txn|tr)_[A-Za-z0-9]+/g;
 
@@ -155,6 +204,23 @@ async function patchBillingRow(organizationId: string, patch: BillingPatch): Pro
     logFailure('patchBillingRow', err);
     return false;
   }
+}
+
+/**
+ * patchBillingRow with two retries, for the ONE write that must not be lost:
+ * the subscription id of a subscription Stripe has just created. A row that
+ * does not know its subscription is what turns a transient Postgres blip into a
+ * second live subscription the next night (H-23).
+ */
+async function patchBillingRowWithRetry(
+  organizationId: string,
+  patch:          BillingPatch,
+  attempts        = 3,
+): Promise<boolean> {
+  for (let i = 0; i < attempts; i++) {
+    if (await patchBillingRow(organizationId, patch)) return true;
+  }
+  return false;
 }
 
 // ─── Reads ────────────────────────────────────────────────────────────────────
@@ -532,6 +598,13 @@ async function retrieveSubscription(subscriptionId: string): Promise<Stripe.Subs
  * throws — membership changes must succeed even if Stripe is down; the next
  * call (or a reconcile) catches up.
  *
+ * ONE SUBSCRIPTION PER CUSTOMER. When the billing row records no subscription,
+ * this asks Stripe what the customer already has and ADOPTS a live seat
+ * subscription rather than creating a second one; only a customer with none is
+ * created for. That check, not the idempotency key, is what makes a lost row
+ * write survivable (H-23) — the key expires after ~24 hours, the same interval
+ * the nightly reconcile runs on.
+ *
  * ZERO SEATS. Stripe bills a licensed subscription item for at least one unit
  * and the SDK types put no constraint on `quantity`, so we never gamble a
  * quantity: 0 request in the middle of a membership change. Instead an org that
@@ -556,17 +629,55 @@ export async function syncOrgSeatQuantity(organizationId: string): Promise<SeatS
       ? await retrieveSubscription(row.stripe_subscription_id)
       : null;
 
-    const live =
+    let live =
       subscription
       && subscription.status !== 'canceled'
       && subscription.status !== 'incomplete_expired'
         ? subscription
         : null;
 
-    // ── No live subscription: create one (nothing to create for zero seats) ──
+    // ── Nothing recorded: adopt what the customer already has, or create ─────
     if (!live) {
       if (activeSeats === 0) return { ...base, outcome: 'skipped' };
 
+      // H-23. Before creating, ask Stripe what this customer already has: the
+      // idempotency key below expires after ~24 hours, which is exactly the
+      // reconcile interval, so a lost row write would otherwise produce a
+      // second live subscription every night. This list call is deliberately
+      // NOT wrapped in its own catch — if we cannot see the customer's
+      // subscriptions we must not create one, and the outer catch turns that
+      // into 'error' plus a system_events row (which is a delay, whereas
+      // double-billing a firm is a refund and an apology).
+      const existing = await stripe.subscriptions.list({
+        customer: row.stripe_customer_id,
+        status:   'all',
+        limit:    20,
+      });
+      const adopted = pickAdoptableSubscription(existing.data, priceId);
+
+      if (adopted) {
+        const adoptedItem =
+          adopted.items.data.find(i => i.price?.id === priceId) ?? adopted.items.data[0] ?? null;
+        const recorded = await patchBillingRowWithRetry(organizationId, {
+          stripe_subscription_id:      adopted.id,
+          stripe_subscription_item_id: adoptedItem?.id ?? null,
+          subscription_status:         adopted.status,
+        });
+        if (!recorded) {
+          await recordSystemFailure({
+            area:   'seat_sync',
+            reason: `subscription_adopted_but_unrecorded:${stripeIdTail(adopted.id)}`,
+            organizationId,
+          });
+        }
+        console.log('[orgBilling] seat-subscription-adopted', { organizationId, activeSeats });
+        // Fall through to the live-subscription handling below, which sets the
+        // quantity on the subscription we just adopted.
+        live = adopted;
+      }
+    }
+
+    if (!live) {
       // A previously recorded subscription means this is a RE-create after a
       // cancellation; a distinct idempotency key stops Stripe from replaying
       // the original (now canceled) create.
@@ -585,12 +696,24 @@ export async function syncOrgSeatQuantity(organizationId: string): Promise<SeatS
         { idempotencyKey },
       );
 
-      await patchBillingRow(organizationId, {
+      // The subscription now EXISTS AT STRIPE and is billing the firm. A row
+      // that does not record its id is the whole of H-23, so the write is
+      // retried and, if it still fails, recorded as a failure an operator can
+      // act on before the next nightly sweep runs (the id's last four
+      // characters locate it in the dashboard without logging the id itself).
+      const recorded = await patchBillingRowWithRetry(organizationId, {
         stripe_subscription_id:      created.id,
         stripe_subscription_item_id: created.items.data[0]?.id ?? null,
         subscription_status:         created.status,
         seat_quantity_synced:        activeSeats,
       });
+      if (!recorded) {
+        await recordSystemFailure({
+          area:   'seat_sync',
+          reason: `subscription_created_but_unrecorded:${stripeIdTail(created.id)}`,
+          organizationId,
+        });
+      }
       console.log('[orgBilling] seat-subscription-created', { organizationId, activeSeats });
       return { ...base, outcome: 'updated' };
     }
