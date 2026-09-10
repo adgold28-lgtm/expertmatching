@@ -18,8 +18,9 @@
 //     advance an engagement on the expert's behalf.
 //   - "no" is a fact about the person, not about this project: a decline adds
 //     them to the global do-not-contact list.
-//   - after a verified signature the handler always answers 200, so Resend
-//     does not retry a reply we deliberately ignored.
+//   - a reply the handler DELIBERATELY IGNORES is answered 200, so Resend does
+//     not retry a decision that would come out the same way. Only an in-flight
+//     duplicate (409) and an unexpected failure (500) ask for a redelivery.
 //
 // WHAT PHASE 2 ADDED: a SCHEDULING BRANCH that runs BEFORE the generic
 // classifier. Once an engagement is at 'scheduling_sent' or 'scheduled', the
@@ -32,13 +33,25 @@
 // reply is recorded.
 //
 // WHAT IS NEW:
-//   - IDEMPOTENCY. Resend retries on any non-2xx and on a timeout. The old
-//     handler had no dedupe at all, so a retry could re-suppress an address,
-//     re-emit events and (now) send a second follow-up. The svix message id is
-//     claimed in Redis with SET NX before any side effect; a second delivery of
-//     the same id acknowledges and does nothing. It FAILS OPEN — if Redis is
-//     unavailable the message is processed rather than dropped, because losing
-//     a reply is worse than duplicating one.
+//   - IDEMPOTENCY, IN TWO PHASES. Resend retries on any non-2xx and on a
+//     timeout. The old handler had no dedupe at all, so a retry could
+//     re-suppress an address, re-emit events and (now) send a second follow-up.
+//     The svix message id is claimed in Redis with SET NX before any side
+//     effect — but as "processing", with a 2-minute TTL, and it is rewritten to
+//     "done" for 7 days only once the reply has actually been handled. A second
+//     delivery therefore reads the claim rather than assuming it: "done" is
+//     acknowledged and dropped, "processing" answers 409 so Resend comes back
+//     after the first attempt has finished or its TTL has run out, and an
+//     unexpected failure deletes the claim and answers 500 so the redelivery
+//     lands inside the window instead of being deduped into oblivion. The cost
+//     of that retry is a possible duplicate of the work done before the throw;
+//     losing an expert's reply is the worse of the two. It still FAILS OPEN —
+//     if Redis is unavailable the message is processed rather than dropped.
+//   - SENDER AUTHENTICITY. The address match below is not authentication, so
+//     the handler also reads whatever SPF/DKIM/DMARC verdicts the payload
+//     carries and refuses a hard DKIM or DMARC fail. Resend's inbound webhook
+//     does not supply them today (see inboundGuards.senderAuthAllows), so the
+//     check is inert and says so once a day through recordSystemFailure.
 //   - The reply is cleaned, screened, stored encrypted, and summarized.
 //   - THE CADENCE IS GONE. Nothing here schedules email2 or email3. A follow-up
 //     goes out because the expert said yes, not because a clock ran out, and
@@ -64,7 +77,15 @@ import { cleanEmailBody } from '../../../lib/emailClean';
 import { screenMessage } from '../../../lib/matchyScreen';
 import { appendMessage, updateMessage } from '../../../lib/conversations';
 import { classifyMessage, type MatchyClassification } from '../../../lib/matchyClassify';
-import { emitEngagementEvent } from '../../../lib/engagementEvents';
+import { emitEngagementEvent, recordSystemFailure } from '../../../lib/engagementEvents';
+import {
+  CLAIM_DONE,
+  CLAIM_IN_PROGRESS,
+  decideClaim,
+  extractResendMessageId,
+  senderAuthAllows,
+  type ClaimDecision,
+} from './inboundGuards';
 import { isIdentityRevealed } from '../../../lib/redactExpert';
 import { buildFollowUpEmail, deriveTopic } from '../../../lib/matchyTemplates';
 import { sendSequenceEmail } from '../../../lib/emailSequence';
@@ -129,8 +150,19 @@ function verifyResendSignature(rawBody: string, request: NextRequest): boolean {
 
 // ─── Idempotency ──────────────────────────────────────────────────────────────
 
-/** How long a processed delivery id is remembered. Resend retries for ~24h. */
+/** How long a COMPLETED delivery id is remembered. Resend retries for ~24h. */
 const DEDUPE_TTL_S = 7 * 24 * 60 * 60;
+
+/**
+ * How long an IN-FLIGHT claim is held. Long enough for the slowest reply
+ * (Supabase writes, one or two model calls, an outbound send), short enough
+ * that a process killed mid-flight — which never runs the catch that deletes
+ * the claim — frees the id well inside Resend's retry window.
+ */
+const CLAIM_TTL_S = 120;
+
+/** One alert a day is enough to tell the founder the auth check is inert. */
+const AUTH_ALERT_TTL_S = 24 * 60 * 60;
 
 /**
  * The stable id for this delivery: the svix message id when Resend sent one,
@@ -151,23 +183,84 @@ function deliveryId(request: NextRequest, payload: Record<string, unknown>): str
 }
 
 /**
- * Claims this delivery. True means "you are the first, carry on"; false means
- * "already handled, acknowledge and stop".
+ * Phase one of the claim: take the id, or find out who holds it.
+ *
+ *   process      carry on (also the answer with no id and with no Redis)
+ *   duplicate    already handled — acknowledge 200 and stop
+ *   in_progress  another delivery of this id is mid-flight — answer 409
  *
  * FAILS OPEN on every error and when there is no Redis at all: a duplicated
  * reply is a smaller failure than a lost one.
  */
-async function claimDelivery(id: string | null): Promise<boolean> {
-  if (!id) return true;
+async function claimDelivery(id: string | null): Promise<ClaimDecision> {
+  if (!id) return 'process';
   const redis = getUpstashClient();
-  if (!redis) return true;
+  if (!redis) return 'process';
 
   try {
-    const result = await redis.set(`inbound-seen:${id}`, '1', { ex: DEDUPE_TTL_S, nx: true });
-    return result === 'OK';
+    const claimed = await redis.set(`inbound-seen:${id}`, CLAIM_IN_PROGRESS, { ex: CLAIM_TTL_S, nx: true });
+    if (claimed === 'OK') return 'process';
+    return decideClaim(await redis.get(`inbound-seen:${id}`));
   } catch {
-    return true;
+    return 'process';
   }
+}
+
+/**
+ * Phase two: this delivery reached a terminal decision — handled, or
+ * deliberately ignored — so the id is remembered for 7 days and no retry of it
+ * does anything again. Best-effort: on a Redis failure the claim simply
+ * expires in CLAIM_TTL_S and a retry re-runs, which is the fail-open side.
+ */
+async function markDeliveryDone(id: string | null): Promise<void> {
+  if (!id) return;
+  const redis = getUpstashClient();
+  if (!redis) return;
+  try {
+    await redis.set(`inbound-seen:${id}`, CLAIM_DONE, { ex: DEDUPE_TTL_S });
+  } catch {
+    // Non-fatal — the short claim expires on its own.
+  }
+}
+
+/**
+ * Releases the claim after an unexpected failure, so the 500 we answer sends
+ * Resend back into an unclaimed window rather than a deduped one.
+ */
+async function releaseDelivery(id: string | null): Promise<void> {
+  if (!id) return;
+  const redis = getUpstashClient();
+  if (!redis) return;
+  try {
+    await redis.del(`inbound-seen:${id}`);
+  } catch {
+    // Non-fatal — the claim expires in CLAIM_TTL_S and the retry lands then.
+  }
+}
+
+/**
+ * Records, at most once a day, that the inbound payload carried no SPF/DKIM/
+ * DMARC verdict — so the sender-authenticity check is inert and the address
+ * match is the only sender control in force. Redis holds the daily key; with
+ * no Redis a module-level stamp keeps it to once a day per instance. Never
+ * throws (recordSystemFailure does not either).
+ */
+let authAlertStampMs = 0;
+
+async function noteMissingAuthResults(): Promise<void> {
+  const redis = getUpstashClient();
+  if (redis) {
+    try {
+      const first = await redis.set('inbound-auth-missing:alerted', '1', { ex: AUTH_ALERT_TTL_S, nx: true });
+      if (first !== 'OK') return;
+    } catch {
+      // Fall through to the in-process stamp.
+    }
+  }
+  const now = Date.now();
+  if (now - authAlertStampMs < AUTH_ALERT_TTL_S * 1000) return;
+  authAlertStampMs = now;
+  await recordSystemFailure({ area: 'mail', reason: 'inbound_auth_results_missing' });
 }
 
 // ─── Token index lookup ───────────────────────────────────────────────────────
@@ -280,16 +373,20 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
   }
 
   // ── 5. Idempotency — claim this delivery before any side effect ──────────
-  // NOTE THE TRADE-OFF this makes in the other direction. The id is claimed
-  // BEFORE the reply is processed, and every failure below is swallowed and
-  // answered 200, so a delivery that dies half-way (Supabase down after the
-  // message row, the model call throwing after the status write) is never
-  // retried by Resend and never re-processed: the reply is lost with a partial
-  // state left behind. Claiming AFTER a successful handleReply, or recording a
-  // completion marker alongside the claim, would make retries useful again.
-  if (!(await claimDelivery(deliveryId(request, payload)))) {
+  // The claim is a lease, not a tombstone: "processing" for two minutes now,
+  // rewritten to "done" for 7 days at every terminal decision below (handled,
+  // or deliberately ignored), and deleted if the pipeline throws. A delivery
+  // that dies half-way is therefore answered 500 and redelivered into an
+  // unclaimed window instead of being deduped away with the reply lost.
+  const claimId = deliveryId(request, payload);
+  const claim   = await claimDelivery(claimId);
+  if (claim === 'duplicate') {
     console.log('[inbound-email] duplicate delivery — already handled');
     return NextResponse.json({ ok: true, deduped: true });
+  }
+  if (claim === 'in_progress') {
+    console.log('[inbound-email] delivery already in flight — asking for a retry');
+    return NextResponse.json({ error: 'in_progress' }, { status: 409 });
   }
 
   // ── 6. Extract "to" address and reply token ───────────────────────────────
@@ -302,9 +399,12 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     toAddress = toField;
   }
 
+  // Every deliberate ignore below closes the claim first: the decision would
+  // come out the same on a redelivery, so the id is spent, not released.
   const token = extractReplyToken(toAddress);
   if (!token) {
     console.warn('[inbound-email] no reply token found in to address');
+    await markDeliveryDone(claimId);
     return NextResponse.json({ ok: true }); // Ack to avoid Resend retries
   }
 
@@ -312,6 +412,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
   const verifyResult = verifyOutreachToken(token);
   if (!verifyResult.ok) {
     console.warn('[inbound-email] invalid outreach token:', verifyResult.reason);
+    await markDeliveryDone(claimId);
     return NextResponse.json({ ok: true }); // Ack — don't retry on invalid tokens
   }
 
@@ -326,6 +427,9 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
   const resolvedProjectId = indexed?.projectId ?? projectId;
   const resolvedExpertId  = indexed?.expertId  ?? expertId;
 
+  // These two do NOT close the claim: a missing project or row can be a
+  // transient read, and the id expiring in CLAIM_TTL_S lets a later redelivery
+  // look again. A genuinely deleted project simply gets ignored twice.
   const project = await getProject(resolvedProjectId);
   if (!project) {
     console.error('[inbound-email] project not found');
@@ -338,15 +442,30 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     return NextResponse.json({ ok: true });
   }
 
-  // ── 9. Sender check — only the address we mailed can move the thread ─────
-  // This compares the envelope/header From against `contactEmail`. It stops a
-  // forward or a colleague, which is what it is for. It is NOT an authentication
-  // of the sender: the header is attacker-controlled, and Resend's inbound
-  // payload carries SPF/DKIM results that this handler does not read. Anyone who
-  // obtained a reply token (a forwarded email, a leaked thread) could therefore
-  // mail reply+TOKEN@ with a spoofed From and decline, counter-rate or accept on
-  // the expert's behalf. Checking the auth results Resend supplies would close
-  // it.
+  // ── 9. Sender authenticity — the verdicts, then the address ──────────────
+  // The address comparison below stops a forward or a colleague, which is what
+  // it is for, but it is not authentication: the From header is
+  // attacker-controlled, so anyone holding a reply token (a forwarded email, a
+  // leaked thread) could mail reply+TOKEN@ as the expert and decline,
+  // counter-rate or accept on their behalf. senderAuthAllows reads the SPF,
+  // DKIM and DMARC verdicts out of the payload and refuses a hard DKIM or DMARC
+  // fail — the two that a forged From cannot survive.
+  //
+  // As of the 2026-09 Resend docs the inbound webhook carries metadata only and
+  // supplies none of those verdicts, so in production this allows every message
+  // and raises one system failure a day instead, until the payload gains them
+  // or the founder moves inbound to a relay that reports them.
+  const auth = senderAuthAllows(payload);
+  if (!auth.present) {
+    await noteMissingAuthResults();
+  } else if (!auth.allow) {
+    console.warn('[inbound-email] sender authentication failed — ignored',
+      { failed: auth.failed.join(',') });
+    await markDeliveryDone(claimId);
+    return NextResponse.json({ ok: true });
+  }
+
+  // ── 10. Sender check — only the address we mailed can move the thread ────
   const fromAddress    = extractFromAddress(payload.from);
   const expectedSender = pe.contactEmail?.trim().toLowerCase() ?? '';
   if (!expectedSender || fromAddress !== expectedSender) {
@@ -359,23 +478,38 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
       // Non-fatal — the counter is diagnostic, not a control.
     }
     console.warn('[inbound-email] sender does not match contact email — ignored', { keyHash });
+    await markDeliveryDone(claimId);
     return NextResponse.json({ ok: true });
   }
 
-  // ── 10. Body ──────────────────────────────────────────────────────────────
+  // ── 11. Body ──────────────────────────────────────────────────────────────
   const emailText = typeof payload.text === 'string' ? payload.text : '';
   if (!emailText.trim()) {
     console.warn('[inbound-email] empty email body');
+    await markDeliveryDone(claimId);
     return NextResponse.json({ ok: true });
   }
 
+  // ── 12. Handle, then close the claim ─────────────────────────────────────
+  // A throw here means the thread is in an unknown state, so the claim is
+  // released and the 500 asks Resend to redeliver. The retry may repeat work
+  // that had already succeeded (a stored message, an emitted event); that is
+  // the price of not losing the reply, and the message-level
+  // `resend_message_id` makes the duplicate visible in the data.
   try {
-    await handleReply({ project, pe, token, rawEmail: emailText });
+    await handleReply({
+      project, pe, token,
+      rawEmail:        emailText,
+      resendMessageId: extractResendMessageId(payload),
+    });
   } catch (err) {
     console.error('[inbound-email] handling failed:',
       err instanceof Error ? err.message.slice(0, 120) : 'unknown');
+    await releaseDelivery(claimId);
+    return NextResponse.json({ error: 'processing_failed' }, { status: 500 });
   }
 
+  await markDeliveryDone(claimId);
   return NextResponse.json({ ok: true });
 }
 
@@ -386,9 +520,11 @@ interface HandleReplyInput {
   pe:       ProjectExpert;
   token:    string;
   rawEmail: string;
+  /** The sender's Message-ID, stored on the row as a second dedupe signal. */
+  resendMessageId: string | null;
 }
 
-async function handleReply({ project, pe, token, rawEmail }: HandleReplyInput): Promise<void> {
+async function handleReply({ project, pe, token, rawEmail, resendMessageId }: HandleReplyInput): Promise<void> {
   const projectId = project.id;
   const expertId  = pe.expert.id;
   const now       = Date.now();
@@ -424,6 +560,7 @@ async function handleReply({ project, pe, token, rawEmail }: HandleReplyInput): 
     bodyRaw:   rawEmail,     // encrypted inside appendMessage
     bodyClean,
     screenResult,
+    resendMessageId,
   });
 
   await emitEngagementEvent({
