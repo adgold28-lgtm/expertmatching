@@ -316,6 +316,7 @@ export interface PayoutProjectView {
         ProjectExpert,
         'contactEmail' | 'expertRate' | 'actualDurationMin' | 'callDurationMin'
         | 'stripeConnectAccountId' | 'payoutAttempts' | 'paymentStatus'
+        | 'expertOnboardingStatus'
       >
     & { expert: { id: string; name: string } }
   >;
@@ -372,6 +373,42 @@ function defaultPayoutDeps(): PayoutDeps {
 
 // ─── Public API ───────────────────────────────────────────────────────────────
 
+/** An unfinished payout the platform still owes: stalled or failed, never transferred. */
+function payoutOwed(pe: Pick<ProjectExpert, 'expertOnboardingStatus' | 'stripeTransferId'>): boolean {
+  const status = pe.expertOnboardingStatus;
+  return (status === 'pending' || status === 'failed') && !pe.stripeTransferId;
+}
+
+/**
+ * Parks a payout that is owed but cannot be sent yet.
+ *
+ * `pending` is the state both sweeps (retryPendingPayoutsForAccount and the
+ * nightly reconcile) and the stale-owed alarm select on, so the row is picked
+ * up again the moment the block clears. `payoutAttempts` is deliberately NOT
+ * incremented: a block is not a failed transfer, and burning the attempt budget
+ * would retire a row that nobody ever tried to pay.
+ *
+ * The system_events row is written only on the TRANSITION into the hold, so a
+ * nightly sweep over a long-stuck row does not flood the admin attention feed.
+ */
+async function holdPayout(
+  projectId: string,
+  expertId:  string,
+  pe:        Pick<ProjectExpert, 'expertOnboardingStatus' | 'stripeTransferId'>,
+  reason:    'payment_not_settled' | 'account_not_chargeable',
+  d:         PayoutDeps,
+): Promise<void> {
+  console.log('[stripe] payout-held', { projectId, expertId, reason });
+  if (pe.expertOnboardingStatus === 'pending') return;
+  await d.updateExpertStatus(projectId, expertId, { expertOnboardingStatus: 'pending' }).catch(() => {});
+  await d.recordSystemFailure({
+    area:   'payout',
+    reason: `payout_held:${reason}`,
+    projectId,
+    expertId,
+  }).catch(() => {});
+}
+
 /**
  * Pays out (or onboards) the expert for a completed, client-paid call.
  *
@@ -392,11 +429,32 @@ export async function runExpertPayout(
     const pe          = project?.experts.find(e => e.expert.id === expertId);
     const expertEmail = pe?.contactEmail;
 
-    if (!pe || pe.paymentStatus !== 'paid') return;
+    if (!pe) return;
+
+    if (pe.paymentStatus !== 'paid') {
+      // A call that was refunded, never settled, or re-billed for a NEW call
+      // (createAndSendInvoice resets the shared row to 'unpaid') owes the
+      // expert nothing right now. But if the row still carries an unfinished
+      // payout from an earlier call, money IS owed, and returning silently
+      // would drop it. Hold it where the sweeps can see it instead.
+      if (payoutOwed(pe)) await holdPayout(projectId, expertId, pe, 'payment_not_settled', d);
+      return;
+    }
+
     // Retries and account.updated enter here independently of the payment
     // webhook. A refund or trial restriction must stop both transfers and mail.
     const entitlements = await d.getEntitlementsForProject(projectId);
-    if (!entitlements.canCharge) return;
+    if (!entitlements.canCharge) {
+      // getEntitlementsForProject FAILS CLOSED: a Supabase outage, a project
+      // whose organization row cannot be read, and a legacy project with no
+      // organization all arrive here looking exactly like a restricted trial.
+      // The bare `return` this replaced left the row with no
+      // expertOnboardingStatus at all, which is the one thing both sweeps and
+      // the reconcile stale-owed alarm select on — the expert became invisible
+      // rather than merely unpaid.
+      await holdPayout(projectId, expertId, pe, 'account_not_chargeable', d);
+      return;
+    }
 
     // Idempotency, per CALL: this call is in paidCallIds (or the row predates
     // that list and has a transfer id). Webhook replays and both retry sweeps

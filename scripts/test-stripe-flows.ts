@@ -646,6 +646,51 @@ async function main(): Promise<void> {
     eq('refund before late onboarding stops the eventual transfer', payout.transfers.length, 0);
   }
 
+  section('a blocked payout that is still owed stays visible to the sweeps');
+  {
+    // getEntitlementsForProject fails closed, so a Supabase outage looks exactly
+    // like a restricted trial. Either way the row must keep the one field both
+    // sweeps and the stale-owed alarm select on.
+    const payout = payoutEnv({ expert: { expertOnboardingStatus: undefined } });
+    payout.deps.getEntitlementsForProject = async () => ({ canCharge: false });
+    await runExpertPayout(PROJECT_ID, EXPERT_ID, payout.deps);
+    eq('no transfer',                        payout.transfers.length, 0);
+    eq('no onboarding mail',                 payout.reminders.length, 0);
+    eq('the row is parked as pending',       payout.patches[0]?.expertOnboardingStatus, 'pending');
+    check('the hold does not burn an attempt', payout.patches[0]?.payoutAttempts === undefined);
+    eq('and it reaches the attention feed',  payout.failures[0], 'payout_held:account_not_chargeable');
+  }
+  {
+    // A long-stuck row must not write one attention row per nightly sweep.
+    const payout = payoutEnv({ expert: { expertOnboardingStatus: 'pending' } });
+    payout.deps.getEntitlementsForProject = async () => ({ canCharge: false });
+    await runExpertPayout(PROJECT_ID, EXPERT_ID, payout.deps);
+    await runExpertPayout(PROJECT_ID, EXPERT_ID, payout.deps);
+    eq('already held — no repeat write',  payout.patches.length, 0);
+    eq('already held — no repeat alert',  payout.failures.length, 0);
+  }
+  {
+    // createAndSendInvoice resets the shared row to 'unpaid' when a SECOND call
+    // is billed. An earlier call's stalled payout is still owed.
+    const payout = payoutEnv({ expert: { paymentStatus: 'unpaid', expertOnboardingStatus: 'failed' } });
+    await runExpertPayout(PROJECT_ID, EXPERT_ID, payout.deps);
+    eq('a re-billed row does not transfer', payout.transfers.length, 0);
+    eq('but the owed payout is held, not dropped', payout.failures[0], 'payout_held:payment_not_settled');
+  }
+  {
+    // A refund with nothing owed stays silent: no hold, no attention noise.
+    const payout = payoutEnv({ expert: { paymentStatus: 'refunded', expertOnboardingStatus: undefined } });
+    await runExpertPayout(PROJECT_ID, EXPERT_ID, payout.deps);
+    eq('a refunded call owes nothing',   payout.patches.length, 0);
+    eq('and raises nothing',             payout.failures.length, 0);
+  }
+  {
+    // Already transferred: not owed, whatever the status field says.
+    const payout = payoutEnv({ expert: { paymentStatus: 'refunded', expertOnboardingStatus: 'pending', stripeTransferId: 'tr_done' } });
+    await runExpertPayout(PROJECT_ID, EXPERT_ID, payout.deps);
+    eq('a transferred row is never re-held', payout.failures.length, 0);
+  }
+
   section('payment_intent.succeeded → paid → payout');
   {
     const env = webhookEnv();
