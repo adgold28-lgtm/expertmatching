@@ -114,6 +114,14 @@ export async function middleware(request: NextRequest): Promise<NextResponse> {
 
     // Keep the outer project-route gate consistent with the route guards.
     if (!statusMayUseProduct(meta.status)) {
+      // PUBLIC_PATHS first, and returned rather than fallen through: a blocked
+      // session must be able to reach the way OUT. Without this, /login
+      // redirects to /login (ERR_TOO_MANY_REDIRECTS — PUBLIC_PATHS is only
+      // consulted in the no-session branch below, and APP_REDIRECT_PATHS would
+      // bounce it to /app anyway) while /api/auth/logout answers 403, so the
+      // user cannot clear the cookie that is blocking them. The onboarding gate
+      // immediately below already makes the same allowance.
+      if (PUBLIC_PATHS.has(pathname)) return response;
       return pathname.startsWith('/api/')
         ? NextResponse.json({ error: 'forbidden' }, { status: 403 })
         : NextResponse.redirect(new URL('/login', request.url));

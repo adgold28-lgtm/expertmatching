@@ -14,9 +14,9 @@ let status = 'active';
 let outage = false;
 const user = (email: string) => ({ id: email, email, aud: 'authenticated',
   app_metadata: { role: 'user', status, onboarding_complete: true }, user_metadata: {}, created_at: '' });
-function request(email = 'one@example.test') {
+function request(email = 'one@example.test', path = '/api/projects') {
   const session = { access_token: email, refresh_token: 'fixture', expires_at: Math.floor(Date.now()/1000)+3600, user: user(email) };
-  return new NextRequest('https://app.example.test/api/projects', {
+  return new NextRequest(`https://app.example.test${path}`, {
     headers: { cookie: `sb-fixture-auth-token=base64-${Buffer.from(JSON.stringify(session)).toString('base64url')}` },
   });
 }
@@ -47,10 +47,23 @@ async function main() {
   assert.equal((await routeAuthGuard(request()))?.status, 403, 'new request observes revocation');
   status = 'pending';
   assert.equal((await middleware(request())).status, 403, 'pending cannot bypass guards through project middleware');
+  // A blocked session must still be able to reach the way out. Without the
+  // PUBLIC_PATHS allowance, /login redirects to /login and /api/auth/logout
+  // answers 403, so the user cannot clear the cookie that blocks them.
+  for (const blocked of ['pending', 'disabled'] as const) {
+    status = blocked;
+    const logout = await middleware(request('one@example.test', '/api/auth/logout'));
+    assert.equal(logout.status, 200, `${blocked} can still sign out`);
+    const login = await middleware(request('one@example.test', '/login'));
+    assert.equal(login.status, 200, `${blocked} can still load /login`);
+    assert.equal(login.headers.get('location'), null, `${blocked} is not redirected in a loop`);
+    const app = await middleware(request('one@example.test', '/app'));
+    assert.equal(app.status, 307, `${blocked} is still kept out of the app`);
+  }
   status = 'active';
   assert.equal((await middleware(request())).status, 200);
   outage = true;
   assert.equal((await routeAuthGuard(request()))?.status, 401, 'outage fails closed');
-  process.stdout.write('PASS auth request isolation, revocation, pending middleware, concurrency, outage\n');
+  process.stdout.write('PASS auth request isolation, revocation, pending middleware, sign-out escape, concurrency, outage\n');
 }
 main().finally(() => { globalThis.fetch = realFetch; }).catch(err => { console.error(err); process.exitCode=1; });
