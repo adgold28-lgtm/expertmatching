@@ -9,7 +9,9 @@
 //   sendSequenceEmail — the single Resend sender, shared with Matchy's own
 //                      templates (lib/matchyTemplates.ts) and the thread relay
 //
-// Emails go out via Resend with Reply-To: reply+[token]@expertmatch.fit.
+// Emails go out via Resend with Reply-To: reply+[token]@reply.expertmatch.fit.
+// The reply subdomain has its own MX record pointing at Resend receiving, so the
+// root domain's MX can stay with a human mailbox provider (see HANDOFF Session 9).
 //
 // Required env vars:
 //   RESEND_API_KEY, OUTREACH_FROM_EMAIL
@@ -181,6 +183,9 @@ export function dispositionOf(attempt: SendAttempt): SendDisposition {
  *
  * Never logs: the recipient address, the subject, the body, or the token.
  */
+/** Domain that receives expert replies. Override only for local testing. */
+export const REPLY_DOMAIN = process.env.OUTREACH_REPLY_DOMAIN ?? 'reply.expertmatch.fit';
+
 export async function sendSequenceEmail(
   to:         string,
   subject:    string,
@@ -226,7 +231,7 @@ export async function sendSequenceEmail(
   }
 
   const from    = getFromAddress();
-  const replyTo = `reply+${replyToken}@expertmatch.fit`;
+  const replyTo = `reply+${replyToken}@${REPLY_DOMAIN}`;
   const resend  = getResend();
 
   // CAN-SPAM footer: postal address (when configured) plus a per-recipient

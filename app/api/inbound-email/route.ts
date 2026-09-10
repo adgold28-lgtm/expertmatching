@@ -279,8 +279,10 @@ async function lookupReplyToken(token: string): Promise<{ projectId: string; exp
 // ─── Address extraction ───────────────────────────────────────────────────────
 
 function extractReplyToken(toAddress: string): string | null {
-  // Matches: reply+TOKEN@expertmatch.fit or "Name <reply+TOKEN@expertmatch.fit>"
-  const match = toAddress.match(/reply\+([A-Za-z0-9._~-]+)@expertmatch\.fit/i);
+  // Matches reply+TOKEN@reply.expertmatch.fit (current) and reply+TOKEN@expertmatch.fit
+  // (threads started before the reply subdomain existed), with or without a
+  // display name. The token, not the domain, is what authenticates the reply.
+  const match = toAddress.match(/reply\+([A-Za-z0-9._~-]+)@(?:reply\.)?expertmatch\.fit/i);
   return match?.[1] ?? null;
 }
 

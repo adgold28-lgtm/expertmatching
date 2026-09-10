@@ -76,6 +76,8 @@ export const OPTIONAL_VARS = [
   // Who signs Matchy's emails (lib/senderIdentity.ts); unset = unsigned
   'OUTREACH_SIGNATURE',
   // The LinkedIn URL in the intro's signature block (lib/senderIdentity.ts,
+  // Domain that receives expert replies (Reply-To); default reply.expertmatch.fit
+  'OUTREACH_REPLY_DOMAIN',
   // Pin every intro to one trial arm 1-4 (lib/matchyTemplates.introArmFor);
   // unset = the deterministic per-expert split
   'INTRO_ARM',
