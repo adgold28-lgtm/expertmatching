@@ -9,7 +9,8 @@
 // off Redis and onto Supabase recovery tokens — see lib/authLinks.ts).
 //
 // Key families written by the auth batch:
-//   login-rl:<ip>                     login throttle, 15-min window  (app/api/auth/login)
+//   login-rl:<hmac(ip)>               login attempt throttle, 15-min window (lib/loginThrottle)
+//   login-fail:<hmac(email)>          per-account login FAILURE cap, 1 h    (lib/loginThrottle)
 //   invite-rl:<sha256(token)[0..16]>  set-password attempt cap, 1 h  (app/api/auth/set-password)
 //   reset-rl:{ip|email}:<hmac>        password-reset request cap, 1 h (lib/passwordReset)
 //   access-rl:{ip|email}:<hmac>       access-request cap, 1 h        (app/api/request-access)

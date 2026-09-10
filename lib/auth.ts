@@ -9,19 +9,27 @@
 // handled separately by lib/supabase/middleware.ts.
 //
 // WHICH GUARD A ROUTE SHOULD CALL
-//   routeAuthGuard  — any signed-in user. Checks a session exists and
-//                     status !== 'disabled'. Nothing else. It does NOT check
-//                     onboarding_complete and does NOT reject status 'pending'
-//                     (middleware.ts owns the onboarding gate; a pending
-//                     account has no password yet, so it cannot sign in).
-//   adminGuard      — platform staff only (app_metadata.role === 'admin').
-//                     /api/admin/* runs this AND is shadowed by middleware's
-//                     admin-only 404, deliberately twice.
+//   routeAuthGuard  — any ACTIVE signed-in user. Checks a session exists and
+//                     the status is neither 'disabled' nor 'pending'. Nothing
+//                     else: it does NOT check onboarding_complete
+//                     (middleware.ts owns the onboarding gate).
+//   adminGuard      — platform staff only (app_metadata.role === 'admin'),
+//                     same status rule. /api/admin/* runs this AND is shadowed
+//                     by middleware's admin-only 404, deliberately twice.
 //   orgAdminGuard   — the Team API. Platform admin OR org_admin with an org_id;
-//                     additionally rejects 'pending'. Returns the SessionUser so
-//                     the caller does not re-read the session.
+//                     same status rule. Returns the SessionUser so the caller
+//                     does not re-read the session.
 // None of these check project ownership — that is getProjectForUser (404 on no
 // access) followed by lib/projectsGuard.requireProjectOwner (403), in that order.
+//
+// ALL THREE AGREE ON WHAT "MAY USE THE PRODUCT" MEANS — statusMayUseProduct()
+// below is the single definition. They did not always: routeAuthGuard and
+// adminGuard used to admit status 'pending' while orgAdminGuard refused it
+// (audit M-2). That was not exploitable, because a pending account holds only
+// the unguessable random password ensureSupabaseUser sets and so cannot sign
+// in, but any future path that establishes a session before activation — a
+// magic link, an SSO bridge, a set-password that signs in before upsertUser
+// finishes — would have handed a pending account every routeAuthGuard route.
 //
 // Each guard performs its own getUser() round-trip to the Supabase auth server,
 // so a handler that calls a guard and then getSessionUser() makes two. That is
@@ -70,6 +78,17 @@ interface AuthAppMetadata {
   first_name?:          string;
   onboarding_complete?: boolean;
   billing_complete?:    boolean;
+}
+
+/**
+ * The one definition of "this account may use the product", shared by all three
+ * guards. 'pending' means invited but not yet activated; 'disabled' means
+ * revoked. An absent status is treated as usable, because accounts provisioned
+ * before the claim existed carry none and locking them out would be worse than
+ * the (nil, given the above) risk.
+ */
+export function statusMayUseProduct(status: string | undefined | null): boolean {
+  return status !== 'disabled' && status !== 'pending';
 }
 
 /**
@@ -146,29 +165,34 @@ export async function getSessionUser(request: NextRequest): Promise<SessionUser>
 
 /**
  * Route-level auth guard — supplements middleware (defense in depth).
- * Returns null if authenticated and not disabled, or a 401/403 Response.
+ * Returns null if authenticated and active, or a 401/403 Response.
+ *
+ * A 'pending' session gets the same 403 { error: 'forbidden' } a disabled one
+ * does, rather than a 401: the body and status clients already handle, and the
+ * distinction (no session vs a session that may not act) stays honest.
  */
 export async function routeAuthGuard(request: NextRequest): Promise<Response | null> {
   if (!isAuthEnabled()) return null;
   const user = await getSupabaseSessionUser(request);
   if (!user) return Response.json({ error: 'unauthorized' }, { status: 401 });
   const meta = (user.app_metadata ?? {}) as AuthAppMetadata;
-  if (meta.status === 'disabled') {
+  if (!statusMayUseProduct(meta.status)) {
     return Response.json({ error: 'forbidden' }, { status: 403 });
   }
   return null;
 }
 
 /**
- * Admin-only guard — requires an authenticated user whose app_metadata role
- * is explicitly 'admin'. Missing/legacy roles fail closed with 403.
+ * Admin-only guard — requires an ACTIVE authenticated user whose app_metadata
+ * role is explicitly 'admin'. Missing/legacy roles, and any status that is not
+ * usable ('pending' or 'disabled'), fail closed with 403.
  */
 export async function adminGuard(request: NextRequest): Promise<Response | null> {
   if (!isAuthEnabled()) return null;
   const user = await getSupabaseSessionUser(request);
   if (!user) return Response.json({ error: 'unauthorized' }, { status: 401 });
   const meta = (user.app_metadata ?? {}) as AuthAppMetadata;
-  if (meta.status === 'disabled' || meta.role !== 'admin') {
+  if (!statusMayUseProduct(meta.status) || meta.role !== 'admin') {
     return Response.json({ error: 'forbidden' }, { status: 403 });
   }
   return null;
@@ -202,7 +226,7 @@ export async function orgAdminGuard(
   }
 
   const meta = (authUser.app_metadata ?? {}) as AuthAppMetadata;
-  if (meta.status === 'disabled' || meta.status === 'pending') {
+  if (!statusMayUseProduct(meta.status)) {
     return {
       error: Response.json(
         { error: 'forbidden', message: 'Your account is not active.' },

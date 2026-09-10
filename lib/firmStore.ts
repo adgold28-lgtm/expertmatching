@@ -200,14 +200,21 @@ function toUserRecord(
 }
 
 /**
- * Mirrors the user's authorization state onto app_metadata (best-effort).
+ * Mirrors the user's authorization state onto app_metadata.
  * Includes the organization claims (org_id / org_role) that orgAdminGuard reads,
  * so team management never needs a per-request DB round-trip.
+ *
+ * RETURNS whether the mirror actually landed. This is the revocation signal:
+ * every guard reads app_metadata and never the tables, so a false here means
+ * the row says 'disabled' while the JWT still says 'active' and the account
+ * keeps working (audit H-16). Callers that are revoking access must not treat
+ * a false as success — app/api/org/members turns it into a warning, and
+ * lib/membershipReconcile retries it nightly.
  */
-export async function syncUserMetadata(email: string): Promise<void> {
+export async function syncUserMetadata(email: string): Promise<boolean> {
   const user = await getUser(email);
-  if (!user) return;
-  await syncAppMetadata(email, {
+  if (!user) return false;
+  return syncAppMetadata(email, {
     role:                user.role,
     status:              user.status,
     firm_domain:         user.firmDomain,
@@ -356,8 +363,16 @@ export async function getUser(email: string): Promise<UserRecord | null> {
  * Creates or updates a user. Ensures a Supabase auth account + profile exist,
  * applies profile fields, ensures firm membership when firmDomain is given,
  * and syncs app_metadata. Throws on hard failures so callers can 500.
+ *
+ * Returns `{ metadataSynced }`: false means the database write succeeded but
+ * the app_metadata mirror did not, so the guards still see the OLD claims.
+ * For a status or role change that is a failed revocation, not a success —
+ * see the note on step 4 below. Callers that do not care may ignore it.
  */
-export async function upsertUser(email: string, fields: UpsertUserInput): Promise<void> {
+export async function upsertUser(
+  email: string,
+  fields: UpsertUserInput,
+): Promise<{ metadataSynced: boolean }> {
   const db = getServiceRoleClient();
   if (!db) throw new Error('[firmStore] Supabase unavailable');
   const e = normEmail(email);
@@ -456,24 +471,33 @@ export async function upsertUser(email: string, fields: UpsertUserInput): Promis
     }
   }
 
-  // 4. Mirror onto app_metadata (best-effort).
+  // 4. Mirror onto app_metadata, and REPORT whether it landed.
   //
   // This is the ONLY thing that makes a status or role change visible to
   // middleware.ts and the lib/auth.ts guards — they read app_metadata and never
-  // the tables. Swallowing the error keeps the DB write authoritative, but it
-  // means a failed sync leaves a just-disabled or just-demoted user carrying
-  // the old claims until the next successful upsertUser for that account. The
-  // self-heal path is GET /api/org/membership, which re-syncs when it notices
-  // missing org claims; there is no periodic reconciler for status.
-  await syncUserMetadata(e).catch(() => {});
+  // the tables. The exception is still swallowed here, because the database
+  // write is authoritative and unwinding it would be worse, but the outcome is
+  // no longer discarded: a failed sync leaves a just-disabled or just-demoted
+  // user carrying the old claims, so the caller is told and can say so.
+  //
+  // Two repair paths exist for a false: GET /api/org/membership re-syncs when
+  // it notices MISSING org claims (not stale ones), and
+  // lib/membershipReconcile.sweepMembershipStatus re-syncs every disabled
+  // membership whose auth claims disagree, nightly.
+  const metadataSynced = await syncUserMetadata(e).catch(() => false);
 
   // 5. A membership that became active / disabled changes the org's billable
   //    seat count. Best effort — billing never fails an account write.
   if (membershipChanged) await syncSeatsBestEffort(touchedOrgId);
+
+  return { metadataSynced };
 }
 
-export async function updateUserStatus(email: string, status: UserStatus): Promise<void> {
-  await upsertUser(email, { status });
+export async function updateUserStatus(
+  email: string,
+  status: UserStatus,
+): Promise<{ metadataSynced: boolean }> {
+  return upsertUser(email, { status });
 }
 
 export async function listUsersForFirm(domain: string): Promise<UserRecord[]> {
@@ -540,13 +564,23 @@ export async function listAllUsers(): Promise<UserRecord[]> {
   });
 }
 
-export async function deleteUser(email: string): Promise<void> {
+/**
+ * Removes the auth user, which cascades to profiles and organization_members.
+ *
+ * Returns whether the delete actually happened. deleteSupabaseUser reports its
+ * failures as false rather than throwing, and that used to be discarded here,
+ * so a removal that never took effect still answered 200 ok — the same silent
+ * revocation failure as a dropped app_metadata sync (audit H-16). The caller
+ * decides what to say about a false.
+ */
+export async function deleteUser(email: string): Promise<{ deleted: boolean }> {
   // Read the membership first — the cascade removes it with the auth user.
-  const user = await getUser(email).catch(() => null);
+  const user    = await getUser(email).catch(() => null);
   // Deleting the auth user cascades to profiles and organization_members.
-  await deleteSupabaseUser(normEmail(email));
+  const deleted = await deleteSupabaseUser(normEmail(email));
   // A removed active membership frees a billable seat.
-  if (user?.status === 'active') await syncSeatsBestEffort(user.orgId);
+  if (deleted && user?.status === 'active') await syncSeatsBestEffort(user.orgId);
+  return { deleted };
 }
 
 // ─── Organization membership helpers ──────────────────────────────────────────
@@ -647,8 +681,11 @@ export async function countOrgAdmins(organizationId: string): Promise<number> {
 }
 
 /** Promotes / demotes a member inside their organization. */
-export async function updateOrgMemberRole(email: string, orgRole: OrgRole): Promise<void> {
-  await upsertUser(email, { orgRole });
+export async function updateOrgMemberRole(
+  email: string,
+  orgRole: OrgRole,
+): Promise<{ metadataSynced: boolean }> {
+  return upsertUser(email, { orgRole });
 }
 
 // ─── Seat claim lock (Redis — short-TTL concurrency guard only) ────────────────

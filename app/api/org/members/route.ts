@@ -6,6 +6,24 @@
 //
 // Every mutation re-syncs the org's Stripe seat quantity (best effort — billing
 // must never fail a membership change).
+//
+// TWO RULES ON THE TARGET OF A PATCH OR DELETE, both of them here rather than
+// in firmStore because they are about who is asking:
+//
+//   1. A target whose PLATFORM role is 'admin' (ExpertMatch staff holding a
+//      seat in a customer org) may only be acted on by another platform admin.
+//      Without it a customer's org_admin could disable staff across the whole
+//      platform, since disabling writes app_metadata.status and middleware
+//      enforces that everywhere (audit M-3). Refusal is 403 { error:
+//      'read_only' }.
+//
+//   2. Revocation that does not reach app_metadata is NOT success. The guards
+//      read the JWT claims and never the tables, so a disable whose metadata
+//      sync failed leaves the account working while the row says 'disabled'
+//      (audit H-16). Those answer 200 { ok: true, warning: 'metadata_sync_failed' }
+//      — the write did happen, so this is not a 500 the caller should retry —
+//      and record a 'membership' system failure so the admin attention feed
+//      shows it and lib/membershipReconcile repairs it that night.
 
 import { NextRequest } from 'next/server';
 import { orgAdminGuard, type SessionUser } from '../../../../lib/auth';
@@ -112,6 +130,37 @@ function noOrg(): Response {
     { error: 'no_organization', message: 'No organization to manage.' },
     { status: 400 },
   );
+}
+
+/**
+ * True when this caller may not act on this target: the target is platform
+ * staff and the caller is not. Same rule for PATCH and DELETE.
+ */
+function targetIsProtectedStaff(caller: SessionUser, target: UserRecord): boolean {
+  return target.role === 'admin' && caller.role !== 'admin';
+}
+
+function readOnlyTarget(): Response {
+  return Response.json(
+    {
+      error:   'read_only',
+      message: 'This account is managed by ExpertMatch and cannot be changed here.',
+    },
+    { status: 403 },
+  );
+}
+
+/**
+ * The membership change reached Postgres but not the JWT claims. Recorded so it
+ * appears at GET /api/admin/attention; the nightly sweep re-tries the sync.
+ * Never carries the email — organizationId only, per the no-PII-in-events rule.
+ */
+async function recordSyncGap(organizationId: string, what: string): Promise<void> {
+  await recordSystemFailure({
+    area:           'membership',
+    reason:         `app_metadata sync failed after ${what}; JWT claims are stale`,
+    organizationId,
+  });
 }
 
 // ─── GET — members + seat summary ─────────────────────────────────────────────
@@ -253,14 +302,13 @@ export async function PATCH(request: NextRequest): Promise<Response> {
       );
     }
 
-    // Never let an organization lose its last admin.
-    //
-    // Scope note: the only check on the TARGET is that they belong to this
-    // organization. A member whose PLATFORM role is 'admin' (ExpertMatch staff
-    // holding a seat in a customer org) is an ordinary target here, so an
-    // org_admin can disable or demote them. There is no "you may not act on a
-    // platform admin" rule, and the last-admin guard counts org_admins, not
-    // platform admins.
+    // Platform staff are off limits to a customer's org admin (rule 1 above).
+    // Checked before the last-admin guard so the answer does not depend on how
+    // many org_admins the organization happens to have.
+    if (targetIsProtectedStaff(guard.user, member)) return readOnlyTarget();
+
+    // Never let an organization lose its last admin. The last-admin guard
+    // counts org_admins, which is orthogonal to profiles.is_platform_admin.
     const currentOrgRole = member.orgRole ?? 'org_member';
     const losesAdmin =
       currentOrgRole === 'org_admin' && (orgRole === 'org_member' || status === 'disabled');
@@ -275,14 +323,25 @@ export async function PATCH(request: NextRequest): Promise<Response> {
       );
     }
 
+    // Both writes report whether the app_metadata mirror landed. Either one
+    // failing means the guards still see the old role or status.
+    let metadataSynced = true;
+
     if (orgRole && orgRole !== currentOrgRole) {
-      await updateOrgMemberRole(email, orgRole as OrgRole);
+      const r = await updateOrgMemberRole(email, orgRole as OrgRole);
+      if (!r.metadataSynced) metadataSynced = false;
     }
     if (status && status !== member.status) {
-      await upsertUser(email, { status: status as UserStatus });
+      const r = await upsertUser(email, { status: status as UserStatus });
+      if (!r.metadataSynced) metadataSynced = false;
     }
 
     await syncSeats(orgId);
+
+    if (!metadataSynced) {
+      await recordSyncGap(orgId, 'a member status or role change');
+      return Response.json({ ok: true, warning: 'metadata_sync_failed' });
+    }
 
     return Response.json({ ok: true });
   } catch {
@@ -322,6 +381,7 @@ export async function DELETE(request: NextRequest): Promise<Response> {
         { status: 404 },
       );
     }
+    if (targetIsProtectedStaff(guard.user, member)) return readOnlyTarget();
     if (member.status === 'active') {
       return Response.json(
         {
@@ -332,8 +392,16 @@ export async function DELETE(request: NextRequest): Promise<Response> {
       );
     }
 
-    await deleteUser(email);
+    // deleteUser reports a refused delete rather than throwing. A false here is
+    // the same class of silent revocation failure as a dropped metadata sync,
+    // so it gets the same warning shape rather than a fresh error string.
+    const { deleted } = await deleteUser(email);
     await syncSeats(orgId);
+
+    if (!deleted) {
+      await recordSyncGap(orgId, 'a member removal');
+      return Response.json({ ok: true, warning: 'metadata_sync_failed' });
+    }
 
     return Response.json({ ok: true });
   } catch {

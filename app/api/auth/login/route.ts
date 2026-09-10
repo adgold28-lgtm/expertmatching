@@ -2,6 +2,11 @@ import { NextRequest, NextResponse } from 'next/server';
 import { createServerClient } from '@supabase/ssr';
 import { getUpstashClient } from '../../../../lib/upstashRedis';
 import { trackProductEvent } from '../../../../lib/productEvents';
+import {
+  createLoginThrottleBackend,
+  checkLoginThrottle,
+  recordLoginFailure,
+} from '../../../../lib/loginThrottle';
 
 // POST /api/auth/login — the ONE login path. Public (middleware PUBLIC_PATHS).
 //
@@ -9,34 +14,28 @@ import { trackProductEvent } from '../../../../lib/productEvents';
 // writes the session cookies onto the response; authorization metadata
 // (role / status / firm / onboarding) rides in the JWT's app_metadata.
 //
-// Sequence: body-size guard → JSON parse → per-IP throttle → Supabase
-// signInWithPassword → app_metadata.status check → capture Set-Cookie →
-// product event. From here the browser's next request goes through
+// Sequence: body-size guard → JSON parse → throttle (per-IP attempts AND the
+// target account's failure budget) → Supabase signInWithPassword →
+// app_metadata.status check → record a failure if it was one → capture
+// Set-Cookie → product event. From here the browser's next request goes through
 // middleware.ts, which refreshes the cookie (lib/supabase/middleware.updateSession)
 // and applies the disabled / admin-only / onboarding gates.
 //
 // Two deliberate properties worth knowing before changing anything here:
-//   - A wrong password and an unknown address both answer 401 invalid_credentials,
-//     so this route never confirms an address has an account. A DISABLED account
-//     is the one exception (403 account_disabled) — the password was correct, so
-//     nothing is leaked to someone who does not already hold it.
-//   - The throttle is per-IP only, 10 attempts / 15 min, and FAILS OPEN: no
-//     Upstash, or an Upstash error, means no cap at all. There is no per-account
-//     lockout, so credential stuffing spread across IPs is not slowed here.
-//     See the report's audit section.
+//   - A wrong password, an unknown address and a spent per-account failure
+//     budget all answer 401 invalid_credentials, so this route never confirms an
+//     address has an account. A DISABLED account is the one exception
+//     (403 account_disabled) — the password was correct, so nothing is leaked to
+//     someone who does not already hold it.
+//   - The throttle policy lives in lib/loginThrottle.ts (a route.ts may not
+//     export helpers). Two counters: every attempt against `login-rl:<hmac(ip)>`
+//     at 10 per 15 min, and FAILURES ONLY against `login-fail:<hmac(email)>` at
+//     10 per hour. Unlike every other limiter in this repo, login does NOT fail
+//     open when Upstash is down — it degrades to a per-instance in-process
+//     limiter, which is weak (N warm instances multiply the cap by N) but not
+//     absent. See that module's header for why.
 
-const MAX_BODY         = 4 * 1024;                 // 4 KB — email+password only
-const LOGIN_RATE_LIMIT = 10;                       // attempts per window per IP
-const LOGIN_WINDOW_MS  = 15 * 60 * 1000;           // 15 minutes
-
-// Redis key family: `login-rl:<ip>` (15-minute INCR window).
-// NOTE the raw IP is the key material here. Every other limiter in the repo
-// (lib/rateLimiter.rlKey, lib/passwordReset.rlKey, app/api/request-access)
-// HMACs the value with LOG_HASH_SECRET first, precisely so an address or IP
-// never sits in a Redis key name. This one is the outlier.
-function loginRlKey(ip: string): string {
-  return `login-rl:${ip}`;
-}
+const MAX_BODY = 4 * 1024;                 // 4 KB — email+password only
 
 type SetCookieOption = {
   domain?:      string;
@@ -88,21 +87,26 @@ export async function POST(request: NextRequest): Promise<Response> {
   }
 
   // ── Rate limiting ─────────────────────────────────────────────────────────
+  //
+  // The backend is built once and reused below to record a failure, so a single
+  // request never opens two Upstash connections and the in-process fallback
+  // (if it is in play) counts the attempt and its failure in the same limiter.
+  const throttle = createLoginThrottleBackend(getUpstashClient());
   {
     const ip = request.headers.get('x-forwarded-for')?.split(',')[0]?.trim()
             ?? request.headers.get('x-real-ip')
             ?? 'unknown';
-    const redis = getUpstashClient();
-    if (redis) {
-      try {
-        const { count, ttlMs } = await redis.incrWithWindow(loginRlKey(ip), LOGIN_WINDOW_MS);
-        if (count > LOGIN_RATE_LIMIT) {
-          return Response.json(
-            { error: 'rate_limited', message: 'Too many login attempts. Please try again later.' },
-            { status: 429, headers: { 'Retry-After': String(Math.ceil(ttlMs / 1000)) } },
-          );
-        }
-      } catch { /* fail open */ }
+    const decision = await checkLoginThrottle(throttle, ip, email);
+    if (!decision.allowed) {
+      if (decision.reason === 'ip') {
+        return Response.json(
+          { error: 'rate_limited', message: 'Too many login attempts. Please try again later.' },
+          { status: 429, headers: { 'Retry-After': String(Math.ceil(decision.retryAfterMs / 1000)) } },
+        );
+      }
+      // Per-account cap: answer exactly as a wrong password does. Telling the
+      // caller the account is locked would confirm the address exists.
+      return Response.json({ error: 'invalid_credentials' }, { status: 401 });
     }
   }
 
@@ -152,6 +156,10 @@ export async function POST(request: NextRequest): Promise<Response> {
   }
 
   if (!signInOk) {
+    // Count it against this account's hourly failure budget. Only wrong
+    // credentials land here: the disabled branch returned above, because there
+    // the password was correct and the attempt is not an attack.
+    await recordLoginFailure(throttle, email);
     // Uniform error — do not reveal whether the email exists.
     return Response.json({ error: 'invalid_credentials' }, { status: 401 });
   }
