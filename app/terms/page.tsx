@@ -8,8 +8,8 @@ import { SEAT_TIERS, formatUsdFromCents, MIN_BILLABLE_MINUTES } from '../../lib/
 //
 // Every commercial term below is drawn from lib/pricing.ts so this page can
 // never quote a number the billing code does not charge. Anything the founder
-// still has to decide is marked with a literal [CONFIRM: …] token so it can be
-// found with `grep -rn "\[CONFIRM" app/`.
+// still has to decide was marked with a literal [CONFIRM: …] token; the last
+// one (legal entity: ExpertMatch LLC, Arkansas) was filled on 2026-09-10.
 
 export const metadata: Metadata = {
   title: 'Terms of Service — ExpertMatch',
@@ -85,8 +85,9 @@ export default function TermsPage() {
               is responsible for what those people do with the account.
             </p>
             <p>
-              [CONFIRM: legal entity name and form — e.g. &ldquo;ExpertMatch, Inc., a Delaware
-              corporation&rdquo;. Every reference to &ldquo;ExpertMatch&rdquo; below should name that entity.]
+              These Terms are a contract between you and ExpertMatch LLC, an Arkansas limited
+              liability company (&ldquo;ExpertMatch&rdquo;, &ldquo;we&rdquo;, &ldquo;us&rdquo;). Every
+              reference to &ldquo;ExpertMatch&rdquo; in these Terms means that company.
             </p>
             <p>
               Accounts are issued by invitation. We may decline a request for access, and we may
@@ -314,9 +315,9 @@ export default function TermsPage() {
           <Section n="13" title="Governing law and disputes">
             <p>
               These terms are governed by the laws of{' '}
-              <strong className="font-medium text-ink">[Governing law: State]</strong>, without regard
+              <strong className="font-medium text-ink">the State of Arkansas</strong>, without regard
               to its conflict-of-laws rules. Any dispute will be brought in the courts of{' '}
-              <strong className="font-medium text-ink">[Governing law: State]</strong>, and both
+              <strong className="font-medium text-ink">the State of Arkansas</strong>, and both
               parties consent to that jurisdiction.
             </p>
           </Section>
