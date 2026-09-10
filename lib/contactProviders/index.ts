@@ -18,6 +18,8 @@ import type { ContactProvider, ActiveProviderName } from './types';
 
 export { snovProvider, hunterProvider };
 
+// The one registry of active providers, read by buildProviderWaterfall and
+// getContactProvider.
 const PROVIDER_MAP: Record<ActiveProviderName, ContactProvider> = {
   snov:   snovProvider,
   hunter: hunterProvider,
@@ -69,17 +71,12 @@ export function buildProviderWaterfall(): ContactProvider[] {
   return waterfall;
 }
 
-// Identical to PROVIDER_MAP above — kept as a second copy only because
-// getContactProvider() was written against it. Both are unused; if either is
-// revived, collapse them into one map first.
-const ACTIVE_PROVIDERS: Record<ActiveProviderName, ContactProvider> = {
-  snov:   snovProvider,
-  hunter: hunterProvider,
-};
-
 // Returns a provider by name. Throws if the name is not a recognized active provider.
+// Reads the same PROVIDER_MAP buildProviderWaterfall does — there used to be a
+// second, byte-identical ACTIVE_PROVIDERS map here purely because this function
+// was written against it (audit M-23).
 export function getContactProvider(name: string): ContactProvider {
-  const provider = ACTIVE_PROVIDERS[name as ActiveProviderName];
+  const provider = PROVIDER_MAP[name as ActiveProviderName];
   if (!provider) throw new Error(`Unknown contact provider: ${name}`);
   return provider;
 }

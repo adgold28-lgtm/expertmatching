@@ -3,9 +3,18 @@
 // Hand-authored types for the Supabase schema created in
 //   supabase/migrations/20260831000000_supabase_cutover_foundation.sql
 //   supabase/migrations/20260901000000_onboarding_billing_calendar.sql
-//   supabase/migrations/20260906000000_outreach_suppressions.sql
 //   supabase/migrations/20260902000000_org_billing_and_rls_hardening.sql
+//   supabase/migrations/20260906000000_outreach_suppressions.sql
 //   supabase/migrations/20260907000000_matchy_phase1.sql
+//   supabase/migrations/20260907100000_availability_windows_and_indexes.sql
+//   supabase/migrations/20260907300000_matchy_phase2_events.sql
+//   supabase/migrations/20260908000000_identity_boundary_trial_events.sql
+//   supabase/migrations/20260909000000_cron_scan_indexes.sql (indexes only)
+//
+// EVERY table belongs here, including the service-role-only ones. This file is
+// the only compile-time check on column names in a codebase that otherwise
+// talks to Postgres through strings, so a table described by an ad-hoc inline
+// type somewhere else is a table nothing checks (audit M-10).
 //
 // Keep this file in sync with those migrations. (Once the Supabase CLI is
 // wired up you can regenerate with: `supabase gen types typescript --linked`.)
@@ -15,8 +24,8 @@
 //                     access_requests
 //   project-scoped -> projects, project_members, project_experts
 //   service-role   -> access_requests, user_calendar_connections,
-//                     outreach_suppressions, engagement_events
-//                     organization_billing
+//                     outreach_suppressions, engagement_events,
+//                     organization_billing, system_events, product_events
 //   project-read   -> conversation_messages (members read; writes service-role)
 // Project data is reachable only via project ownership or an explicit
 // project_members row — never org-wide.
@@ -354,6 +363,9 @@ export interface Database {
           calendar_email: string | null;
           calendly_url: string | null;
           manual_slots: Json | null;
+          // Recurring availability, added by 20260907100000: an array of
+          // { dayOfWeek, from, to, timezone } — see lib/availabilityWindows.ts.
+          weekly_windows: Json | null;
           timezone: string | null;
           oauth_state: string | null;
           created_at: string;
@@ -368,6 +380,7 @@ export interface Database {
           calendar_email?: string | null;
           calendly_url?: string | null;
           manual_slots?: Json | null;
+          weekly_windows?: Json | null;
           timezone?: string | null;
           oauth_state?: string | null;
           created_at?: string;
@@ -382,6 +395,7 @@ export interface Database {
           calendar_email?: string | null;
           calendly_url?: string | null;
           manual_slots?: Json | null;
+          weekly_windows?: Json | null;
           timezone?: string | null;
           oauth_state?: string | null;
           created_at?: string;
@@ -536,6 +550,46 @@ export interface Database {
         };
         Relationships: [];
       };
+      // Operational failures the request path deliberately swallowed — seat
+      // syncs, payouts, mail, sourcing, invoices, nudges. Service-role only
+      // (RLS enabled, no policies). Written by
+      // lib/engagementEvents.recordSystemFailure, read by lib/attention.ts.
+      // `kind` and `area` are free-form text on purpose: a new area must never
+      // be able to turn a swallowed failure into a second failure at insert
+      // time. See 20260907100000_availability_windows_and_indexes.sql.
+      system_events: {
+        Row: {
+          id: string;
+          kind: string;
+          area: string;
+          reason: string;
+          organization_id: string | null;
+          project_id: string | null;
+          expert_id: string | null;
+          created_at: string;
+        };
+        Insert: {
+          id?: string;
+          kind: string;
+          area: string;
+          reason: string;
+          organization_id?: string | null;
+          project_id?: string | null;
+          expert_id?: string | null;
+          created_at?: string;
+        };
+        Update: {
+          id?: string;
+          kind?: string;
+          area?: string;
+          reason?: string;
+          organization_id?: string | null;
+          project_id?: string | null;
+          expert_id?: string | null;
+          created_at?: string;
+        };
+        Relationships: [];
+      };
       // What people DO in the product — the trial/usage funnel. Service-role
       // only (RLS enabled, no policies). See lib/productEvents.ts and
       // supabase/migrations/20260908000000_identity_boundary_trial_events.sql.
@@ -607,3 +661,5 @@ export type OrganizationBillingRow = Database['public']['Tables']['organization_
 export type ConversationMessageRow = Database['public']['Tables']['conversation_messages']['Row'];
 export type EngagementEventRow = Database['public']['Tables']['engagement_events']['Row'];
 export type ProductEventRow = Database['public']['Tables']['product_events']['Row'];
+export type SystemEventRow = Database['public']['Tables']['system_events']['Row'];
+export type SystemEventInsert = Database['public']['Tables']['system_events']['Insert'];

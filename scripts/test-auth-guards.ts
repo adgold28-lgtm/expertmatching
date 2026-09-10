@@ -48,21 +48,7 @@ import {
   MAX_ROWS,
   type DisabledMembership,
 } from '../lib/membershipReconcile';
-
-let failures = 0;
-let checks   = 0;
-
-function check(name: string, ok: boolean, detail = ''): void {
-  checks++;
-  if (!ok) {
-    failures++;
-    console.log(`FAIL  ${name}${detail ? ` — ${detail}` : ''}`);
-  }
-}
-
-function eq<T>(name: string, actual: T, expected: T): void {
-  check(name, Object.is(actual, expected), `expected ${String(expected)}, got ${String(actual)}`);
-}
+import { check, eq, summary } from './testHarness';
 
 function section(title: string): void {
   console.log(`\n── ${title} ──`);
@@ -455,8 +441,7 @@ eq('owned-projects refusal takes priority over any deleted flag',
 async function main(): Promise<void> {
   await runFallbackCases();
   await runSweepCases();
-  console.log(`\n${failures === 0 ? 'PASS' : 'FAIL'} — ${checks - failures}/${checks} checks passed`);
-  process.exit(failures === 0 ? 0 : 1);
+  summary();
 }
 
 void main();

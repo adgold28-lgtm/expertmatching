@@ -18,16 +18,15 @@
 //   ENCRYPTION_KEY         — 64 hex chars (AES-256-GCM key)
 //   NEXT_PUBLIC_APP_URL    — base URL for redirect URI construction
 
-import { createHmac, timingSafeEqual } from 'crypto';
 import { NextRequest, NextResponse } from 'next/server';
 import { getProject, updateExpertStatus } from '../../../../../../lib/projectStore';
 import { encrypt } from '../../../../../../lib/encryption';
+import { constantTimeEqual, verify } from '../../../../../../lib/hmacToken';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
 const GOOGLE_TOKEN_URL = 'https://oauth2.googleapis.com/token';
 const USERINFO_URL     = 'https://www.googleapis.com/oauth2/v3/userinfo';
-const STATE_SECRET_ENV = 'AVAILABILITY_TOKEN_SECRET';
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -35,43 +34,21 @@ function verifyState(
   stateB64: string,
   storedNonce: string,
 ): { ok: false } | { ok: true; projectId: string; expertId: string; token: string } {
-  const secret = process.env[STATE_SECRET_ENV];
-  if (!secret) return { ok: false };
-
-  let decoded: string;
-  try {
-    decoded = Buffer.from(stateB64, 'base64url').toString('utf8');
-  } catch {
-    return { ok: false };
-  }
-
-  // Format: `${projectId}:${expertId}:${nonce}.${sig}`
-  const lastDot = decoded.lastIndexOf('.');
-  if (lastDot < 0) return { ok: false };
-
-  const payload  = decoded.slice(0, lastDot);
-  const sigActual = decoded.slice(lastDot + 1);
-
-  const sigExpected = createHmac('sha256', secret).update(payload).digest('hex');
-
-  // Timing-safe comparison
-  const expBuf = Buffer.from(sigExpected, 'utf8');
-  const actBuf = Buffer.from(sigActual,   'utf8');
-  if (expBuf.length !== actBuf.length) return { ok: false };
-  if (!timingSafeEqual(expBuf, actBuf))  return { ok: false };
+  // Signature check, constant-time compare and base64url decode all live in
+  // lib/hmacToken (purpose 'expert-oauth'); the wire format is unchanged, so a
+  // state minted before the consolidation still verifies here.
+  const verified = verify(stateB64, 'expert-oauth');
+  if (!verified.ok) return { ok: false };
 
   // `projectId:expertId:nonce` (legacy) or `projectId:expertId:nonce:token`.
-  const parts = payload.split(':');
+  const parts = verified.payload.split(':');
   if (parts.length !== 3 && parts.length !== 4) return { ok: false };
 
   const [projectId, expertId, nonce] = parts;
   const token = parts[3] ?? '';
 
   // Nonce must match what we stored (prevents replay / state-swap)
-  const nonceExpBuf = Buffer.from(storedNonce, 'utf8');
-  const nonceActBuf = Buffer.from(nonce,       'utf8');
-  if (nonceExpBuf.length !== nonceActBuf.length) return { ok: false };
-  if (!timingSafeEqual(nonceExpBuf, nonceActBuf)) return { ok: false };
+  if (!constantTimeEqual(storedNonce, nonce)) return { ok: false };
 
   return { ok: true, projectId, expertId, token };
 }

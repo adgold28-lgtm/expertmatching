@@ -45,6 +45,7 @@
 
 import { NextRequest } from 'next/server';
 import { getServiceRoleClient } from '../../../../lib/supabase/admin';
+import { secretMatches } from '../../../../lib/auth';
 import { getProject } from '../../../../lib/projectStore';
 import { listThread } from '../../../../lib/conversations';
 import { getCalendarConnection } from '../../../../lib/calendarConnections';
@@ -98,18 +99,6 @@ interface PlannerResult {
   skipped: SkipCounts;
   errors:  number;
   ranMs:   number;
-}
-
-// ─── Auth ─────────────────────────────────────────────────────────────────────
-
-/** Constant-time-ish compare, same as app/api/jobs/reconcile. */
-function secretMatches(provided: string, expected: string): boolean {
-  if (provided.length !== expected.length) return false;
-  let diff = 0;
-  for (let i = 0; i < provided.length; i++) {
-    diff |= provided.charCodeAt(i) ^ expected.charCodeAt(i);
-  }
-  return diff === 0;
 }
 
 // ─── Handler ──────────────────────────────────────────────────────────────────

@@ -26,9 +26,8 @@
 // supabase/migrations/20260907000000_matchy_phase1.sql), so a browser session
 // can neither read nor write it.
 
-import type { SupabaseClient } from '@supabase/supabase-js';
 import { getServiceRoleClient } from './supabase/admin';
-import type { EngagementEventType } from './supabase/database.types';
+import type { EngagementEventType, SystemEventRow, SystemEventInsert } from './supabase/database.types';
 
 export type { EngagementEventType };
 
@@ -178,53 +177,15 @@ export type SystemFailureArea = 'seat_sync' | 'payout' | 'mail' | 'sourcing' | '
 /** The only kind written today; the column is free-form so a later kind needs no migration. */
 export const SYSTEM_FAILURE_KIND = 'system_failure';
 
-export type SystemEventRow = {
-  id:              string;
-  kind:            string;
-  area:            string;
-  reason:          string;
-  organization_id: string | null;
-  project_id:      string | null;
-  expert_id:       string | null;
-  created_at:      string;
-}
+// The row and insert shapes come from lib/supabase/database.types.ts, which
+// describes system_events like every other table. There used to be a private
+// copy of the schema here and a cast of the service-role client onto it,
+// because the types file did not know the table (audit M-10); it does now.
+export type { SystemEventRow, SystemEventInsert };
 
-export type SystemEventInsert = {
-  kind:             string;
-  area:             string;
-  reason:           string;
-  organization_id?: string | null;
-  project_id?:      string | null;
-  expert_id?:       string | null;
-}
-
-/**
- * A minimal schema for the one table lib/supabase/database.types.ts does not
- * describe yet. Casting the service-role client to this keeps `system_events`
- * fully typed at both call sites without an `any` and without editing the
- * generated types file.
- */
-export type SystemEventsSchema = {
-  public: {
-    Tables: {
-      system_events: {
-        Row:           SystemEventRow;
-        Insert:        SystemEventInsert;
-        Update:        Partial<SystemEventInsert>;
-        Relationships: [];
-      };
-    };
-    Views:          Record<string, never>;
-    Functions:      Record<string, never>;
-    Enums:          Record<string, never>;
-    CompositeTypes: Record<string, never>;
-  };
-}
-
-/** Service-role client typed for `system_events`, or null without credentials. */
-export function getSystemEventsClient(): SupabaseClient<SystemEventsSchema> | null {
-  const db = getServiceRoleClient();
-  return db ? (db as unknown as SupabaseClient<SystemEventsSchema>) : null;
+/** Service-role client, or null without credentials. `system_events` is typed. */
+export function getSystemEventsClient(): ReturnType<typeof getServiceRoleClient> {
+  return getServiceRoleClient();
 }
 
 /** Longest stored reason. Long enough to be useful, short enough to not be prose. */

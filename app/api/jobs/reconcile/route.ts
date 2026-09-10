@@ -45,6 +45,7 @@
 
 import { NextRequest } from 'next/server';
 import { getServiceRoleClient } from '../../../../lib/supabase/admin';
+import { secretMatches } from '../../../../lib/auth';
 import { syncOrgSeatQuantity } from '../../../../lib/orgBilling';
 import { retryPendingPayoutsForAccount, MAX_PAYOUT_ATTEMPTS } from '../../../../lib/expertPayout';
 import { updateProjectFields } from '../../../../lib/projectStore';
@@ -93,22 +94,6 @@ interface ReconcileResult {
   membership: MembershipSweepResult;
   ranMs:    number;
   steps:    { seats: StepStatus; payouts: StepStatus; sourcing: StepStatus; membership: StepStatus };
-}
-
-// ─── Auth ─────────────────────────────────────────────────────────────────────
-
-/**
- * Constant-time-ish comparison. Not a defence against a local attacker (this is
- * a header check on a serverless function, not a crypto primitive) but it costs
- * nothing to avoid the early-exit compare.
- */
-function secretMatches(provided: string, expected: string): boolean {
-  if (provided.length !== expected.length) return false;
-  let diff = 0;
-  for (let i = 0; i < provided.length; i++) {
-    diff |= provided.charCodeAt(i) ^ expected.charCodeAt(i);
-  }
-  return diff === 0;
 }
 
 // ─── Step 1: seat quantities ──────────────────────────────────────────────────

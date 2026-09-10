@@ -19,20 +19,7 @@ import {
   verifySignupToken,
   hashToken,
 } from '../lib/signupToken';
-
-let failures = 0;
-let checks   = 0;
-
-function check(label: string, actual: unknown, expected: unknown): void {
-  checks++;
-  const pass = Object.is(actual, expected);
-  if (!pass) {
-    failures++;
-    console.error(`  FAIL  ${label}\n        expected ${String(expected)}, got ${String(actual)}`);
-  } else {
-    console.log(`  ok    ${label}`);
-  }
-}
+import { eq as check, summary } from './testHarness';
 
 function section(name: string): void {
   console.log(`\n${name}`);
@@ -209,8 +196,4 @@ section('Uniqueness');
   check('their hashes differ',                    a.hash  === b.hash,  false);
 }
 
-console.log(`\n${checks - failures}/${checks} checks passed`);
-if (failures > 0) {
-  console.error(`${failures} FAILED`);
-  process.exit(1);
-}
+summary();

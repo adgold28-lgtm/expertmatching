@@ -23,21 +23,7 @@
 import { resolveSendGate, dispositionOf, type SendGateFacts } from '../lib/emailSequence';
 import { introAlreadySent } from '../lib/outreachSteps';
 import type { SuppressionCheck } from '../lib/outreachSuppressions';
-
-let failures = 0;
-let checks   = 0;
-
-function check(name: string, ok: boolean, detail = ''): void {
-  checks++;
-  if (!ok) {
-    failures++;
-    console.log(`FAIL  ${name}${detail ? ` — ${detail}` : ''}`);
-  }
-}
-
-function eq(name: string, actual: unknown, expected: unknown): void {
-  check(name, actual === expected, `got ${JSON.stringify(actual)}, want ${JSON.stringify(expected)}`);
-}
+import { check, eq, summary } from './testHarness';
 
 function section(title: string): void {
   console.log(`\n── ${title} ──`);
@@ -162,9 +148,4 @@ check('the second concurrent job refuses to send', introAlreadySent(claimedByA) 
 
 // ─── Result ───────────────────────────────────────────────────────────────────
 
-console.log(`\n${checks - failures}/${checks} checks passed`);
-if (failures > 0) {
-  console.log(`${failures} FAILED`);
-  process.exit(1);
-}
-console.log('ALL CHECKS PASSED');
+summary();

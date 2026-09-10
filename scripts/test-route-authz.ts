@@ -33,15 +33,10 @@ const ROOT = path.resolve(__dirname, '..');
 dotenv.config({ path: path.join(ROOT, '.env.local') });
 
 import { createClient } from '@supabase/supabase-js';
+import { check, summary } from './testHarness';
 
 const BASE   = (process.env.SMOKE_BASE_URL ?? 'http://localhost:3000').replace(/\/+$/, '');
 const ORIGIN = process.env.NEXT_PUBLIC_APP_URL ?? BASE;
-
-let failures = 0;
-function check(name: string, ok: boolean, detail = ''): void {
-  console.log(`${ok ? 'PASS' : 'FAIL'}  ${name}${detail ? ' — ' + detail : ''}`);
-  if (!ok) failures++;
-}
 
 class Jar {
   cookies = new Map<string, string>();
@@ -477,8 +472,7 @@ async function main(): Promise<void> {
     for (const fn of cleanup.reverse()) await fn().catch(err => console.error('cleanup error', err instanceof Error ? err.message : err));
     console.log('cleanup: throwaway projects, users and orgs deleted');
   }
-  console.log(failures === 0 ? '\nALL CHECKS PASSED' : `\n${failures} CHECK(S) FAILED`);
-  process.exit(failures === 0 ? 0 : 1);
+  summary();
 }
 
 main();

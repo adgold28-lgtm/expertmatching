@@ -11,8 +11,14 @@
 // project it creates — but it DOES sign the admin account in, so use a throwaway
 // admin when pointing it at production (Supabase signOut revokes every session
 // for that user, including the one in your browser).
+//
+// ENVIRONMENT GUARD (audit H-22): the script prints the resolved target and
+// Supabase hosts before signing anyone in and REFUSES to run when either is not
+// localhost or 127.0.0.1 unless ALLOW_PROD=1 is set. That is the logout hazard
+// above made explicit: pointing this at production ends the founder's sessions.
 import * as dotenv from 'dotenv';
 import * as path from 'path';
+import { requireSafeTarget } from './opsGuard';
 
 // Run from the repo root: `npx tsx scripts/smoke-cutover.ts`.
 const ROOT = process.cwd();
@@ -69,6 +75,11 @@ async function req(jar: Jar, method: string, p: string, body?: unknown): Promise
 }
 
 async function main(): Promise<void> {
+  requireSafeTarget('smoke-cutover', [
+    { label: 'Target',   url: BASE },
+    { label: 'Supabase', url: process.env.NEXT_PUBLIC_SUPABASE_URL },
+  ]);
+
   if (!ADMIN_EMAIL) {
     console.error('SMOKE_ADMIN_EMAIL (or SEED_ADMIN_EMAIL) missing — set it to the account to sign in as');
     process.exit(1);

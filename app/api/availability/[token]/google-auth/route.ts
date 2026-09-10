@@ -22,11 +22,12 @@
 //   GOOGLE_CLIENT_SECRET  — OAuth 2.0 client secret (not used here, but validated)
 //   NEXT_PUBLIC_APP_URL   — base URL for constructing the redirect URI
 
-import { createHmac, randomBytes } from 'crypto';
+import { randomBytes } from 'crypto';
 import { NextRequest, NextResponse } from 'next/server';
 import { verifyAvailabilityToken, hashToken } from '../../../../../lib/availabilityToken';
 import { getProject, updateExpertStatus } from '../../../../../lib/projectStore';
 import { createRateLimiterStore } from '../../../../../lib/rateLimiter';
+import { sign } from '../../../../../lib/hmacToken';
 
 // Per-token rate limit: 5 OAuth initiations / 10 min.
 // Prevents nonce write-contention on repeated hits with a valid token.
@@ -61,7 +62,6 @@ const GOOGLE_AUTH_URL  = 'https://accounts.google.com/o/oauth2/v2/auth';
 // as their free/busy.
 const CALENDAR_SCOPE   = 'openid email https://www.googleapis.com/auth/calendar.freebusy';
 
-const STATE_SECRET_ENV = 'AVAILABILITY_TOKEN_SECRET'; // reuse existing secret for state HMAC
 
 // ─── State HMAC ───────────────────────────────────────────────────────────────
 
@@ -77,13 +77,10 @@ const STATE_SECRET_ENV = 'AVAILABILITY_TOKEN_SECRET'; // reuse existing secret f
  * the only clock bounding this round-trip.
  */
 function buildState(projectId: string, expertId: string, nonce: string, token: string): string {
-  const secret  = process.env[STATE_SECRET_ENV];
-  if (!secret) throw new Error('[google-auth] AVAILABILITY_TOKEN_SECRET not set');
   // The token is base64url, so it can never contain the ':' separator.
-  const payload = `${projectId}:${expertId}:${nonce}:${token}`;
-  const sig     = createHmac('sha256', secret).update(payload).digest('hex');
-  const stateRaw = `${payload}.${sig}`;
-  return Buffer.from(stateRaw).toString('base64url');
+  // lib/hmacToken signs it under purpose 'expert-oauth', which is the wire
+  // format this route has always emitted; the callback verifies the same way.
+  return sign(`${projectId}:${expertId}:${nonce}:${token}`, 'expert-oauth');
 }
 
 // ─── Handler ─────────────────────────────────────────────────────────────────

@@ -66,7 +66,6 @@
 // Never logs: email content, expert email, expert name, project name, token.
 
 import { NextRequest, NextResponse } from 'next/server';
-import { createHmac } from 'crypto';
 import { Webhook } from 'svix';
 import { getProject, updateExpertStatus } from '../../../lib/projectStore';
 import { verifyOutreachToken } from '../../../lib/outreachToken';
@@ -101,6 +100,9 @@ import { bookCall, rebookCall } from '../../../lib/bookCall';
 import { isWalkthrough, WALKTHROUGH_HELD_SUMMARY } from '../../../lib/walkthrough';
 import { clientRateFor } from '../../../lib/pricing';
 import { getFirm, getUser } from '../../../lib/firmStore';
+// The one pseudonymiser (audit L-49). It hard-fails in production without
+// LOG_HASH_SECRET, where this route's private copy silently fell back.
+import { pseudonymize } from '../../../lib/contactCache';
 import type { Project, ProjectExpert } from '../../../types';
 
 // ─── Rate limiter ─────────────────────────────────────────────────────────────
@@ -118,11 +120,6 @@ function getClientIp(request: NextRequest): string {
     request.headers.get('x-real-ip') ??
     'unknown'
   );
-}
-
-function pseudonymize(value: string): string {
-  const secret = process.env.LOG_HASH_SECRET ?? 'dev-fallback-secret';
-  return createHmac('sha256', secret).update(value).digest('hex').slice(0, 16);
 }
 
 // ─── Resend (Svix) webhook signature verification ─────────────────────────────

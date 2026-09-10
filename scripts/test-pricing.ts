@@ -34,21 +34,7 @@ import {
 // The one non-pricing import: the helper that keeps the two rate columns in
 // step. It is pure and does no I/O, even though its module talks to Postgres.
 import { rateFieldsFor } from '../lib/projectStore';
-
-let failures = 0;
-let checks   = 0;
-
-function check(name: string, ok: boolean, detail = ''): void {
-  checks++;
-  if (!ok) {
-    failures++;
-    console.log(`FAIL  ${name}${detail ? ` — ${detail}` : ''}`);
-  }
-}
-
-function eq<T>(name: string, actual: T, expected: T): void {
-  check(name, Object.is(actual, expected), `expected ${String(expected)}, got ${String(actual)}`);
-}
+import { check, eq, summary } from './testHarness';
 
 function section(title: string): void {
   console.log(`\n── ${title} ──`);
@@ -350,5 +336,4 @@ eq('a counter that converts above the ceiling is caught',
 
 // ── Result ───────────────────────────────────────────────────────────────────
 
-console.log(`\n${failures === 0 ? 'PASS' : 'FAIL'} — ${checks - failures}/${checks} checks passed`);
-process.exit(failures === 0 ? 0 : 1);
+summary();

@@ -32,8 +32,8 @@
 //     password. The pure decisions are covered by scripts/test-auth-guards.ts;
 //     what is asserted here is that the route actually wires them up.
 //   deletion (M-46)
-//     What DELETE /api/admin/users really does to an owner of projects today.
-//     See "Observed" in the wave report: this asserts current behaviour.
+//     DELETE /api/admin/users refuses an owner of projects with 409
+//     owns_projects and leaves the account intact (closed in W4-0).
 //
 // SAFE TO RUN WHILE THE FOUNDER IS LOGGED IN. Every account, organization and
 // project here is created by this script through the service role and removed
@@ -55,17 +55,11 @@ const ROOT = path.resolve(__dirname, '..');
 dotenv.config({ path: path.join(ROOT, '.env.local') });
 
 import { createClient } from '@supabase/supabase-js';
+import { check, summary } from './testHarness';
 
 const BASE   = (process.env.SMOKE_BASE_URL ?? 'http://localhost:3000').replace(/\/+$/, '');
 const ORIGIN = process.env.NEXT_PUBLIC_APP_URL ?? BASE;
 
-let failures = 0;
-let checks   = 0;
-function check(name: string, ok: boolean, detail = ''): void {
-  checks++;
-  console.log(`${ok ? 'PASS' : 'FAIL'}  ${name}${detail ? ' — ' + detail : ''}`);
-  if (!ok) failures++;
-}
 function section(title: string): void {
   console.log(`\n── ${title} ──`);
 }
@@ -757,15 +751,15 @@ async function main(): Promise<void> {
     const deleteOwner = await req(staff, 'DELETE', '/api/admin/users', { email: E.ownerdel });
     const deleteOwnerBody = await json(deleteOwner);
     const stillThere = await authUserExists(E.ownerdel);
-    // CURRENT BEHAVIOUR, asserted so a change is noticed: deleteSupabaseUser
-    // reports the foreign-key refusal as `false`, firmStore.deleteUser passes it
-    // back, and this route discards it — so the admin is told the delete worked
-    // when the account is still there. M-46 asks for 409 with the blocking
-    // project names; that is a Wave 4 change, not this brief's.
+    // M-46 is closed (W4-0): the route counts the target's owned projects BEFORE
+    // calling deleteUser and refuses with 409 owns_projects, naming them, rather
+    // than reporting 200 ok while the foreign key quietly blocks the delete.
     check('the owner of a project is NOT actually deleted (the constraint holds)', stillThere,
       `auth user present: ${stillThere}`);
-    check('but the route answers 200 ok today rather than the 409 M-46 asks for',
-      deleteOwner.status === 200 && deleteOwnerBody?.ok === true,
+    check('and the route answers 409 owns_projects, naming the blocking project',
+      deleteOwner.status === 409
+        && deleteOwnerBody?.error === 'owns_projects'
+        && Array.isArray(deleteOwnerBody?.projectNames),
       `status ${deleteOwner.status} ${err(deleteOwnerBody)}`);
     check('the project is still owned by somebody', !!ownedProject);
 
@@ -783,8 +777,7 @@ async function main(): Promise<void> {
     console.log('cleanup: throwaway accounts, organizations, projects and events deleted');
   }
 
-  console.log(failures === 0 ? `\nALL ${checks} CHECKS PASSED` : `\n${failures} of ${checks} CHECK(S) FAILED`);
-  process.exit(failures === 0 ? 0 : 1);
+  summary();
 }
 
 main();

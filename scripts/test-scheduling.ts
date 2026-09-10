@@ -53,27 +53,13 @@ import {
 import { generateIcs } from '../lib/generateIcs';
 import { redactExpertForViewer } from '../lib/redactExpert';
 import type { Expert, ProjectExpert, ProposedSlot, SchedulingState } from '../types';
+import { check, eq as equal, summary } from './testHarness';
 
 // The CAN-SPAM footer signs a per-recipient opt-out token with this secret.
 // A throwaway value keeps the templates exercisable with no configured env.
 process.env.AVAILABILITY_TOKEN_SECRET ||= 'test-only-secret-for-scheduling-assertions';
 
 // ─── Harness ──────────────────────────────────────────────────────────────────
-
-let failures = 0;
-let checks   = 0;
-
-function check(name: string, ok: boolean, detail = ''): void {
-  checks++;
-  if (!ok) {
-    failures++;
-    console.log(`FAIL  ${name}${detail ? ` — ${detail}` : ''}`);
-  }
-}
-
-function equal(name: string, actual: unknown, expected: unknown): void {
-  check(name, actual === expected, `got ${JSON.stringify(actual)}, want ${JSON.stringify(expected)}`);
-}
 
 function section(title: string): void {
   console.log(`\n${title}`);
@@ -566,8 +552,5 @@ check('an expert with no scheduling state gains no key',
 // ─── Result ───────────────────────────────────────────────────────────────────
 
 void runBrevityChecks().then(() => {
-  console.log(failures === 0
-    ? `\nAll ${checks} scheduling assertions passed.\n`
-    : `\n${failures} of ${checks} assertion(s) FAILED\n`);
-  process.exit(failures === 0 ? 0 : 1);
+  summary('scheduling assertions');
 });

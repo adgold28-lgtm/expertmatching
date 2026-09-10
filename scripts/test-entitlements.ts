@@ -8,12 +8,7 @@
 // inside the product is open to all three.
 
 import { entitlementsFromBilling, NO_ORG_ENTITLEMENTS, TRIAL_SUBSCRIPTION_STATUS, ACTIVATION_REQUIRED_MESSAGE } from '../lib/entitlements';
-
-let failures = 0;
-function check(name: string, ok: boolean, detail = ''): void {
-  console.log(`${ok ? 'PASS' : 'FAIL'}  ${name}${detail ? ' — ' + detail : ''}`);
-  if (!ok) failures++;
-}
+import { check, summary } from './testHarness';
 
 const ORG = '00000000-0000-4000-8000-00000000000a';
 
@@ -73,5 +68,4 @@ for (const [label, row] of [
     e.canGoLive === e.canOutreachExperts && e.canOutreachExperts === e.canScheduleCalls && e.canScheduleCalls === e.canCharge);
 }
 
-console.log(failures === 0 ? '\nALL CHECKS PASSED' : `\n${failures} FAILED`);
-process.exit(failures === 0 ? 0 : 1);
+summary();

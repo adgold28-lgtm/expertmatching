@@ -31,17 +31,7 @@ import {
   type ClassifyLlmFn,
   type MatchyClassification,
 } from '../lib/matchyClassify';
-
-let failures = 0;
-let checks   = 0;
-
-function check(name: string, ok: boolean, detail = ''): void {
-  checks++;
-  if (!ok) {
-    failures++;
-    console.log(`FAIL  ${name}${detail ? ` — ${detail}` : ''}`);
-  }
-}
+import { check, summary } from './testHarness';
 
 function section(title: string): void {
   console.log(`\n${title}`);
@@ -365,8 +355,7 @@ async function main(): Promise<void> {
 
 main()
   .then(() => {
-    console.log(`\n${failures === 0 ? 'PASS' : 'FAIL'} — ${checks - failures}/${checks} checks passed`);
-    process.exit(failures === 0 ? 0 : 1);
+    summary();
   })
   .catch(err => {
     console.log(`FAIL  suite threw — ${err instanceof Error ? err.message : 'unknown'}`);

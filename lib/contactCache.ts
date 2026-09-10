@@ -36,10 +36,10 @@ export interface CacheStore {
 
 // ─── Pseudonymization helpers ────────────────────────────────────────────────
 
-// 12-char HMAC truncation for audit log identifiers.
-// Exported but currently unused — app/api/inbound-email/route.ts defines its own
-// identical local copy rather than importing this one. Kept as the canonical
-// implementation (it is the one that hard-fails in production without a secret).
+// 12-char HMAC truncation for audit log identifiers. The one implementation:
+// app/api/inbound-email/route.ts and the interview-guide route both import it.
+// Hard-fails in production without LOG_HASH_SECRET rather than hashing under a
+// guessable fallback.
 export function pseudonymize(value: string): string {
   const secret = process.env.LOG_HASH_SECRET;
   if (!secret) {

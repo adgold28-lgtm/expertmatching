@@ -28,23 +28,12 @@ import type { Expert, ProjectExpert, ExpertStatus, SchedulingState, BookingState
 import { redactExpertForViewer, redactProjectForViewer, isIdentityRevealed } from '../lib/redactExpert';
 import { descriptorIsAnonymous, fallbackDescriptor } from '../lib/anonymizeExpert';
 import { toInitialForm } from '../lib/nameValidation';
+import { check, eq as equal, summary, setVerbose } from './testHarness';
+
+// This script has always printed a line per passing assertion.
+setVerbose(true);
 
 // ─── Assertions ───────────────────────────────────────────────────────────────
-
-let failures = 0;
-
-function check(label: string, condition: boolean): void {
-  if (condition) {
-    console.log(`  ok    ${label}`);
-  } else {
-    failures++;
-    console.error(`  FAIL  ${label}`);
-  }
-}
-
-function equal(label: string, actual: unknown, expected: unknown): void {
-  check(`${label} → ${JSON.stringify(actual)}`, actual === expected);
-}
 
 // ─── Sample data ──────────────────────────────────────────────────────────────
 
@@ -516,8 +505,4 @@ check('adjacent sourcing candidates get the same re-check',
 
 // ─── Result ───────────────────────────────────────────────────────────────────
 
-if (failures > 0) {
-  console.error(`\n${failures} assertion(s) FAILED\n`);
-  process.exit(1);
-}
-console.log('\nAll redaction assertions passed.\n');
+summary('redaction assertions');

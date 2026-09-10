@@ -1,18 +1,28 @@
 // scripts/wipe-projects.ts — DESTRUCTIVE. Deletes every project, project
 // index/lock, access-request, and signup-token/rate-limit key in the target
 // Upstash Redis (the pre-Supabase project store; see lib/upstashRedis.ts).
-// No confirmation prompt and no filtering by environment — it wipes whatever
-// UPSTASH_REDIS_REST_URL / UPSTASH_REDIS_REST_TOKEN point at, so pointing it
-// at production Upstash creds deletes production project data.
+// It wipes whatever UPSTASH_REDIS_REST_URL / UPSTASH_REDIS_REST_TOKEN point at.
 //
 //   npx tsx scripts/wipe-projects.ts
 //
+// ENVIRONMENT GUARD (audit H-22): the script prints the resolved Upstash host
+// before touching anything and REFUSES to run when that host is not localhost
+// or 127.0.0.1 unless ALLOW_PROD=1 is set. There is still no confirmation
+// prompt and no dry run, so read the printed host before you set ALLOW_PROD.
+//
 // No dotenv load here — vars must already be in the environment (e.g. via
-// `set -a && source .env.local && set +a` first), which is the only guard
-// against running this against the wrong environment by accident.
+// `set -a && source .env.local && set +a` first).
+//
+// NOTE: this targets the Redis project store that Postgres replaced. Nothing
+// the product reads today lives in these keys.
 import { getUpstashClient } from '../lib/upstashRedis';
+import { requireSafeTarget } from './opsGuard';
 
 async function main() {
+  requireSafeTarget('wipe-projects', [
+    { label: 'Upstash', url: process.env.UPSTASH_REDIS_REST_URL },
+  ]);
+
   const redis = getUpstashClient();
   if (!redis) {
     console.error('No Upstash client — set UPSTASH_REDIS_REST_URL and UPSTASH_REDIS_REST_TOKEN');

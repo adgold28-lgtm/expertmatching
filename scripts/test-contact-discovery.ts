@@ -27,17 +27,7 @@ import {
   MIN_CONFIDENCE,
 } from '../lib/contactDiscovery';
 import type { ProviderEmailResult, NormalizedEmailStatus } from '../lib/contactProviders/types';
-
-let failures = 0;
-let checks   = 0;
-
-function check(name: string, ok: boolean, detail = ''): void {
-  checks++;
-  if (!ok) {
-    failures++;
-    console.log(`FAIL  ${name}${detail ? ` — ${detail}` : ''}`);
-  }
-}
+import { check, summary } from './testHarness';
 
 function section(title: string): void {
   console.log(`\n${title}`);
@@ -279,8 +269,7 @@ async function killSwitch(): Promise<void> {
 async function main(): Promise<void> {
   await killSwitch();
 
-  console.log(`\n${failures === 0 ? 'PASS' : 'FAIL'} — ${checks - failures}/${checks} checks passed`);
-  if (failures > 0) process.exit(1);
+  summary();
 }
 
 void main();

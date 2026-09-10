@@ -38,6 +38,7 @@ import {
 } from '../lib/matchyTemplates';
 import { clientRateFor } from '../lib/pricing';
 import type { IntroArm } from '../types';
+import { check, eq, summary } from './testHarness';
 
 // The CAN-SPAM footer signs a per-recipient opt-out token. Give it a secret so
 // the templates can be exercised without a configured environment; this value
@@ -50,21 +51,6 @@ process.env.AVAILABILITY_TOKEN_SECRET ||= 'test-only-secret-for-matchy-template-
 delete process.env.OUTREACH_SIGNATURE;
 delete process.env.INTRO_ARM;
 process.env.OUTREACH_FROM_EMAIL = 'Asher Goldstein <asher@expertmatch.fit>';
-
-let failures = 0;
-let checks   = 0;
-
-function check(name: string, ok: boolean, detail = ''): void {
-  checks++;
-  if (!ok) {
-    failures++;
-    console.log(`FAIL  ${name}${detail ? ` — ${detail}` : ''}`);
-  }
-}
-
-function eq(name: string, actual: unknown, expected: unknown): void {
-  check(name, actual === expected, `got ${JSON.stringify(actual)}, want ${JSON.stringify(expected)}`);
-}
 
 function section(title: string): void {
   console.log(`\n${title}`);
@@ -463,5 +449,4 @@ for (const rate of [400, 650, 675, 800, 1200]) {
 
 // ─── Result ──────────────────────────────────────────────────────────────────
 
-console.log(`\n${failures === 0 ? 'PASS' : 'FAIL'} — ${checks - failures}/${checks} checks passed`);
-process.exit(failures === 0 ? 0 : 1);
+summary();

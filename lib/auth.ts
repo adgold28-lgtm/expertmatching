@@ -92,6 +92,25 @@ export function statusMayUseProduct(status: string | undefined | null): boolean 
 }
 
 /**
+ * Constant-time-ish comparison of a bearer secret, shared by the cron routes
+ * (/api/jobs/reconcile and /api/jobs/schedule-nudges), which used to hold two
+ * byte-identical private copies of it.
+ *
+ * Not a defence against a local attacker — this is a header check on a
+ * serverless function, not a crypto primitive — but it costs nothing to avoid
+ * the early-exit compare. Char-code based rather than timingSafeEqual so it is
+ * safe in the Edge runtime as well as Node.
+ */
+export function secretMatches(provided: string, expected: string): boolean {
+  if (provided.length !== expected.length) return false;
+  let diff = 0;
+  for (let i = 0; i < provided.length; i++) {
+    diff |= provided.charCodeAt(i) ^ expected.charCodeAt(i);
+  }
+  return diff === 0;
+}
+
+/**
  * Reads the authenticated Supabase user from the request's cookies, or null.
  * Read-only — never writes cookies (middleware owns session refresh).
  * Fails closed: returns null on any error.

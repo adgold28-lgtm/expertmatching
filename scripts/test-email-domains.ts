@@ -7,12 +7,7 @@
 // auto-approved colleague of the platform admin.
 
 import { isPublicEmailDomain, impliedOrgDomainFor, emailDomainOf, normalizeEmailDomain } from '../lib/emailDomains';
-
-let failures = 0;
-function check(name: string, ok: boolean, detail = ''): void {
-  console.log(`${ok ? 'PASS' : 'FAIL'}  ${name}${detail ? ' — ' + detail : ''}`);
-  if (!ok) failures++;
-}
+import { check, summary } from './testHarness';
 
 for (const d of ['gmail.com', 'GMAIL.COM', 'googlemail.com', 'outlook.com', 'hotmail.com', 'live.com',
                  'yahoo.com', 'yahoo.co.uk', 'icloud.com', 'me.com', 'aol.com', 'protonmail.com',
@@ -34,5 +29,4 @@ check('impliedOrgDomainFor a work address', impliedOrgDomainFor('jane@blackstone
 check('impliedOrgDomainFor a gmail address is null', impliedOrgDomainFor('jane@gmail.com') === null);
 check('impliedOrgDomainFor an outlook address is null', impliedOrgDomainFor('jane@outlook.com') === null);
 
-console.log(failures === 0 ? '\nALL CHECKS PASSED' : `\n${failures} FAILED`);
-process.exit(failures === 0 ? 0 : 1);
+summary();

@@ -20,21 +20,7 @@
 import { formatSlot, viewerZoneLabel, schedulingLine, proposedSlotsOf, bookingIcsUrl, firstNameOf,
          PREFERENCES_MAX, type SchedulableExpert } from '../lib/matchyClient';
 import type { BookingState, ProposedSlot, SchedulingOutcome, SchedulingState } from '../types';
-
-let failures = 0;
-let checks   = 0;
-
-function check(name: string, ok: boolean, detail = ''): void {
-  checks++;
-  if (!ok) {
-    failures++;
-    console.log(`FAIL  ${name}${detail ? ` — ${detail}` : ''}`);
-  }
-}
-
-function eq(name: string, actual: unknown, expected: unknown): void {
-  check(name, actual === expected, `got ${JSON.stringify(actual)}, want ${JSON.stringify(expected)}`);
-}
+import { check, eq, summary } from './testHarness';
 
 function section(title: string): void {
   console.log(`\n${title}`);
@@ -259,9 +245,4 @@ eq('the preferences cap matches the API contract', PREFERENCES_MAX, 200);
 
 // ─── Result ───────────────────────────────────────────────────────────────────
 
-console.log(`\n${checks - failures}/${checks} checks passed`);
-if (failures > 0) {
-  console.log(`${failures} FAILED`);
-  process.exit(1);
-}
-console.log('ALL CHECKS PASSED');
+summary();

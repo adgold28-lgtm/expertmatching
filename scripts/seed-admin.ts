@@ -18,14 +18,24 @@
  *
  * Idempotent — safe to re-run; existing accounts get their password and
  * metadata updated.
+ *
+ * ENVIRONMENT GUARD (audit H-22): the script prints the resolved Supabase host
+ * before writing anything and REFUSES to run when that host is not localhost or
+ * 127.0.0.1 unless ALLOW_PROD=1 is set. It creates a real auth user and a real
+ * organization in whatever project NEXT_PUBLIC_SUPABASE_URL names.
  */
 
 import * as dotenv from 'dotenv';
 import * as path from 'path';
+import { requireSafeTarget } from './opsGuard';
 
 dotenv.config({ path: path.join(process.cwd(), '.env.local') });
 
 async function main(): Promise<void> {
+  requireSafeTarget('seed-admin', [
+    { label: 'Supabase', url: process.env.NEXT_PUBLIC_SUPABASE_URL },
+  ]);
+
   // Import after dotenv so env vars are populated.
   const { getServiceRoleClient, ensureSupabaseUser, syncAppMetadata } = await import('../lib/supabase/admin');
 
