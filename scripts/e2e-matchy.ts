@@ -384,7 +384,7 @@ async function main(): Promise<void> {
     await runLiveSchedulingChecks(owner, collab, projectId, expertId);
 
     // ── walkthrough mode: a second project that may not send anything ──────
-    await runWalkthroughChecks(owner, cleanup);
+    await runWalkthroughChecks(owner, orgId, cleanup);
 
     // ── unbookmark ─────────────────────────────────────────────────────────
     const ub = await req(owner, 'POST', `/api/projects/${projectId}/experts/${expertId}/unbookmark`, {});
@@ -410,7 +410,7 @@ async function main(): Promise<void> {
  * well as the behaviour. Its expert has no address, exactly like the main run's,
  * so even a bug in the gate could not reach a real inbox.
  */
-async function runWalkthroughChecks(owner: Jar, cleanup: Array<() => Promise<void>>): Promise<void> {
+async function runWalkthroughChecks(owner: Jar, orgId: string, cleanup: Array<() => Promise<void>>): Promise<void> {
   const create  = await req(owner, 'POST', '/api/projects', { name: 'Matchy E2E walkthrough', industry: 'Industrial coatings', function: 'Operations', geography: 'US', seniority: 'Senior' });
   const created = await json(create);
   const wId: string | undefined = created?.project?.id ?? created?.id;
@@ -470,8 +470,9 @@ async function runWalkthroughChecks(owner: Jar, cleanup: Array<() => Promise<voi
 
   const accept     = await req(owner, 'POST', `/api/projects/${wId}/experts/${wExpertId}/rate-decision`, { action: 'accept' });
   const acceptBody = await json(accept);
-  check('walkthrough: rate-decision 200 with held:true',
-    accept.status === 200 && acceptBody?.held === true, `status ${accept.status} held ${acceptBody?.held}`);
+  check("walkthrough: rate-decision 200 with held: 'walkthrough'",
+    accept.status === 200 && typeof acceptBody?.held === 'string' && acceptBody?.held.length > 0 && acceptBody?.held === 'walkthrough',
+    `status ${accept.status} held ${acceptBody?.held}`);
   check('walkthrough: the money still moved ($650 → $1,300)',
     acceptBody?.projectExpert?.clientRate === 1300, `clientRate ${acceptBody?.projectExpert?.clientRate}`);
   // Accepting a rate makes Matchy promise a time, and it keeps the promise
@@ -490,8 +491,8 @@ async function runWalkthroughChecks(owner: Jar, cleanup: Array<() => Promise<voi
   // A client reply is screened, stored held, and not sent.
   const reply     = await req(owner, 'POST', `/api/projects/${wId}/experts/${wExpertId}/messages`, { text: 'Tuesday afternoon suits me.' });
   const replyBody = await json(reply);
-  check('walkthrough: POST messages → 201',
-    reply.status === 201, `status ${reply.status} ${JSON.stringify(replyBody)?.slice(0, 160)}`);
+  check('walkthrough: POST messages → 200 (held)',
+    reply.status === 200 && replyBody?.ok === true, `status ${reply.status} ${JSON.stringify(replyBody)?.slice(0, 160)}`);
   check("walkthrough: the stored reply carries held === 'walkthrough'",
     replyBody?.message?.held === 'walkthrough', `held ${JSON.stringify(replyBody?.message?.held)}`);
 
@@ -514,6 +515,17 @@ async function runWalkthroughChecks(owner: Jar, cleanup: Array<() => Promise<voi
 
   // ── scheduling, held: the one path that would otherwise send mail ───────
   await runHeldSchedulingChecks(owner, wId, wExpertId);
+
+  // canGoLive (lib/entitlements.ts) requires organization_billing.billing_complete.
+  // The walkthrough-project persona has run every held check above with no
+  // billing row at all — that's the trial boundary working. Only now, right
+  // before asking to go live, does the throwaway org get a card on file.
+  const { error: billingErr } = await db.from('organization_billing').upsert(
+    { organization_id: orgId, billing_complete: true },
+    { onConflict: 'organization_id' },
+  );
+  check('walkthrough: billing provisioned for go-live', !billingErr, billingErr?.message ?? '');
+  cleanup.push(async () => { await db.from('organization_billing').delete().eq('organization_id', orgId); });
 
   // Going live lands on review-first unless the owner says otherwise.
   const live     = await req(owner, 'PATCH', `/api/projects/${wId}`, { walkthrough: false });
