@@ -45,7 +45,6 @@ import { getServiceRoleClient } from './supabase/admin';
 import { encrypt } from './encryption';
 import type { ConversationMessageRow } from './supabase/database.types';
 import {
-  maskFindings,
   maskContactDetails,
   maskCurrency,
   type ScreenFinding,
@@ -395,14 +394,12 @@ export async function latestSummary(
  *      always `body_clean`; a message with no clean body shows as empty.
  *   2. Platform admins (staff) see the clean body untouched — they run the
  *      escalations and need what was actually written.
- *   3. A client reading an expert→client message BEFORE the identity reveal
- *      gets the body masked: every contact detail and name the screen found is
- *      replaced with `[removed]`, then a second context-free sweep removes any
- *      email, link or phone number the screen did not record, then the
- *      expert's own name (when the caller supplied it) goes the same way.
- *      Belt and braces — anonymization is the product.
- *   4. After the reveal, names may cross; contact details still may not, so
- *      the contact-detail sweep stays on.
+ *   3. A client reading an expert→client message gets NO BODY, before or after
+ *      the reveal (Matchy 2.0). The client reads Matchy's summary, which is
+ *      masked: every contact detail comes out, and the expert's own name and
+ *      employer come out until the reveal. Anonymization is the product.
+ *   4. After the reveal, names may cross in the summary; contact details
+ *      still may not, so the contact-detail sweep stays on.
  *   5. Matchy's own outbound messages quote the EXPERT-side rate, because they
  *      were written for the expert. Every dollar amount in them is masked for a
  *      client; staff see the real copy.
@@ -424,22 +421,23 @@ export function redactMessageForViewer(
     const fromExpert = message.direction === 'inbound' || message.author === 'expert';
 
     if (fromExpert) {
-      // 1. Everything the screen already identified.
-      if (stored?.findings?.length) body = maskFindings(body, stored.findings);
-      // 2. Anything it did not — a signature line added after the screen ran,
-      //    a link in a format the screen's host list does not know.
-      body = maskContactDetails(body);
-      // 3. The expert's own name and employer, while the identity is still
-      //    anonymized.
-      if (!revealed && viewer.expertFullName) body = maskName(body, viewer.expertFullName);
-      if (!revealed && viewer.expertCompany)  body = maskCompany(body, viewer.expertCompany);
+      // Matchy 2.0 (founder, 2026-09-09): a client never reads the expert's
+      // email. What they read is Matchy's summary, masked below; the cleaned
+      // body stays on the server for staff, who see it untouched above. This
+      // closes the last path for an expert's prose, signature or masked
+      // token to reach a client, and it makes the summary the whole contract.
+      body = '';
     } else if (message.author === 'matchy') {
       // Matchy's own outbound copy is written FOR THE EXPERT and quotes
       // `expertRate` (lib/matchyTemplates.buildFollowUpEmail). The client is
       // only ever shown client-side numbers, so the amounts come out on the
       // way to a client's screen. Their number is on the expert card as
-      // `clientRate`.
+      // `clientRate`. And now that the intro is personal
+      // (docs/OUTREACH_EMAIL_RUBRIC.md) Matchy's copy can name the expert's
+      // employer, so the same pre-reveal masks a summary gets apply here.
       body = maskCurrency(body);
+      if (!revealed && viewer.expertFullName) body = maskName(body, viewer.expertFullName);
+      if (!revealed && viewer.expertCompany)  body = maskCompany(body, viewer.expertCompany);
     }
   }
 

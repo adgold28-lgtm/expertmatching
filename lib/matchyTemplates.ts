@@ -7,16 +7,27 @@
 // testable: scripts/test-matchy-templates.ts asserts the rules below hold for
 // every combination of inputs.
 //
-// THE RULES, straight from the spec:
+// THE RULES:
 //
-//   Intro
-//     - never mentions money, in any form
-//     - never names the client
-//     - describes the client as one size word plus one type word — "a mid-size
-//       PE firm", "a boutique consulting firm", "a large law firm", "a family
-//       office" — falling back to "an investment firm" when we do not know
-//     - generalizes the research question to one clause with no company names
-//     - asks one question and stops
+//   Intro (docs/OUTREACH_EMAIL_RUBRIC.md — the founder's rubric is the contract)
+//     - subject: "Expert in {domain}: …" — a domain specific to the expert,
+//       never the brief's industry; a colon, never an em dash
+//     - "Dear {First}," then the WHY-THEM line: one fact only someone who read
+//       the expert's background would know. It is an input here, never a slot
+//       this module fills (lib/introPersonalization.ts writes it from the
+//       sourcing evidence, or staff write it)
+//     - then the offer: who the client is (one size word plus one type word),
+//       what they want to understand, the EXPERT-side rate, the time range,
+//       the scope limit as one clause, and the yes/no question. Nothing else:
+//       no scheduling, no agreement, no payment mechanics
+//     - the rate is asked, not asserted, and the client number never appears
+//     - four trial arms (INTRO_ARMS): the number in the subject or not, hourly
+//       or flat framing in the body. Every arm states the money in the body.
+//     - signed "Asher" (first name only, always) over a real signature block
+//     - hard rules, enforced in code: zero em dashes, no banned phrases, none of
+//       secrets / NDA / confidential / compliance, under 90 words before the
+//       sign-off. buildIntroEmail THROWS IntroRubricError rather than send a
+//       body that breaks one.
 //
 //   Follow-up (sent only after a yes)
 //     - the conflict / NDA questions, then the rate, ASKED not asserted
@@ -31,20 +42,25 @@
 // return a bare body, because they go out as a reply on an existing thread and
 // the sender supplies the subject and the footer.
 //
-// Both bodies stay under 120 words and both carry the CAN-SPAM footer from
-// lib/outreachFooter.ts.
+// Every body carries the CAN-SPAM footer from lib/outreachFooter.ts.
 //
-// Two style notes. A body signs off only when OUTREACH_SIGNATURE is set
-// (lib/senderIdentity.ts): unset, the footer already says who sent it. And no
-// em dashes in either body (the house rule for outbound mail) — the one em
-// dash in the subject line is the spec's own wording, quoted verbatim.
+// Sign-offs. The intro always signs (rubric). The follow-up and the rate lines
+// sign only when OUTREACH_SIGNATURE is set (lib/senderIdentity.ts): unset, the
+// footer already says who sent it. No em dashes in any body (the house rule for
+// outbound mail).
 //
 // Never logs anything — these functions are pure and do no I/O.
 
-import type { Project } from '../types';
+import type { IntroArm, Project } from '../types';
 import type { FirmTypeValue, FirmSizeValue } from './supabase/database.types';
 import { buildOutreachFooter } from './outreachFooter';
-import { signOff } from './senderIdentity';
+import {
+  signOff,
+  senderFirstName,
+  senderFullName,
+  senderFromAddress,
+  senderLinkedInUrl,
+} from './senderIdentity';
 
 export interface MatchyEmail {
   subject: string;
@@ -554,47 +570,259 @@ export function firstNameOf(fullName: string | undefined | null): string {
   return trimmed.split(/\s+/)[0];
 }
 
-// ─── Intro ────────────────────────────────────────────────────────────────────
+// ─── Rubric lint ──────────────────────────────────────────────────────────────
+//
+// docs/OUTREACH_EMAIL_RUBRIC.md, "Hard rules". These are checked on the
+// assembled intro (subject and body) AND on every candidate why-them line
+// (lib/introPersonalization.ts), so a phrase cannot enter through either door.
 
-export interface IntroEmailInput {
-  firmType?:           FirmTypeValue | null;
-  firmSize?:           FirmSizeValue | null;
-  /** One generalized clause — deriveTopic(project). */
-  topic:               string;
-  /** One lower-case fragment — descriptorFragmentFrom(expert.anonymizedDescriptor). */
-  descriptorFragment?: string;
-  expertFirstName:     string;
-  /** Recipient address — the CAN-SPAM footer's opt-out link is per-recipient. */
-  recipientEmail:      string;
+/**
+ * Phrases the rubric bans outright, as case-insensitive patterns. Each one
+ * reads as AI or as a mass send. "space" is banned only in the "the X space"
+ * construction; "leverage" and "insights" are banned as words.
+ */
+export const INTRO_BANNED_PHRASES: ReadonlyArray<{ label: string; pattern: RegExp }> = [
+  { label: 'I hope this finds you well',   pattern: /\bhope\s+this\s+(?:email\s+|note\s+|message\s+)?finds\s+you\b/i },
+  { label: 'I came across your profile',   pattern: /\bcame\s+across\s+your\b/i },
+  { label: 'I was impressed by',           pattern: /\bimpressed\s+(?:by|with)\b/i },
+  { label: 'reach out',                    pattern: /\breach(?:ing|ed)?\s+out\b/i },
+  { label: 'circle back',                  pattern: /\bcircl(?:e|ing)\s+back\b/i },
+  { label: 'touch base',                   pattern: /\btouch(?:ing)?\s+base\b/i },
+  { label: 'real feel for',                pattern: /\breal\s+feel\s+for\b/i },
+  { label: 'how things actually work',     pattern: /\bhow\s+things\s+actually\s+work\b/i },
+  { label: 'leverage',                     pattern: /\bleverag(?:e|es|ed|ing)\b/i },
+  { label: 'insights',                     pattern: /\binsights?\b/i },
+  { label: 'the … space',                  pattern: /\bthe\s+[\w-]+\s+space\b/i },
+  { label: 'would love to',                pattern: /\bwould\s+love\s+to\b/i },
+  { label: 'excited to',                   pattern: /\bexcited\s+(?:to|about)\b/i },
+  { label: 'as someone who has',           pattern: /\bas\s+someone\s+who\s+(?:has|have|had)\b/i },
+  // "Anything in a list of three": the Oxford-comma triple is the detectable
+  // form. Conservative on purpose — single words either side of the commas.
+  { label: 'a list of three',              pattern: /\b[\w-]+,\s+[\w-]+,\s+and\s+[\w-]+\b/i },
+];
+
+/**
+ * Words the rubric forbids because naming the risk plants it ("Scope and
+ * compliance language"). Whole words, either number, any case.
+ */
+export const INTRO_BANNED_WORDS: ReadonlyArray<{ label: string; pattern: RegExp }> = [
+  { label: 'secrets',      pattern: /\bsecrets?\b/i },
+  { label: 'NDA',          pattern: /\bNDAs?\b/i },
+  { label: 'confidential', pattern: /\bconfidential(?:ity)?\b/i },
+  { label: 'compliance',   pattern: /\bcomplian(?:ce|t)\b/i },
+];
+
+/** An em dash, or the two stand-ins people type for one. */
+const EM_DASH_RE = /—|\s[–]\s|--/;
+
+/**
+ * The first hard rule the text breaks, or null when it passes. The label is a
+ * diagnostic for staff and tests; it never reaches an expert.
+ */
+export function introRubricViolation(text: string): string | null {
+  if (EM_DASH_RE.test(text)) return 'em dash';
+  for (const { label, pattern } of INTRO_BANNED_WORDS)   if (pattern.test(text)) return `banned word: ${label}`;
+  for (const { label, pattern } of INTRO_BANNED_PHRASES) if (pattern.test(text)) return `banned phrase: ${label}`;
+  return null;
+}
+
+/** Thrown by buildIntroEmail when the assembled message breaks a hard rule. */
+export class IntroRubricError extends Error {
+  constructor(public readonly rule: string) {
+    super(`intro breaks the rubric: ${rule}`);
+    this.name = 'IntroRubricError';
+  }
+}
+
+// ─── Trial arms ───────────────────────────────────────────────────────────────
+
+export interface IntroArmSpec {
+  /** Whether the number appears in the subject line. The body always states it. */
+  priceInSubject: boolean;
+  /** How the body frames the money: "$X/hr for 15 to 60 minutes" or "$X for up to an hour". */
+  framing: 'hourly' | 'flat';
+}
+
+/** The four arms of the founder's trial (rubric, "Trial arms"). */
+export const INTRO_ARMS: Readonly<Record<IntroArm, IntroArmSpec>> = {
+  1: { priceInSubject: true,  framing: 'hourly' },
+  2: { priceInSubject: false, framing: 'hourly' },
+  3: { priceInSubject: true,  framing: 'flat'   },
+  4: { priceInSubject: false, framing: 'flat'   },
+};
+
+const ALL_ARMS: readonly IntroArm[] = [1, 2, 3, 4];
+
+/** FNV-1a, 32-bit. Small, dependency-free and stable across runtimes. */
+function fnv1a(text: string): number {
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < text.length; i++) {
+    hash ^= text.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193) >>> 0;
+  }
+  return hash >>> 0;
 }
 
 /**
- * The first thing an expert ever hears from us. No money, no client name, no
- * links beyond the mandatory opt-out. One question, then it stops.
+ * Which arm this expert's intro goes out under. A deterministic hash of the
+ * expert id, so the same expert always lands on the same arm and the split is
+ * even over a population. INTRO_ARM=1..4 in the environment pins every intro
+ * to one arm (to run a single variant, or to reproduce a sample by hand).
+ */
+export function introArmFor(expertId: string): IntroArm {
+  const pinned = Number(process.env.INTRO_ARM);
+  if (ALL_ARMS.includes(pinned as IntroArm)) return pinned as IntroArm;
+  return ALL_ARMS[fnv1a(expertId) % ALL_ARMS.length];
+}
+
+// ─── Intro ────────────────────────────────────────────────────────────────────
+
+export interface IntroEmailInput {
+  /** The trial arm — introArmFor(expert.id), or the arm already recorded on the expert. */
+  arm:             IntroArm;
+  /**
+   * The specific domain for the subject line, lower-case, 2 to 5 words:
+   * "cold-chain distribution". From the expert's evidence
+   * (lib/introPersonalization.ts), never the brief's industry field.
+   */
+  domain:          string;
+  /**
+   * The complete "why them" sentence, second person, ending in a full stop:
+   * "You ran distribution in the Southeast for Sysco for six years, so I think
+   * you'd be a great fit for my client." Never generated here.
+   */
+  whyThem:         string;
+  firmType?:       FirmTypeValue | null;
+  firmSize?:       FirmSizeValue | null;
+  /** One generalized clause — deriveTopic(project). */
+  topic:           string;
+  /** EXPERT-side hourly rate in whole dollars. Never the client number. */
+  expertRate:      number;
+  expertFirstName: string;
+  /** Recipient address — the CAN-SPAM footer's opt-out link is per-recipient. */
+  recipientEmail:  string;
+}
+
+/** Strict: under this many words from "Dear" to the end of the question. */
+export const INTRO_MAX_BODY_WORDS = 90;
+
+/** The scope limit, one clause, verbatim from the rubric. */
+export const INTRO_SCOPE_CLAUSE = "This wouldn't be anything proprietary and should stay relatively broad.";
+/** The yes/no question the intro ends on. */
+export const INTRO_QUESTION     = 'Does this sound interesting to you?';
+
+function countWords(text: string): number {
+  return text.trim().split(/\s+/).filter(Boolean).length;
+}
+
+/** A sentence ends in a full stop. Adds one when the line has no terminal mark. */
+function ensureFullStop(sentence: string): string {
+  const trimmed = tidy(sentence.replace(/\s+/g, ' '));
+  if (!trimmed) return '';
+  return /[.!?]$/.test(sentence.trim()) ? sentence.trim() : `${trimmed}.`;
+}
+
+function introSubject(arm: IntroArm, domain: string, rate: number): string {
+  const spec = INTRO_ARMS[arm];
+  if (!spec.priceInSubject) return `Expert in ${domain}: a paid call for my client?`;
+  return spec.framing === 'hourly'
+    ? `Expert in ${domain}: compensated $${rate}/hr for your time?`
+    : `Expert in ${domain}: $${rate} for up to an hour of your time?`;
+}
+
+function offerSentence(arm: IntroArm, firm: string, topic: string, rate: number): string {
+  const money = INTRO_ARMS[arm].framing === 'hourly'
+    ? `they want to compensate you $${rate}/hr for 15 to 60 minutes of your time`
+    : `they want to pay you $${rate} for up to an hour, even if we only need 20 minutes`;
+  return `They are ${firm} looking to understand ${topic}, and ${money}. ${INTRO_SCOPE_CLAUSE} ${INTRO_QUESTION}`;
+}
+
+/**
+ * The signature block under the first-name sign-off: full name, From address,
+ * LinkedIn. Each line comes from the environment (lib/senderIdentity.ts); a
+ * line we do not have is omitted, never faked. Returned as text lines and as
+ * the HTML for the same block (the LinkedIn URL is a real link there).
+ */
+function signatureBlock(): { lines: string[]; html: string } {
+  const first    = senderFirstName();
+  const full     = senderFullName();
+  const address  = senderFromAddress();
+  const linkedin = senderLinkedInUrl();
+
+  const lines = [first];
+  if (full && full !== first) lines.push(full);
+  lines.push(address);
+  if (linkedin) lines.push(linkedin);
+
+  const htmlLines = lines.map(line => (line === linkedin
+    ? `<a href="${escapeHtml(line)}" style="color:#0B1F3B;">${escapeHtml(line)}</a>`
+    : escapeHtml(line)));
+
+  return { lines, html: `<p style="margin:0 0 14px;">${htmlLines.join('<br />')}</p>` };
+}
+
+/**
+ * Email one of the expert outreach sequence, to the founder's rubric
+ * (docs/OUTREACH_EMAIL_RUBRIC.md). Pure assembly: the why-them line and the
+ * domain are inputs; this function decides nothing about the expert.
+ *
+ * ENFORCED HERE, NOT HOPED FOR. The finished subject and body are checked for
+ * an em dash, every banned phrase and word, and the 90-word ceiling. The topic
+ * clause is the one part that may be shortened to fit (it is the least
+ * specific part of the email and is never a sentence of its own); anything
+ * else out of bounds throws IntroRubricError, and the caller holds the intro
+ * for a person rather than sending it.
  */
 export function buildIntroEmail(input: IntroEmailInput): MatchyEmail {
-  const firm     = firmPhrase(input.firmType, input.firmSize);
-  const topic    = tidy(input.topic) || 'this market';
-  const fragment = tidy(input.descriptorFragment ?? '');
-  const name     = firstNameOf(input.expertFirstName);
+  const rate = Math.round(input.expertRate);
+  if (!Number.isFinite(rate) || rate <= 0) throw new IntroRubricError('no expert rate');
 
-  const background = fragment
-    ? `Given your background in ${fragment}, they would value a 45 to 60 minute paid consultation.`
-    : 'They would value a 45 to 60 minute paid consultation.';
+  const domain  = tidy(input.domain).toLowerCase();
+  if (!domain) throw new IntroRubricError('no domain');
 
-  const body = [
-    `Hi ${name},`,
-    `I am reaching out on behalf of ${firm} looking at ${topic}. ${background}`,
-    'Would you be open to it? If so, I will send the details.',
-  ].join('\n\n');
+  const whyThem = ensureFullStop(input.whyThem);
+  if (!whyThem) throw new IntroRubricError('no why-them line');
 
-  const footer = buildOutreachFooter(input.recipientEmail);
+  const firm  = firmPhrase(input.firmType, input.firmSize);
+  const name  = firstNameOf(input.expertFirstName);
+  const arm   = input.arm;
 
-  return {
-    subject: `Paid expert call — ${topic}`,
-    text:    `${signOff(body)}${footer.text}`,
-    html:    toHtml(signOff(body), footer.html),
-  };
+  // Shorten the topic clause, one word at a time from the end, until the body
+  // is under the ceiling. Two words is the floor — below that it stops being a
+  // topic — and if the body is still too long the why-them line is the cause.
+  let topicWords = tidy(input.topic).split(/\s+/).filter(Boolean);
+  if (topicWords.length === 0) topicWords = ['this', 'market'];
+
+  let body = '';
+  for (;;) {
+    const topic = trimDangling(topicWords.join(' ')) || 'this market';
+    body = [`Dear ${name},`, whyThem, offerSentence(arm, firm, topic, rate)].join('\n\n');
+    if (countWords(body) < INTRO_MAX_BODY_WORDS || topicWords.length <= 2) break;
+    topicWords = topicWords.slice(0, -1);
+  }
+  if (countWords(body) >= INTRO_MAX_BODY_WORDS) throw new IntroRubricError('body over 90 words');
+
+  const subject = introSubject(arm, domain, rate);
+
+  const violation = introRubricViolation(subject) ?? introRubricViolation(body);
+  if (violation) throw new IntroRubricError(violation);
+
+  const signature = signatureBlock();
+  const footer    = buildOutreachFooter(input.recipientEmail);
+
+  const text = `${body}\n\n${signature.lines.join('\n')}${footer.text}`;
+
+  const bodyHtml = body
+    .split(/\n{2,}/)
+    .map(p => `<p style="margin:0 0 14px;">${escapeHtml(p)}</p>`)
+    .join('\n  ');
+  const html = `<div style="font-family:Arial,Helvetica,sans-serif;font-size:14px;line-height:1.65;color:#0B1F3B;max-width:560px;">
+  ${bodyHtml}
+  ${signature.html}
+${footer.html}
+</div>`;
+
+  return { subject, text, html };
 }
 
 // ─── Follow-up ────────────────────────────────────────────────────────────────

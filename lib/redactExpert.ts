@@ -117,6 +117,15 @@ const INTERNAL_PROJECT_EXPERT_KEYS: readonly (keyof ProjectExpert)[] = [
   'screeningNotes',
   'outreachSubject',
   'outreachDraft',
+  // The rubric intro's personal line and subject domain
+  // (docs/OUTREACH_EMAIL_RUBRIC.md). `whyThem` names the expert's employer and
+  // what they did there — the identity the client is not entitled to before
+  // the reveal — and `introDomain` / `introArm` describe the same email, so
+  // all three stay with staff. `introNeedsWhyThem` is KEPT: it only says the
+  // intro is waiting on a person, which the thread shows the client.
+  'whyThem',
+  'introDomain',
+  'introArm',
   // The expert's own words and addresses from the scheduling flow. The raw
   // free text they typed into the picker (or into a reply) can carry their
   // name, employer or phone number; the Google account they connected IS an

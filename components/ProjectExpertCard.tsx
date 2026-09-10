@@ -18,22 +18,7 @@ import {
   schedulingLine,
 } from '../lib/matchyClient';
 
-const REJECTION_REASONS: Array<{ value: RejectionReason; label: string }> = [
-  { value: 'too_generic',             label: 'Too Generic'              },
-  { value: 'wrong_industry',          label: 'Wrong Industry'           },
-  { value: 'wrong_geography',         label: 'Wrong Geography'          },
-  { value: 'weak_evidence',           label: 'Weak Evidence'            },
-  { value: 'no_contact_path',         label: "Couldn't reach them"      },
-  { value: 'conflict_risk',           label: 'Conflict Risk'            },
-  { value: 'not_senior_enough',       label: 'Not Senior Enough'        },
-  { value: 'too_academic',            label: 'Too Academic'             },
-  { value: 'vendor_biased',           label: 'Vendor Biased'            },
-  { value: 'better_option_available', label: 'Better Option Available'  },
-  { value: 'other',                   label: 'Other'                    },
-];
-
-// Reasons that warrant a follow-up notes field
-const REASONS_WITH_NOTES = new Set<RejectionReason>(['other', 'better_option_available', 'conflict_risk']);
+import { REJECTION_REASONS, REASONS_WITH_NOTES } from '../lib/rejectionReasons';
 
 // Full status list, in pipeline order. Derived so the controlled <select> always
 // contains the expert's current status — mid-pipeline states (email2_sent,

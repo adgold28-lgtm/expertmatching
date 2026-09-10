@@ -11,7 +11,7 @@
 // NEVER log: project names, research questions, confidential notes, or expert names.
 
 import { randomBytes } from 'crypto';
-import type { Expert, Project, ProjectExpert, ProjectSummary, ExpertStatus, ReplyIntent, RejectionReason, ValueChainPosition, ScreeningStatus, SuggestedDomain, PublicContactEmail, AvailabilitySlot, OverlapSlot, SchedulingState, BookingState, NudgeState } from '../types';
+import type { Expert, Project, ProjectExpert, ProjectSummary, ExpertStatus, ReplyIntent, RejectionReason, ValueChainPosition, ScreeningStatus, SuggestedDomain, PublicContactEmail, AvailabilitySlot, OverlapSlot, SchedulingState, BookingState, NudgeState, IntroArm } from '../types';
 import { getServiceRoleClient } from './supabase/admin';
 import type { Database, ProjectRow, ProjectExpertRow } from './supabase/database.types';
 import type { SupabaseClient } from '@supabase/supabase-js';
@@ -108,6 +108,12 @@ export interface UpdateExpertInput {
   scheduling?: SchedulingState | null;
   booking?:    BookingState    | null;
   nudges?:     NudgeState      | null;
+  // Matchy 2.0 — intro rubric fields and the rate lock (types.ts). Data jsonb, no migration.
+  introArm?:          IntroArm | null;
+  whyThem?:           string | null;
+  introDomain?:       string | null;
+  introNeedsWhyThem?: boolean;
+  rateAgreedAt?:      number | null;
   // Billing / Stripe
   clientRate?:           number | null;
   expertRate?:           number | null;

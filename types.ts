@@ -436,9 +436,39 @@ export interface ProjectExpert {
   scheduling?: SchedulingState | null;
   booking?:    BookingState | null;
   nudges?:     NudgeState | null;
+  // ── Matchy 2.0 (docs/OUTREACH_EMAIL_RUBRIC.md + the two-exit composer) ──
+  /**
+   * Which trial arm the intro went out under (1–4, lib/matchyTemplates
+   * introArmFor). Recorded on the intro_sent event; staff-only on the wire.
+   */
+  introArm?: IntroArm | null;
+  /**
+   * The "why them" sentence of the intro: one fact only someone who read the
+   * expert's background would know. Written by Matchy from the sourcing
+   * evidence, or supplied by the owner when Matchy could not write one that
+   * passes the rubric. Never generated from a template slot.
+   */
+  whyThem?: string | null;
+  /** The specific domain named in the intro's subject line ("cold-chain distribution"). */
+  introDomain?: string | null;
+  /**
+   * True while the intro is drafted but cannot go: Matchy found no evidence
+   * fact it trusts for the "why them" line and is waiting on the owner to
+   * write it. Cleared when `whyThem` is set.
+   */
+  introNeedsWhyThem?: boolean;
+  /**
+   * Unix ms when the rate was agreed (the client accepted a counter, or the
+   * expert said yes to the offer). Once set, the per-expert client rate is
+   * locked: the thread header shows "Agreed" and PUT { clientRate } refuses.
+   */
+  rateAgreedAt?: number | null;
   addedAt: number;
   updatedAt: number;
 }
+
+/** The four intro trial arms: 1 price in subject + hourly body, 2 no price in subject + hourly, 3 price in subject + flat, 4 no price in subject + flat. */
+export type IntroArm = 1 | 2 | 3 | 4;
 
 export interface Project {
   id: string;

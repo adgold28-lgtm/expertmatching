@@ -142,6 +142,22 @@ export function expertRateFor(clientRate: number): number {
   return Math.floor(clientRate * EXPERT_SHARE);
 }
 
+/** The lowest client-facing hourly rate the product accepts, in whole USD. */
+export const CLIENT_RATE_FLOOR_USD = 100;
+
+/**
+ * True when a client-side rate sits on the product's grid: a whole number of
+ * dollars, at least the floor, in $50 steps. The project band and the
+ * per-expert rate (PUT …/experts/[id] { clientRate }) share this test so a
+ * number the band accepts is a number an engagement accepts.
+ */
+export function isValidClientRateUsd(value: unknown): value is number {
+  return typeof value === 'number'
+    && Number.isInteger(value)
+    && value >= CLIENT_RATE_FLOOR_USD
+    && value % CLIENT_RATE_ROUNDING_USD === 0;
+}
+
 // ─── The client's rate band ───────────────────────────────────────────────────
 //
 // `clientRateMin` / `clientRateMax` are set per project in CLIENT-side dollars

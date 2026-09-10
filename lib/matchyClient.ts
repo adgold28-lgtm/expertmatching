@@ -19,6 +19,7 @@ import type {
   Project,
   ProjectExpert,
   ProposedSlot,
+  RejectionReason,
   SchedulingOutcome,
   SchedulingState,
 } from '../types';
@@ -179,6 +180,17 @@ const ERROR_LINES: Record<string, string> = {
   invalid_walkthrough:      "Couldn't save that setting.",
   not_ready_to_schedule:    'Terms are not settled yet. I propose times once the rate is agreed.',
   nothing_booked:           'There is no call to move yet.',
+  // Matchy 2.0 — the per-expert rate, the pass, and the draft.
+  invalid_client_rate:      'Rates are whole dollars, at least $100, in $50 steps.',
+  outside_band:             'That is outside your band. Change the band in settings for more room.',
+  rate_locked:              'That rate is agreed and does not move.',
+  instruction_required:     'Tell me what to say first.',
+  instruction_too_long:     'Keep that under 1,000 characters.',
+  ask_rate_limited:         'Give me a minute before the next draft.',
+  no_draft:                 "I could not write that one cleanly. Write it in your words and I'll screen it.",
+  why_them_required:        'Matchy could not write the personal line for this intro. Staff add it, then send.',
+  staff_only:               'Only staff can write that line.',
+  draft_failed:             "I couldn't write that just now. Try again.",
 };
 
 interface ApiError {
@@ -193,7 +205,7 @@ interface ApiError {
  */
 async function request<T>(
   url: string,
-  init: { method: 'GET' | 'POST' | 'PATCH'; body?: unknown },
+  init: { method: 'GET' | 'POST' | 'PATCH' | 'PUT'; body?: unknown },
 ): Promise<MatchyResult<T>> {
   let res: Response;
   try {
@@ -332,6 +344,75 @@ export function proposeTimes(
 /** The calendar file for the booked call. Any project member may download it. */
 export function bookingIcsUrl(projectId: string, expertId: string): string {
   return `${expertBase(projectId, expertId)}/booking/ics`;
+}
+
+// ─── Matchy 2.0: the per-expert rate, the pass, the draft ─────────────────────
+
+/**
+ * Sets the owner's rate for one engagement, in client dollars. The server
+ * checks the $50 grid, the project band and the rate lock, and derives the
+ * expert-side figure in the same write; nothing is sent. 409 `outside_band`
+ * and `rate_locked` come back with a written message.
+ */
+export function setClientRate(
+  projectId: string,
+  expertId:  string,
+  clientRate: number,
+): Promise<MatchyResult<{ project: Project }>> {
+  return request(expertBase(projectId, expertId), { method: 'PUT', body: { clientRate } });
+}
+
+/**
+ * Passes on an expert from the thread. The client writes `rejected`; the
+ * server lands a post-outreach engagement on `rejected_after_outreach` so the
+ * nudges stop and the thread keeps its history. No email goes to the expert.
+ */
+export function passExpert(
+  projectId: string,
+  expertId:  string,
+  reason:    RejectionReason,
+  notes?:    string,
+): Promise<MatchyResult<{ project: Project }>> {
+  return request(expertBase(projectId, expertId), {
+    method: 'PUT',
+    body:   {
+      status:          'rejected',
+      rejectionReason: reason,
+      rejectedAt:      Date.now(),
+      ...(notes && notes.trim() ? { rejectionNotes: notes.trim() } : {}),
+    },
+  });
+}
+
+export interface DraftReplyResult {
+  /** The suggested reply, ready to drop into the composer. Absent on no_draft. */
+  text?:    string;
+  /** 'no_draft' when Matchy could not write one cleanly. Still a 200. */
+  error?:   string;
+  message?: string;
+}
+
+/**
+ * Asks Matchy to write the reply for the client to edit and send. The
+ * instruction is screened server side before any model call (422
+ * `message_blocked` with findings); the draft is capped and screened after.
+ * Nothing is sent or stored.
+ */
+export function draftReply(
+  projectId:   string,
+  expertId:    string,
+  instruction: string,
+): Promise<MatchyResult<DraftReplyResult>> {
+  return request(`${expertBase(projectId, expertId)}/messages/draft`, { method: 'POST', body: { instruction } });
+}
+
+/** Staff only: supplies the intro's personal line when Matchy could not write one. */
+export function approveOutreachWithLine(
+  projectId: string,
+  expertId:  string,
+  whyThem:   string,
+): Promise<MatchyResult<{ projectExpert: ProjectExpertWithCounter }>> {
+  return request(`${expertBase(projectId, expertId)}/outreach/approve`, { method: 'POST', body: { whyThem } });
 }
 
 // ─── Project settings ─────────────────────────────────────────────────────────

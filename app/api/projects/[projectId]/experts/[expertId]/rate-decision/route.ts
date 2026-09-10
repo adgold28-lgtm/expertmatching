@@ -162,6 +162,9 @@ export async function POST(
       ...rates,
       expertCounterRate: null,
       clientCounterRate: null,
+      // An accepted counter is an agreed rate: the per-expert rate control in
+      // the thread locks on this (PUT …/experts/[id] { clientRate } → 409).
+      ...(action === 'accept' && { rateAgreedAt: Date.now() }),
     });
 
     let current = updated.experts.find(e => e.expert.id === params.expertId) ?? pe;

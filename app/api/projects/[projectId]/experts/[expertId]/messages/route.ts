@@ -48,37 +48,13 @@ import { screenMessage } from '../../../../../../../lib/matchyScreen';
 import { redactExpertForViewer, isIdentityRevealed } from '../../../../../../../lib/redactExpert';
 import { sendSequenceEmail } from '../../../../../../../lib/emailSequence';
 import { isWalkthrough } from '../../../../../../../lib/walkthrough';
-import { getFirm, getUser } from '../../../../../../../lib/firmStore';
-import type { Project } from '../../../../../../../types';
+import { loadScreenContext } from '../../../../../../../lib/matchyScreenContext';
 
 const ID_RE        = /^[a-f0-9]{24}$/;
 const EXPERT_ID_RE = /^[a-zA-Z0-9\-_]+$/;
 
 /** Longest message a client may send in one go. */
 const MAX_MESSAGE_CHARS = 4000; // not exported: Next rejects non-handler exports from route files
-
-// ─── Shared context ───────────────────────────────────────────────────────────
-
-/**
- * The firm name and the client's real name — the two things the compliance
- * screen needs to stop an identity crossing the wall. Best-effort on both: a
- * name we do not have is a check the screen cannot run, not a reason to fail.
- */
-async function loadScreenContext(project: Project, fallbackEmail: string) {
-  const firm = await getFirm(project.firmDomain).catch(() => null);
-
-  let clientFullName = project.clientName?.trim() || undefined;
-  if (!clientFullName) {
-    const owner = await getUser(project.ownerEmail || fallbackEmail).catch(() => null);
-    const parts = [owner?.firstName, owner?.lastName].filter(Boolean);
-    if (parts.length > 0) clientFullName = parts.join(' ');
-  }
-
-  return {
-    clientFirmName: firm?.name?.trim() || undefined,
-    clientFullName,
-  };
-}
 
 function badIds(projectId: string, expertId: string): NextResponse | null {
   if (!ID_RE.test(projectId)) {

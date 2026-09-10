@@ -92,6 +92,12 @@ async function provisionUser(email: string, domain: string): Promise<string> {
 async function provisionOrg(domain: string, name: string): Promise<string> {
   const { data, error } = await db.from('organizations').insert({ domain, name }).select('id').single();
   if (error || !data) throw new Error(`org ${domain}: ${error?.message}`);
+  // A card on file: since Session 8 (lib/entitlements.ts) going live, sending
+  // and scheduling need one. The row cascades away with the org.
+  const { error: be } = await db.from('organization_billing').insert({
+    organization_id: data.id, billing_complete: true, subscription_status: 'active',
+  });
+  if (be) throw new Error(`billing ${domain}: ${be.message}`);
   return data.id as string;
 }
 async function addMember(orgId: string, profileId: string): Promise<void> {

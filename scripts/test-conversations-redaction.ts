@@ -91,7 +91,7 @@ check('a message with no clean body shows as empty, not as ciphertext', noClean.
 
 // ─── 2. Expert → client, pre-reveal ───────────────────────────────────────────
 
-section('an expert message is masked for a client pre-reveal');
+section('an expert message never reaches a client as text');
 
 const leaky = row({
   body_clean: 'Sure. Call me on 415-555-0132 or scott@vetgroup.com. — Scott Smithers',
@@ -108,8 +108,9 @@ const masked = asClient(leaky);
 check('a recorded phone number is masked',  !masked.body.includes('415-555-0132'), masked.body);
 check('a recorded email is masked',         !masked.body.includes('scott@vetgroup.com'), masked.body);
 check("the expert's surname is masked",     !masked.body.includes('Smithers'), masked.body);
-check('the placeholder is visible',         masked.body.includes('[removed]'), masked.body);
-check('the rest of the sentence survives',  masked.body.includes('Sure.'), masked.body);
+check('the client gets no body at all',     masked.body === '', masked.body);
+check('staff still read the cleaned body',   asAdmin(row({ body_clean: 'Sure. Call me on 415-555-0132.' })).body.includes('415-555-0132'));
+check('the summary is what the client reads', asClient(row({ summary: 'Interested. Reach him at scott@vetgroup.com, says Scott Smithers.' })).summary === 'Interested. Reach him at [removed], says [removed].' || !/vetgroup|Smithers/.test(asClient(row({ summary: 'Interested. Reach him at scott@vetgroup.com, says Scott Smithers.' })).summary ?? ''));
 
 // Belt and braces: a leak the screen never recorded still comes out.
 const unrecorded = asClient(row({
@@ -121,7 +122,7 @@ check('an unrecorded link is masked anyway',  !unrecorded.body.includes('linkedi
 
 // After the reveal names may cross; contact details still may not.
 const revealed = asClient(leaky, 'scheduled');
-check('after the reveal the name is allowed through', revealed.body.includes('Smithers'), revealed.body);
+check('after the reveal the client still reads the summary, not the email', revealed.body === '', revealed.body);
 check('after the reveal the phone number is still masked', !revealed.body.includes('415-555-0132'), revealed.body);
 check('after the reveal the email is still masked', !revealed.body.includes('scott@vetgroup.com'), revealed.body);
 
@@ -150,6 +151,16 @@ check('the sentence around it survives', clientView.body.includes('billed per mi
 
 const staffView = asAdmin(followUp);
 check('staff see the real copy', staffView.body.includes('$400/hr'), staffView.body);
+
+// Matchy's outbound copy can name the expert now that the intro is personal.
+const introLike = row({
+  direction: 'outbound', author: 'matchy', body_raw: null,
+  body_clean: 'You ran distribution for Bayview Veterinary Partners for six years, so I think you would be a great fit. Regards, Scott Smithers',
+});
+check("Matchy's copy: employer masked for a client pre-reveal", !/bayview/i.test(asClient(introLike).body), asClient(introLike).body);
+check("Matchy's copy: surname masked for a client pre-reveal",  !asClient(introLike).body.includes('Smithers'), asClient(introLike).body);
+check("Matchy's copy: employer shown after the reveal",         asClient(introLike, 'scheduled').body.includes('Bayview Veterinary Partners'));
+check("Matchy's copy: staff read it untouched",                 asAdmin(introLike).body.includes('Smithers'));
 
 // The client's own message is returned as written — they wrote it.
 const clientWrote = asClient(row({
@@ -218,7 +229,7 @@ check('distinctive employer word masked on its own', !/bayview/i.test(employerCl
 check('employer masked in the summary too', !/bayview/i.test(employerClient.summary ?? ''), employerClient.summary ?? '');
 check('generic words of the employer survive', /veterinary|partners/i.test(employerClient.body) === false || true);
 const employerRevealed = asClient(employer, 'scheduled');
-check('employer shown after the reveal', employerRevealed.body.includes('Bayview Veterinary Partners'), employerRevealed.body);
+check('employer: still no body for the client after the reveal', employerRevealed.body === '', employerRevealed.body);
 const employerAdmin = asAdmin(employer, 'replied');
 check('admin sees the employer untouched', employerAdmin.body.includes('Bayview Veterinary Partners'));
 

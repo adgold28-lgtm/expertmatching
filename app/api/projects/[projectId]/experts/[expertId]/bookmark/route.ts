@@ -12,8 +12,11 @@
 //      intro_failed) re-runs the outreach attempt and emits nothing here.
 //   4. if we already have an address, send Matchy's intro (or draft it, when
 //      the project's review-first switch is on)
-//      - sent      → status 'contacted', emit `intro_sent`
-//      - drafted   → status 'outreach_drafted', nothing else emitted
+//      - sent      → status 'contacted', emit `intro_sent` (payload carries
+//                    the trial arm, docs/OUTREACH_EMAIL_RUBRIC.md)
+//      - drafted   → status 'outreach_drafted', nothing else emitted. Also
+//                    where the intro lands when Matchy has no personal line it
+//                    trusts (`introNeedsWhyThem`) — staff finish it
 //      - no address → emit `contact_not_found`, status stays 'bookmarked'
 //
 // WALKTHROUGH MODE (lib/walkthrough.ts) changes two things and nothing else:
@@ -285,20 +288,25 @@ export async function POST(
 
     current = result.project.experts.find(e => e.expert.id === params.expertId) ?? current;
 
-    if (!draftOnly) {
+    // What the step actually did is on the status, not on `draftOnly`: the
+    // step also holds an intro when Matchy could not write its personal line
+    // (introNeedsWhyThem, lib/outreachSteps.ts) or the send chokepoint refused.
+    const sent = current.status === 'contacted';
+
+    if (sent) {
       await emitEngagementEvent({
         projectId: params.projectId,
         expertId:  params.expertId,
         orgId,
         type:      'intro_sent',
-        payload:   { hasAddress: true, tier, expertRate, clientRate },
+        payload:   { hasAddress: true, tier, expertRate, clientRate, introArm: current.introArm ?? null },
       });
     }
 
     return NextResponse.json({
       ok:            true,
       projectExpert: redactExpertForViewer(current, { role }),
-      outcome:       draftOnly ? 'intro_drafted' : 'intro_sent',
+      outcome:       sent ? 'intro_sent' : 'intro_drafted',
       ...(held && { held: true }),
     });
   } catch (err) {

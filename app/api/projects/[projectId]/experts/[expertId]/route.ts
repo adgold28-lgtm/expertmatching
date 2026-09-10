@@ -23,9 +23,22 @@
 // MONEY: `expertRate` is never written on its own. projectStore.rateFieldsFor
 // derives `clientRate` from it in the same write, so the number the client is
 // billed can never drift from the number the expert accepted.
+//
+// MATCHY 2.0 — THE PER-EXPERT RATE. The owner may set `clientRate` (their
+// number, fee included) for one engagement: it must sit on the $50 grid,
+// inside the project's band, and the rate must not be agreed yet
+// (`rateAgreedAt`, or a status past the negotiation). The expert-side figure is
+// derived in the same write (lib/pricing.expertRateFor → rateFieldsFor), the
+// mirror of the staff-side `expertRate` write above. Nothing is sent: the next
+// message to the expert carries the new number.
+//
+// A client's "pass" on an expert Matchy has already written to lands on
+// `rejected_after_outreach` (the server maps it), so the thread's Pass reads
+// the same as a pass from Matches and the nudges stop either way.
 
 import { NextRequest } from 'next/server';
 import { updateExpertStatus, addExpertNote, removeExpertFromProject, getProjectForUser, rateFieldsFor } from '../../../../../../lib/projectStore';
+import { expertRateFor, isValidClientRateUsd, CLIENT_RATE_FLOOR_USD, CLIENT_RATE_ROUNDING_USD } from '../../../../../../lib/pricing';
 import { guardMutatingRequest, requireProjectOwner } from '../../../../../../lib/projectsGuard';
 import { getSessionUser } from '../../../../../../lib/auth';
 import { sanitizeText, LIMITS } from '../../../../../../lib/projectValidation';
@@ -91,6 +104,7 @@ const COLLABORATOR_FIELDS: ReadonlySet<string> = new Set([
 const OWNER_ONLY_FIELDS: readonly string[] = [
   'status',
   'screeningStatus',
+  'clientRate',
   'expertRate',
   'expertCounterRate',
   'callDurationMin',
@@ -160,6 +174,15 @@ export async function PUT(
         );
       }
       input.status = body.status as ExpertStatus;
+    }
+
+    // A client passing on an expert Matchy has already written to: the
+    // engagement ends as `rejected_after_outreach` (nudges stop, the thread
+    // keeps its history), never as a pre-contact `rejected`. Staff may write
+    // either directly.
+    const current = accessible.experts.find(e => e.expert.id === params.expertId);
+    if (input.status === 'rejected' && role !== 'admin' && current && (current.outreachToken || current.contactedAt)) {
+      input.status = 'rejected_after_outreach';
     }
 
     if (body.rejectionReason !== undefined) {
@@ -244,6 +267,47 @@ export async function PUT(
       input.expertRate = rates.expertRate;
       input.clientRate = rates.clientRate;
     }
+
+    // The owner's own number for this engagement (Matchy 2.0). Client dollars
+    // in; both fields out of one conversion.
+    if (body.clientRate !== undefined) {
+      const requested = body.clientRate;
+      if (!isValidClientRateUsd(requested)) {
+        return Response.json(
+          {
+            error:   'invalid_client_rate',
+            field:   'clientRate',
+            message: `Whole dollars, at least $${CLIENT_RATE_FLOOR_USD}, in $${CLIENT_RATE_ROUNDING_USD} steps.`,
+          },
+          { status: 400 },
+        );
+      }
+      const locked = !!current?.rateAgreedAt
+        || current?.status === 'scheduling_sent'
+        || current?.status === 'scheduled'
+        || current?.status === 'completed';
+      if (locked) {
+        const agreed = typeof current?.clientRate === 'number' ? `$${current.clientRate.toLocaleString('en-US')}/hr` : 'the agreed rate';
+        return Response.json(
+          { error: 'rate_locked', message: `The rate with this expert is agreed at ${agreed}. It does not move after that.` },
+          { status: 409 },
+        );
+      }
+      const min = typeof accessible.clientRateMin === 'number' && accessible.clientRateMin > 0 ? accessible.clientRateMin : null;
+      const max = typeof accessible.clientRateMax === 'number' && accessible.clientRateMax > 0 ? accessible.clientRateMax : null;
+      if ((min !== null && requested < min) || (max !== null && requested > max)) {
+        const band = min !== null && max !== null
+          ? `$${min.toLocaleString('en-US')} to $${max.toLocaleString('en-US')}`
+          : min !== null ? `at least $${min.toLocaleString('en-US')}` : `at most $${(max as number).toLocaleString('en-US')}`;
+        return Response.json(
+          { error: 'outside_band', message: `Inside your band, ${band}, in $${CLIENT_RATE_ROUNDING_USD} steps. Change the band in settings for more room.` },
+          { status: 409 },
+        );
+      }
+      const rates = rateFieldsFor(expertRateFor(requested));
+      input.expertRate = rates.expertRate;
+      input.clientRate = rates.clientRate;
+    }
     if (typeof body.callDurationMin === 'number' && Number.isInteger(body.callDurationMin) && body.callDurationMin >= 1 && body.callDurationMin <= 480) {
       input.callDurationMin = body.callDurationMin;
     }
@@ -313,8 +377,10 @@ export async function PUT(
     const project = await updateExpertStatus(params.projectId, params.expertId, input);
 
     if (input.status && input.status !== before) {
-      const type = input.status === 'rejected' ? 'candidate_passed'
-        : before === 'rejected' ? 'candidate_unpassed'
+      const passedNow    = input.status === 'rejected' || input.status === 'rejected_after_outreach';
+      const passedBefore = before === 'rejected' || before === 'rejected_after_outreach';
+      const type = passedNow && !passedBefore ? 'candidate_passed'
+        : passedBefore && !passedNow ? 'candidate_unpassed'
         : null;
       if (type) {
         void trackProductEvent({

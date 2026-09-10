@@ -16,7 +16,7 @@ import ConversationThread from './ConversationThread';
 import MatchySettingsStrip from './MatchySettingsStrip';
 import MatchyLine from './MatchyLine';
 import { isWalkthrough } from '../lib/walkthrough';
-import { firstNameOf, formatSlot, schedulingLine } from '../lib/matchyClient';
+import { clientCounterRateOf, firstNameOf, formatRate, formatSlot, schedulingLine, type ProjectExpertWithCounter } from '../lib/matchyClient';
 
 // ─── Props ────────────────────────────────────────────────────────────────────
 
@@ -162,12 +162,56 @@ export default function ConversationsPanel({
   // The project decides, not the thread — one read, passed down.
   const walkthrough = isWalkthrough(project);
 
+  // What is waiting on the owner, in one line each: a counter to decide, an
+  // intro to send, a scheduling round that came back empty.
+  const waiting = threads.flatMap(pe => {
+    const first   = firstNameOf(pe.expert.name);
+    const counter = clientCounterRateOf(pe as ProjectExpertWithCounter);
+    if (counter !== null && (pe.status === 'replied' || pe.status === 'followup_sent' || pe.status === 'rate_negotiation')) {
+      return [{ expertId: pe.expert.id, first, what: `${first}'s counter at ${formatRate(counter)}/hr` }];
+    }
+    if (pe.status === 'outreach_drafted' && !pe.introNeedsWhyThem && !walkthrough) {
+      return [{ expertId: pe.expert.id, first, what: `${first}'s intro to send` }];
+    }
+    if (pe.scheduling?.outcome === 'expert_declined_times' || pe.scheduling?.outcome === 'no_client_availability') {
+      return [{ expertId: pe.expert.id, first, what: `new times for ${first}` }];
+    }
+    return [];
+  });
+
   return (
     <div className="space-y-5">
 
       {/* ── Project settings (owner / staff) ── */}
       {canSend && (
-        <MatchySettingsStrip projectId={projectId} project={project} onUpdate={onProjectUpdate} />
+        <div id="matchy-settings">
+          <MatchySettingsStrip projectId={projectId} project={project} onUpdate={onProjectUpdate} />
+        </div>
+      )}
+
+      {/* ── Waiting on you (Matchy 2.0) ──
+            The decisions open across the project, computed from the payload
+            already here. Shown only when the count is above zero; no feed,
+            no chronology. */}
+      {canSend && waiting.length > 0 && (
+        <div className="border border-frame bg-surface px-4 py-3 space-y-2">
+          <MatchyLine>
+            {waiting.length === 1 ? 'One thing' : `${waiting.length} things`} waiting on you: {waiting.map(w => w.what).join('; ')}.
+          </MatchyLine>
+          <div className="pl-[52px] flex items-center gap-2 flex-wrap">
+            {waiting.map(w => (
+              <button
+                key={w.expertId}
+                type="button"
+                onClick={() => setSelectedId(w.expertId)}
+                className="text-[10px] uppercase tracking-widest text-navy border border-navy/30 hover:border-navy px-3 py-1.5 transition-colors"
+                style={{ letterSpacing: '0.1em' }}
+              >
+                Open {w.first}
+              </button>
+            ))}
+          </div>
+        </div>
       )}
 
       {threads.length === 0 ? (
@@ -237,6 +281,8 @@ export default function ConversationsPanel({
               walkthrough={walkthrough}
               onExpertUpdate={onExpertUpdate}
               onInboundSeen={handleInboundSeen}
+              project={project}
+              onOpenExpert={id => setSelectedId(id)}
             />
           )}
         </div>

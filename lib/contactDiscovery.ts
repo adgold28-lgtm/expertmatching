@@ -792,7 +792,13 @@ export async function runContactDiscoveryJob(job: ContactDiscoveryJob): Promise<
       return 'intro_failed';
     }
 
-    if (!draftOnly) {
+    // Whether it went is on the status the step wrote, not on `draftOnly`: the
+    // step also holds an intro it has no personal line for (introNeedsWhyThem,
+    // lib/outreachSteps.ts), and the send chokepoint can refuse.
+    const sentPe = sendResult.project.experts.find(e => e.expert.id === expertId);
+    const sent   = sentPe?.status === 'contacted';
+
+    if (sent) {
       await emitEngagementEvent({
         projectId, expertId, orgId,
         type:    'intro_sent',
@@ -803,14 +809,15 @@ export async function runContactDiscoveryJob(job: ContactDiscoveryJob): Promise<
           tier,
           expertRate: pe.expertRate ?? 0,
           clientRate: pe.clientRate ?? 0,
+          introArm:   sentPe?.introArm ?? null,
         },
       });
     }
 
     // runSequenceStep owns `status`; contactStatus records how it ended so the
     // Matchy line can say it even after a page reload.
-    await writeOutcome(projectId, expertId, draftOnly ? 'intro_drafted' : 'intro_sent');
-    return draftOnly ? 'intro_drafted' : 'intro_sent';
+    await writeOutcome(projectId, expertId, sent ? 'intro_sent' : 'intro_drafted');
+    return sent ? 'intro_sent' : 'intro_drafted';
   } catch (err) {
     console.error('[contactDiscovery] job failed', JSON.stringify({
       projectId,

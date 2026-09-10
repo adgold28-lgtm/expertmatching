@@ -14,6 +14,15 @@
 //     nothing leaves the building. Held messages carry a grey tag instead of a
 //     send control, a follow-up drafted before the switch shows its Send button
 //     disabled, and the composer stays open — practising the reply is the point.
+//   • MATCHY 2.0: the composer has TWO EXITS. "Send to {first}" is the relay
+//     below, unchanged. "Ask Matchy" runs lib/matchyIntent.askMatchy over the
+//     redacted record already in this component and renders ONE card
+//     (components/MatchyAskCard.tsx) above the buttons. Ask never sends; the
+//     only network call it can make is POST …/messages/draft, whose answer
+//     lands in the textarea behind "Use this" and leaves only through Send.
+//     Expert messages render Matchy's summary only — the server sends no body
+//     to a client (lib/conversations.redactMessageForViewer). The owner's rate
+//     for this expert sits under the header and is editable until agreed.
 //   • The Accept / Offer buttons send an ACTION, never text. They used to post
 //     "Yes — $1,300/hr works." to the messages endpoint, which emails the body
 //     verbatim — so the expert received the number that includes our fee. They
@@ -22,7 +31,7 @@
 //     labels stay in client dollars, which is what the client is agreeing to.
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import type { ProjectExpert } from '../types';
+import type { Project, ProjectExpert } from '../types';
 import {
   fetchThread,
   sendMessage,
@@ -40,6 +49,13 @@ import {
   viewerZoneLabel,
   bookingIcsUrl,
   PREFERENCES_MAX,
+  setClientRate,
+  passExpert,
+  draftReply,
+  approveOutreachWithLine,
+  isValidClientRate,
+  RATE_FLOOR,
+  RATE_STEP,
   type ConversationMessage,
   type MessageIntent,
   type ProjectExpertWithCounter,
@@ -47,8 +63,11 @@ import {
 } from '../lib/matchyClient';
 import MatchyLine from './MatchyLine';
 import ClientReadyCard from './ClientReadyCard';
-import { CLIENT_STATUS_META } from './matchyStatus';
+import MatchyAskCard, { type AskActionPayload } from './MatchyAskCard';
+import { CLIENT_STATUS_META, hasConversation } from './matchyStatus';
 import { WALKTHROUGH_HELD_SUMMARY, heldLabel } from '../lib/walkthrough';
+import { askMatchy, findingNoun, isRateLocked, type AskAction, type AskCard, type AskJump } from '../lib/matchyIntent';
+import { rejectionLabel } from '../lib/rejectionReasons';
 
 // ─── Props ────────────────────────────────────────────────────────────────────
 
@@ -71,26 +90,16 @@ interface Props {
   onExpertUpdate: (updated: ProjectExpert) => void;
   /** Reports the newest inbound timestamp so the list can clear its dot. */
   onInboundSeen:  (expertId: string, latestInboundMs: number) => void;
+  /**
+   * The project, for "Ask Matchy" questions that look across experts and for
+   * the rate band. Optional so the thread still renders on its own.
+   */
+  project?:       Pick<Project, 'experts' | 'clientRateMin' | 'clientRateMax'>;
+  /** "Open Priya" on a cross-project answer selects that thread. */
+  onOpenExpert?:  (expertId: string) => void;
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
-
-/** Plain nouns for what the screen found. No rule names, no codes. */
-const FINDING_NOUN: Record<string, string> = {
-  phone:               'phone number',
-  email:               'email address',
-  url:                 'link',
-  scheduling_link:     'scheduling link',
-  client_firm_name:    'firm name',
-  expert_real_name:    'name',
-  client_real_name:    'name',
-  off_platform_phrase: 'phrase',
-  money:               'rate',
-};
-
-function findingNoun(kind: string): string {
-  return FINDING_NOUN[kind] ?? kind.replace(/_/g, ' ');
-}
 
 /**
  * The scheduling intents get a tag next to the timestamp so a client can scan
@@ -301,11 +310,15 @@ function ExpertMessage({ message, expertFirstName }: { message: ConversationMess
         </div>
       </div>
 
-      {message.summary && (
+      {message.summary ? (
         <div className="px-3.5 py-2.5 bg-surface border-b border-frame/70">
           <MatchyLine>{message.summary}</MatchyLine>
         </div>
-      )}
+      ) : !message.body ? (
+        <div className="px-3.5 py-2.5 bg-surface">
+          <MatchyLine tone="quiet">Reply received.</MatchyLine>
+        </div>
+      ) : null}
 
       {message.body && (
         <div className="px-3.5 py-2.5">
@@ -428,6 +441,8 @@ export default function ConversationThread({
   walkthrough,
   onExpertUpdate,
   onInboundSeen,
+  project,
+  onOpenExpert,
 }: Props) {
   const expertId  = projectExpert.expert.id;
   const firstName = firstNameOf(projectExpert.expert.name);
@@ -456,6 +471,26 @@ export default function ConversationThread({
   const [scheduleError,    setScheduleError]    = useState('');
   const [scheduleFindings, setScheduleFindings] = useState<ScreenFinding[]>([]);
   const [confirmMove,      setConfirmMove]      = useState(false);
+
+  // ── Ask Matchy (Matchy 2.0) ──
+  // One card at a time, never stored. `askDraft` is the draft route's answer,
+  // shown behind "Use this". `askNote` is the one quiet line left behind after
+  // a card's button did its work.
+  const [askCard,  setAskCard]  = useState<AskCard | null>(null);
+  const [askDraft, setAskDraft] = useState<string | null>(null);
+  const [askBusy,  setAskBusy]  = useState(false);
+  const [askNote,  setAskNote]  = useState('');
+  const boxRef = useRef<HTMLTextAreaElement>(null);
+
+  // ── The owner's rate for this expert ──
+  const [rateEditing, setRateEditing] = useState(false);
+  const [rateInput,   setRateInput]   = useState('');
+  const [rateError,   setRateError]   = useState('');
+  const [rateSaving,  setRateSaving]  = useState(false);
+
+  // ── Staff: the intro's personal line when Matchy could not write one ──
+  const [whyThem,      setWhyThem]      = useState('');
+  const [whyThemError, setWhyThemError] = useState('');
 
   const [noteText,   setNoteText]   = useState(projectExpert.userNotes ?? '');
   const [noteSaving, setNoteSaving] = useState(false);
@@ -499,6 +534,13 @@ export default function ConversationThread({
     setScheduleError('');
     setScheduleFindings([]);
     setConfirmMove(false);
+    setAskCard(null);
+    setAskDraft(null);
+    setAskNote('');
+    setRateEditing(false);
+    setRateError('');
+    setWhyThem('');
+    setWhyThemError('');
     setNoteText(projectExpert.userNotes ?? '');
     setNoteSaved(false);
     void load(true);
@@ -537,6 +579,8 @@ export default function ConversationThread({
       return;
     }
     if (clearDraft) setDraft('');
+    setAskCard(null);
+    setAskDraft(null);
     await load(false);
   }
 
@@ -597,14 +641,14 @@ export default function ConversationThread({
    * In walkthrough the server answers `held` and nothing changed, so the note
    * says so rather than claiming a proposal went out.
    */
-  async function runProposeTimes(reason: 'initial' | 'reschedule') {
+  async function runProposeTimes(reason: 'initial' | 'reschedule', preferencesOverride?: string) {
     if (proposing) return;
     setProposing(true);
     setScheduleError('');
     setScheduleFindings([]);
     setScheduleNote('');
 
-    const hint = preferences.trim();
+    const hint = (preferencesOverride ?? preferences).trim();
     const res  = await proposeTimes(projectId, expertId, {
       reason,
       ...(reason === 'initial' && hint ? { preferences: hint } : {}),
@@ -632,12 +676,15 @@ export default function ConversationThread({
   }
 
   /** Review-first: the intro is written and waiting on the client. */
-  async function approveIntro() {
+  async function approveIntro(line?: string) {
     setApproving(true);
     setSendError('');
-    const res = await approveOutreach(projectId, expertId);
+    setWhyThemError('');
+    const res = line
+      ? await approveOutreachWithLine(projectId, expertId, line)
+      : await approveOutreach(projectId, expertId);
     setApproving(false);
-    if (!res.ok) { setSendError(res.message); return; }
+    if (!res.ok) { if (line) setWhyThemError(res.message); else setSendError(res.message); return; }
     setThreadPE(res.projectExpert);
     onExpertUpdate(res.projectExpert);
     await load(false);
@@ -649,6 +696,162 @@ export default function ConversationThread({
     setPendingId(null);
     if (!res.ok) { setSendError(res.message); return; }
     await load(false);
+  }
+
+  // ── Ask Matchy ─────────────────────────────────────────────────────────────
+
+  /** Scrolls the pane to a card or a message and flashes its edge once. */
+  function jumpTo(jump: AskJump | undefined) {
+    if (!jump) return;
+    const id = jump.to === 'message' ? `msg-${jump.messageId}` : `ask-${jump.to}`;
+    const el = document.getElementById(id);
+    if (!el) return;
+    el.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    el.classList.add('ring-2', 'ring-gold');
+    window.setTimeout(() => el.classList.remove('ring-2', 'ring-gold'), 900);
+  }
+
+  function clearAsk() {
+    setAskCard(null);
+    setAskDraft(null);
+  }
+
+  /**
+   * The second exit. Routes the text through lib/matchyIntent (no network) and
+   * renders the one card it returns. A draft request is the single case that
+   * calls the server; its answer lands behind "Use this" and only ever leaves
+   * through Send.
+   */
+  async function runAsk() {
+    const text = draft.trim();
+    if (!text || askBusy) return;
+    setFindings([]);
+    setSendError('');
+    setAskNote('');
+    setAskDraft(null);
+
+    const card = askMatchy(text, {
+      pe,
+      messages,
+      project:         project ?? null,
+      canSend,
+      walkthrough,
+      statusLabelOf:   s => CLIENT_STATUS_META[s].label,
+      hasConversation,
+    });
+
+    if (card.kind !== 'draft_request') {
+      setAskCard(card);
+      if (card.jump) jumpTo(card.jump);
+      return;
+    }
+
+    setAskBusy(true);
+    setAskCard({ kind: 'line', tone: 'quiet', tint: 'cream', line: 'Working…', buttons: [] });
+    const res = await draftReply(projectId, expertId, card.instruction ?? text);
+    setAskBusy(false);
+    if (!res.ok) {
+      if (res.error === 'message_blocked') {
+        setAskCard({ kind: 'card', tone: 'default', tint: 'blocked', line: 'Nothing sent. Say it without the contact detail and I will write it.', findings: res.findings ?? [], buttons: [] });
+        return;
+      }
+      setAskCard({ kind: 'line', tone: 'quiet', tint: 'cream', line: res.message, buttons: [] });
+      return;
+    }
+    if (!res.text) {
+      setAskCard({ kind: 'line', tone: 'quiet', tint: 'cream', line: res.message ?? "I could not write that one cleanly. Write it in your words and I'll screen it.", buttons: [] });
+      return;
+    }
+    setAskDraft(res.text);
+    setAskCard({
+      kind: 'card', tone: 'default', tint: 'cream',
+      line: `Here is a reply. Nothing sent; edit it, then press ${walkthrough ? 'Hold' : 'Send'} for ${firstName}.`,
+      buttons: [{ action: 'use_draft', label: 'Use this', primary: true }, { action: 'dismiss', label: 'Dismiss' }],
+    });
+  }
+
+  /** Every button on the card calls a handler this component already owns. */
+  async function onAskAction(action: AskAction, payload?: AskActionPayload) {
+    switch (action) {
+      case 'dismiss':
+        clearAsk();
+        return;
+      case 'jump':
+        jumpTo(askCard?.jump);
+        return;
+      case 'use_draft':
+        if (payload?.text) setDraft(payload.text);
+        clearAsk();
+        boxRef.current?.focus();
+        return;
+      case 'open_expert':
+        if (payload?.expertId) onOpenExpert?.(payload.expertId);
+        return;
+      case 'switch_live':
+        clearAsk();
+        document.getElementById('matchy-settings')?.scrollIntoView({ block: 'start', behavior: 'smooth' });
+        return;
+      case 'approve_intro':
+        clearAsk();
+        await approveIntro();
+        return;
+      case 'set_rate':
+        if (typeof payload?.rate === 'number') await applyRate(payload.rate);
+        return;
+      case 'propose':
+        clearAsk();
+        setPreferences(payload?.preferences ?? '');
+        await runProposeTimes('initial', payload?.preferences ?? '');
+        return;
+      case 'move':
+        clearAsk();
+        await runProposeTimes('reschedule');
+        return;
+      case 'pass': {
+        if (!payload?.reason) return;
+        setAskBusy(true);
+        const res = await passExpert(projectId, expertId, payload.reason, payload.notes);
+        setAskBusy(false);
+        if (!res.ok) { setSendError(res.message); return; }
+        const updated = res.project.experts.find(e => e.expert.id === expertId);
+        if (updated) { setThreadPE(updated as ProjectExpertWithCounter); onExpertUpdate(updated); }
+        clearAsk();
+        setAskNote(`Passed: ${rejectionLabel(payload.reason).toLowerCase()}. Nothing more goes to ${firstName}.`);
+        await load(false);
+        return;
+      }
+    }
+  }
+
+  // ── The owner's rate for this expert ───────────────────────────────────────
+
+  /**
+   * Sets the client-side rate for this engagement. The server checks the $50
+   * grid, the band and the lock, and derives the expert-side figure in the same
+   * write; nothing is sent. With a counter open, the Offer button picks the new
+   * number up; otherwise it goes out with the next message.
+   */
+  async function applyRate(n: number) {
+    if (rateSaving) return;
+    if (!isValidClientRate(n)) {
+      setRateError(`Whole dollars, at least ${formatRate(RATE_FLOOR)}, in ${formatRate(RATE_STEP)} steps.`);
+      setRateEditing(true);
+      return;
+    }
+    setRateSaving(true);
+    setRateError('');
+    const res = await setClientRate(projectId, expertId, n);
+    setRateSaving(false);
+    if (!res.ok) { setRateError(res.message); setRateEditing(true); return; }
+    const updated = res.project.experts.find(e => e.expert.id === expertId);
+    if (updated) { setThreadPE(updated as ProjectExpertWithCounter); onExpertUpdate(updated); }
+    setRateEditing(false);
+    clearAsk();
+    const decisionIsOpen = latestInbound(messages)?.intent === 'counter_rate' && clientCounterRateOf(pe) !== null;
+    setAskNote(decisionIsOpen
+      ? `Rate for ${firstName} set to ${formatRate(n)}/hr. Press Offer ${formatRate(n)} on the card to send it.`
+      : `Rate for ${firstName} set to ${formatRate(n)}/hr. It goes out with the next message to them.`);
+    if (decisionIsOpen) jumpTo({ to: 'decision' });
   }
 
   // ── Post-call ──────────────────────────────────────────────────────────────
@@ -791,6 +994,7 @@ export default function ConversationThread({
     );
   }
 
+  const isTerminal  = status === 'completed' || status === 'rejected' || status === 'rejected_after_outreach';
   const callMinutes = pe.actualDurationMin ?? pe.callDurationMin ?? null;
   const charged     = typeof pe.invoiceAmount === 'number' ? pe.invoiceAmount : null;
   const isCompleted = status === 'completed';
@@ -809,14 +1013,81 @@ export default function ConversationThread({
           </p>
         </div>
         <div className="flex items-center gap-2 shrink-0">
-          {typeof pe.clientRate === 'number' && pe.clientRate > 0 && (
-            <span className="text-[10px] text-muted">{formatRate(pe.clientRate)}/hr · includes ExpertMatch fee</span>
-          )}
           <span className={`text-[10px] px-2 py-0.5 border font-medium uppercase tracking-wider ${statusPill.classes}`}>
             {statusPill.label}
           </span>
         </div>
       </div>
+
+      {/* ── Your rate for this expert (Matchy 2.0) ──
+            The band in the settings strip is the default and the limit; this
+            is the number for this engagement. Editable by the owner until the
+            rate is agreed, then it reads "Agreed" and does not move. */}
+      {typeof pe.clientRate === 'number' && pe.clientRate > 0 && !isTerminal && (
+        <div className="px-4 py-2 border-b border-frame bg-cream flex items-center gap-3 flex-wrap text-[11px] text-muted">
+          {isRateLocked(pe) ? (
+            <span>Agreed <span className="text-ink font-medium">{formatRate(pe.clientRate)}/hr</span> · includes ExpertMatch fee</span>
+          ) : !rateEditing ? (
+            <>
+              <span>Your rate for {firstName} <span className="text-ink font-medium">{formatRate(pe.clientRate)}/hr</span> · includes ExpertMatch fee</span>
+              {canSend && (
+                <button
+                  type="button"
+                  onClick={() => { setRateInput(String(pe.clientRate)); setRateError(''); setRateEditing(true); }}
+                  className="text-[10px] uppercase tracking-widest text-muted hover:text-navy transition-colors"
+                  style={{ letterSpacing: '0.12em' }}
+                >
+                  Change
+                </button>
+              )}
+            </>
+          ) : (
+            <>
+              <span className="text-[10px] uppercase tracking-widest" style={{ letterSpacing: '0.12em' }}>Your rate for {firstName}</span>
+              <span className="text-[12px] text-muted">$</span>
+              <input
+                type="number"
+                inputMode="numeric"
+                min={RATE_FLOOR}
+                step={RATE_STEP}
+                value={rateInput}
+                autoFocus
+                disabled={rateSaving}
+                onChange={e => setRateInput(e.target.value)}
+                onKeyDown={e => {
+                  if (e.key === 'Enter') { e.preventDefault(); void applyRate(Number(rateInput)); }
+                  if (e.key === 'Escape') { setRateEditing(false); setRateError(''); }
+                }}
+                aria-label="Your rate per hour for this expert"
+                className="w-24 px-2 py-1 text-[12px] border border-frame bg-surface focus:outline-none focus:border-navy text-ink"
+              />
+              <span className="text-[12px] text-muted">/hr</span>
+              <button
+                type="button"
+                onClick={() => { void applyRate(Number(rateInput)); }}
+                disabled={rateSaving}
+                className="text-[10px] uppercase tracking-widest bg-navy text-cream px-2.5 py-1 hover:bg-navy/90 disabled:opacity-40 transition-colors"
+                style={{ letterSpacing: '0.1em' }}
+              >
+                {rateSaving ? 'Saving…' : 'Save'}
+              </button>
+              <button
+                type="button"
+                onClick={() => { setRateEditing(false); setRateError(''); }}
+                disabled={rateSaving}
+                className="text-[10px] uppercase tracking-widest text-muted hover:text-navy disabled:opacity-40 transition-colors"
+                style={{ letterSpacing: '0.1em' }}
+              >
+                Cancel
+              </button>
+              <span className="text-[10px] text-muted/80 basis-full sm:basis-auto">
+                Inside your band, in {formatRate(RATE_STEP)} steps. {firstName} hears their side of the number only.
+              </span>
+              {rateError && <span className="text-[11px] text-red-600 basis-full">{rateError}</span>}
+            </>
+          )}
+        </div>
+      )}
 
       {/* ── Staff panel (admins only) ── */}
       {isAdmin && <StaffPanel pe={pe} />}
@@ -871,34 +1142,65 @@ export default function ConversationThread({
           </MatchyLine>
         )}
 
-        {messages.map(m => {
-          if (m.author === 'expert') {
-            return <ExpertMessage key={m.id} message={m} expertFirstName={firstName} />;
-          }
-          if (m.author === 'matchy') {
-            return (
+        {messages.map(m => (
+          <div key={m.id} id={`msg-${m.id}`} className="transition-shadow">
+            {m.author === 'expert' ? (
+              <ExpertMessage message={m} expertFirstName={firstName} />
+            ) : m.author === 'matchy' ? (
               <MatchyMessage
-                key={m.id}
                 message={m}
                 onSend={releasePending}
                 sending={pendingId === m.id}
                 canSend={canSend}
                 walkthrough={walkthrough}
               />
-            );
-          }
-          return <ClientMessage key={m.id} message={m} />;
-        })}
+            ) : (
+              <ClientMessage message={m} />
+            )}
+          </div>
+        ))}
 
         {/* ── Review-first: the intro is written and waiting ── */}
         {status === 'outreach_drafted' && !hasPendingMatchy && (
-          <div className={`border px-3.5 py-3 space-y-2 ${walkthrough ? 'border-frame bg-cream' : 'border-sky-200 bg-sky-50'}`}>
+          <div id="ask-intro" className={`border px-3.5 py-3 space-y-2 transition-shadow ${walkthrough ? 'border-frame bg-cream' : 'border-sky-200 bg-sky-50'}`}>
             <MatchyLine tone={walkthrough ? 'quiet' : 'default'}>
-              {walkthrough
-                ? "Intro written. Nothing is sent in walkthrough mode — switch this project to live and it's yours to send."
-                : 'Intro drafted — review and send.'}
+              {pe.introNeedsWhyThem
+                ? isAdmin
+                  ? 'Intro drafted, but I could not write its first line from the evidence. Give me one fact only someone who read their background would know.'
+                  : 'Matchy is finishing the intro. Staff add one line, then it goes.'
+                : walkthrough
+                  ? "Intro written. Nothing is sent in walkthrough mode. Switch this project to live and it's yours to send."
+                  : 'Intro drafted. Review and send.'}
             </MatchyLine>
-            {canSend && (
+            {pe.introNeedsWhyThem && isAdmin && (
+              <div className="pl-0 sm:pl-[52px] space-y-1.5">
+                <input
+                  type="text"
+                  value={whyThem}
+                  onChange={e => setWhyThem(e.target.value)}
+                  maxLength={200}
+                  disabled={approving}
+                  placeholder="You ran distribution in the Southeast for Sysco for six years"
+                  aria-label="The personal line of the intro"
+                  className="w-full px-2.5 py-2 text-[12px] border border-frame bg-surface focus:outline-none focus:border-navy text-ink disabled:opacity-50"
+                />
+                <div className="flex items-center gap-2 flex-wrap">
+                  <button
+                    type="button"
+                    onClick={() => { void approveIntro(whyThem.trim()); }}
+                    disabled={approving || walkthrough || !whyThem.trim()}
+                    title={walkthrough ? 'Nothing is sent in walkthrough mode' : undefined}
+                    className="text-[10px] uppercase tracking-widest bg-navy text-cream px-3 py-1.5 hover:bg-navy/90 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                    style={{ letterSpacing: '0.1em' }}
+                  >
+                    {approving ? 'Sending…' : 'Add the line and send'}
+                  </button>
+                  <span className="text-[10px] text-muted">Staff only. Screened like any message; the client never sees this line.</span>
+                </div>
+                {whyThemError && <p className="text-[11px] text-red-600">{whyThemError}</p>}
+              </div>
+            )}
+            {canSend && !pe.introNeedsWhyThem && (
               <div className="pl-[52px] flex items-center gap-2 flex-wrap">
                 <button
                   type="button"
@@ -918,9 +1220,10 @@ export default function ConversationThread({
 
         {/* ── Rate decision ── */}
         {wantsDecision && counterRate !== null && (
-          <div className="border border-amber-300 bg-amber-50 px-3.5 py-3 space-y-2.5">
+          <div id="ask-decision" className="border border-amber-300 bg-amber-50 px-3.5 py-3 space-y-2.5 transition-shadow">
             <MatchyLine>
-              {firstName} wants {formatRate(counterRate)}/hr — that&apos;s what you&apos;d pay, ExpertMatch fee included.
+              {firstName}&apos;s counter comes to {formatRate(counterRate)}/hr for you, fee included.
+              {canCounter && standingRate !== null ? ` Accept, or hold at ${formatRate(standingRate)}?` : ''} Either way I reply with their side of the number only.
             </MatchyLine>
             {canSend && (
               <div className="flex items-center gap-2 flex-wrap pl-[52px]">
@@ -946,6 +1249,9 @@ export default function ConversationThread({
                 )}
               </div>
             )}
+            <p className="pl-[52px] text-[10px] text-muted">
+              Nothing is charged now. You pay after the call, by the minute, 15-minute minimum, at the rate you accept.
+            </p>
           </div>
         )}
 
@@ -969,7 +1275,7 @@ export default function ConversationThread({
 
         {/* ── Times: proposed, waiting on the expert ── */}
         {showProposed && (
-          <div className="border border-teal-300 bg-teal-50 px-3.5 py-3 space-y-2.5">
+          <div id="ask-times" className="border border-teal-300 bg-teal-50 px-3.5 py-3 space-y-2.5 transition-shadow">
             <MatchyLine>
               {scheduleLine?.text ?? `Sent ${firstName} a link to pick a time.`}
             </MatchyLine>
@@ -1024,7 +1330,7 @@ export default function ConversationThread({
 
         {/* ── The booked call ── */}
         {showBooked && booking && (
-          <div className="border border-green-300 bg-green-50 px-3.5 py-3 space-y-2.5">
+          <div id="ask-booked" className="border border-green-300 bg-green-50 px-3.5 py-3 space-y-2.5 transition-shadow">
             <p
               className="text-[10px] uppercase tracking-widest text-green-800 font-semibold"
               style={{ letterSpacing: '0.16em' }}
@@ -1164,65 +1470,95 @@ export default function ConversationThread({
         </div>
       )}
 
-      {/* ── Composer ── */}
+      {/* ── Composer: one box, two exits (Matchy 2.0) ──
+            "Send to {first}" is the relay, unchanged and owner-only. "Ask
+            Matchy" never sends: it returns one card above the buttons. Neither
+            has a keyboard shortcut, so nothing reaches the wire by inference. */}
       <div className="border-t border-frame px-4 py-3 space-y-2">
-        {!canSend ? (
-          <p className="text-[11px] text-muted">Only the project owner can message experts.</p>
-        ) : (
-          <>
-            <textarea
-              value={draft}
-              onChange={e => setDraft(e.target.value)}
-              rows={3}
-              placeholder={noAddressYet
-                ? `Nothing to reply to yet.`
-                : walkthrough
-                  ? 'Practice reply. Nothing is sent in walkthrough mode.'
-                  : `Write to ${firstName} — I'll relay it.`}
-              disabled={sending || noAddressYet}
-              className="w-full px-2.5 py-2 text-[12px] border border-frame bg-cream focus:outline-none focus:border-navy text-ink resize-none disabled:opacity-50"
-            />
+        <textarea
+          ref={boxRef}
+          value={draft}
+          onChange={e => setDraft(e.target.value)}
+          rows={3}
+          placeholder={!canSend
+            ? `Ask me about ${firstName}: what they said, where we are.`
+            : noAddressYet
+              ? 'Nothing to reply to yet. Ask me where we are.'
+              : walkthrough
+                ? 'Practice here. Nothing is sent in walkthrough mode.'
+                : `Write to ${firstName}, or ask me what they said, where we are, or to write the reply for you.`}
+          disabled={sending || askBusy}
+          className="w-full px-2.5 py-2 text-[12px] border border-frame bg-cream focus:outline-none focus:border-navy text-ink resize-none disabled:opacity-50"
+        />
 
-            {noAddressYet && (
-              <p className="text-[11px] text-muted">
-                No address on file yet — I&apos;ll open this up as soon as there is one.
+        {canSend && noAddressYet && (
+          <p className="text-[11px] text-muted">
+            No address on file yet. I&apos;ll open this up as soon as there is one.
+          </p>
+        )}
+
+        {canSend && walkthrough && !noAddressYet && (
+          <p className="text-[11px] text-muted">
+            Walkthrough mode. Your message is screened and saved to the thread, and nothing is sent.
+          </p>
+        )}
+
+        {findings.length > 0 && (
+          <div className="border border-amber-300 bg-amber-50 px-3 py-2 space-y-1">
+            {findings.map((f, i) => (
+              <p key={`${f.kind}-${i}`} className="text-[11px] text-amber-800 leading-relaxed">
+                Remove: {findingNoun(f.kind)} &lsquo;{f.match}&rsquo; &middot; {f.hint}
               </p>
-            )}
+            ))}
+          </div>
+        )}
 
-            {walkthrough && !noAddressYet && (
-              <p className="text-[11px] text-muted">
-                Walkthrough mode. Your message is screened and saved to the thread, and nothing is sent.
-              </p>
-            )}
+        {sendError && <p className="text-[11px] text-red-600">{sendError}</p>}
 
-            {findings.length > 0 && (
-              <div className="border border-amber-300 bg-amber-50 px-3 py-2 space-y-1">
-                {findings.map((f, i) => (
-                  <p key={`${f.kind}-${i}`} className="text-[11px] text-amber-800 leading-relaxed">
-                    Remove: {findingNoun(f.kind)} &lsquo;{f.match}&rsquo; — {f.hint}
-                  </p>
-                ))}
-              </div>
-            )}
+        {askCard && (
+          <MatchyAskCard
+            card={askCard}
+            canSend={canSend}
+            busy={askBusy || sending || proposing || approving || rateSaving}
+            draft={askDraft ?? undefined}
+            onAction={(action, payload) => { void onAskAction(action, payload); }}
+          />
+        )}
 
-            {sendError && <p className="text-[11px] text-red-600">{sendError}</p>}
+        {askNote && !askCard && <MatchyLine tone="quiet">{askNote}</MatchyLine>}
 
-            <div className="flex items-center justify-between gap-3">
-              <p className="text-[10px] text-muted/70">
-                Identities and contact details stay off the thread until the call is booked.
-              </p>
+        <div className="flex items-end justify-between gap-3 flex-wrap">
+          <p className="text-[10px] text-muted/70 leading-relaxed">
+            {canSend
+              ? <>Ask Matchy answers here and sends nothing. {walkthrough ? `Hold for ${firstName} saves it to the thread.` : `Send to ${firstName} emails ${firstName}.`}<br /></>
+              : <>Only the project owner can message experts. Ask Matchy answers here and sends nothing.<br /></>}
+            Identities and contact details stay off the thread until the call is booked.
+          </p>
+          <div className="flex items-center gap-2 ml-auto w-full sm:w-auto">
+            <button
+              type="button"
+              onClick={() => { void runAsk(); }}
+              disabled={askBusy || sending || !draft.trim()}
+              className="flex-1 sm:flex-none min-h-[40px] sm:min-h-0 inline-flex items-center justify-center gap-1.5 text-[10px] uppercase tracking-widest text-navy border border-navy/30 hover:border-navy px-4 py-2 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+              style={{ letterSpacing: '0.12em' }}
+            >
+              {askBusy && <Spinner />}
+              {askBusy ? 'Working…' : 'Ask Matchy'}
+            </button>
+            {canSend && (
               <button
                 type="button"
                 onClick={() => { void send(draft, true); }}
-                disabled={sending || noAddressYet || !draft.trim()}
-                className="shrink-0 text-[10px] uppercase tracking-widest bg-navy text-cream px-4 py-2 hover:bg-navy/90 disabled:opacity-40 transition-colors"
+                disabled={sending || askBusy || noAddressYet || !draft.trim()}
+                title={walkthrough ? 'Walkthrough: saved to the thread, not sent' : undefined}
+                className="flex-1 sm:flex-none min-h-[40px] sm:min-h-0 text-[10px] uppercase tracking-widest bg-navy text-cream px-4 py-2 hover:bg-navy/90 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
                 style={{ letterSpacing: '0.12em' }}
               >
-                {sending ? 'Sending…' : 'Send'}
+                {sending ? (walkthrough ? 'Saving…' : 'Sending…') : walkthrough ? `Hold for ${firstName}` : `Send to ${firstName}`}
               </button>
-            </div>
-          </>
-        )}
+            )}
+          </div>
+        </div>
       </div>
     </div>
   );

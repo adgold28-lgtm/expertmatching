@@ -129,3 +129,33 @@ export async function incrementProviderDailyCount(
 ): Promise<void> {
   await store.increment(`rl:provider:${provider}:24h`, TWENTY_FOUR_H);
 }
+
+// ─── Matchy composer: "write the reply for me" ────────────────────────────────
+// One model call per draft, so the budget is the model bill. Two windows: a
+// per-user burst limit (a client hammering the button) and a per-project daily
+// ceiling (a runaway client or script). Keys are HMAC'd — no email, no project
+// id in Redis. The caller wraps this in try/catch and FAILS OPEN: a store
+// outage must not take the composer down (HANDOFF, Session 7 lesson).
+
+const ONE_MIN_MS = 60 * 1000;
+
+export const DRAFT_LIMIT_PER_USER_MINUTE  = 10;
+export const DRAFT_LIMIT_PER_PROJECT_DAY  = 200;
+
+export async function checkDraftLimits(
+  store: RateLimiterStore,
+  userEmail: string,
+  projectId: string,
+): Promise<{ allowed: boolean; retryAfterMs?: number }> {
+  // Per user: 10 drafts / minute.
+  const { count: c1, ttlMs: t1 } = await store.increment(
+    rlKey('rl:draft:user:1m', userEmail.trim().toLowerCase()), ONE_MIN_MS);
+  if (c1 > DRAFT_LIMIT_PER_USER_MINUTE) return { allowed: false, retryAfterMs: t1 };
+
+  // Per project: 200 drafts / 24 h.
+  const { count: c2, ttlMs: t2 } = await store.increment(
+    rlKey('rl:draft:project:24h', projectId), TWENTY_FOUR_H);
+  if (c2 > DRAFT_LIMIT_PER_PROJECT_DAY) return { allowed: false, retryAfterMs: t2 };
+
+  return { allowed: true };
+}

@@ -16,6 +16,19 @@
 // (docs/MATCHY_SPEC.md, founder answer 5). 404 rather than 403 on an
 // inaccessible project.
 //
+// THE PERSONAL LINE (docs/OUTREACH_EMAIL_RUBRIC.md). The intro's first line is
+// a fact about the expert's career. When Matchy could not write one it trusts,
+// the step leaves the expert at `outreach_drafted` with `introNeedsWhyThem`,
+// and this route answers 409 `why_them_required` until a line arrives in the
+// body as `{ whyThem }`. ONLY A PLATFORM ADMIN may send that field: the owner
+// is a client who does not know who the expert is before the reveal, so a
+// line they wrote could only be a guess or a leak — 403 `staff_only`. The
+// line is screened like any other client→expert text (lib/matchyScreen.ts,
+// any finding blocks), checked against the rubric (no em dash, no banned
+// phrase), capped at 200 characters, given the rubric's closing clause when
+// the admin wrote only the fact, and persisted BEFORE the step runs so the
+// step picks it up.
+//
 // WALKTHROUGH MODE: 409 `walkthrough_mode`, before any side effect. In
 // walkthrough the bookmark already leaves the intro at `outreach_drafted`, so
 // this button is exactly where an impatient client would try to leave the
@@ -25,12 +38,13 @@
 // out (or the expert was rejected), and approving again would be a second cold
 // email to the same person.
 //
-// Never logs: expert name, expert email, project name, token, email content.
+// Never logs: expert name, expert email, project name, token, email content,
+// the why-them line.
 
 import { NextRequest, NextResponse } from 'next/server';
 import { getSessionUser } from '../../../../../../../../lib/auth';
 import { guardMutatingRequest } from '../../../../../../../../lib/projectsGuard';
-import { getProjectForUser } from '../../../../../../../../lib/projectStore';
+import { getProjectForUser, updateExpertStatus } from '../../../../../../../../lib/projectStore';
 import { runSequenceStep } from '../../../../../../../../lib/outreachSteps';
 import { isSuppressed } from '../../../../../../../../lib/outreachSuppressions';
 import { emitEngagementEvent } from '../../../../../../../../lib/engagementEvents';
@@ -38,9 +52,18 @@ import { redactExpertForViewer } from '../../../../../../../../lib/redactExpert'
 import { getFirm } from '../../../../../../../../lib/firmStore';
 import { clientRateFor } from '../../../../../../../../lib/pricing';
 import { isWalkthrough } from '../../../../../../../../lib/walkthrough';
+import { screenMessage } from '../../../../../../../../lib/matchyScreen';
+import { whyThemRejection, withWhyThemClause } from '../../../../../../../../lib/introPersonalization';
 
 const ID_RE        = /^[a-f0-9]{24}$/;
 const EXPERT_ID_RE = /^[a-zA-Z0-9\-_]+$/;
+
+/** Longest why-them line staff may submit. The rubric's whole body is under 90 words. */
+const MAX_WHY_THEM_CHARS = 200;
+/** 200 characters is about 35 words; the word cap is the backstop, not the rule. */
+const MAX_WHY_THEM_WORDS = 40;
+
+const WHY_THEM_REQUIRED_MESSAGE = 'Matchy could not write the personal line for this intro. Add it, then send.';
 
 export async function POST(
   request: NextRequest,
@@ -71,6 +94,27 @@ export async function POST(
       );
     }
 
+    // The personal line, if one was sent. Staff only — checked before anything
+    // else so a client never learns whether the field does something.
+    const rawWhyThem = guard.body.whyThem;
+    if (rawWhyThem !== undefined) {
+      if (role !== 'admin') {
+        return NextResponse.json(
+          { error: 'staff_only', message: 'Only ExpertMatch staff can write the personal line of an intro.' },
+          { status: 403 },
+        );
+      }
+      if (typeof rawWhyThem !== 'string' || !rawWhyThem.trim()) {
+        return NextResponse.json({ error: 'invalid_why_them' }, { status: 400 });
+      }
+      if (rawWhyThem.trim().length > MAX_WHY_THEM_CHARS) {
+        return NextResponse.json(
+          { error: 'invalid_why_them', message: `Keep the personal line under ${MAX_WHY_THEM_CHARS} characters.` },
+          { status: 400 },
+        );
+      }
+    }
+
     // Walkthrough: nothing may be sent from this project at all. Refuse before
     // any side effect — no suppression lookup, no status write, no Resend call.
     if (isWalkthrough(project)) {
@@ -86,6 +130,13 @@ export async function POST(
     if (pe.status !== 'outreach_drafted') {
       return NextResponse.json(
         { error: 'not_awaiting_approval', message: 'There is no draft waiting to be sent to this expert.' },
+        { status: 409 },
+      );
+    }
+
+    if (pe.introNeedsWhyThem && rawWhyThem === undefined) {
+      return NextResponse.json(
+        { error: 'why_them_required', message: WHY_THEM_REQUIRED_MESSAGE },
         { status: 409 },
       );
     }
@@ -114,6 +165,45 @@ export async function POST(
 
     const firm = await getFirm(project.firmDomain).catch(() => null);
 
+    // Screen, lint and persist the staff line before the step runs.
+    if (typeof rawWhyThem === 'string') {
+      const line = withWhyThemClause(rawWhyThem);
+
+      const screen = screenMessage({
+        text:           line,
+        direction:      'client_to_expert',
+        clientFirmName: firm?.name,
+        expertFullName: pe.expert.name,
+      });
+      if (screen.findings.length > 0) {
+        return NextResponse.json(
+          {
+            error:    'why_them_blocked',
+            message:  'The personal line cannot go out as written.',
+            findings: screen.findings.map(f => ({ kind: f.kind, hint: f.hint })),
+          },
+          { status: 422 },
+        );
+      }
+
+      const rejection = whyThemRejection(line, { requireSecondPerson: false, maxWords: MAX_WHY_THEM_WORDS });
+      if (rejection) {
+        return NextResponse.json(
+          {
+            error:   'why_them_rubric',
+            reason:  rejection,
+            message: 'The personal line breaks the outreach rubric (no em dashes, no banned phrases, under 30 words).',
+          },
+          { status: 422 },
+        );
+      }
+
+      await updateExpertStatus(params.projectId, params.expertId, {
+        whyThem:           line,
+        introNeedsWhyThem: false,
+      });
+    }
+
     const result = await runSequenceStep({
       projectId: params.projectId,
       expertId:  params.expertId,
@@ -121,6 +211,7 @@ export async function POST(
       token:     pe.outreachToken ?? '',
       firmType:  firm?.firmType ?? null,
       firmSize:  firm?.firmSize ?? null,
+      firmName:  firm?.name ?? null,
       draftOnly: false,
     });
 
@@ -130,6 +221,23 @@ export async function POST(
     }
 
     const updated = result.project.experts.find(e => e.expert.id === params.expertId) ?? pe;
+
+    // The step can decline to send: it holds an intro it has no personal line
+    // for (a draft that predates the rubric, or a line that broke it), and the
+    // send chokepoint can refuse. Neither is an `intro_sent`.
+    if (updated.status !== 'contacted') {
+      if (updated.introNeedsWhyThem) {
+        return NextResponse.json(
+          { error: 'why_them_required', message: WHY_THEM_REQUIRED_MESSAGE },
+          { status: 409 },
+        );
+      }
+      return NextResponse.json({
+        ok:            true,
+        projectExpert: redactExpertForViewer(updated, { role }),
+        outcome:       'intro_drafted',
+      });
+    }
 
     const expertRate = updated.expertRate ?? 0;
     await emitEngagementEvent({
@@ -143,6 +251,7 @@ export async function POST(
         tier:       updated.expert.seniorityTier ?? 'unknown',
         expertRate,
         clientRate: expertRate > 0 ? clientRateFor(expertRate) : 0,
+        introArm:   updated.introArm ?? null,
       },
     });
 

@@ -16,6 +16,8 @@
  *   scheduling state  → the picker token hash and its expiry never reach a
  *                       client, the rest of the scheduling card does, and
  *                       stripping the two never mutates the stored record
+ *   rubric intro      → whyThem / introDomain / introArm never reach a
+ *                       non-admin at any status; introNeedsWhyThem does
  */
 
 import type { Expert, ProjectExpert, ExpertStatus, SchedulingState, BookingState } from '../types';
@@ -98,6 +100,13 @@ function projectExpertAt(status: ExpertStatus): ProjectExpert {
     zoomStartUrl:            'https://zoom.us/s/123?zak=secret',
     scheduling:              schedulingState(),
     booking:                 bookingState(),
+    // The rubric intro's fields (docs/OUTREACH_EMAIL_RUBRIC.md). The first
+    // three name the expert's employer and describe the email; the flag only
+    // says the intro is waiting on a person.
+    introArm:                1,
+    whyThem:                 "You scaled Bayview from 6 to 41 clinics, so I think you'd be a great fit for my client.",
+    introDomain:             'multi-site veterinary operations',
+    introNeedsWhyThem:       true,
     addedAt:                 1,
     updatedAt:               2,
   };
@@ -195,6 +204,14 @@ check('outreachToken absent',           contacted.outreachToken           === un
 check('calendarAccessToken absent',     contacted.calendarAccessToken     === undefined);
 check('userNotes KEPT (client owns them)', contacted.userNotes === 'Client wants to ask about staffing.');
 check('status kept',                    contacted.status === 'contacted');
+check('whyThem absent — it names the employer before the reveal', contacted.whyThem === undefined);
+check('introDomain absent',             contacted.introDomain === undefined);
+check('introArm absent',                contacted.introArm === undefined);
+check('introNeedsWhyThem KEPT — the thread shows "Matchy is finishing the intro"',
+      contacted.introNeedsWhyThem === true);
+check('no intro field leaks through the serialized payload',
+      !/"(whyThem|introDomain|introArm)"/.test(JSON.stringify(contacted))
+   && !JSON.stringify(contacted).includes('Bayview from 6 to 41'));
 
 // ─── user + scheduled: identity revealed ──────────────────────────────────────
 
@@ -212,6 +229,8 @@ check('contactCandidates STILL absent after the reveal',
 check('expertRate STILL absent after the reveal — the two rates never share an audience',
       scheduled.expertRate === undefined);
 check('clientRate still shown after the reveal', scheduled.clientRate === 1300);
+check('whyThem STILL absent after the reveal — the intro is staff-side',
+      scheduled.whyThem === undefined && scheduled.introDomain === undefined && scheduled.introArm === undefined);
 
 // ─── The reveal needs a server-written booking, not just a status ─────────────
 // A project owner can PUT status through the API; `booking` is written only by
@@ -319,6 +338,26 @@ for (const status of ['contacted', 'scheduled', 'rejected'] as const) {
   check(`${status}: contactEmail intact`,   asAdmin.contactEmail === 'scott@bayviewvet.example');
   check(`${status}: expertRate intact`,     asAdmin.expertRate === 650);
   check(`${status}: contactCandidates intact`, asAdmin.contactCandidates?.length === 1);
+  check(`${status}: whyThem intact`,        asAdmin.whyThem?.startsWith('You scaled Bayview') === true);
+  check(`${status}: introArm intact`,       asAdmin.introArm === 1);
+}
+
+// ─── Every project expert in a non-admin project payload ──────────────────────
+// The route layer serializes whole projects. Whatever status an expert is at,
+// the intro fields must not be in the bytes a non-admin receives.
+
+console.log('\nno non-admin project payload carries whyThem / introDomain / introArm');
+{
+  const allStatuses: ExpertStatus[] = ['bookmarked', 'outreach_drafted', 'contacted', 'scheduled', 'completed', 'rejected'];
+  const payload = JSON.stringify(redactProjectForViewer({
+    id: 'b'.repeat(24), name: 'p', researchQuestion: 'q', industry: '', function: '', geography: '', seniority: '',
+    createdAt: 1, updatedAt: 2, ownerEmail: 'client@firm.example', collaborators: [], firmDomain: 'firm.example',
+    experts: allStatuses.map(projectExpertAt),
+  }, { role: 'user' }));
+  check('no "whyThem" key in a user payload',     !/"whyThem"/.test(payload));
+  check('no "introDomain" key in a user payload', !/"introDomain"/.test(payload));
+  check('no "introArm" key in a user payload',    !/"introArm"/.test(payload));
+  check('introNeedsWhyThem present for every expert', (payload.match(/"introNeedsWhyThem":true/g) ?? []).length === allStatuses.length);
 }
 
 // ─── Project level ────────────────────────────────────────────────────────────

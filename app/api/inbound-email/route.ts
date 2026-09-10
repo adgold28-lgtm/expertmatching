@@ -743,6 +743,9 @@ async function advanceInterested(
     replyDetectedAt: now,
     replyIntent:     'interested',
     ...(read.availabilityNote ? { availability: read.availabilityNote } : {}),
+    // A yes to the follow-up is a yes to the standing rate: lock the
+    // per-expert rate (Matchy 2.0) in the same write as the status.
+    ...(pe.status === 'followup_sent' ? { rateAgreedAt: now } : {}),
   });
 
   // THE FOLLOW-UP IS ALREADY OUT and they have come back with a yes. That is

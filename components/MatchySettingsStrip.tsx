@@ -298,8 +298,8 @@ export default function MatchySettingsStrip({ projectId, project, onUpdate }: Pr
             rate-decision route refuses an accept above the ceiling with 409
             above_band. Rates already agreed are not revisited. */}
         <p className="text-[11px] text-muted leading-relaxed max-w-md">
-          Matchy opens inside this band and won&apos;t agree to a rate above the top of it.
-          Leave either end blank for no limit.
+          The default and the limit. Each expert gets a rate inside it, which you can change
+          from their thread until it is agreed. Leave either end blank for no limit.
         </p>
         <div className="flex items-center gap-3 flex-wrap pt-1">
           <label className="flex items-center gap-1.5">
