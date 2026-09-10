@@ -1,5 +1,8 @@
 # ExpertMatch architecture audit
 
+> Follow-up 2026-09-10: [Independent security/correctness review](docs/SECURITY_CORRECTNESS_REVIEW_2026-09-10.md) verified the repair branch and found additional webhook-recovery, payout-eligibility and middleware gaps. Its fixes and limitations supersede any “fixed” claim below that implies complete payment idempotency or active-account enforcement. It includes the current online dependency audit and explicitly unvalidated deployment conditions.
+
+
 **Date:** 2026-09-08
 **Scope:** the whole first-party codebase at branch `docs/architecture-map`, which is `main@0d1dd1b` plus a snapshot of the uncommitted work in progress (commit `a9e0547`, 67 files changed, +2679/-450). Third-party code under `node_modules` was not audited.
 **Method:** a comment-only annotation pass over the repository, split into fourteen directory batches (config, auth, database, shared libs, projects, sourcing, contact discovery, outreach, scheduling, background jobs, billing, frontend, admin, scripts). Each batch read every file in its slice, traced the request and job flows end to end, and recorded findings. Every finding below was verified against the code that produces it, and duplicates raised by more than one batch have been merged into a single entry citing all the files involved.

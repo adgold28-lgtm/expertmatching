@@ -49,6 +49,7 @@
 // accountId, or transferId. Amounts, projectId and expertId are safe.
 
 import { Resend } from 'resend';
+import { getEntitlementsForProject } from './entitlements';
 import type { ProjectExpert } from '../types';
 import { getProject, updateExpertStatus } from './projectStore';
 import type { UpdateExpertInput } from './projectStore';
@@ -314,7 +315,7 @@ export interface PayoutProjectView {
     & Pick<
         ProjectExpert,
         'contactEmail' | 'expertRate' | 'actualDurationMin' | 'callDurationMin'
-        | 'stripeConnectAccountId' | 'payoutAttempts'
+        | 'stripeConnectAccountId' | 'payoutAttempts' | 'paymentStatus'
       >
     & { expert: { id: string; name: string } }
   >;
@@ -325,6 +326,7 @@ export interface PayoutProjectView {
  * it. Declared with method syntax so a stub may narrow a parameter type.
  */
 export interface PayoutDeps {
+  getEntitlementsForProject(projectId: string): Promise<{ canCharge: boolean }>;
   getProject(projectId: string): Promise<PayoutProjectView | null>;
   updateExpertStatus(projectId: string, expertId: string, patch: UpdateExpertInput): Promise<unknown>;
   getConnectAccountId(email: string): Promise<string | null>;
@@ -355,6 +357,7 @@ export interface PayoutDeps {
 /** The real store, Connect client and mailer. */
 function defaultPayoutDeps(): PayoutDeps {
   return {
+    getEntitlementsForProject,
     getProject,
     updateExpertStatus,
     getConnectAccountId,
@@ -389,7 +392,11 @@ export async function runExpertPayout(
     const pe          = project?.experts.find(e => e.expert.id === expertId);
     const expertEmail = pe?.contactEmail;
 
-    if (!pe) return;
+    if (!pe || pe.paymentStatus !== 'paid') return;
+    // Retries and account.updated enter here independently of the payment
+    // webhook. A refund or trial restriction must stop both transfers and mail.
+    const entitlements = await d.getEntitlementsForProject(projectId);
+    if (!entitlements.canCharge) return;
 
     // Idempotency, per CALL: this call is in paidCallIds (or the row predates
     // that list and has a transfer id). Webhook replays and both retry sweeps

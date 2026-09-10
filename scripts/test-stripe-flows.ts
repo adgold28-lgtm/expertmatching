@@ -435,6 +435,7 @@ async function main(): Promise<void> {
       contactEmail:      'expert@example.com',
       expertRate:        EXPERT_RATE,
       actualDurationMin: DURATION,
+      paymentStatus: 'paid',
       billedCallId:      CALL_ID,
       booking:           { icsUid: CALL_ID } as PayoutRow['booking'],
       ...opts.expert,
@@ -455,6 +456,7 @@ async function main(): Promise<void> {
     };
     env.deps = {
       getProject: async () => ({ experts: [row] }),
+      getEntitlementsForProject: async () => ({ canCharge: true }),
       updateExpertStatus: async (_p, _e, patch) => { env.patches.push(patch); Object.assign(row, patch); return row; },
       getConnectAccountId: async () => (opts.account === undefined ? 'acct_expert' : opts.account),
       // The real functions, driven through their own Stripe seam, so the amount
@@ -619,6 +621,30 @@ async function main(): Promise<void> {
 
   const paidIntent = (id = 'pi_new_1') =>
     stripeEvent('evt_paid_1', 'payment_intent.succeeded', { id, metadata: { projectId: PROJECT_ID, expertId: EXPERT_ID } });
+
+  section('payout retry requires settled client payment and entitlement');
+  for (const paymentStatus of ['unpaid', 'failed', 'refunded', 'invoice_sent', null, undefined] as const) {
+    const payout = payoutEnv({ expert: { paymentStatus } });
+    await runExpertPayout(PROJECT_ID, EXPERT_ID, payout.deps);
+    eq(`no transfer for ${paymentStatus}`, payout.transfers.length, 0);
+    eq(`no onboarding mail for ${paymentStatus}`, payout.reminders.length, 0);
+    eq(`no state mutation for ${paymentStatus}`, payout.patches.length, 0);
+  }
+  {
+    const payout = payoutEnv();
+    payout.deps.getEntitlementsForProject = async () => ({ canCharge: false });
+    await runExpertPayout(PROJECT_ID, EXPERT_ID, payout.deps);
+    eq('trial cannot transfer even with a stale paid row', payout.transfers.length, 0);
+    eq('trial sends no payout setup mail', payout.reminders.length, 0);
+  }
+  {
+    const payout = payoutEnv({ onboarded: false });
+    await runExpertPayout(PROJECT_ID, EXPERT_ID, payout.deps);
+    payout.row.paymentStatus = 'refunded';
+    payout.onboardingComplete.value = true;
+    await runExpertPayout(PROJECT_ID, EXPERT_ID, payout.deps);
+    eq('refund before late onboarding stops the eventual transfer', payout.transfers.length, 0);
+  }
 
   section('payment_intent.succeeded → paid → payout');
   {

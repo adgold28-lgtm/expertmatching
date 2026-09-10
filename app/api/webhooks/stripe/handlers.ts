@@ -39,17 +39,9 @@ export const STRIPE_EVENT_TTL_SECONDS = 7 * 24 * 60 * 60;
 export type EventDedupDecision = 'process' | 'duplicate';
 
 /**
- * Decides whether to run the branches for an event, given the result of
- * `SET stripe-event:<id> NX EX 7d`.
- *
- *   'OK'  → this delivery claimed the key: process.
- *   null  → the key already existed: a redelivery, skip and answer 200.
- *
- * FAIL-OPEN. When Redis is absent or the SET threw (`available: false`) the
- * event is processed: every branch is independently idempotent (the paid/failed
- * writes are last-writer-wins, the payout guard is the stored paidCallIds, the
- * subscription mirror is a copy of Stripe's own state), so processing twice
- * costs a duplicate write, while refusing would cost a lost payment. Pure.
+ * Legacy pure cache-availability decision, retained for the earlier regression
+ * suite. Production uses claimStripeEvent's processing/done protocol below.
+ * Neither this helper nor event deduplication guarantees cross-event ordering.
  */
 export function decideEventDedup(
   setResult: 'OK' | null,
