@@ -21,8 +21,8 @@
 //       the scope limit as one clause, and the yes/no question. Nothing else:
 //       no scheduling, no agreement, no payment mechanics
 //     - the rate is asked, not asserted, and the client number never appears
-//     - four trial arms (INTRO_ARMS): the number in the subject or not, hourly
-//       or flat framing in the body. Every arm states the money in the body.
+//     - two trial arms (INTRO_ARMS): the number in the subject or not. The body
+//       states the hourly rate either way.
 //     - signed "Asher" (first name only, always) over a real signature block
 //     - hard rules, enforced in code: zero em dashes, no banned phrases, none of
 //       secrets / NDA / confidential / compliance, under 90 words before the
@@ -59,7 +59,6 @@ import {
   senderFirstName,
   senderFullName,
   senderFromAddress,
-  senderLinkedInUrl,
 } from './senderIdentity';
 
 export interface MatchyEmail {
@@ -637,21 +636,21 @@ export class IntroRubricError extends Error {
 // ─── Trial arms ───────────────────────────────────────────────────────────────
 
 export interface IntroArmSpec {
-  /** Whether the number appears in the subject line. The body always states it. */
+  /** Whether the number appears in the subject line. The body always states it, hourly. */
   priceInSubject: boolean;
-  /** How the body frames the money: "$X/hr for 15 to 60 minutes" or "$X for up to an hour". */
-  framing: 'hourly' | 'flat';
 }
 
-/** The four arms of the founder's trial (rubric, "Trial arms"). */
+/**
+ * The two arms of the founder's trial (rubric, "Trial arms"). A flat "$X for
+ * up to an hour" framing was tried in the draft and dropped by the founder on
+ * 2026-09-10; the body is always "$X/hr for 15 to 60 minutes".
+ */
 export const INTRO_ARMS: Readonly<Record<IntroArm, IntroArmSpec>> = {
-  1: { priceInSubject: true,  framing: 'hourly' },
-  2: { priceInSubject: false, framing: 'hourly' },
-  3: { priceInSubject: true,  framing: 'flat'   },
-  4: { priceInSubject: false, framing: 'flat'   },
+  1: { priceInSubject: true  },
+  2: { priceInSubject: false },
 };
 
-const ALL_ARMS: readonly IntroArm[] = [1, 2, 3, 4];
+const ALL_ARMS: readonly IntroArm[] = [1, 2];
 
 /** FNV-1a, 32-bit. Small, dependency-free and stable across runtimes. */
 function fnv1a(text: string): number {
@@ -666,7 +665,7 @@ function fnv1a(text: string): number {
 /**
  * Which arm this expert's intro goes out under. A deterministic hash of the
  * expert id, so the same expert always lands on the same arm and the split is
- * even over a population. INTRO_ARM=1..4 in the environment pins every intro
+ * even over a population. INTRO_ARM=1 or 2 in the environment pins every intro
  * to one arm (to run a single variant, or to reproduce a sample by hand).
  */
 export function introArmFor(expertId: string): IntroArm {
@@ -723,40 +722,32 @@ function ensureFullStop(sentence: string): string {
 }
 
 function introSubject(arm: IntroArm, domain: string, rate: number): string {
-  const spec = INTRO_ARMS[arm];
-  if (!spec.priceInSubject) return `Expert in ${domain}: a paid call for my client?`;
-  return spec.framing === 'hourly'
-    ? `Expert in ${domain}: compensated $${rate}/hr for your time?`
-    : `Expert in ${domain}: $${rate} for up to an hour of your time?`;
+  if (!INTRO_ARMS[arm].priceInSubject) return `Expert in ${domain}: a paid call for my client?`;
+  return `Expert in ${domain}: compensated $${rate}/hr for your time?`;
 }
 
-function offerSentence(arm: IntroArm, firm: string, topic: string, rate: number): string {
-  const money = INTRO_ARMS[arm].framing === 'hourly'
-    ? `they want to compensate you $${rate}/hr for 15 to 60 minutes of your time`
-    : `they want to pay you $${rate} for up to an hour, even if we only need 20 minutes`;
+function offerSentence(_arm: IntroArm, firm: string, topic: string, rate: number): string {
+  const money = `they want to compensate you $${rate}/hr for 15 to 60 minutes of your time`;
   return `They are ${firm} looking to understand ${topic}, and ${money}. ${INTRO_SCOPE_CLAUSE} ${INTRO_QUESTION}`;
 }
 
 /**
- * The signature block under the first-name sign-off: full name, From address,
- * LinkedIn. Each line comes from the environment (lib/senderIdentity.ts); a
- * line we do not have is omitted, never faked. Returned as text lines and as
- * the HTML for the same block (the LinkedIn URL is a real link there).
+ * The signature block under the first-name sign-off: full name and From
+ * address. Each line comes from the environment (lib/senderIdentity.ts); a
+ * line we do not have is omitted, never faked. (A LinkedIn line was in the
+ * draft; the founder dropped it on 2026-09-10.) Returned as text lines and as
+ * the HTML for the same block.
  */
 function signatureBlock(): { lines: string[]; html: string } {
-  const first    = senderFirstName();
-  const full     = senderFullName();
-  const address  = senderFromAddress();
-  const linkedin = senderLinkedInUrl();
+  const first   = senderFirstName();
+  const full    = senderFullName();
+  const address = senderFromAddress();
 
   const lines = [first];
   if (full && full !== first) lines.push(full);
   lines.push(address);
-  if (linkedin) lines.push(linkedin);
 
-  const htmlLines = lines.map(line => (line === linkedin
-    ? `<a href="${escapeHtml(line)}" style="color:#0B1F3B;">${escapeHtml(line)}</a>`
-    : escapeHtml(line)));
+  const htmlLines = lines.map(line => escapeHtml(line));
 
   return { lines, html: `<p style="margin:0 0 14px;">${htmlLines.join('<br />')}</p>` };
 }

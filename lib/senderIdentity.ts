@@ -11,16 +11,12 @@
 //                          "Asher" or "Asher Goldstein\nExpertMatch". Unset
 //                          means no sign-off (the footer already names the
 //                          sender), which is how Phase 1 shipped.
-//   OUTREACH_LINKEDIN_URL — the founder's LinkedIn profile, for the signature
-//                          block under the intro (docs/OUTREACH_EMAIL_RUBRIC.md,
-//                          "Real signature with LinkedIn"). Unset omits the line.
 //
 // The rubric intro (lib/matchyTemplates.buildIntroEmail) signs differently from
 // the rest: first name only, ALWAYS — "Asher" when nothing is configured — with
-// a block underneath carrying the full name, the From address and the LinkedIn
-// link. senderFirstName / senderFullName / senderFromAddress / senderLinkedInUrl
-// below are the four pieces of that block, each derived from the env, none of
-// them invented.
+// a block underneath carrying the full name and the From address.
+// senderFirstName / senderFullName / senderFromAddress below are the pieces of
+// that block, each derived from the env, none of them invented.
 //
 // The founder's question was whether Matchy should write "on behalf of" them.
 // This module makes that a one-variable decision rather than a code change:
@@ -92,22 +88,4 @@ export function senderFullName(): string {
 /** The bare From address (lib/mailFrom.getFromAddress, so always on the verified domain). */
 export function senderFromAddress(): string {
   return bareAddress(getFromAddress());
-}
-
-/**
- * OUTREACH_LINKEDIN_URL when it is an http(s) URL on linkedin.com, else null.
- * Anything else is dropped rather than mailed: a signature link that is not a
- * LinkedIn profile is exactly what a phishing filter is looking for.
- */
-export function senderLinkedInUrl(): string | null {
-  const raw = process.env.OUTREACH_LINKEDIN_URL?.trim();
-  if (!raw) return null;
-  try {
-    const url = new URL(raw);
-    if (url.protocol !== 'https:' && url.protocol !== 'http:') return null;
-    if (!/(^|\.)linkedin\.com$/i.test(url.hostname)) return null;
-    return url.toString().replace(/\/$/, '');
-  } catch {
-    return null;
-  }
 }

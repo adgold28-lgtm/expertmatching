@@ -23,7 +23,7 @@ A client bookmarks an expert from their matches. From that moment Matchy — Exp
 3. **Intro (Matchy sends it — default auto, per-project review switch).** To the rubric in `OUTREACH_EMAIL_RUBRIC.md`: anonymized client, one real fact about the expert, the expert-side offer, one question:
    > *Subject: Expert in cold-chain distribution: compensated $800/hr for your time?*
    > *Dear Mark, / You ran distribution in the Southeast for Sysco for six years, so I think you'd be a great fit for my client. / They are a PE firm looking to understand cold-chain economics, and they want to compensate you $800/hr for 15 to 60 minutes of your time. This wouldn't be anything proprietary and should stay relatively broad. Does this sound interesting to you? / Asher*
-   Four trial arms vary the subject (price or not) and the money framing (hourly or flat). When Matchy cannot write the personal line from the evidence, the intro is held for staff (`introNeedsWhyThem`). Status → `contacted`. Matchy card in the thread: *"Sent Mark the intro. I'll let you know when he replies."*
+   Two trial arms vary the subject (the rate in it, or "a paid call for my client?"). When Matchy cannot write the personal line from the evidence, the intro is held for staff (`introNeedsWhyThem`). Status → `contacted`. Matchy card in the thread: *"Sent Mark the intro. I'll let you know when he replies."*
 4. **Follow-up on "yes" (Matchy drafts; sends automatically unless review switch is on).** Conflict/NDA questions + the rate ask — asked, never asserted:
    > *Glad to hear it. Three quick things before we schedule: (1) any NDAs or employer restrictions that would limit discussing {topic}? (2) any current involvement with companies in this space we should know about? (3) We compensate experts at ${expertRate}/hr, billed per minute — does that work for you? If so, I'll propose a couple of times.*
 5. **Relay + summary.** Every expert email is verified, cleaned, screened, stored, summarized ("Interested. Free Tue/Thu afternoons ET. Wants $650 — you're offering $560. Possible NDA with a competitor."), and the pipeline stage updates. Client replies in-app; Matchy screens and sends.
@@ -96,7 +96,7 @@ Rationale: ~4,100 US PE firms average ~8 employees, so nearly every account is 1
 
 **Phase 2 — Matchy scheduling + discovery loop.** Propose-times from calendar overlap + preferences; book on confirmation; discovery job across providers with bounce retry; card statuses.
 
-**Phase 2.5 — Matchy 2.0 (built 2026-09-09).** The two-exit composer with deterministic answers and verb cards; `POST …/messages/draft`; summary-only expert messages; the per-expert rate; the rubric intro with four trial arms; the "waiting on you" line.
+**Phase 2.5 — Matchy 2.0 (built 2026-09-09).** The two-exit composer with deterministic answers and verb cards; `POST …/messages/draft`; summary-only expert messages; the per-expert rate; the rubric intro with two trial arms; the "waiting on you" line.
 
 **Phase 3 — Learning + polish.** Rejection re-weighting into sourcing; rate tuning from events; LLM-assisted screen; suggested replies; digest; retire Screen tab into the thread.
 

@@ -467,8 +467,8 @@ export interface ProjectExpert {
   updatedAt: number;
 }
 
-/** The four intro trial arms: 1 price in subject + hourly body, 2 no price in subject + hourly, 3 price in subject + flat, 4 no price in subject + flat. */
-export type IntroArm = 1 | 2 | 3 | 4;
+/** The two intro trial arms: 1 the rate in the subject, 2 a paid call in the subject. The body states the hourly rate either way. */
+export type IntroArm = 1 | 2;
 
 export interface Project {
   id: string;

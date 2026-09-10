@@ -88,7 +88,7 @@ Asher
 
 ## Trial arms (founder, 2026-09-08)
 
-Run trial emails with various bodies and subjects, with the price in them or not. Every arm keeps the "why them" line and states the money in the body (hard rule above); what varies is whether the number is in the subject and whether the body frames it hourly or flat. Record the arm in the `intro_sent` event payload; reply rate and positive-reply rate within four business days come from `reply_received` / `intent_classified`.
+Run trial emails with the price in the subject or not. Every arm keeps the "why them" line and states the hourly rate in the body (hard rule above); the only variable is the subject line. (The flat "$X for up to an hour" body framing was dropped by the founder on 2026-09-10.) Record the arm in the `intro_sent` event payload; reply rate and positive-reply rate within four business days come from `reply_received` / `intent_classified`.
 
 ## Pre-send checklist
 
@@ -109,14 +109,14 @@ Run trial emails with various bodies and subjects, with the price in them or not
 - `buildIntroEmail` moves to this format. The "why them" fact comes from the expert's sourcing evidence (`evidenceItems`, high confidence, type `role` or `company`). No qualifying fact means Matchy holds the intro and asks the owner for the line instead of sending a generic one.
 - The subject's domain comes from the expert's evidence, not the brief's industry.
 - The rate is the expert-side opening offer already seeded at bookmark (Mid $400 / Senior $650 / Executive $800, clamped to the project band). The client number never appears.
-- Sign-off `Asher` plus a signature block: name and From address from `OUTREACH_SIGNATURE` / `OUTREACH_FROM_EMAIL`; LinkedIn needs a new env var (e.g. `OUTREACH_LINKEDIN_URL`).
+- Sign-off `Asher` plus a signature block: name and From address from `OUTREACH_SIGNATURE` / `OUTREACH_FROM_EMAIL`. (Founder, 2026-09-10: no LinkedIn line.)
 - `scripts/test-matchy-templates.ts` gains: zero em dashes, banned-phrase lint, body under 90 words, subject format.
 
 ### Rubric intro (built, 2026-09-09)
 
 `buildIntroEmail` now produces the shape above, and the pre-send checklist is code, not hope:
 
-- **Shape.** `Expert in {domain}: …` subject (colon, never an em dash), `Dear {First},`, the why-them line, the offer sentence with the scope clause and the question, then `Asher` over a signature block (full name, From address, `OUTREACH_LINKEDIN_URL` when set) and the CAN-SPAM footer. Four trial arms (`INTRO_ARMS`, `introArmFor(expertId)` is a stable hash; `INTRO_ARM=1..4` pins): arms 1 and 3 put the number in the subject; arms 1 and 2 frame it hourly, 3 and 4 flat. The arm rides on the `intro_sent` event payload as `introArm`.
+- **Shape.** `Expert in {domain}: …` subject (colon, never an em dash), `Dear {First},`, the why-them line, the offer sentence with the scope clause and the question, then `Asher` over a signature block (full name, From address) and the CAN-SPAM footer. Two trial arms (`INTRO_ARMS`, `introArmFor(expertId)` is a stable hash; `INTRO_ARM=1|2` pins): arm 1 puts the rate in the subject, arm 2 says "a paid call for my client?"; the body always states the hourly rate. The flat "$X for up to an hour" framing was dropped by the founder on 2026-09-10. The arm rides on the `intro_sent` event payload as `introArm`.
 - **Hard rules enforced.** An em dash anywhere, a banned phrase or word, or a body at or over 90 words makes `buildIntroEmail` throw `IntroRubricError`; the send path holds the intro instead of sending it. The topic clause is the one part that may be shortened to fit.
 - **The why-them line is never a slot.** `lib/introPersonalization.ts` runs, in order: (1) a deterministic pass over `evidenceItems` (high confidence, or an untagged role/company claim) that turns a past-tense claim into second person plus the closing clause; (2) one `gpt-4o-mini` call whose JSON `{ whyThem, domain }` must pass the same checks plus "no digit you did not read" and "carries the company or a distinctive claim word"; (3) nothing. On nothing, `lib/outreachSteps.ts` leaves the expert at `outreach_drafted` with `introNeedsWhyThem: true` and sends nothing, whatever the review-first switch says. A platform admin supplies the line through `POST …/outreach/approve { whyThem }` (screened, linted, the clause appended if missing); an owner cannot, because the owner does not know who the expert is. The thread shows the client "Matchy is finishing the intro" meanwhile.
 - **The domain** comes from the expert's value-chain label or descriptor, falls back to the brief's industry only when neither exists, and is refused if it names the employer or a client term.

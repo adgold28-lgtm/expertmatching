@@ -11,7 +11,7 @@
 //   - the intro follows docs/OUTREACH_EMAIL_RUBRIC.md in all four trial arms:
 //     subject format, price in the subject only for arms 1 and 3, "Dear
 //     {First}," the why-them line first, the money sentence in every arm
-//     (hourly for 1/2, flat for 3/4), the scope clause verbatim, the closing
+//     (hourly, in every arm), the scope clause verbatim, the closing
 //     question, zero em dashes, under 90 words, no banned phrase or word,
 //     signed "Asher" over a real signature block
 //   - introArmFor is deterministic, covers all four arms, and INTRO_ARM pins it
@@ -48,7 +48,6 @@ process.env.AVAILABILITY_TOKEN_SECRET ||= 'test-only-secret-for-matchy-template-
 // no sign-off configured (the rubric says it is "Asher" regardless), a From
 // address on the verified domain, no LinkedIn, no pinned arm.
 delete process.env.OUTREACH_SIGNATURE;
-delete process.env.OUTREACH_LINKEDIN_URL;
 delete process.env.INTRO_ARM;
 process.env.OUTREACH_FROM_EMAIL = 'Asher Goldstein <asher@expertmatch.fit>';
 
@@ -259,7 +258,7 @@ section('buildIntroEmail — the rubric, in all four arms');
 const WHY_THEM = "You ran distribution in the Southeast for Sysco for six years, so I think you'd be a great fit for my client.";
 const DOMAIN   = 'cold-chain distribution';
 const RATE     = 800;
-const ARMS: readonly IntroArm[] = [1, 2, 3, 4];
+const ARMS: readonly IntroArm[] = [1, 2];
 
 function introFor(arm: IntroArm, overrides: Partial<Parameters<typeof buildIntroEmail>[0]> = {}) {
   return buildIntroEmail({
@@ -286,12 +285,9 @@ function bodyBeforeSignOff(text: string): string {
 const SUBJECT_RE: Record<IntroArm, RegExp> = {
   1: /^Expert in cold-chain distribution: compensated \$800\/hr for your time\?$/,
   2: /^Expert in cold-chain distribution: a paid call for my client\?$/,
-  3: /^Expert in cold-chain distribution: \$800 for up to an hour of your time\?$/,
-  4: /^Expert in cold-chain distribution: a paid call for my client\?$/,
 };
 
 const HOURLY_MONEY = `they want to compensate you $${RATE}/hr for 15 to 60 minutes of your time.`;
-const FLAT_MONEY   = `they want to pay you $${RATE} for up to an hour, even if we only need 20 minutes.`;
 
 for (const arm of ARMS) {
   const e    = introFor(arm);
@@ -299,15 +295,14 @@ for (const arm of ARMS) {
   const full = bodyOf(e.text);
   const spec = INTRO_ARMS[arm];
 
-  if (arm === 1 || arm === 3) console.log(`\n--- intro, arm ${arm} ---\nSubject: ${e.subject}\n\n${full}\n-------------`);
+  console.log(`\n--- intro, arm ${arm} ---\nSubject: ${e.subject}\n\n${full}\n-------------`);
 
   check(`arm ${arm}: subject format`, SUBJECT_RE[arm].test(e.subject), e.subject);
-  eq(`arm ${arm}: price in subject only for arms 1 and 3`, e.subject.includes('$'), spec.priceInSubject);
+  eq(`arm ${arm}: price in subject only for arm 1`, e.subject.includes('$'), spec.priceInSubject);
   check(`arm ${arm}: subject uses a colon, never an em dash`, e.subject.includes(':') && !e.subject.includes('—'));
   check(`arm ${arm}: opens "Dear Scott,"`, body.startsWith('Dear Scott,\n\n'));
   check(`arm ${arm}: why-them line comes first`, body.split('\n\n')[1] === WHY_THEM, body.split('\n\n')[1]);
-  check(`arm ${arm}: money sentence present (${spec.framing})`,
-    body.includes(spec.framing === 'hourly' ? HOURLY_MONEY : FLAT_MONEY), body);
+  check(`arm ${arm}: hourly money sentence present`, body.includes(HOURLY_MONEY), body);
   check(`arm ${arm}: exactly one dollar figure in the body`, (body.match(/\$\d/g) ?? []).length === 1);
   check(`arm ${arm}: the client number is absent`, !e.text.includes(`$${clientRateFor(RATE)}`));
   check(`arm ${arm}: names the firm type`, body.includes('They are a PE firm looking to understand cold-chain economics, and'));
@@ -328,21 +323,13 @@ for (const arm of ARMS) {
     !/\b(calendly|zoom|agreement|invoice|stripe|payment)\b/i.test(full));
   check(`arm ${arm}: signs off "Asher" on its own line`, /\n\nAsher\n/.test(full), full);
   check(`arm ${arm}: signature block carries the From address`, full.includes('\nAsher Goldstein\nasher@expertmatch.fit'));
-  check(`arm ${arm}: no LinkedIn line when OUTREACH_LINKEDIN_URL is unset`, !/linkedin/i.test(full));
+  check(`arm ${arm}: no LinkedIn line (dropped by the founder)`, !/linkedin/i.test(full));
   check(`arm ${arm}: footer opt-out link present`, e.text.includes('Opt out'));
   check(`arm ${arm}: html carries the body and the block`, e.html.includes('Dear Scott,') && e.html.includes('asher@expertmatch.fit'));
 }
 
-// The signature block with a LinkedIn URL configured.
-process.env.OUTREACH_LINKEDIN_URL = 'https://www.linkedin.com/in/ashergoldstein/';
-const withLinkedIn = bodyOf(introFor(1).text);
-check('LinkedIn line present when OUTREACH_LINKEDIN_URL is set',
-  withLinkedIn.endsWith('\nAsher\nAsher Goldstein\nasher@expertmatch.fit\nhttps://www.linkedin.com/in/ashergoldstein'),
-  withLinkedIn.slice(-140));
-check('LinkedIn is a real link in the html', introFor(1).html.includes('href="https://www.linkedin.com/in/ashergoldstein"'));
-process.env.OUTREACH_LINKEDIN_URL = 'https://evil.example/phish';
-check('a non-LinkedIn URL is dropped, not mailed', !bodyOf(introFor(1).text).includes('evil.example'));
-delete process.env.OUTREACH_LINKEDIN_URL;
+// The signature block ends on the From address; nothing else is appended.
+check('signature block ends on the From address', bodyOf(introFor(1).text).endsWith('\nAsher\nAsher Goldstein\nasher@expertmatch.fit'), bodyOf(introFor(1).text).slice(-120));
 
 // A configured multi-line signature still signs with the first name only.
 process.env.OUTREACH_SIGNATURE = 'Asher Goldstein\nExpertMatch';
@@ -407,7 +394,7 @@ eq('lint: "15 to 60 minutes" is not a list', introRubricViolation('for 15 to 60 
 
 // ─── introArmFor ─────────────────────────────────────────────────────────────
 
-section('introArmFor — deterministic, covers all four arms, INTRO_ARM pins');
+section('introArmFor — deterministic, covers both arms, INTRO_ARM pins');
 
 const ids = Array.from({ length: 200 }, (_, i) => `expert-${i}-${(i * 7919).toString(16)}`);
 const seen = new Set<IntroArm>();
@@ -419,16 +406,16 @@ for (const id of ids) {
   if (!ARMS.includes(arm)) stable = false;
 }
 check('every id maps to the same arm twice', stable);
-check(`all four arms appear over 200 ids (${Array.from(seen).sort().join(',')})`, seen.size === 4);
-check('INTRO_ARMS names the price-in-subject arms', INTRO_ARMS[1].priceInSubject && INTRO_ARMS[3].priceInSubject && !INTRO_ARMS[2].priceInSubject && !INTRO_ARMS[4].priceInSubject);
-check('INTRO_ARMS names the flat arms', INTRO_ARMS[3].framing === 'flat' && INTRO_ARMS[4].framing === 'flat' && INTRO_ARMS[1].framing === 'hourly' && INTRO_ARMS[2].framing === 'hourly');
+check(`both arms appear over 200 ids (${Array.from(seen).sort().join(',')})`, seen.size === 2);
+check('INTRO_ARMS names the price-in-subject arm', INTRO_ARMS[1].priceInSubject && !INTRO_ARMS[2].priceInSubject);
+check('no flat framing anywhere', !/up to an hour/.test(introFor(1).text) && !/up to an hour/.test(introFor(2).text));
 
 for (const pin of ARMS) {
   process.env.INTRO_ARM = String(pin);
   check(`INTRO_ARM=${pin} pins every id`, ids.every(id => introArmFor(id) === pin));
 }
 process.env.INTRO_ARM = '7';
-check('an out-of-range INTRO_ARM is ignored', new Set(ids.map(introArmFor)).size === 4);
+check('an out-of-range INTRO_ARM is ignored', new Set(ids.map(introArmFor)).size === 2);
 delete process.env.INTRO_ARM;
 
 // ─── Follow-up ───────────────────────────────────────────────────────────────
