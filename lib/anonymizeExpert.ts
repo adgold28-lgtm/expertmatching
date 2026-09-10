@@ -17,6 +17,7 @@
 import Anthropic from '@anthropic-ai/sdk';
 import type { Expert, SeniorityTier } from '../types';
 import { classifySeniority } from './seniorityClassifier';
+import { maskContactDetails } from './matchyScreen';
 import { getProject, updateExpertStatus } from './projectStore';
 
 // ─── Limits ───────────────────────────────────────────────────────────────────
@@ -55,6 +56,96 @@ export function fallbackDescriptor(expert: DescriptorSource): string {
     .filter((part): part is string => !!part && part.length > 0)
     .join(' · ')
     .slice(0, MAX_DESCRIPTOR_LEN);
+}
+
+// ─── Anonymity check on generated text ────────────────────────────────────────
+//
+// THE PROMPT IS NOT THE GUARANTEE (audit H-18). ANONYMIZATION_RULES tells the
+// model not to name the person or the employer; nothing used to check that it
+// obeyed, and the redactor substituted whatever came back straight onto the
+// client's card. This is the post-hoc check — the same shape
+// app/api/projects/[projectId]/interview-guide/route.ts already applies to its
+// model output — run BOTH where the text is produced and again at render time,
+// because text generated before this shipped is already in the database.
+//
+// A failure is not an error: the caller drops the text and uses the
+// deterministic fallback, which is what an expert with no descriptor has always
+// been shown.
+
+/** The identity a descriptor must not give away, plus the vocabulary it may use. */
+export type IdentitySource = Partial<Pick<
+  Expert,
+  'name' | 'company' | 'category' | 'valueChainLabel'
+>>;
+
+/**
+ * Company words that identify nobody on their own. "Bayview" is the employer;
+ * "group" is a scale word the anonymized style guide actively asks for
+ * ("regional veterinary clinic group"). Mirrors GENERIC_TAIL in
+ * lib/matchyScreen.ts, which makes the same distinction for firm names.
+ */
+const GENERIC_COMPANY_WORDS = new Set([
+  'group', 'holdings', 'partners', 'capital', 'ventures', 'associates', 'advisors',
+  'management', 'company', 'corporation', 'incorporated', 'limited', 'international',
+  'global', 'national', 'regional', 'services', 'solutions', 'systems', 'technologies',
+  'industries', 'enterprises', 'consulting', 'labs',
+]);
+
+function wordsOf(value: string | undefined): string[] {
+  return (value ?? '').toLowerCase().split(/[^a-z0-9]+/i).filter(Boolean);
+}
+
+function containsWord(text: string, term: string): boolean {
+  const escaped = term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return new RegExp(`\\b${escaped}\\b`, 'i').test(text);
+}
+
+/**
+ * True when this text gives nothing away about who the expert is.
+ *
+ * Rejects, in order:
+ *   1. an email address, a link or a phone number (lib/matchyScreen's own
+ *      context-free sweep — reused rather than re-implemented)
+ *   2. the expert's full name, or their surname alone: the client is shown
+ *      "Scott S.", so the family name is the identifying half
+ *   3. a distinctive word from the employer's name, longer than three
+ *      characters
+ *
+ * ONE EXCEPTION on (3), and it is deliberate: a company word that also appears
+ * in the expert's own category or value-chain label is allowed through, because
+ * the deterministic fallback we would swap in is BUILT from those two fields.
+ * Rejecting "veterinary" for an expert at "Bayview Veterinary Partners" and
+ * then showing them "Executive · Operator · Veterinary services" instead would
+ * be incoherent, and it would throw away every good descriptor whose employer
+ * happens to be named after its industry. "Bayview" is still rejected.
+ *
+ * Pure. Unit-checked by scripts/check-redaction.ts.
+ */
+export function descriptorIsAnonymous(text: string, expert: IdentitySource): boolean {
+  const value = (text ?? '').trim();
+  if (!value) return true;                                  // nothing to give away
+  if (maskContactDetails(value) !== value) return false;     // email, link or phone
+
+  const nameParts = (expert.name ?? '').trim().split(/\s+/).filter(Boolean);
+  if (nameParts.length >= 2) {
+    const surname = nameParts[nameParts.length - 1];
+    if (containsWord(value, nameParts.join(' '))) return false;
+    if (surname.length >= 3 && containsWord(value, surname)) return false;
+  } else if (nameParts.length === 1 && nameParts[0].length >= 3) {
+    if (containsWord(value, nameParts[0])) return false;
+  }
+
+  const safeVocabulary = new Set([
+    ...wordsOf(expert.category),
+    ...wordsOf(expert.valueChainLabel),
+  ]);
+  for (const word of wordsOf(expert.company)) {
+    if (word.length <= 3) continue;
+    if (GENERIC_COMPANY_WORDS.has(word) || safeVocabulary.has(word)) continue;
+    if (containsWord(value, word)) return false;
+  }
+
+  return true;
 }
 
 // ─── LLM generation ───────────────────────────────────────────────────────────
@@ -128,9 +219,15 @@ function parseFields(text: string, expert: Expert): AnonymizedFields {
     ? parsed.anonymizedJustification.trim().slice(0, MAX_JUSTIFICATION_LEN)
     : '';
 
+  // The model was told the rules; this is where we check it followed them
+  // (audit H-18). A descriptor that names the person or the employer is
+  // dropped for the deterministic one; a justification that does is dropped
+  // entirely, which is already what a failed generation returns.
   return {
-    anonymizedDescriptor:    descriptor || fallbackDescriptor(expert),
-    anonymizedJustification: justification,
+    anonymizedDescriptor: descriptor && descriptorIsAnonymous(descriptor, expert)
+      ? descriptor
+      : fallbackDescriptor(expert),
+    anonymizedJustification: descriptorIsAnonymous(justification, expert) ? justification : '',
   };
 }
 

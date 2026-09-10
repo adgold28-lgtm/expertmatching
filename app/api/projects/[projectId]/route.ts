@@ -16,16 +16,20 @@
 // non-admin never receives contact paths, expertRate, tokens or an unrevealed
 // expert's real name (lib/redactExpert.ts).
 //
-// THREE SEPARATE GATES SIT ON THE PUT and are easy to confuse:
+// FOUR SEPARATE GATES SIT ON THE PUT and are easy to confuse:
 //   - the owner check       — who may write at all
 //   - entitlements          — whether this org may leave walkthrough (a card on
 //                             file; lib/entitlements.ts)
-//   - the brief version     — whether the brief moved under the writer (409)
+//   - the brief version     — whether the brief moved under the writer since
+//                             the page loaded (409 brief_conflict)
+//   - the store's compare-and-set — whether the row moved between this
+//                             request's own load and its save (the same 409;
+//                             lib/projectStore.updateProject, audit H-17)
 //
 // Never logs: project names, research questions, confidential notes, expert data.
 
 import { NextRequest } from 'next/server';
-import { getProject, getProjectForUser, updateProject, deleteProject } from '../../../../lib/projectStore';
+import { getProject, getProjectForUser, updateProject, deleteProject, PROJECT_UPDATE_CONFLICT } from '../../../../lib/projectStore';
 import { guardReadRequest, guardMutatingRequest } from '../../../../lib/projectsGuard';
 import { sanitizeText, LIMITS, VALID_PERSPECTIVES } from '../../../../lib/projectValidation';
 import { getSessionUser } from '../../../../lib/auth';
@@ -36,10 +40,11 @@ import { trackProductEvent } from '../../../../lib/productEvents';
 import { getAuthUserIdByEmail } from '../../../../lib/supabase/admin';
 
 /**
- * Brief fields a PUT may change. Everything here is merged into the brief
- * document (lib/projectStore.updateProject rewrites the whole jsonb), which is
- * why saving carries a version: two people editing the same brief must not
- * silently overwrite each other (see `briefVersion` below).
+ * Brief fields a PUT may change. Everything here is merged into the stored
+ * brief document key by key (lib/projectStore.updateProject), and saving also
+ * carries a version, because merging keeps a colleague's OTHER keys but says
+ * nothing about the one you are both editing: two people on the same field
+ * must not silently overwrite each other (see `briefVersion` below).
  */
 const BRIEF_FIELDS = new Set([
   'name', 'clientEmail', 'clientName', 'notes', 'confidentialNotes', 'timeline',
@@ -269,19 +274,18 @@ export async function PUT(
     }
     const briefVersionPatch = touchesBrief ? { briefUpdatedAt: Date.now() } : {};
 
-    // READ-MODIFY-WRITE OF THE WHOLE PROJECT. `project` here is the RAW row we
-    // loaded above (never the redacted copy — redaction happens only on the way
-    // out), and projectStore.updateProject rewrites the entire `brief` jsonb
-    // from this object. So every key the spread does not overwrite is written
-    // back verbatim, and any brief key another writer changed between the load
-    // and this line is lost. `briefVersion` only guards the fields in
-    // BRIEF_FIELDS; unpromoted keys written by background work (sourcingStatus,
-    // sourcingAdjacent, walkthrough) are not versioned and can be clobbered by a
-    // concurrent save. Each `...(typeof body.x === 'string' && {...})` below is
-    // therefore both the sanitizer AND the allow-list: a key with no clause here
-    // cannot be written through this route at all.
-    const updated = await updateProject({
-      ...project,
+    // A MERGE PATCH, NOT THE WHOLE PROJECT. Everything below is only the keys
+    // this request actually writes; projectStore.updateProject merges them into
+    // the brief as it is stored at write time and refuses the write if the row
+    // moved since the load above (audit H-17). So a brief save no longer puts
+    // back stale copies of the keys background work owns — sourcingStatus,
+    // sourcingAdjacent, walkthrough — and a genuine race answers 409 instead of
+    // silently winning. Each `...(typeof body.x === 'string' && {...})` clause
+    // is both the sanitizer AND the allow-list: a key with no clause here
+    // cannot be written through this route at all. A clause that yields
+    // `undefined` (an emptied optional field) still CLEARS that key, exactly as
+    // the whole-document rewrite did.
+    const updated = await updateProject(params.projectId, {
       ...matchySettings.patch,
       ...briefVersionPatch,
       ...(typeof body.name  === 'string' && { name:  sanitizeText(body.name,  LIMITS.projectName) || project.name }),
@@ -339,7 +343,25 @@ export async function PUT(
       ...(typeof body.expertType === 'string' && {
         expertType: sanitizeText(body.expertType, LIMITS.functionField) || undefined,
       }),
+    }, project.updatedAt).catch((err: unknown) => {
+      // Lost the compare-and-set: someone else wrote the project between our
+      // load and our save. Same 409 the briefVersion check answers, so the
+      // workspace shows their version instead of overwriting it.
+      if (err instanceof Error && err.message === PROJECT_UPDATE_CONFLICT) return null;
+      throw err;
     });
+
+    if (!updated) {
+      const latest = (await getProjectForUser(params.projectId, email, role)) ?? project;
+      return Response.json(
+        {
+          error:   'brief_conflict',
+          message: 'This project changed while you were saving. Review the latest version before saving again.',
+          project: redactProjectForViewer(latest, { role }),
+        },
+        { status: 409 },
+      );
+    }
 
     if (touchesBrief) {
       void trackProductEvent({

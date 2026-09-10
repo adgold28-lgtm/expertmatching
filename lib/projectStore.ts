@@ -129,7 +129,7 @@ export interface UpdateExpertInput {
   stripePaymentLinkId?:  string | null;
   stripePaymentLinkUrl?: string | null;
   stripePaymentIntentId?: string | null;
-  paymentStatus?:        'unpaid' | 'invoice_sent' | 'paid' | 'failed' | null;
+  paymentStatus?:        'unpaid' | 'invoice_sent' | 'paid' | 'failed' | 'refunded' | null;
   paidAt?:               number | null;
   // Identifies which call the current payment fields refer to — see
   // lib/createAndSendInvoice.ts and types.ts ProjectExpert.
@@ -147,7 +147,7 @@ export interface UpdateExpertInput {
   // Email sequence fields
   outreachToken?:        string;
   outreachStep?:         'email1' | 'email2' | 'email3';
-  email1SentAt?:         number;
+  email1SentAt?:         number | null;
   email2SentAt?:         number;
   email3SentAt?:         number;
   replyDetectedAt?:      number;
@@ -165,6 +165,10 @@ export interface UpdateExpertInput {
   stripeTransferId?:        string;
   expertPaidAt?:            number;
   expertOnboardingStatus?:  'pending' | 'complete' | 'failed';
+  paidCallIds?:          string[];
+  payoutReminderSentAt?: number;
+  payoutReminderCount?:  number;
+  payoutAttempts?:       number;
   // The one key that writes INSIDE the nested Expert rather than onto the
   // ProjectExpert. Deliberately narrow: only derived presentation fields, never
   // the raw identity data (name/title/company/sources), which is immutable
@@ -231,6 +235,29 @@ export interface UpdateProjectInput {
   sourcingLimitedPool?: boolean | null;
 }
 
+/**
+ * A MERGE PATCH for one project: only the keys the caller means to write.
+ *
+ * A key that is ABSENT is left exactly as stored — that is the whole point,
+ * because the `brief` jsonb is one document and two writers touching different
+ * keys must not overwrite each other (audit H-17). A key present with the value
+ * `undefined` DELETES it from the brief: the PUT route clears an optional brief
+ * field by sanitising it to `undefined`, and that behaviour is preserved.
+ *
+ * `id`, `createdAt` and `updatedAt` are not patchable. `experts`,
+ * `collaborators` and `firmDomain` are accepted by the type (the dev store
+ * writes them) but ignored by the Supabase store, which keeps them in their own
+ * tables and has dedicated methods for each.
+ */
+export type UpdateProjectPatch = Partial<Omit<Project, 'id' | 'createdAt' | 'updatedAt'>>;
+
+/**
+ * Thrown by `updateProject` when the project row moved between the caller's
+ * read and this write. The PUT route turns it into the same
+ * `409 brief_conflict` the workspace already handles.
+ */
+export const PROJECT_UPDATE_CONFLICT = 'project_update_conflict';
+
 // ─── Utilities ────────────────────────────────────────────────────────────────
 
 const ID_RE = /^[a-f0-9]{24}$/;
@@ -284,11 +311,25 @@ interface ProjectStore {
   getProjectForUser(id: string, email: string, role: 'admin' | 'user'): Promise<Project | null>;
   listProjects(): Promise<ProjectSummary[]>;
   listProjectsForUser(email: string, role: 'admin' | 'user'): Promise<ProjectSummary[]>;
-  updateProject(project: Project): Promise<Project>;
+  updateProject(id: string, patch: UpdateProjectPatch, expectedUpdatedAt?: number): Promise<Project>;
   deleteProject(id: string): Promise<{ success: boolean }>;
   addExpertsToProject(id: string, experts: Array<{ expert: Expert; status?: ExpertStatus }>): Promise<Project>;
   updateExpertStatus(id: string, expertId: string, input: UpdateExpertInput): Promise<Project>;
   updateProjectFields(id: string, input: UpdateProjectInput): Promise<Project>;
+
+  /**
+   * Claim a sourcing run: set `sourcingStatus: 'running'` and stamp `runId` as
+   * `sourcingStartedAt`, but ONLY while the row still carries
+   * `expectedStartedAt`. Returns false when it does not — another request
+   * claimed the run between the caller's read and this write.
+   *
+   * This is the ONE conditional transition in this store. `updateProjectFields`
+   * is a read-modify-write on the `brief` document and cannot express a
+   * precondition; a compare-and-set on the run stamp can, because the stamp is
+   * unique per run by construction (see the sourcing start route).
+   */
+  startSourcingRun(id: string, expectedStartedAt: number | null, runId: number): Promise<boolean>;
+
   addExpertNote(id: string, expertId: string, note: string): Promise<Project>;
   removeExpertFromProject(id: string, expertId: string): Promise<Project>;
   addCollaborator(id: string, ownerEmail: string, collaboratorEmail: string): Promise<Project>;
@@ -347,9 +388,16 @@ class InMemoryProjectStore implements ProjectStore {
       .sort((a, b) => b.updatedAt - a.updatedAt);
   }
 
-  async updateProject(project: Project): Promise<Project> {
-    const updated = { ...project, updatedAt: Date.now() };
-    this.data.set(project.id, updated);
+  // Same contract as the Supabase store: merge the patch into what is stored,
+  // refuse the write if the project moved since `expectedUpdatedAt`.
+  async updateProject(id: string, patch: UpdateProjectPatch, expectedUpdatedAt?: number): Promise<Project> {
+    const current = this.data.get(id);
+    if (!current) throw new Error(`Project not found: ${id}`);
+    if (expectedUpdatedAt !== undefined && current.updatedAt !== expectedUpdatedAt) {
+      throw new Error(PROJECT_UPDATE_CONFLICT);
+    }
+    const updated = { ...current, ...patch, id, updatedAt: Date.now() };
+    this.data.set(id, updated);
     return updated;
   }
 
@@ -358,7 +406,7 @@ class InMemoryProjectStore implements ProjectStore {
     if (!project) throw new Error(`Project not found: ${id}`);
     const existingIds = new Set(project.experts.map(pe => pe.expert.id));
     const newEntries  = makeProjectExperts(experts.filter(({ expert: e }) => !existingIds.has(e.id)));
-    return this.updateProject({ ...project, experts: [...project.experts, ...newEntries] });
+    return this.updateProject(project.id, { experts: [...project.experts, ...newEntries] });
   }
 
   async updateExpertStatus(id: string, expertId: string, input: UpdateExpertInput): Promise<Project> {
@@ -367,13 +415,32 @@ class InMemoryProjectStore implements ProjectStore {
     const experts = project.experts.map(pe =>
       pe.expert.id !== expertId ? pe : applyExpertInput(pe, input),
     );
-    return this.updateProject({ ...project, experts });
+    return this.updateProject(project.id, { experts });
   }
 
   async updateProjectFields(id: string, input: UpdateProjectInput): Promise<Project> {
     const project = await this.getProject(id);
     if (!project) throw new Error(`Project not found: ${id}`);
-    return this.updateProject({ ...project, ...input });
+    return this.updateProject(project.id, input);
+  }
+
+  // In-process Map, so the read-check below is already atomic with the write
+  // — there is no other request that can land between them the way there can
+  // against Postgres. Same contract as the Supabase store otherwise.
+  async startSourcingRun(
+    id: string,
+    expectedStartedAt: number | null,
+    runId: number,
+  ): Promise<boolean> {
+    const current = this.data.get(id);
+    if (!current) throw new Error(`Project not found: ${id}`);
+    if ((current.sourcingStartedAt ?? null) !== expectedStartedAt) return false;
+    await this.updateProjectFields(id, {
+      sourcingStatus:    'running',
+      sourcingStartedAt: runId,
+      sourcingError:     null,
+    });
+    return true;
   }
 
   async addExpertNote(id: string, expertId: string, note: string): Promise<Project> {
@@ -385,13 +452,13 @@ class InMemoryProjectStore implements ProjectStore {
       const userNotes = existing ? `${existing}\n\n${note.trim()}` : note.trim();
       return { ...pe, userNotes, updatedAt: Date.now() };
     });
-    return this.updateProject({ ...project, experts });
+    return this.updateProject(project.id, { experts });
   }
 
   async removeExpertFromProject(id: string, expertId: string): Promise<Project> {
     const project = await this.getProject(id);
     if (!project) throw new Error(`Project not found: ${id}`);
-    return this.updateProject({ ...project, experts: project.experts.filter(pe => pe.expert.id !== expertId) });
+    return this.updateProject(project.id, { experts: project.experts.filter(pe => pe.expert.id !== expertId) });
   }
 
   async deleteProject(id: string): Promise<{ success: boolean }> {
@@ -414,14 +481,14 @@ class InMemoryProjectStore implements ProjectStore {
       throw new CollaboratorNotInOrganizationError();
     }
 
-    return this.updateProject({ ...project, collaborators: [...project.collaborators, collaboratorEmail] });
+    return this.updateProject(project.id, { collaborators: [...project.collaborators, collaboratorEmail] });
   }
 
   async removeCollaborator(id: string, ownerEmail: string, collaboratorEmail: string): Promise<Project> {
     const project = await this.getProject(id);
     if (!project) throw new Error(`Project not found: ${id}`);
     if (project.ownerEmail !== ownerEmail) throw new Error('Only the project owner can remove collaborators');
-    return this.updateProject({ ...project, collaborators: project.collaborators.filter(e => e !== collaboratorEmail) });
+    return this.updateProject(project.id, { collaborators: project.collaborators.filter(e => e !== collaboratorEmail) });
   }
 }
 
@@ -488,12 +555,48 @@ function toMs(iso: string): number {
   return Number.isFinite(t) ? t : 0;
 }
 
-function projectToBrief(project: Project): Record<string, unknown> {
-  const brief: Record<string, unknown> = {};
-  for (const [k, v] of Object.entries(project)) {
-    if (!PROMOTED_PROJECT_KEYS.has(k) && v !== undefined) brief[k] = v;
+/**
+ * Merges an UpdateProjectPatch into the brief document as it is STORED RIGHT
+ * NOW — never rebuilt from a Project the caller loaded earlier (audit H-17).
+ * Keys the patch does not mention survive untouched, so a sourcing job writing
+ * `sourcingStatus` while a human saves the brief loses nothing.
+ *
+ * Two conventions, both load-bearing:
+ *   - a promoted key is skipped (it has its own column; one home per value)
+ *   - a key present with `undefined` is DELETED from the brief, which is how
+ *     the PUT route clears an optional field ("" → sanitised → undefined)
+ *
+ * Pure. Unit-checked by scripts/test-project-update.ts.
+ */
+export function mergeProjectBrief(
+  storedBrief: Record<string, unknown>,
+  patch: UpdateProjectPatch,
+): Record<string, unknown> {
+  const brief = { ...storedBrief };
+  for (const [k, v] of Object.entries(patch)) {
+    if (PROMOTED_PROJECT_KEYS.has(k)) continue;
+    if (v === undefined) delete brief[k];
+    else brief[k] = v;
   }
   return brief;
+}
+
+/**
+ * True when the stored row has moved since the caller read it — the optimistic
+ * concurrency check for `updateProject`. `expectedUpdatedAt` is the ms value
+ * the caller loaded (Project.updatedAt); omitting it means "write regardless",
+ * which only server-internal callers with nothing to lose should do.
+ *
+ * Compared in MILLISECONDS, not against the raw timestamptz string: `updatedAt`
+ * has already been through toMs() on the way out, and Postgres stores
+ * microseconds, so the string cannot be reconstructed from it. The write itself
+ * still pins the raw string it just read (see updateProject).
+ *
+ * Pure. Unit-checked by scripts/test-project-update.ts.
+ */
+export function projectRowMoved(rowUpdatedAt: string, expectedUpdatedAt?: number): boolean {
+  if (expectedUpdatedAt === undefined) return false;
+  return toMs(rowUpdatedAt) !== expectedUpdatedAt;
 }
 
 function expertToRow(projectId: string, pe: ProjectExpert): Database['public']['Tables']['project_experts']['Insert'] {
@@ -762,31 +865,45 @@ class SupabaseProjectStore implements ProjectStore {
   // Updates project-level fields only (name, research question, brief).
   // Experts and collaborators are managed by their dedicated methods.
   //
-  // LAST WRITE WINS, WHOLE DOCUMENT. `brief` is rebuilt from the caller's
-  // in-memory Project and overwrites the stored jsonb outright — there is no
-  // `updated_at` guard like mutateExpert's. A caller that loaded the project,
-  // did some work, and calls this puts back every brief key as it was at load
-  // time, so a concurrent write to an unrelated brief key (sourcingStatus from
-  // the sourcing job, walkthrough from the settings strip) is lost. The PUT
-  // route's `briefVersion` check narrows the window for the fields a human
-  // edits; nothing protects the rest. Prefer updateProjectFields, which merges
-  // only the keys it was given.
-  async updateProject(project: Project): Promise<Project> {
-    const { data: row, error } = await this.db
+  // MERGE, WITH COMPARE-AND-SET (audit H-17). Two rules make a concurrent write
+  // survive:
+  //   1. the brief is merged into the row's CURRENT document, read here, one
+  //      key at a time — never rebuilt from a Project the caller loaded before
+  //      doing its work, which is how a sourcing job's `sourcingStatus` or the
+  //      settings strip's `walkthrough` used to be silently reverted;
+  //   2. the UPDATE only applies while `updated_at` still holds the value this
+  //      method just read, the same optimistic concurrency mutateExpert uses.
+  //      `expectedUpdatedAt` (the caller's Project.updatedAt) is checked first,
+  //      so a row that moved between the caller's read and ours is refused too.
+  // Either failure throws PROJECT_UPDATE_CONFLICT; the PUT route turns that
+  // into the 409 `brief_conflict` the workspace already knows how to show. Only
+  // a promoted key the patch actually mentions is written to its column.
+  async updateProject(id: string, patch: UpdateProjectPatch, expectedUpdatedAt?: number): Promise<Project> {
+    const current = await this.getRow(id);
+    if (!current) throw new Error(`Project not found: ${id}`);
+    if (projectRowMoved(current.updated_at, expectedUpdatedAt)) {
+      throw new Error(PROJECT_UPDATE_CONFLICT);
+    }
+
+    const brief = mergeProjectBrief((current.brief as Record<string, unknown>) ?? {}, patch);
+    const columns: Database['public']['Tables']['projects']['Update'] = {
+      brief: brief as Database['public']['Tables']['projects']['Update']['brief'],
+      ...(patch.name             !== undefined ? { name:              patch.name }                    : {}),
+      ...(patch.researchQuestion !== undefined ? { research_question: patch.researchQuestion }        : {}),
+      ...(patch.reviewFirst      !== undefined ? { review_first:      patch.reviewFirst ?? false }    : {}),
+      ...(patch.clientRateMin    !== undefined ? { client_rate_min:   patch.clientRateMin ?? null }   : {}),
+      ...(patch.clientRateMax    !== undefined ? { client_rate_max:   patch.clientRateMax ?? null }   : {}),
+    };
+
+    const { data: rows, error } = await this.db
       .from('projects')
-      .update({
-        name:              project.name,
-        research_question: project.researchQuestion,
-        review_first:      project.reviewFirst ?? false,
-        client_rate_min:   project.clientRateMin ?? null,
-        client_rate_max:   project.clientRateMax ?? null,
-        brief:             projectToBrief(project) as Database['public']['Tables']['projects']['Update']['brief'],
-      })
-      .eq('id', project.id)
-      .select()
-      .single();
-    if (error || !row) throw new Error(`Project not found: ${project.id}`);
-    return this.assemble(row);
+      .update(columns)
+      .eq('id', id)
+      .eq('updated_at', current.updated_at)
+      .select();
+    if (error) throw new Error(`Failed to update project: ${id}`);
+    if (!rows || rows.length === 0) throw new Error(PROJECT_UPDATE_CONFLICT);
+    return this.assemble(rows[0]);
   }
 
   async deleteProject(id: string): Promise<{ success: boolean }> {
@@ -899,6 +1016,45 @@ class SupabaseProjectStore implements ProjectStore {
       .single();
     if (error || !updated) throw new Error(`Project not found: ${id}`);
     return this.assemble(updated);
+  }
+
+  // Compare-and-set on the run stamp (H-11 / W2-F open question 2). We read
+  // `brief.sourcingStartedAt` and decide `seen !== expectedStartedAt` in code
+  // — that treats an ABSENT key the same as `null` unambiguously, in either
+  // branch — rather than pushing the same comparison into a PostgREST filter
+  // on the jsonb path (`brief->sourcingStartedAt`). Whether `.is(...,null)`
+  // matches an absent key the same as an explicit JSON null there is not
+  // something to trust untested against a real row. Instead the write itself
+  // is guarded by `updated_at` still matching what we just read, the exact
+  // optimistic-concurrency pattern `updateProject`/`mutateExpert` already use:
+  // any writer that changes the row between our read and this update —
+  // including a concurrent startSourcingRun claim — bumps `updated_at` (row
+  // trigger) and this UPDATE then matches zero rows, so we return false
+  // rather than clobbering it.
+  async startSourcingRun(
+    id: string,
+    expectedStartedAt: number | null,
+    runId: number,
+  ): Promise<boolean> {
+    const row = await this.getRow(id);
+    if (!row) throw new Error(`Project not found: ${id}`);
+
+    const brief = { ...(row.brief as Record<string, unknown> ?? {}) };
+    const seen  = typeof brief.sourcingStartedAt === 'number' ? brief.sourcingStartedAt : null;
+    if (seen !== expectedStartedAt) return false;
+
+    brief.sourcingStatus    = 'running';
+    brief.sourcingStartedAt = runId;
+    brief.sourcingError     = null;
+
+    const { data, error } = await this.db
+      .from('projects')
+      .update({ brief: brief as Database['public']['Tables']['projects']['Update']['brief'] })
+      .eq('id', id)
+      .eq('updated_at', row.updated_at)
+      .select('id');
+    if (error) throw new Error(`startSourcingRun failed: ${id}`);
+    return (data?.length ?? 0) > 0;
   }
 
   async addExpertNote(id: string, expertId: string, note: string): Promise<Project> {
@@ -1029,8 +1185,18 @@ export function listProjectsForUser(email: string, role: 'admin' | 'user'): Prom
   return getProjectStore().listProjectsForUser(email, role);
 }
 
-export function updateProject(project: Project): Promise<Project> {
-  return getProjectStore().updateProject(project);
+/**
+ * Writes only the keys in `patch`, and only while the project still looks the
+ * way the caller last saw it. Pass `expectedUpdatedAt` (the Project.updatedAt
+ * you loaded) to get the compare-and-set; on a lost race this rejects with
+ * `Error(PROJECT_UPDATE_CONFLICT)` rather than overwriting the other writer.
+ */
+export function updateProject(
+  id: string,
+  patch: UpdateProjectPatch,
+  expectedUpdatedAt?: number,
+): Promise<Project> {
+  return getProjectStore().updateProject(id, patch, expectedUpdatedAt);
 }
 
 export function deleteProject(id: string): Promise<{ success: boolean }> {
@@ -1072,6 +1238,14 @@ export function rateFieldsFor(expertRate: number): { expertRate: number; clientR
 
 export function updateProjectFields(id: string, input: UpdateProjectInput): Promise<Project> {
   return getProjectStore().updateProjectFields(id, input);
+}
+
+export function startSourcingRun(
+  id: string,
+  expectedStartedAt: number | null,
+  runId: number,
+): Promise<boolean> {
+  return getProjectStore().startSourcingRun(id, expectedStartedAt, runId);
 }
 
 export function addExpertNote(id: string, expertId: string, note: string): Promise<Project> {

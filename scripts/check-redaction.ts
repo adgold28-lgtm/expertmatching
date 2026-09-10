@@ -18,10 +18,15 @@
  *                       stripping the two never mutates the stored record
  *   rubric intro      → whyThem / introDomain / introArm never reach a
  *                       non-admin at any status; introNeedsWhyThem does
+ *   descriptor content → an LLM-written anonymizedDescriptor that names the
+ *                       expert or their employer is refused and replaced by the
+ *                       deterministic one, both where it is generated and again
+ *                       at render time (audit H-18)
  */
 
 import type { Expert, ProjectExpert, ExpertStatus, SchedulingState, BookingState } from '../types';
 import { redactExpertForViewer, redactProjectForViewer, isIdentityRevealed } from '../lib/redactExpert';
+import { descriptorIsAnonymous, fallbackDescriptor } from '../lib/anonymizeExpert';
 import { toInitialForm } from '../lib/nameValidation';
 
 // ─── Assertions ───────────────────────────────────────────────────────────────
@@ -94,6 +99,8 @@ function projectExpertAt(status: ExpertStatus): ProjectExpert {
     clientRate:              1300,
     screeningNotes:          'Strong on ops, weak on M&A pricing.',
     rejectionNotes:          'n/a',
+    rateExpectation:         'Wants $600/hr, will do $550 for 30 minutes.',
+    availability:            'Tuesdays after 4pm; ask for Scott at the Bayview clinic.',
     outreachToken:           'tok_secret',
     calendarAccessToken:     'enc_access',
     zoomJoinUrl:             'https://zoom.us/j/123',
@@ -199,6 +206,10 @@ check('emailVerificationStatus absent', contacted.emailVerificationStatus === un
 check('emailProvider absent',           contacted.emailProvider           === undefined);
 check('contactStatus absent',           contacted.contactStatus           === undefined);
 check('screeningNotes absent',          contacted.screeningNotes          === undefined);
+check('rateExpectation absent — the expert-side number in prose is still the expert-side number',
+      contacted.rateExpectation === undefined);
+check('availability absent — free text the staffer typed can carry the expert own words',
+      contacted.availability === undefined);
 check('rejectionNotes absent',          contacted.rejectionNotes          === undefined);
 check('outreachToken absent',           contacted.outreachToken           === undefined);
 check('calendarAccessToken absent',     contacted.calendarAccessToken     === undefined);
@@ -338,6 +349,8 @@ for (const status of ['contacted', 'scheduled', 'rejected'] as const) {
   check(`${status}: contactEmail intact`,   asAdmin.contactEmail === 'scott@bayviewvet.example');
   check(`${status}: expertRate intact`,     asAdmin.expertRate === 650);
   check(`${status}: contactCandidates intact`, asAdmin.contactCandidates?.length === 1);
+  check(`${status}: rateExpectation intact`,   asAdmin.rateExpectation?.startsWith('Wants') === true);
+  check(`${status}: availability intact`,      asAdmin.availability?.startsWith('Tuesdays') === true);
   check(`${status}: whyThem intact`,        asAdmin.whyThem?.startsWith('You scaled Bayview') === true);
   check(`${status}: introArm intact`,       asAdmin.introArm === 1);
 }
@@ -395,6 +408,97 @@ check('scheduled expert revealed',         redactedProject.experts[1].expert.nam
 check('researchQuestion kept',             redactedProject.researchQuestion === project.researchQuestion);
 
 check('admin project untouched', redactProjectForViewer(project, { role: 'admin' }) === project);
+
+// ─── Descriptor anonymity (audit H-18) ────────────────────────────────────────
+//
+// The prompt tells the model not to name the person or the employer; nothing
+// used to check that it obeyed. descriptorIsAnonymous is that check, and
+// redactExpertForViewer runs it again at render time because text written
+// before the check existed is already stored.
+
+console.log('\ndescriptorIsAnonymous — what a descriptor may and may not say');
+
+const anon = (text: string) => descriptorIsAnonymous(text, SAMPLE_EXPERT);
+
+check('a clean descriptor passes',
+      anon('Former President & CEO, regional veterinary clinic group — 40+ locations, ~$200M revenue'));
+check('the deterministic fallback passes its own check',
+      anon(fallbackDescriptor(SAMPLE_EXPERT)));
+check('a generic org form passes',
+      anon('Former CEO of a mid-market partners group in national specialty retail'));
+check('empty text has nothing to give away', anon(''));
+
+check('the employer name is refused',
+      !anon('Former President & CEO of Bayview Veterinary Partners'));
+check('the distinctive employer word alone is refused',
+      !anon('Former President & CEO, Bayview — 40+ clinics'));
+check('the employer word is matched case-insensitively',
+      !anon('former president of BAYVIEW, a clinic rollup'));
+check('the full name is refused',      !anon('Scott Smithers, former President & CEO'));
+check('the surname alone is refused',  !anon('Former CEO; the Smithers era rollup'));
+check('an email address is refused',   !anon('Former CEO — scott@bayviewvet.example'));
+check('a link is refused',             !anon('Former CEO. See https://bayviewvet.example/team'));
+// A bare host with a real TLD counts as a link; `.example` is reserved and is
+// not in lib/matchyScreen's TLD list, which is why the fixture uses `.com`.
+check('a bare host is refused',        !anon('Former CEO at bayviewvet.com'));
+
+check('an industry word the expert own value chain label already uses is allowed',
+      anon('Former CEO, regional veterinary clinic group'));
+check('a first name on its own is not an identity — the client is shown "Scott S."',
+      anon('Former CEO known internally as the Scott of multi-site vet care'));
+check('a one-word name is still matched',
+      !descriptorIsAnonymous('Former CEO, known as Prince', { name: 'Prince' }));
+check('an expert with no company or name cannot fail on either',
+      descriptorIsAnonymous('Executive · Operator', {}));
+
+console.log('\nrole \'user\' — a leaky stored descriptor never renders');
+
+const LEAKY_DESCRIPTOR = 'Former President & CEO of Bayview Veterinary Partners, 40+ clinics';
+const leaky = redactExpertForViewer({
+  ...projectExpertAt('contacted'),
+  expert: {
+    ...SAMPLE_EXPERT,
+    anonymizedDescriptor:    LEAKY_DESCRIPTOR,
+    anonymizedJustification: 'Smithers ran the rollup from 6 to 41 clinics.',
+  },
+}, { role: 'user' });
+
+check('the leaky descriptor is not rendered',
+      leaky.expert.anonymizedDescriptor !== LEAKY_DESCRIPTOR);
+check('the deterministic descriptor is rendered instead',
+      leaky.expert.anonymizedDescriptor === fallbackDescriptor(SAMPLE_EXPERT));
+check('the descriptor names no employer',   !leaky.expert.anonymizedDescriptor?.includes('Bayview'));
+check('a leaky justification is dropped',   leaky.expert.anonymizedJustification === undefined);
+check('and the visible justification is empty rather than identifying',
+      leaky.expert.justification === '');
+
+const CLEAN_DESCRIPTOR = 'Former President & CEO, regional veterinary clinic group — 40+ locations';
+const clean = redactExpertForViewer({
+  ...projectExpertAt('contacted'),
+  expert: {
+    ...SAMPLE_EXPERT,
+    anonymizedDescriptor:    CLEAN_DESCRIPTOR,
+    anonymizedJustification: 'Scaled a regional clinic group from 6 to 41 sites.',
+  },
+}, { role: 'user' });
+
+check('a clean stored descriptor is rendered verbatim',
+      clean.expert.anonymizedDescriptor === CLEAN_DESCRIPTOR);
+check('a clean justification survives',
+      clean.expert.anonymizedJustification === 'Scaled a regional clinic group from 6 to 41 sites.');
+
+check('an admin still sees the raw descriptor, leak and all',
+      redactExpertForViewer({
+        ...projectExpertAt('contacted'),
+        expert: { ...SAMPLE_EXPERT, anonymizedDescriptor: LEAKY_DESCRIPTOR },
+      }, { role: 'admin' }).expert.anonymizedDescriptor === LEAKY_DESCRIPTOR);
+
+check('adjacent sourcing candidates get the same re-check',
+      redactProjectForViewer({
+        ...project,
+        sourcingAdjacent: [{ ...SAMPLE_EXPERT, anonymizedDescriptor: LEAKY_DESCRIPTOR }],
+      }, { role: 'user' }).sourcingAdjacent?.[0].anonymizedDescriptor
+        === fallbackDescriptor(SAMPLE_EXPERT));
 
 // ─── Result ───────────────────────────────────────────────────────────────────
 

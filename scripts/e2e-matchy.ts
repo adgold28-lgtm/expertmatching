@@ -244,6 +244,30 @@ async function main(): Promise<void> {
     const collabNote = await req(collab, 'PUT', `/api/projects/${projectId}/experts/${expertId}`, { note: 'Reader note.' });
     check('collaborator PUT note → 200', collabNote.status === 200, `status ${collabNote.status}`);
 
+    // C-1: owning the project does not buy the right to set your own price.
+    // The owner is refused the money fields with the same status a collaborator
+    // gets, and the body names the field so the UI can say which one.
+    const ownerRate     = await req(owner, 'PUT', `/api/projects/${projectId}/experts/${expertId}`, { expertRate: 1 });
+    const ownerRateBody = await json(ownerRate);
+    check('owner PUT expertRate → 403 read_only',
+      ownerRate.status === 403 && ownerRateBody?.error === 'read_only' && ownerRateBody?.field === 'expertRate',
+      `status ${ownerRate.status} ${JSON.stringify(ownerRateBody)}`);
+
+    // H-1: and cannot point Matchy's intro at an address they control.
+    const ownerContact = await req(owner, 'PUT', `/api/projects/${projectId}/experts/${expertId}`, { contactEmail: 'attacker@example.com' });
+    check('owner PUT contactEmail → 403 read_only', ownerContact.status === 403, `status ${ownerContact.status}`);
+
+    // H-17: two PUTs from the same loaded version — the second must not
+    // silently win. Both name a BRIEF_FIELDS key (`notes`) with the same
+    // `briefVersion`, so the second is a stale save.
+    const beforeConflict = await json(await req(owner, 'GET', `/api/projects/${projectId}`));
+    const v = beforeConflict?.project?.briefUpdatedAt ?? 0;
+    await req(owner, 'PUT', `/api/projects/${projectId}`, { notes: 'first', briefVersion: v });
+    const stale = await req(owner, 'PUT', `/api/projects/${projectId}`, { notes: 'second', briefVersion: v });
+    const staleBody = await json(stale);
+    check('stale brief save is refused', stale.status === 409 && staleBody?.error === 'brief_conflict', `status ${stale.status} ${JSON.stringify(staleBody)?.slice(0, 160)}`);
+    check('the refusal carries the current project', typeof staleBody?.project?.id === 'string');
+
     const collabSource = await req(collab, 'POST', `/api/projects/${projectId}/source-experts`, {});
     check('collaborator POST source-experts → 403', collabSource.status === 403, `status ${collabSource.status}`);
 

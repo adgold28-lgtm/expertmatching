@@ -22,7 +22,7 @@ import type {
 } from '../types';
 import { EXPERT_STATUSES } from './expertPipeline';
 import { toInitialForm } from './nameValidation';
-import { fallbackDescriptor } from './anonymizeExpert';
+import { fallbackDescriptor, descriptorIsAnonymous } from './anonymizeExpert';
 import { classifySeniority, TIER_PRICING } from './seniorityClassifier';
 
 export interface Viewer {
@@ -117,6 +117,12 @@ const INTERNAL_PROJECT_EXPERT_KEYS: readonly (keyof ProjectExpert)[] = [
   'screeningNotes',
   'outreachSubject',
   'outreachDraft',
+  // Legacy pre-Matchy screening free text, in the client's hands until the
+  // 2026-09-08 audit (M-13). `rateExpectation` is the expert-side number in
+  // prose ("wants $600/hr"), which defeats the `expertRate` rule above; the
+  // free-text `availability` can carry the expert's own words verbatim.
+  'rateExpectation',
+  'availability',
   // The rubric intro's personal line and subject domain
   // (docs/OUTREACH_EMAIL_RUBRIC.md). `whyThem` names the expert's employer and
   // what they did there — the identity the client is not entitled to before
@@ -155,16 +161,13 @@ const INTERNAL_PROJECT_EXPERT_KEYS: readonly (keyof ProjectExpert)[] = [
  *     `knowledgeFit`, `communicationQuality`, `conflictRisk`,
  *     `recommendToClient`, `valueChainPosition`. Verdicts, not identity — the
  *     client-ready card renders some of them on purpose.
- *   - `rateExpectation` and `availability`: free text a staffer typed while
- *     screening. Both can carry the expert's own words, and `rateExpectation`
- *     is an expert-side number in prose form, which the `expertRate` rule above
- *     otherwise keeps from the client.
  *   - `conflictNote`: read off the expert's reply, but written by
  *     lib/matchyClassify.ts through screenAndMask, so it arrives masked.
  *   - `nudges`: `linesUsed` holds Matchy's own outbound lines, not the
  *     expert's. Harmless, but it is outreach plumbing on a client payload.
  * None of these can identify an unrevealed expert on their own, which is why
- * they were left; `rateExpectation` is the one worth revisiting.
+ * they were left. (`rateExpectation` and `availability` used to be on this
+ * list; they are stripped now — see the entries above.)
  */
 
 /**
@@ -221,11 +224,20 @@ export function generalizeLocation(location: string | undefined): string {
  * `title`, `company` and `justification` are required fields on Expert, so they
  * are emptied rather than deleted; every render site treats empty as absent.
  * The descriptor is never empty — it falls back to the deterministic form.
+ *
+ * THE STORED DESCRIPTOR IS RE-CHECKED HERE, not trusted (audit H-18). It is
+ * LLM-written text and the check that should have caught a leak at generation
+ * time did not exist until now, so anything already in the database gets the
+ * same test on the way out: a descriptor or justification naming the person or
+ * the employer is replaced by the deterministic descriptor (or dropped), which
+ * is exactly what an expert with no descriptor has always been shown.
  */
 function anonymizeExpert(expert: Expert): Expert {
   const tier      = expert.seniorityTier ?? classifySeniority(expert.title ?? '');
   const region    = generalizeLocation(expert.location);
-  const rationale = expert.anonymizedJustification?.trim() ?? '';
+  const stored    = expert.anonymizedJustification?.trim() ?? '';
+  const rationale = descriptorIsAnonymous(stored, expert) ? stored : '';
+  const descriptor = expert.anonymizedDescriptor?.trim() ?? '';
 
   return {
     id:              expert.id,
@@ -245,7 +257,9 @@ function anonymizeExpert(expert: Expert): Expert {
     ...(expert.valueChainLabel && { valueChainLabel: expert.valueChainLabel }),
     seniorityTier:   tier,
     tierPricing:     expert.tierPricing ?? TIER_PRICING[tier],
-    anonymizedDescriptor:    expert.anonymizedDescriptor?.trim() || fallbackDescriptor(expert),
+    anonymizedDescriptor:    descriptor && descriptorIsAnonymous(descriptor, expert)
+      ? descriptor
+      : fallbackDescriptor(expert),
     ...(rationale && { anonymizedJustification: rationale }),
   };
 }
