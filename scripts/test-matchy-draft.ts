@@ -31,21 +31,7 @@ import {
   type DraftContext,
 } from '../lib/matchyDraft';
 import type { ConversationMessageRow } from '../lib/supabase/database.types';
-
-let failures = 0;
-let checks   = 0;
-
-function check(name: string, ok: boolean, detail = ''): void {
-  checks++;
-  if (!ok) {
-    failures++;
-    console.log(`FAIL  ${name}${detail ? ` — ${detail}` : ''}`);
-  }
-}
-
-function eq(name: string, actual: unknown, expected: unknown): void {
-  check(name, Object.is(actual, expected), `got ${JSON.stringify(actual)}, want ${JSON.stringify(expected)}`);
-}
+import { check, eq, summary } from './testHarness';
 
 function section(title: string): void {
   console.log(`\n── ${title} ──`);
@@ -291,7 +277,4 @@ async function run(): Promise<void> {
   check('the model is called with the redacted thread', seen.length > 0 && !seen.includes('scott@banfield.com'));
 }
 
-run().then(() => {
-  console.log(`\n${failures === 0 ? 'PASS' : 'FAIL'} — ${checks - failures}/${checks} checks passed`);
-  process.exit(failures === 0 ? 0 : 1);
-});
+run().then(() => summary());

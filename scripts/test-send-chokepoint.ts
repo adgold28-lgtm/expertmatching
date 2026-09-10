@@ -20,6 +20,7 @@
 // lib/outreachSuppressions.isSuppressed returns, including its fail-closed
 // { ok: false } shape; `send: true` is the decision that reaches Resend at all.
 
+import { readFileSync } from 'fs';
 import { resolveSendGate, dispositionOf, type SendGateFacts } from '../lib/emailSequence';
 import { introAlreadySent } from '../lib/outreachSteps';
 import type { SuppressionCheck } from '../lib/outreachSuppressions';
@@ -145,6 +146,68 @@ check('a queued email2 marker is not an intro marker',
 // reads the claimed row and must refuse.
 const claimedByA = { email1SentAt: Date.now(), outreachStep: 'email1' as const };
 check('the second concurrent job refuses to send', introAlreadySent(claimedByA) === true);
+
+// ─── Matchy 2.0's new surfaces do not open a second door ─────────────────────
+//
+// A source-level check, deliberately: the gates above are only the chokepoint
+// if EVERY path that can put words in front of an expert goes through
+// sendSequenceEmail. Matchy 2.0 added a composer with two exits, a draft route
+// and the modules behind them. None of them may construct a Resend client or
+// call resend.emails.send: the composer's relay exit posts to
+// .../messages (which does go through the chokepoint and reads the outcome),
+// and the draft exit never sends at all — it hands text back to the client to
+// edit. This fails the day someone wires a "just send it" button straight to
+// Resend.
+
+section('Matchy 2.0 send surfaces');
+
+const MATCHY_2_MODULES = [
+  'lib/matchyDraft.ts',
+  'lib/matchyIntent.ts',
+  'lib/matchyScreenContext.ts',
+  'lib/introPersonalization.ts',
+  'lib/rejectionReasons.ts',
+  'components/MatchyAskCard.tsx',
+  'app/api/projects/[projectId]/experts/[expertId]/messages/draft/route.ts',
+];
+
+for (const rel of MATCHY_2_MODULES) {
+  const src = readFileSync(new URL(`../${rel}`, import.meta.url), 'utf8');
+  check(`${rel}: no Resend client`,      !/new\s+Resend\s*\(/.test(src), rel);
+  check(`${rel}: no direct emails.send`, !/emails\s*\.\s*send\s*\(/.test(src), rel);
+}
+
+// The three client→expert routes read the SendOutcome rather than assuming a
+// send happened, through the one shared helper (H-4). The intro's own step
+// reads it too, and releases its claim when the answer is "held".
+const OUTCOME_READERS = [
+  'app/api/projects/[projectId]/experts/[expertId]/messages/route.ts',
+  'app/api/projects/[projectId]/experts/[expertId]/messages/[messageId]/send/route.ts',
+  'app/api/projects/[projectId]/experts/[expertId]/rate-decision/route.ts',
+];
+for (const rel of OUTCOME_READERS) {
+  const src = readFileSync(new URL(`../${rel}`, import.meta.url), 'utf8');
+  check(`${rel}: sends through the chokepoint`, src.includes('sendSequenceEmail'), rel);
+  check(`${rel}: reads the outcome`,            src.includes('dispositionOf'),    rel);
+}
+
+const introStep = readFileSync(new URL('../lib/outreachSteps.ts', import.meta.url), 'utf8');
+check('the intro sends through the chokepoint', introStep.includes('sendSequenceEmail('));
+check('a held intro releases the send claim',
+  /if \(!introOutcome\.sent\)[\s\S]{0,240}releaseClaim\(/.test(introStep));
+check('the intro passes the firm name to deriveTopic as a deny term',
+  introStep.includes('clientDenyTermsFor(project, input.firmName)')
+  && introStep.includes("denyTerms: input.firmName ? [input.firmName] : []"));
+
+// The two session-authed intro senders hand the firm name down, so the
+// review-first path is blinded exactly as carefully as the auto-sent one.
+for (const rel of [
+  'app/api/projects/[projectId]/experts/[expertId]/bookmark/route.ts',
+  'app/api/projects/[projectId]/experts/[expertId]/outreach/approve/route.ts',
+]) {
+  const src = readFileSync(new URL(`../${rel}`, import.meta.url), 'utf8');
+  check(`${rel}: passes firmName to runSequenceStep`, /firmName:\s*firm\?\.name/.test(src), rel);
+}
 
 // ─── Result ───────────────────────────────────────────────────────────────────
 

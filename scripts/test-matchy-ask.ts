@@ -12,13 +12,8 @@
 import { askMatchy, isRateLocked, preferencesReadBack, reasonFromWords, type AskContext } from '../lib/matchyIntent';
 import type { ConversationMessage, ProjectExpertWithCounter } from '../lib/matchyClient';
 import type { ExpertStatus } from '../types';
+import { check, summary } from './testHarness';
 
-let failures = 0;
-let checks   = 0;
-function check(name: string, ok: boolean, detail = ''): void {
-  checks++;
-  if (!ok) { failures++; console.log(`FAIL  ${name}${detail ? ` — ${detail}` : ''}`); }
-}
 function section(title: string): void { console.log(`\n${title}`); }
 
 const LABELS: Partial<Record<ExpertStatus, string>> = {
@@ -210,5 +205,4 @@ section('no leaks in any answer');
   }
 }
 
-console.log(`\n${failures === 0 ? 'PASS' : 'FAIL'} — ${checks - failures}/${checks} checks passed`);
-process.exit(failures === 0 ? 0 : 1);
+summary();
