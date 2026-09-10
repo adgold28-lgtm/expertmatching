@@ -49,7 +49,17 @@ async function checkTokenRateLimit(tokenHash: string): Promise<boolean> {
 // ─── Constants ────────────────────────────────────────────────────────────────
 
 const GOOGLE_AUTH_URL  = 'https://accounts.google.com/o/oauth2/v2/auth';
-const CALENDAR_SCOPE   = 'https://www.googleapis.com/auth/calendar.freebusy';
+
+// `openid email` rides alongside freebusy because the callback needs the linked
+// account's ADDRESS: it is the calendar id lib/fetchGoogleFreebusy.ts queries
+// and one of the three fields lib/matchyScheduling.expertKnownWindows requires
+// before it will read the connection at all. Requesting freebusy alone made the
+// userinfo call fail, so calendarEmail was stored as undefined and the calendar
+// the expert had just granted was silently ignored (H-20). This matches the
+// client-side onboarding flow (app/api/onboarding/calendar/google) and CHANGES
+// THE CONSENT SCREEN the expert sees — it now names their email address as well
+// as their free/busy.
+const CALENDAR_SCOPE   = 'openid email https://www.googleapis.com/auth/calendar.freebusy';
 
 const STATE_SECRET_ENV = 'AVAILABILITY_TOKEN_SECRET'; // reuse existing secret for state HMAC
 

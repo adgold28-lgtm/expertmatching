@@ -73,7 +73,22 @@ export const OPTIONAL_VARS = [
   'OUTREACH_POSTAL_ADDRESS',
   // One-line LLM rephrase of nudges; off unless 'true'
   'NUDGE_LLM_VARIATION',
+  // Web search behind expert sourcing. Not required to boot — the app runs
+  // fine without it right up until a user starts a run, which then fails with
+  // no_search_provider — so validateEnv() warns instead (see below).
+  'EXA_API_KEY',
+  'TAVILY_API_KEY',
+  'SCRAPINGBEE_KEY',
+  // Which of the three to try first, and whether to fall through to the others
+  'SEARCH_PROVIDER',
+  'SEARCH_FALLBACK_ENABLED',
 ] as const;
+
+/**
+ * Sourcing needs at least ONE of these. Any one is enough, which is why none of
+ * them can sit in REQUIRED_VARS.
+ */
+const SEARCH_PROVIDER_KEYS = ['EXA_API_KEY', 'TAVILY_API_KEY', 'SCRAPINGBEE_KEY'] as const;
 
 export function validateEnv(): void {
   const isProd = process.env.NODE_ENV === 'production';
@@ -87,6 +102,18 @@ export function validateEnv(): void {
         console.warn(`[validateEnv] WARNING: running without ${name} — acceptable in dev`);
       }
     }
+  }
+
+  // No search key at all means expert sourcing — the product's core feature —
+  // fails on the first run with no_search_provider, and nothing else notices
+  // (M-19). Any one key is enough, so this WARNS rather than refusing to boot:
+  // a deployment that never sources is a legitimate one, and taking the site
+  // down for a missing optional key would be the worse failure.
+  if (!SEARCH_PROVIDER_KEYS.some(name => process.env[name])) {
+    console.warn(
+      '[validateEnv] WARNING: no search provider key set '
+      + `(${SEARCH_PROVIDER_KEYS.join(', ')}) — expert sourcing will fail with no_search_provider`,
+    );
   }
 
   if (missing.length > 0) {

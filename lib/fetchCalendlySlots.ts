@@ -1,10 +1,21 @@
 // Fetch available time slots from a public Calendly scheduling link.
 //
-// Uses Calendly's public event-types API (no auth required for public links).
 // Returns up to 50 slots within the next `windowDays` days (default: 14).
 // Returns an empty array on any failure — never throws.
 //
-// NEVER log the Calendly URL (may contain PII or private identifiers).
+// VERIFIED 2026-09-09 (M-32): api.calendly.com requires a bearer token for
+// EVERY endpoint, including event_types for a public scheduling page. Probed by
+// hand against a real public link (calendly.com/calendly-demo): the API answers
+//   401 {"title":"Unauthenticated","message":"The access token is invalid"}
+// and fetchCalendlySlots therefore returns [] for every link, always. There is
+// no CALENDLY_* credential anywhere in the app, so this provider cannot work as
+// written; `probeCalendlyLink` below exists so the connect-time path can say so
+// instead of accepting a link that will never yield a slot. Until a token or
+// OAuth is added, treat any Calendly connection as producing no availability.
+//
+// NEVER log the Calendly URL (may contain PII or private identifiers). Status
+// codes are safe to log and are the only way to tell a rejected request from a
+// genuinely empty calendar.
 
 import type { AvailabilitySlot } from '../types';
 
@@ -53,12 +64,11 @@ function parseCalendlyUrl(url: string): { username: string; eventSlug?: string }
 // ─── API fetchers ─────────────────────────────────────────────────────────────
 
 // Both calls below go to api.calendly.com with NO Authorization header and no
-// CALENDLY_* env var anywhere in the app, and both treat any non-OK response as
-// "no availability" rather than as an error. So a rejected request, a changed
-// API contract and a genuinely empty calendar are indistinguishable from the
-// outside: the caller sees [] and lib/matchyScheduling falls back to proposing
-// from the client's side alone. Anyone debugging "Calendly never yields times"
-// should start by logging the status codes here (never the URL — it is PII).
+// CALENDLY_* env var anywhere in the app. Measured answer: 401 on both (see the
+// file header). They still degrade to [] rather than throwing — that contract is
+// what keeps a Calendly outage from breaking a proposal round — but the status
+// is now logged, so "Calendly never yields times" is answerable from the logs.
+// The status is the only thing logged; the URL is PII.
 async function fetchEventTypes(username: string): Promise<CalendlyEventType[]> {
   const res = await fetch(
     `https://api.calendly.com/event_types?organization=&user=https://api.calendly.com/users/${username}`,
@@ -67,9 +77,51 @@ async function fetchEventTypes(username: string): Promise<CalendlyEventType[]> {
       signal:  AbortSignal.timeout(8_000),
     },
   );
-  if (!res.ok) return [];
+  if (!res.ok) {
+    console.warn('[fetchCalendlySlots] event_types rejected', JSON.stringify({ status: res.status }));
+    return [];
+  }
   const data = await res.json() as CalendlyCollection<CalendlyEventType>;
   return data.collection ?? [];
+}
+
+/**
+ * Is this link one the scheduler could actually read? One event_types call, no
+ * slot fetch. `ok` is true only when Calendly answered 200 AND named at least
+ * one event type — which, unauthenticated, it never does today (M-32).
+ *
+ * Exported for the connect-time check: POST /api/onboarding/calendar and
+ * lib/calendarConnections.connectionIsUsable should refuse a link this rejects
+ * rather than storing one that will silently produce no availability forever.
+ * Never logs or returns the URL.
+ */
+export async function probeCalendlyLink(
+  calendlyUrl: string,
+): Promise<{ ok: boolean; status: number | null; reason: 'ok' | 'invalid_url' | 'unauthenticated' | 'http_error' | 'no_event_types' | 'network_error' }> {
+  const parsed = parseCalendlyUrl(calendlyUrl);
+  if (!parsed) return { ok: false, status: null, reason: 'invalid_url' };
+
+  try {
+    const res = await fetch(
+      `https://api.calendly.com/event_types?organization=&user=https://api.calendly.com/users/${parsed.username}`,
+      {
+        headers: { 'Content-Type': 'application/json' },
+        signal:  AbortSignal.timeout(8_000),
+      },
+    );
+    if (res.status === 401 || res.status === 403) {
+      return { ok: false, status: res.status, reason: 'unauthenticated' };
+    }
+    if (!res.ok) return { ok: false, status: res.status, reason: 'http_error' };
+
+    const data = await res.json() as CalendlyCollection<CalendlyEventType>;
+    const count = (data.collection ?? []).length;
+    return count > 0
+      ? { ok: true,  status: res.status, reason: 'ok' }
+      : { ok: false, status: res.status, reason: 'no_event_types' };
+  } catch {
+    return { ok: false, status: null, reason: 'network_error' };
+  }
 }
 
 async function fetchAvailableTimes(
@@ -90,7 +142,10 @@ async function fetchAvailableTimes(
       signal:  AbortSignal.timeout(8_000),
     },
   );
-  if (!res.ok) return [];
+  if (!res.ok) {
+    console.warn('[fetchCalendlySlots] available_times rejected', JSON.stringify({ status: res.status }));
+    return [];
+  }
   const data = await res.json() as CalendlyCollection<CalendlyAvailableTime>;
   return (data.collection ?? []).filter(t => t.status === 'available');
 }

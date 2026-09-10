@@ -388,21 +388,23 @@ async function handleUnavailable(
     });
     if (read.kind === 'unavailable') windows = read.windows;
 
-    // Windows the expert TYPED become their availability, which also flips
-    // `calendarProvider` to 'manual'. That last part is load-bearing and easy to
-    // miss: an expert who had linked Google and then writes "none of these work,
-    // try Tuesday" stops being a connected calendar as far as
+    // Windows the expert TYPED become their availability, but they never
+    // DEMOTE a connected calendar: `calendarProvider` is only set to 'manual'
+    // when there is no provider yet or it is already 'manual'. An expert who
+    // linked Google and then writes "none of these work, try Tuesday" stays a
+    // connected calendar as far as
     // lib/matchyScheduling.expertHasConnectedCalendar is concerned, so later
-    // rounds read these sentences instead of their real free/busy. The Google
-    // ciphertext stays on the row, so re-linking is not required to recover it —
-    // only the provider flag moved.
+    // rounds keep reading their real free/busy — the most informative signal we
+    // have — instead of one sentence (M-33). The typed windows are still stored
+    // and are what expertKnownWindows falls back to when no provider is linked.
+    const keepsProvider = pe.calendarProvider && pe.calendarProvider !== 'manual';
     await writeExpert(project.id, pe.expert.id, {
       availabilityRaw:   text,
       replyIntent:       'time_unavailable',
       ...(windows.length > 0 ? {
         availabilitySlots:     windows,
         availabilitySubmitted: true,
-        calendarProvider:      'manual' as const,
+        ...(keepsProvider ? {} : { calendarProvider: 'manual' as const }),
       } : {}),
     });
   }

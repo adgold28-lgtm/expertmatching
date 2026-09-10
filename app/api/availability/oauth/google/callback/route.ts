@@ -113,14 +113,14 @@ async function exchangeCode(
 
 /**
  * The linked Google account's address, which is also the calendar id
- * lib/fetchGoogleFreebusy.ts queries. Note what the initiate route asked for:
- * `calendar.freebusy` ALONE, with no `openid`/`email` scope — the onboarding
- * flow (app/api/onboarding/calendar/google) requests those two extra scopes and
- * its own header calls this expert flow's calendar_email "unreliable" for
- * exactly this reason. When userinfo refuses, this returns null, the field is
- * left unset below, and lib/matchyScheduling.expertKnownWindows —which requires
- * calendarEmail alongside the tokens — silently falls back to the expert's typed
- * windows, so the connection they just granted is never actually read.
+ * lib/fetchGoogleFreebusy.ts queries. The initiate route now asks for
+ * `openid email` alongside `calendar.freebusy` (matching the onboarding flow at
+ * app/api/onboarding/calendar/google), so userinfo answers and this returns the
+ * real address. When it still refuses — a consent screen granted before the
+ * scope change, or a userinfo outage — the caller falls back to the expert's
+ * own contactEmail rather than leaving the field unset, because
+ * lib/matchyScheduling.expertKnownWindows requires calendarEmail alongside the
+ * tokens and would otherwise ignore the calendar the expert just granted.
  */
 async function fetchCalendarEmail(accessToken: string): Promise<string | null> {
   try {
@@ -225,7 +225,13 @@ export async function GET(request: NextRequest) {
   }
 
   // ── Fetch calendar account email ─────────────────────────────────────────
-  const calendarEmail = await fetchCalendarEmail(tokens.access_token);
+  // Fall back to the address we already write to. Google's freeBusy accepts any
+  // calendar id the grant covers, and an expert's work address is almost always
+  // the account they just linked; a wrong guess costs one empty busy list, an
+  // unset field costs the whole connection (H-20).
+  const calendarEmail = await fetchCalendarEmail(tokens.access_token)
+    ?? pe.contactEmail
+    ?? null;
 
   // ── Encrypt tokens ───────────────────────────────────────────────────────
   let encryptedAccess:  string;

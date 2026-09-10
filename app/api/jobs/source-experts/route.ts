@@ -24,14 +24,17 @@ function getReceiver(): Receiver {
   return new Receiver({ currentSigningKey: currentKey, nextSigningKey: nextKey });
 }
 
-// DURATION: this handler declares no `export const maxDuration`, unlike every
-// sibling job route (reconcile 60, schedule-nudges 60, send-nudge 30,
-// contact-discovery 60). runSourcingJob() makes 2 Haiku calls, up to 3 web
-// searches, one 12k-token Opus call with up to 2 retries, and up to 3 more
-// searches for name resolution — minutes of work on the platform default. If the
-// platform kills the invocation the project is left on 'running' until the daily
-// reconcile cron, and QStash redelivers the job (see runSourcingJob: not
-// idempotent).
+// DURATION: 300 s, the longest of any job route here (reconcile 60,
+// schedule-nudges 60, send-nudge 30, contact-discovery 60), because
+// runSourcingJob() makes 2 Haiku calls, up to 3 web searches, one 12k-token Opus
+// call with up to 2 retries, and up to 3 more searches for name resolution —
+// minutes of work, where the platform default is a minute. A run that still
+// overruns is redelivered by QStash; runSourcingJob is now guarded against
+// writing twice (it refuses when the project's sourcingStartedAt has moved on or
+// the status has left 'running'), and publishSourcingJob sends a deterministic
+// deduplication id per run (H-11).
+export const maxDuration = 300;
+
 export async function POST(request: NextRequest): Promise<NextResponse> {
   // ── 1. Read raw body for signature verification ──────────────────────────
   const body = await request.text();
@@ -66,9 +69,11 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     return NextResponse.json({ error: 'missing_fields' }, { status: 400 });
   }
 
-  // ── 4. Run it. runSourcingJob owns its own error handling and always
-  //      leaves the project on a terminal status, so QStash never needs to
-  //      retry a run that already reported failure to the user.
+  // ── 4. Run it. runSourcingJob owns its own error handling and leaves the
+  //      project on a terminal status whenever this job still owns the run, so
+  //      QStash never needs to retry a run that already reported failure to the
+  //      user. A redelivered or superseded job writes nothing at all — the run
+  //      that owns the project owns its status too.
   await runSourcingJob(job);
 
   return NextResponse.json({ ok: true });

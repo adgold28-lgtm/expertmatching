@@ -32,12 +32,11 @@ export const exaProvider: SearchProvider = {
     const n   = Math.min(maxResults, 25);
 
     async function attempt(): Promise<SearchResult[]> {
-      // Temporary diagnostic — remove after confirming queries and result counts
-      // WARNING: this prints the full query, and sourcing queries are built from
-      // the client's brief (expertType, industry, research question). Every other
-      // module in the sourcing path documents "never log brief content"; this
-      // line is the one place that does, in production as well as dev.
-      console.log('[exa] query:', query);
+      // Counts only. The query itself is built from the client's brief
+      // (expertType, industry, research question), so printing it put
+      // client-confidential text in production logs (H-12) — the length is
+      // enough to tell a well-formed query from an empty one.
+      console.log('[exa] search', JSON.stringify({ queryChars: query.length, maxResults: n }));
       // Inline call so TypeScript infers the conditional return type with highlights
       const raw = await exa.searchAndContents(query, {
         numResults:   n,
@@ -54,7 +53,6 @@ export const exaProvider: SearchProvider = {
         throw wrapped;
       });
 
-      // Temporary diagnostic — remove after confirming queries and result counts
       console.log('[exa] raw results:', raw.results?.length ?? 0);
       return (raw.results ?? []).map(r => {
         const snippet = r.highlights?.[0] ?? r.text?.slice(0, 300) ?? '';

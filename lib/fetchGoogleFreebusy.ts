@@ -105,19 +105,30 @@ const DAY_NAMES = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','
  * Google reports BUSY blocks; the scheduler wants FREE windows, so this walks
  * each day of the horizon and returns the gaps.
  *
- * The frame it inverts inside is a FIXED 08:00–19:00 **UTC** band per calendar
- * day, and the emitted slots are stamped `timezone: 'UTC'`. Nothing here knows
- * the user's own zone: a Google connection has no timezone to consult at this
- * layer. The consequence is worth understanding before changing anything —
- * this band is an upper bound on everything Matchy can ever offer a user whose
- * calendar is Google, and lib/matchyScheduling.pickProposals then intersects it
- * with 09:00–17:00 in the OWNER's zone. For a UTC-ish user the two agree; the
- * further the user's offset from UTC, the smaller the surviving intersection.
+ * The frame it inverts inside is the WHOLE UTC day, 00:00 to 23:59, and the
+ * emitted slots are stamped `timezone: 'UTC'`. Nothing here knows the user's own
+ * zone — a Google connection has no timezone to consult at this layer — so this
+ * layer deliberately applies no business hours at all and leaves them to
+ * lib/matchyScheduling.pickProposals, which is the one place that knows the
+ * OWNER's zone and keeps only starts whose whole call sits inside 09:00–17:00
+ * there. The old fixed 08:00–19:00 UTC band silently truncated everyone far
+ * from UTC (nothing after ~13:00 Eastern, only 09:00–11:00 Pacific) — H-21.
+ *
+ * Two boundary details, both deliberate:
+ *   • The day's last free block ends at 23:59, not at midnight, because
+ *     lib/computeOverlap.slotToUtcRange rejects a slot whose end is not after
+ *     its start and an AvailabilitySlot cannot name a time on the next day. The
+ *     cost is exactly one candidate start, the 60-minute call beginning at
+ *     23:00 UTC; every other half-hour start survives.
+ *   • A free block that spans midnight UTC is emitted as two slots, one per
+ *     day, for the same reason.
  *
  * Gaps shorter than a call are not filtered here — pickProposals enforces the
  * duration, the half-hour grid, weekdays and the 24-hour lead.
+ *
+ * Exported for scripts/test-freebusy-inversion.ts; it is pure and does no I/O.
  */
-function invertBusyToFree(
+export function invertBusyToFree(
   busyBlocks: Array<{ start: string; end: string }>,
   windowStart: Date,
   windowEnd:   Date,
@@ -129,24 +140,26 @@ function invertBusyToFree(
     (a, b) => new Date(a.start).getTime() - new Date(b.start).getTime(),
   );
 
-  // Process each day in the window with broad UTC business hours (8am–7pm)
+  // Process each day in the window over the FULL UTC day; business hours are
+  // pickProposals' job, in the owner's zone, not this layer's.
   const msPerDay = 24 * 60 * 60_000;
   const startDay = new Date(
     Date.UTC(windowStart.getUTCFullYear(), windowStart.getUTCMonth(), windowStart.getUTCDate()),
   );
 
   for (let d = new Date(startDay); d < windowEnd; d = new Date(d.getTime() + msPerDay)) {
-    const dayStart = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate(), 8,  0, 0));
-    const dayEnd   = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate(), 19, 0, 0));
+    const dayStart = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate(),  0,  0, 0));
+    // 23:59, not 24:00 — see the note on midnight above.
+    const dayEnd   = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate(), 23, 59, 0));
 
-    // Collect busy blocks that overlap with this day's business hours
+    // Collect busy blocks that overlap with this day
     const dayBusy = sorted.filter(b => {
       const bs = new Date(b.start).getTime();
       const be = new Date(b.end).getTime();
       return be > dayStart.getTime() && bs < dayEnd.getTime();
     });
 
-    // Invert within the business-hours window
+    // Invert within the day
     let cursor = dayStart;
 
     for (const busy of dayBusy) {

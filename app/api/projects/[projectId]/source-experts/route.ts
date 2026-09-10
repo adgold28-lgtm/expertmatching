@@ -19,7 +19,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { routeAuthGuard, getSessionUser } from '../../../../../lib/auth';
 import { requireProjectOwner } from '../../../../../lib/projectsGuard';
 import { trackProductEvent } from '../../../../../lib/productEvents';
-import { getProjectForUser, updateProjectFields } from '../../../../../lib/projectStore';
+import { getProjectForUser, updateProjectFields, startSourcingRun } from '../../../../../lib/projectStore';
 import {
   isQStashConfigured,
   publishSourcingJob,
@@ -91,19 +91,34 @@ export async function POST(
     );
   }
 
+  // 7. Claim the run. The stamp is generated FIRST because it IS the run's
+  //    identity: the same number goes on the project as `sourcingStartedAt`,
+  //    into the job body as `runId`, and into the QStash deduplication id.
+  //    lib/sourcingJob.shouldPersistRun refuses any job whose `runId` no longer
+  //    matches the row, which is what stops a redelivered run appending a
+  //    second copy of the same candidates (H-11).
+  const runId = Date.now();
+
+  //    The claim is CONDITIONAL. Step 5 above read the project; a second
+  //    request can pass that same check before this write lands, and both would
+  //    then publish a job. `startSourcingRun` writes only while the row still
+  //    carries the `sourcingStartedAt` we read, so exactly one request wins and
+  //    the loser gets the same 409 it would have got a millisecond earlier.
+  const claimed = await startSourcingRun(
+    params.projectId,
+    project.sourcingStartedAt ?? null,
+    runId,
+  );
+  if (!claimed) {
+    return NextResponse.json({ error: 'sourcing_already_running' }, { status: 409 });
+  }
+
   const job: SourcingJob = {
     projectId: params.projectId,
+    runId,
     ...(businessProblem ? { businessProblem } : {}),
     ...(expertType      ? { expertType }      : {}),
   };
-
-  // 7. Mark running before enqueueing, so a poll that lands between the two
-  //    still sees the run.
-  await updateProjectFields(params.projectId, {
-    sourcingStatus:    'running',
-    sourcingStartedAt: Date.now(),
-    sourcingError:     null,
-  });
 
   try {
     if (isQStashConfigured()) {
@@ -117,11 +132,18 @@ export async function POST(
     console.error('[source-experts] enqueue failed', {
       reason: err instanceof Error ? err.message.slice(0, 120) : 'unknown',
     });
-    await updateProjectFields(params.projectId, {
-      sourcingStatus:    'failed',
-      sourcingStartedAt: null,
-      sourcingError:     'Could not start sourcing. Please try again.',
-    });
+    // Roll back only OUR claim. Between the claim and this catch the run could
+    // in principle have been superseded; clearing unconditionally would then
+    // strand a healthy run. Cheap read, and the nightly reconcile is the
+    // backstop if it races.
+    const fresh = await getProjectForUser(params.projectId, email, role).catch(() => null);
+    if (fresh?.sourcingStartedAt === runId) {
+      await updateProjectFields(params.projectId, {
+        sourcingStatus:    'failed',
+        sourcingStartedAt: null,
+        sourcingError:     'Could not start sourcing. Please try again.',
+      });
+    }
     return NextResponse.json({ error: 'enqueue_failed' }, { status: 502 });
   }
 

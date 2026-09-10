@@ -13,6 +13,11 @@
 //   NEXT_PUBLIC_BASE_URL or NEXT_PUBLIC_APP_URL — where QStash calls back
 // Without QSTASH_TOKEN (local dev) the caller runs the job in-process instead.
 //
+// ONE RUN OWNS THE PROJECT. The start route stamps `sourcingStartedAt` and puts
+// that number in the job as `runId`; the publish carries it as a deterministic
+// Upstash-Deduplication-Id, and every write here is fenced by shouldPersistRun()
+// so a redelivered or superseded job spends nothing and writes nothing.
+//
 // NEVER log: project names, research questions, brief content, or expert names.
 
 import type { Expert, Project } from '../types';
@@ -29,6 +34,15 @@ export interface SourcingJob {
   projectId:        string;
   businessProblem?: string;   // brief override — the value the user just typed
   expertType?:      string;
+  /**
+   * Which run this job belongs to: the `sourcingStartedAt` the start route wrote
+   * when it flipped the project to 'running'. It is the only thing that tells a
+   * redelivered or superseded job that the project has moved on, so
+   * shouldPersistRun() refuses to write when it no longer matches (H-11).
+   * Optional so a job already queued without one still runs: those fall back to
+   * the status check alone.
+   */
+  runId?:           number;
 }
 
 /** A run still marked 'running' after this long is treated as timed out. */
@@ -66,11 +80,23 @@ export async function publishSourcingJob(job: SourcingJob): Promise<void> {
   // The destination goes in the path verbatim — QStash rejects a
   // percent-encoded URL ("endpoint has invalid scheme").
   // No delay — sourcing should start immediately.
+  //
+  // Upstash-Deduplication-Id makes a double publish of the SAME run (a
+  // double-clicked button, a client retry) one delivery instead of two. It is
+  // keyed on the run, `sourcing:<projectId>:<runId>`, so a legitimate re-run —
+  // which always gets a fresh sourcingStartedAt — is never deduplicated away.
+  // Without a runId there is nothing safe to key on, so the header is omitted
+  // rather than guessed: a constant per-project id would swallow real re-runs.
+  const dedupId = typeof job.runId === 'number' && Number.isFinite(job.runId)
+    ? `sourcing:${job.projectId}:${job.runId}`
+    : null;
+
   const res = await fetch(`${qstashHost}/v2/publish/${endpoint}`, {
     method:  'POST',
     headers: {
       'Authorization': `Bearer ${token}`,
       'Content-Type':  'application/json',
+      ...(dedupId ? { 'Upstash-Deduplication-Id': dedupId } : {}),
     },
     body: JSON.stringify(job),
   });
@@ -104,6 +130,65 @@ function buildBriefContext(project: Project, expertTypeOverride?: string): Brief
   return bc;
 }
 
+// ─── Run ownership ────────────────────────────────────────────────────────────
+
+/** Why a job was allowed to write, or refused. */
+export type PersistDecision =
+  | { persist: true;  reason: 'owns_run' | 'legacy_no_run_id' }
+  | { persist: false; reason: 'not_running' | 'superseded' };
+
+/**
+ * May THIS job write to THIS project?
+ *
+ * A QStash redelivery of a run that already finished, and a run that a newer
+ * start has replaced, must both be dropped: addExpertsToProject APPENDS, so a
+ * second pass adds a second copy of the same candidates and a stale pass can
+ * overwrite a newer run's status (H-11).
+ *
+ * The rule, in order:
+ *   sourcingStatus not 'running' → the run is over (or was never started);
+ *                                  refuse. This also covers the redelivery of a
+ *                                  job whose first pass completed.
+ *   runId present and different  → a newer start replaced us; refuse.
+ *   runId absent                 → a job queued before runIds existed; the
+ *                                  status check is all it gets.
+ *
+ * Pure, and exported for scripts/test-sourcing-idempotency.ts. The caller reads
+ * the project immediately before writing; the store has no conditional update
+ * (lib/projectStore.updateProjectFields is a read-modify-write on the brief
+ * document), so a window of a few milliseconds between this check and the write
+ * remains. It narrows the failure from "every redelivery duplicates" to "two
+ * writers interleaving inside one round trip", which the deduplication id and
+ * the start route's own guard make very unlikely.
+ */
+export function shouldPersistRun(
+  project: Pick<Project, 'sourcingStatus' | 'sourcingStartedAt'>,
+  job:     Pick<SourcingJob, 'runId'>,
+): PersistDecision {
+  if (project.sourcingStatus !== 'running') return { persist: false, reason: 'not_running' };
+  if (typeof job.runId !== 'number' || !Number.isFinite(job.runId)) {
+    return { persist: true, reason: 'legacy_no_run_id' };
+  }
+  return (project.sourcingStartedAt ?? 0) === job.runId
+    ? { persist: true,  reason: 'owns_run' }
+    : { persist: false, reason: 'superseded' };
+}
+
+/**
+ * Re-reads the project and asks shouldPersistRun. A read that FAILS is reported
+ * as such rather than as a refusal, because the two callers want opposite things
+ * from it: the append must not go ahead on a guess, while the terminal status
+ * must still be written or the project sits on 'running' until the nightly
+ * reconcile for what may have been one transient database blip.
+ */
+async function stillOwnsRun(
+  job: SourcingJob,
+): Promise<PersistDecision | { persist: false; reason: 'read_failed' }> {
+  const fresh = await getProject(job.projectId).catch(() => null);
+  if (!fresh) return { persist: false, reason: 'read_failed' };
+  return shouldPersistRun(fresh, job);
+}
+
 // ─── Job execution ────────────────────────────────────────────────────────────
 
 /**
@@ -111,12 +196,13 @@ function buildBriefContext(project: Project, expertTypeOverride?: string): Brief
  * Never throws — every exit path leaves sourcingStatus at 'completed' or
  * 'failed' so the UI can never be stranded on a spinner.
  */
-// NOT IDEMPOTENT. addExpertsToProject() below APPENDS, and nothing keys off a
-// job id, so running the same SourcingJob twice adds a second copy of the same
-// candidates. The only thing standing between that and a QStash redelivery is
-// that the worker route returns 200 for handled failures — a run that times out
-// or crashes mid-flight is redelivered and re-executed from the top, having
-// possibly already written experts.
+// IDEMPOTENT BY GATE, not by construction: addExpertsToProject() below still
+// APPENDS, so every write is fenced by shouldPersistRun(). The gate is checked
+// twice — once here, before spending two Haiku calls, an Opus call and up to six
+// searches on a run nobody is waiting for, and once again immediately before the
+// write, because the run takes minutes and the project can move on inside them.
+// A refused job returns quietly and writes NOTHING, including no terminal
+// status: the run that owns the project owns its status too.
 export async function runSourcingJob(job: SourcingJob): Promise<void> {
   const startedAtMs = Date.now();
   try {
@@ -126,9 +212,15 @@ export async function runSourcingJob(job: SourcingJob): Promise<void> {
       return;
     }
 
+    const gate = shouldPersistRun(project, job);
+    if (!gate.persist) {
+      console.log('[sourcingJob] skipped', { projectId: job.projectId, reason: gate.reason });
+      return;
+    }
+
     const query = (job.businessProblem ?? project.researchQuestion ?? '').trim();
     if (!query) {
-      await finish(job.projectId, 'failed', 'No business problem on the brief — add one and try again.');
+      await finish(job, 'failed', 'No business problem on the brief — add one and try again.');
       return;
     }
 
@@ -162,10 +254,24 @@ export async function runSourcingJob(job: SourcingJob): Promise<void> {
 
     if (experts.length === 0 && adjacent.length === 0) {
       await finish(
-        job.projectId,
+        job,
         'failed',
         'No experts found. Try broadening the brief or adjusting the research question.',
       );
+      return;
+    }
+
+    // Second gate, immediately before the first write. Everything above this
+    // line is spend; everything below it is state. Minutes have passed, so the
+    // project is re-read rather than trusted from the top of the function.
+    const stillOurs = await stillOwnsRun(job);
+    if (!stillOurs.persist) {
+      console.log('[sourcingJob] discarded results', {
+        projectId: job.projectId,
+        reason:    stillOurs.reason,
+        core:      experts.length,
+        adjacent:  adjacent.length,
+      });
       return;
     }
 
@@ -223,16 +329,26 @@ export async function runSourcingJob(job: SourcingJob): Promise<void> {
       projectId: job.projectId,
       payload:   { code: err instanceof GenerateExpertsError ? err.code : 'unknown', durationMs: Date.now() - startedAtMs },
     });
-    await finish(job.projectId, 'failed', message);
+    await finish(job, 'failed', message);
   }
 }
 
-/** Writes the terminal status. Swallows write errors — nothing left to retry. */
+/**
+ * Writes the terminal status, but only when this job still owns the run — a
+ * superseded or already-finished run's failure must not overwrite the status of
+ * the run that replaced it. Swallows write errors: nothing left to retry.
+ */
 async function finish(
-  projectId: string,
+  job: SourcingJob,
   status: 'completed' | 'failed',
   error: string | null,
 ): Promise<void> {
+  const projectId = job.projectId;
+  const gate = await stillOwnsRun(job);
+  if (!gate.persist && gate.reason !== 'read_failed') {
+    console.log('[sourcingJob] terminal status not written', { projectId, reason: gate.reason });
+    return;
+  }
   try {
     await updateProjectFields(projectId, {
       sourcingStatus:    status,

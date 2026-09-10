@@ -547,15 +547,10 @@ briefType options:
     }
 
     // DIAGNOSTIC: log raw response shape (no content)
-    // CAVEAT: `firstChars` is the first 40 characters of the model's JSON, which
-    // begins with "endMarket" — a value derived from the client's brief. This log
-    // is NOT dev-gated, so those characters reach production logs. Treat it as a
-    // temporary diagnostic, not as the file's logging standard.
     console.log('[generate-experts] vci-llm-response', JSON.stringify({
       responseLength:  block.text.length,
       startsWithBrace: block.text.trim().startsWith('{'),
       startsWithFence: block.text.trim().startsWith('```'),
-      firstChars:      block.text.trim().slice(0, 40),
     }));
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any

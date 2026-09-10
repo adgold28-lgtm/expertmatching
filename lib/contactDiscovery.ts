@@ -16,6 +16,10 @@
 // so an abandoned lookup stops making requests rather than running on), and the
 // whole chain gets TOTAL_BUDGET_MS — under the 25 s the caller allows. A step
 // that would start past the budget is skipped and recorded as 'skipped_budget'.
+// Separately, MONEY: each provider call first takes one credit from the global
+// daily ceiling (ENRICHMENT_DAILY_BUDGET, lib/rateLimiter.ts). A refusal skips
+// that provider ('skipped_spend_budget'); all providers refused gives outcome
+// 'unavailable' with reason 'budget'. The ceiling fails OPEN when Redis is down.
 //
 // GATES: CONTACT_ENRICHMENT_ENABLED must be exactly 'true' or the outcome is
 // 'unavailable' and nothing is called. Every candidate must pass syntax
@@ -40,6 +44,11 @@ import type {
   ProviderEmailResult,
 } from './contactProviders/types';
 import { normalizeDomain, isDisallowedDomain } from './domainSuggestions';
+import {
+  checkAndIncrementGlobalBudget,
+  createRateLimiterStore,
+  type RateLimiterStore,
+} from './rateLimiter';
 import { getProject, updateExpertStatus } from './projectStore';
 import { isWalkthrough } from './walkthrough';
 import { getEntitlementsForProject, recordRestrictedAttempt } from './entitlements';
@@ -60,6 +69,13 @@ export interface DiscoveryAttempt {
 
 export interface DiscoveryResult {
   outcome:     'found' | 'not_found' | 'unavailable';
+  /**
+   * Why nothing was looked up, when `outcome` is 'unavailable'. 'budget' means
+   * the day's provider spend ceiling refused every provider — we could not look,
+   * as opposed to looking and finding nobody — so the caller can retry the
+   * expert tomorrow rather than treating them as unreachable.
+   */
+  reason?:     'budget';
   email?:      string;
   provider?:   string;
   /** 0–100 when the provider supplies one. */
@@ -420,9 +436,14 @@ export async function discoverContact(input: DiscoverContactInput): Promise<Disc
   // provider changes the key and old not_found entries stop suppressing the
   // fuller chain (see lib/contactCache.makeCacheKey).
   //
-  // No spend guard runs here: lib/rateLimiter.checkAndIncrementGlobalBudget and
-  // ENRICHMENT_DAILY_BUDGET are not wired into this path, so the only thing
-  // bounding credit use is the cache plus the bookmark route's own status gate.
+  // SPEND GUARD: lib/rateLimiter.checkAndIncrementGlobalBudget runs once per
+  // provider inside the loop below, so a Snov + Hunter waterfall spends two of
+  // ENRICHMENT_DAILY_BUDGET's credits, not one — which is what the counter was
+  // written for and what H-13 found nothing calling. A refusal skips that
+  // provider (recorded as 'skipped_spend_budget') and moves on; if every one of
+  // them is refused the outcome is 'unavailable' with reason 'budget', never
+  // 'not_found', so nothing negative is cached and a retry tomorrow is free to
+  // ask again.
   const providers = [snovProvider, hunterProvider].filter(p => p.isConfigured());
 
   const store    = cacheStoreOrNull();
@@ -464,12 +485,28 @@ export async function discoverContact(input: DiscoverContactInput): Promise<Disc
     return { outcome: 'unavailable', attempts };
   }
 
-  // 2 + 3. One attempt per provider, in order, each on its own deadline.
+  // 2 + 3. One attempt per provider, in order, each on its own deadline and
+  //        each costing one credit from the global daily budget.
+  let budgetRefusals = 0;
+
   for (const provider of providers) {
     const providerAt = Date.now();
     const budget     = Math.min(PROVIDER_TIMEOUT_MS, remaining());
     if (budget <= 0) {
+      // 'skipped_budget' has meant the TIME budget here since this loop was
+      // written (and still does at the domain-search step above), so the daily
+      // SPEND refusal below gets its own name rather than overloading it.
       record(provider.name, 'skipped_budget', providerAt);
+      continue;
+    }
+
+    // The daily spend ceiling. FAILS OPEN by design: a Redis outage must not
+    // stop outreach, and the providers' own credit balances are the backstop.
+    // Only an answer of "over budget" refuses (Session 7 rule: paid credential
+    // paths fail closed, expert-facing work fails open — this is the latter).
+    if (!(await withinGlobalBudget())) {
+      budgetRefusals++;
+      record(provider.name, 'skipped_spend_budget', providerAt);
       continue;
     }
 
@@ -513,6 +550,14 @@ export async function discoverContact(input: DiscoverContactInput): Promise<Disc
     }
   }
 
+  // Nobody was asked, because the day's budget is spent. That is "we could not
+  // look", not "nobody is there": no cache write, and an outcome the job maps to
+  // contact_discovery_unavailable so the expert can be retried tomorrow.
+  if (budgetRefusals > 0 && budgetRefusals === providers.length) {
+    logCounts(input.projectId, 'unavailable', attempts);
+    return { outcome: 'unavailable', reason: 'budget', attempts };
+  }
+
   // Every configured provider answered "nobody by that name at that domain".
   // Only then is the negative worth remembering.
   const providersAnswered = attempts.some(a =>
@@ -521,6 +566,38 @@ export async function discoverContact(input: DiscoverContactInput): Promise<Disc
 
   logCounts(input.projectId, 'not_found', attempts);
   return { outcome: 'not_found', attempts };
+}
+
+/**
+ * One credit's worth of the global daily budget (ENRICHMENT_DAILY_BUDGET,
+ * default 500), counted per PROVIDER call — which is what
+ * lib/rateLimiter.checkAndIncrementGlobalBudget was written for and what H-13
+ * found nothing calling.
+ *
+ * FAILS OPEN: no Redis, no store, or a store that throws all answer "allowed".
+ * The ceiling exists to stop a loop burning a month of Snov and Hunter credits
+ * in minutes, not to be a hard gate on outreach, and the providers' own balances
+ * are the real backstop.
+ */
+async function withinGlobalBudget(): Promise<boolean> {
+  try {
+    const store = rateLimiterStoreOrNull();
+    if (!store) return true;
+    const { allowed } = await checkAndIncrementGlobalBudget(store);
+    if (!allowed) console.warn('[contactDiscovery] daily provider budget reached');
+    return allowed;
+  } catch {
+    return true;
+  }
+}
+
+/** One rate-limiter store per process; null when one cannot be built. */
+let _rlStore: RateLimiterStore | null | undefined;
+function rateLimiterStoreOrNull(): RateLimiterStore | null {
+  if (_rlStore === undefined) {
+    try { _rlStore = createRateLimiterStore(); } catch { _rlStore = null; }
+  }
+  return _rlStore;
 }
 
 /** Stores the answer. Cache failures are never fatal — this swallows them. */
@@ -709,10 +786,17 @@ export async function runContactDiscoveryJob(job: ContactDiscoveryJob): Promise<
         await writeOutcome(projectId, expertId, 'contact_discovery_unavailable');
         // `contact_not_found` is the closest allowed event kind — the payload
         // is what distinguishes "we could not look" from "nobody is there".
+        // `reason: 'budget'` narrows it further: the day's provider ceiling
+        // refused every provider, so this expert is worth retrying tomorrow
+        // rather than being treated as unreachable (H-13).
         await emitEngagementEvent({
           projectId, expertId, orgId,
           type:    'contact_not_found',
-          payload: { stage: 'discovery', reason: 'unavailable', attempt, tier, steps: result.attempts.length },
+          payload: {
+            stage:  'discovery',
+            reason: result.reason ?? 'unavailable',
+            attempt, tier, steps: result.attempts.length,
+          },
         });
         return 'contact_discovery_unavailable';
       }
@@ -806,6 +890,17 @@ export async function runContactDiscoveryJob(job: ContactDiscoveryJob): Promise<
       console.warn('[contactDiscovery] intro not sent', JSON.stringify({ projectId, reason: sendResult.error }));
       await writeOutcome(projectId, expertId, 'intro_failed');
       return 'intro_failed';
+    }
+
+    // Send-once guard refused: the intro already went out on an earlier call
+    // (the race noted above, at the "already have an address" branch — two
+    // discovery jobs for the same expert both reaching runSequenceStep). This
+    // call sent nothing, so it does not emit a second `intro_sent` event and
+    // does not re-write `contactStatus` — the earlier, actually-sending call
+    // already wrote it. Mirrors the bookmark route's handling of the same
+    // signal (see app/api/.../bookmark/route.ts).
+    if (sendResult.alreadySent) {
+      return draftOnly ? 'intro_drafted' : 'intro_sent';
     }
 
     // Whether it went is on the status the step wrote, not on `draftOnly`: the
