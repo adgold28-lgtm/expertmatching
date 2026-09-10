@@ -6,7 +6,7 @@
 // Meeting IDs and durations are safe to log.
 
 import { createHmac, timingSafeEqual } from 'crypto';
-import { callChargeDollars } from '../../../../lib/pricing';
+import { callChargeDollars, billableCallMinutesFromWindow } from '../../../../lib/pricing';
 import { NextRequest, NextResponse } from 'next/server';
 import { getProject, updateExpertStatus } from '../../../../lib/projectStore';
 import { findProjectExpertByZoomMeetingId } from '../../../../lib/zoomLookup';
@@ -68,12 +68,16 @@ export async function POST(request: NextRequest) {
   }
 
   if (eventType === 'meeting.ended') {
+    // This path charges the client's saved card off-session, so the duration is
+    // bounded before it reaches the pricing math: an unparseable start_time
+    // used to yield NaN (a silent zero-dollar invoice), and a meeting left open
+    // — or a replayed event carrying a stale start_time — had no ceiling at
+    // all, while the manual POST …/complete route refuses anything over
+    // MAX_BILLABLE_MINUTES. billableCallMinutesFromWindow applies both.
     const startTs    = new Date(String(obj?.start_time ?? '')).getTime();
     const endTimeStr = obj?.end_time;
-    const resolvedEnd = endTimeStr
-      ? new Date(String(endTimeStr)).getTime()
-      : Date.now();
-    const actualDurationMin = Math.max(1, Math.ceil((resolvedEnd - startTs) / 60000));
+    const endTs      = endTimeStr ? new Date(String(endTimeStr)).getTime() : null;
+    const actualDurationMin = billableCallMinutesFromWindow(startTs, endTs, Date.now());
 
     const match = await findProjectExpertByZoomMeetingId(meetingId);
     if (match) {

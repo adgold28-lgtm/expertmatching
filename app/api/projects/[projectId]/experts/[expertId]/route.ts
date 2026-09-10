@@ -9,10 +9,20 @@
 //       note, userNotes, rejectionReason, rejectionNotes, rejectedAt
 //
 //   OWNER OR ADMIN ONLY (see OWNER_ONLY_FIELDS) — anything that moves the
-//   engagement or touches money:
-//       status, screeningStatus, expertRate, expertCounterRate,
+//   engagement or sets a rate:
+//       status, screeningStatus, clientRate, expertRate, expertCounterRate
+//
+//   NOBODY (see SERVER_OWNED_FIELDS) — what a call actually cost and whether
+//   money moved is Stripe's answer, not a request body's:
 //       callDurationMin, invoiceAmount, paymentStatus, paidAt,
 //       stripePaymentLinkId, stripePaymentLinkUrl, stripePaymentIntentId
+//   These are written only by POST …/complete (which recomputes the amount
+//   from the stored rate), the Zoom meeting.ended webhook, and the Stripe
+//   webhook. Accepting them here let the PAYING CLIENT — who is the project
+//   owner — send { paymentStatus: 'paid' } and walk straight through
+//   createAndSendInvoice's double-bill guard, so the call was never charged.
+//   No client in this repo has ever sent one of them; the route now answers
+//   403 server_owned_field.
 //
 //   DELETE is owner-or-admin outright — removing an expert throws away the
 //   whole engagement.
@@ -39,6 +49,8 @@
 import { NextRequest } from 'next/server';
 import { updateExpertStatus, addExpertNote, removeExpertFromProject, getProjectForUser, rateFieldsFor } from '../../../../../../lib/projectStore';
 import { expertRateFor, isValidClientRateUsd, CLIENT_RATE_FLOOR_USD, CLIENT_RATE_ROUNDING_USD } from '../../../../../../lib/pricing';
+import { isRateLocked } from '../../../../../../lib/matchyIntent';
+import { COLLABORATOR_FIELDS, OWNER_ONLY_FIELDS, serverOwnedFieldsIn } from '../../../../../../lib/expertWriteFields';
 import { guardMutatingRequest, requireProjectOwner } from '../../../../../../lib/projectsGuard';
 import { getSessionUser } from '../../../../../../lib/auth';
 import { sanitizeText, LIMITS } from '../../../../../../lib/projectValidation';
@@ -86,35 +98,12 @@ const VALID_EMAIL_VERIFICATION_STATUSES = new Set<ContactStatus>([
 const VALID_EMAIL_PROVIDERS = new Set(['hunter', 'snov', 'none']);
 
 /**
- * Body keys only the project owner (or a platform admin) may send: the
- * engagement's stage, the screening verdict, and every field that decides what
- * anyone gets charged or paid. A collaborator sending one of these gets 403;
- * a body without any of them is a note or a rejection reason and goes through.
+ * Who may write what — the three tiers live in lib/expertWriteFields.ts so the
+ * boundary is assertable on its own (scripts/test-billing-boundaries.ts):
+ *   COLLABORATOR_FIELDS  notes and rejection reasons, open to any member
+ *   OWNER_ONLY_FIELDS    stage, screening verdict and the rates
+ *   SERVER_OWNED_FIELDS  duration and payment state — nobody sends these
  */
-// Fields a COLLABORATOR may write. Everything else on this route is owner or
-// platform-admin only: contact details, drafts, availability, screening
-// material and every money field move the engagement or steer outreach.
-const COLLABORATOR_FIELDS: ReadonlySet<string> = new Set([
-  'note',
-  'userNotes',
-  'rejectionReason',
-  'rejectionNotes',
-  'rejectedAt',
-]);
-const OWNER_ONLY_FIELDS: readonly string[] = [
-  'status',
-  'screeningStatus',
-  'clientRate',
-  'expertRate',
-  'expertCounterRate',
-  'callDurationMin',
-  'invoiceAmount',
-  'paymentStatus',
-  'paidAt',
-  'stripePaymentLinkId',
-  'stripePaymentLinkUrl',
-  'stripePaymentIntentId',
-];
 
 export async function PUT(
   request: NextRequest,
@@ -137,6 +126,21 @@ export async function PUT(
     const { email, role } = await getSessionUser(request);
     const accessible = await getProjectForUser(params.projectId, email, role);
     if (!accessible) return Response.json({ error: 'not_found' }, { status: 404 });
+
+    // Billing state is Stripe's to write, never a request body's. Refused for
+    // every caller (owner, collaborator and platform admin alike) so there is
+    // exactly one path from a completed call to a charge.
+    const serverOwned = serverOwnedFieldsIn(body);
+    if (serverOwned.length > 0) {
+      return Response.json(
+        {
+          error:   'server_owned_field',
+          field:   serverOwned[0],
+          message: 'Payment and duration are recorded from the call and from Stripe, not from this request.',
+        },
+        { status: 403 },
+      );
+    }
 
     // Stage and money are the owner's to move; notes are not.
     // Anything outside the collaborator allowlist is owner-or-admin only.
@@ -260,9 +264,26 @@ export async function PUT(
       input.screenedAt = body.screenedAt;
     }
 
+    // Once the rate is agreed it does not move — on EITHER side of the
+    // conversion. The lock used to sit only on the clientRate branch below,
+    // which left `expertRate` as a way to rewrite an agreed engagement (and so
+    // what the card is charged at completion) from a status the product treats
+    // as settled.
+    const rateLocked = current ? isRateLocked(current) : false;
+    const rateLockedResponse = (): Response => {
+      const agreed = typeof current?.clientRate === 'number'
+        ? `$${current.clientRate.toLocaleString('en-US')}/hr`
+        : 'the agreed rate';
+      return Response.json(
+        { error: 'rate_locked', message: `The rate with this expert is agreed at ${agreed}. It does not move after that.` },
+        { status: 409 },
+      );
+    };
+
     // Billing fields. The client rate rides along with the expert rate in the
     // same write (lib/projectStore.rateFieldsFor) — never one without the other.
     if (typeof body.expertRate === 'number' && Number.isFinite(body.expertRate) && body.expertRate >= 1 && body.expertRate <= 9999) {
+      if (rateLocked) return rateLockedResponse();
       const rates = rateFieldsFor(body.expertRate);
       input.expertRate = rates.expertRate;
       input.clientRate = rates.clientRate;
@@ -282,17 +303,7 @@ export async function PUT(
           { status: 400 },
         );
       }
-      const locked = !!current?.rateAgreedAt
-        || current?.status === 'scheduling_sent'
-        || current?.status === 'scheduled'
-        || current?.status === 'completed';
-      if (locked) {
-        const agreed = typeof current?.clientRate === 'number' ? `$${current.clientRate.toLocaleString('en-US')}/hr` : 'the agreed rate';
-        return Response.json(
-          { error: 'rate_locked', message: `The rate with this expert is agreed at ${agreed}. It does not move after that.` },
-          { status: 409 },
-        );
-      }
+      if (rateLocked) return rateLockedResponse();
       const min = typeof accessible.clientRateMin === 'number' && accessible.clientRateMin > 0 ? accessible.clientRateMin : null;
       const max = typeof accessible.clientRateMax === 'number' && accessible.clientRateMax > 0 ? accessible.clientRateMax : null;
       if ((min !== null && requested < min) || (max !== null && requested > max)) {
@@ -308,25 +319,8 @@ export async function PUT(
       input.expertRate = rates.expertRate;
       input.clientRate = rates.clientRate;
     }
-    if (typeof body.callDurationMin === 'number' && Number.isInteger(body.callDurationMin) && body.callDurationMin >= 1 && body.callDurationMin <= 480) {
-      input.callDurationMin = body.callDurationMin;
-    }
-    if (typeof body.invoiceAmount === 'number' && Number.isFinite(body.invoiceAmount)) {
-      input.invoiceAmount = body.invoiceAmount;
-    }
-    if (typeof body.stripePaymentLinkId  === 'string') input.stripePaymentLinkId  = body.stripePaymentLinkId;
-    if (typeof body.stripePaymentLinkUrl === 'string') input.stripePaymentLinkUrl = body.stripePaymentLinkUrl;
-    if (typeof body.stripePaymentIntentId === 'string') input.stripePaymentIntentId = body.stripePaymentIntentId;
-    if (body.paymentStatus !== undefined) {
-      const VALID_PAYMENT_STATUSES = new Set(['unpaid', 'invoice_sent', 'paid', 'failed']);
-      if (body.paymentStatus !== null && !VALID_PAYMENT_STATUSES.has(body.paymentStatus as string)) {
-        return Response.json({ error: 'invalid_payment_status' }, { status: 400 });
-      }
-      input.paymentStatus = (body.paymentStatus ?? null) as 'unpaid' | 'invoice_sent' | 'paid' | 'failed' | null;
-    }
-    if (typeof body.paidAt === 'number' && Number.isFinite(body.paidAt) && body.paidAt > 0) {
-      input.paidAt = body.paidAt;
-    }
+    // callDurationMin, invoiceAmount, paymentStatus, paidAt and the three
+    // stripe* fields are SERVER_OWNED_FIELDS — rejected above, never read here.
     if (typeof body.availabilityRequestedAt === 'number' && Number.isFinite(body.availabilityRequestedAt) && body.availabilityRequestedAt > 0) {
       input.availabilityRequestedAt = body.availabilityRequestedAt;
     }

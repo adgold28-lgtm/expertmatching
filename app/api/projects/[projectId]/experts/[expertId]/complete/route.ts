@@ -12,7 +12,7 @@
 // Amounts are safe to log.
 
 import { NextRequest, NextResponse } from 'next/server';
-import { callChargeDollars } from '../../../../../../../lib/pricing';
+import { callChargeDollars, MAX_BILLABLE_MINUTES } from '../../../../../../../lib/pricing';
 import { routeAuthGuard, getSessionUser } from '../../../../../../../lib/auth';
 import { requireProjectOwner } from '../../../../../../../lib/projectsGuard';
 import { getProjectForUser, updateExpertStatus } from '../../../../../../../lib/projectStore';
@@ -52,9 +52,12 @@ export async function POST(
 
   if (
     callDurationMin === null || !Number.isInteger(callDurationMin) ||
-    callDurationMin < 1 || callDurationMin > 480
+    callDurationMin < 1 || callDurationMin > MAX_BILLABLE_MINUTES
   ) {
-    return NextResponse.json({ error: 'invalid_callDurationMin', message: 'callDurationMin must be 1–480' }, { status: 400 });
+    return NextResponse.json(
+      { error: 'invalid_callDurationMin', message: `callDurationMin must be 1–${MAX_BILLABLE_MINUTES}` },
+      { status: 400 },
+    );
   }
   if (
     invoiceAmount === null || !Number.isInteger(invoiceAmount) ||

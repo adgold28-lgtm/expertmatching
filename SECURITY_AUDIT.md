@@ -189,3 +189,88 @@ See M-1 in "Remaining Findings" section above. Status unchanged.
 - **Auth-gated routes all call `routeAuthGuard`:** `/complete`, `/request-availability`, `/request-client-availability`, admin routes. ✓
 - **No PII in Redis key names:** `rlKey()` HMAC-pseudonymizes all identifiers. ✓
 - **AES-256-GCM for OAuth tokens at rest:** Implemented correctly with random IV per encryption. ✓
+
+---
+
+## Stripe / Billing Review (September 2026)
+
+**Date:** 2026-09-10
+**Scope:** Every file that touches Stripe — `lib/stripe.ts`, `lib/stripeConnect.ts`,
+`lib/chargeSavedCard.ts`, `lib/createAndSendInvoice.ts`, `lib/expertPayout.ts`,
+`lib/orgBilling.ts`, `lib/pricing.ts`, `app/api/webhooks/stripe`,
+`app/api/webhooks/zoom`, `app/api/onboarding/billing` (+ `/confirm`),
+`app/api/settings/payment-method`, `app/api/expert-onboarding/[token]`,
+`app/api/jobs/reconcile`, and the project-expert write route.
+**Method:** Manual read of every money path end to end — who may write the numbers
+that decide a charge, and what each webhook is trusted for.
+**Tests:** `npx tsx scripts/test-billing-boundaries.ts` (48 checks) covers all
+three findings below.
+
+### S-1: The paying client could mark their own call paid [FIXED — HIGH]
+
+**File:** `app/api/projects/[projectId]/experts/[expertId]/route.ts`
+**Finding:** `PUT`/`PATCH` accepted `paymentStatus`, `paidAt`, `stripePaymentIntentId`,
+`stripePaymentLinkId`, `stripePaymentLinkUrl`, `invoiceAmount` and `callDurationMin`
+from the project owner — who is the person whose card the platform charges.
+`lib/createAndSendInvoice.ts`'s durable double-bill guard skips billing when
+`paymentStatus === 'paid'` **or** any `stripePaymentIntentId` is set, so a single
+`PUT { "paymentStatus": "paid" }` before `POST …/complete` meant the call was
+never charged and the engagement still read as paid to staff. The same fields let
+`callDurationMin` be rewritten after a charge, inflating the expert payout that
+`lib/expertPayout.ts` recomputes when Stripe's webhook lands — the difference
+comes out of platform funds.
+**Fix:** These seven fields are now `SERVER_OWNED_FIELDS` (`lib/expertWriteFields.ts`)
+and the route answers `403 server_owned_field` to anyone who sends one, platform
+admins included. They are written by exactly three server paths: `POST …/complete`
+(which recomputes the amount from the stored rate), the Zoom `meeting.ended`
+webhook, and the Stripe webhook. No client in this repo ever sent one of them, so
+nothing in the product changes.
+
+### S-2: An agreed rate could still be moved through `expertRate` [FIXED — MEDIUM]
+
+**File:** `app/api/projects/[projectId]/experts/[expertId]/route.ts`
+**Finding:** The rate lock (`rateAgreedAt`, or a status of `scheduling_sent` /
+`scheduled` / `completed`) was enforced only on the `clientRate` branch. The
+`expertRate` branch writes both rates through `rateFieldsFor()` and had no lock,
+so `PUT { "expertRate": 1 }` on a settled engagement rewrote the client rate the
+completion route then charges — after the expert had accepted a different number.
+**Fix:** Both branches now go through the shared `isRateLocked()` predicate
+(`lib/matchyIntent.ts`) and return the same `409 rate_locked`.
+
+### S-3: The Zoom auto-invoice path had no duration ceiling [FIXED — MEDIUM]
+
+**Files:** `app/api/webhooks/zoom/route.ts`, `lib/pricing.ts`
+**Finding:** `meeting.ended` derives the call length from the event's
+`start_time`/`end_time` and charges the saved card off-session. An unparseable
+`start_time` produced `NaN` (a silent $0 invoice for a real call), and there was
+no upper bound at all: a meeting left open, or an event carrying a stale
+`start_time`, became an unbounded off-session charge — while the manual
+`POST …/complete` route has always refused anything over 480 minutes.
+**Fix:** `billableCallMinutesFromWindow()` in `lib/pricing.ts` bounds the derived
+length to `[1, MAX_BILLABLE_MINUTES]` and never returns `NaN`. `MAX_BILLABLE_MINUTES`
+(480) is now the single ceiling shared by the webhook and the completion route.
+
+### Verified clean in this pass
+
+- **SetupIntent confirmation** (`app/api/onboarding/billing/confirm`) retrieves the
+  intent from Stripe, requires its `customer` to equal the caller's ORG customer
+  before any state change, and requires `status === 'succeeded'`. The replay gap
+  noted in PR #34 is closed. ✓
+- **Card replacement** is gated on `org_admin` / platform admin at the point the
+  SetupIntent is minted; `/confirm` can only ever promote a payment method that
+  already belongs to the org's own customer. ✓
+- **Charge amounts** are always recomputed server-side from the stored rate
+  (`callChargeDollars`); the client-supplied `invoiceAmount` is only cross-checked,
+  never used. ✓
+- **Payout amounts** are recomputed from the stored `expertRate`
+  (`expertPayoutDollars`) — a webhook payload is never trusted for money. ✓
+- **Double-charge / double-payout** are guarded twice: durable state
+  (`paymentStatus` / `stripePaymentIntentId` / `stripeTransferId`) plus deterministic
+  Stripe idempotency keys (`charge:`, `expert-payout:`, `org-customer:`). ✓
+- **Card data exposure:** `/api/settings/payment-method` returns brand, last4 and
+  expiry only, and only to a champion or platform admin. Customer and payment
+  method ids never leave the server. ✓
+- **`/api/jobs/reconcile`** refuses to run (503) without `CRON_SECRET` and compares
+  it without an early exit. ✓
+- **Webhook signatures:** Stripe `constructEvent` and Zoom `timingSafeEqual` both
+  run before any read or write. ✓

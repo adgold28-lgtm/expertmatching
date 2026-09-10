@@ -106,6 +106,42 @@ export const EXPERT_SHARE   = 0.50;
 export const PLATFORM_SHARE = 0.50;
 /** Calls shorter than this are billed as this many minutes. */
 export const MIN_BILLABLE_MINUTES = 15;
+/**
+ * The longest call this product will bill, in minutes (8 hours). It is the
+ * validation ceiling on POST …/complete and the clamp on the duration the Zoom
+ * meeting.ended webhook derives — a meeting left open, or an event carrying a
+ * stale start_time, must not turn into an unbounded off-session charge on the
+ * client's saved card.
+ */
+export const MAX_BILLABLE_MINUTES = 480;
+
+/**
+ * Call length in minutes from a meeting window, bounded on both ends.
+ *
+ * Used by the Zoom `meeting.ended` webhook, which is what turns a finished call
+ * into an off-session charge on the client's saved card — so the number it
+ * derives is never taken on trust:
+ *   - an unparseable or missing `start` falls back to one minute rather than
+ *     producing NaN (which used to become a silent $0 invoice)
+ *   - a missing or unparseable `end` falls back to `now`
+ *   - the result is clamped to [1, MAX_BILLABLE_MINUTES], so a meeting left
+ *     open, or a replayed event carrying a stale start, cannot become an
+ *     unbounded charge. The manual POST …/complete route refuses anything past
+ *     the same ceiling.
+ *
+ * All three arguments are epoch milliseconds.
+ */
+export function billableCallMinutesFromWindow(
+  start: number,
+  end:   number | null,
+  now:   number,
+): number {
+  if (!Number.isFinite(start)) return 1;
+  const resolvedEnd = end !== null && Number.isFinite(end) ? end : now;
+  const minutes     = Math.ceil((resolvedEnd - start) / 60_000);
+  if (!Number.isFinite(minutes)) return 1;
+  return Math.min(MAX_BILLABLE_MINUTES, Math.max(1, minutes));
+}
 
 /** Billable minutes for a call: at least MIN_BILLABLE_MINUTES, whole minutes. */
 export function billableMinutes(durationMinutes: number): number {
