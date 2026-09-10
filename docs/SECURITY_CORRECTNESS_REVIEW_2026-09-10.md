@@ -162,3 +162,71 @@ Tests were executed here using the locally cached tsx Node loader, without insta
 ### Final completion record
 
 `npm run build:local` completed successfully after the payout guard change. `tsc --noEmit` and `git diff --check` passed. The full 38-suite pass includes the updated repair/Matchy 2.0 snapshot; the subsequently expanded payout regression passed 229/229. The new recovery suite passed 39 assertions. All changes remain local on the isolated branch, with no push or deployment.
+
+## Follow-up review of this branch, 2026-09-10 (second reviewer)
+
+The commits above were re-reviewed independently before integration, the branch
+was rebased onto `main@b44a02c`, and four defects were fixed. Every claim in the
+sections above was re-run rather than taken on trust: `tsc --noEmit` clean,
+`git diff --check` clean, all 38 offline suites green, `test-stripe-flows`
+229/229 and `test-stripe-recovery` 39 assertions reproduced exactly as stated
+before any change. `npm run build:local` was run on a clean `npm ci` install.
+
+### Confirmed as described
+
+R1's lease protocol was traced through every interleaving: `busy` throws before
+the `try`, so the `finally` cannot release another worker's lock;
+`releaseLockIfOwner` is an owner-guarded EVAL; the second `doneKey` read closes
+the claim/complete race; `completeEvent` before the release is the correct
+order. R5's `WeakMap` is keyed on request identity, middleware and route
+handlers get distinct objects, and caching a `null` from an auth outage is
+fail-closed. The new `recordSystemFailure` call passes a fixed template with no
+exception text. No secret-leak, stale-user or wrong-authorization path was
+found in any of them.
+
+### Defects found and fixed here
+
+**F1 — a permanent handler failure became a three-day retry loop.** R1's
+"stop swallowing, let Stripe redeliver" is right for a transient store failure
+and wrong for a permanent one. `projectStore.mutateExpert` throws
+`Expert not found` for an engagement deleted between billing and payment
+(`DELETE /api/projects/[id]/experts/[id]` has no billed-row guard), and
+`engagementForCharge` retrieves a PaymentIntent on the platform account that a
+connected-account charge does not have. Both 500'd on every redelivery, wrote
+one attention row per attempt, and risked Stripe disabling the endpoint — which
+would have stopped every other money event too. `isUnprocessableWebhookError`
+now separates the two; permanent failures are recorded once and acknowledged.
+
+**F2 — a blocked payout became invisible rather than deferred.** R3's two new
+checks were bare `return`s placed before the row is ever given an
+`expertOnboardingStatus`, the only field both sweeps and the reconcile
+stale-owed alarm select on. Since `getEntitlementsForProject` fails closed, a
+Supabase outage, an unreadable organization row and a legacy project without an
+organization all reach it looking like a restricted trial — and the expert
+silently disappeared from every retry path. `createAndSendInvoice` resetting the
+shared row to `unpaid` for a second call has the same shape. `holdPayout` now
+parks such a row as `pending` without burning the attempt budget, and raises one
+`payout_held` event on the transition only.
+
+**F3 — R4 trapped a blocked session with no way out.** `PUBLIC_PATHS` is only
+consulted in the no-session branch, so a signed-in `pending` user requesting
+`/login` was redirected to `/login`, and `/api/auth/logout` answered 403: the
+user could not clear the cookie blocking them. The gate now returns
+`PUBLIC_PATHS` through, as the onboarding gate below it already does.
+
+**F4 — rebase integration.** `main@b44a02c` removed the intro's LinkedIn line
+and the only reader of `OUTREACH_LINKEDIN_URL`, which `check-env-drift` fails on
+once the two are combined. The variable is retired.
+
+Each fix carries failed-before evidence: reverting the changed file alone makes
+its suite fail. `test-stripe-recovery` is now 61 assertions,
+`test-stripe-flows` 241/241, and `test-auth-request-cache` additionally covers
+the sign-out escape for both blocked statuses.
+
+### Still open, unchanged by this pass
+
+R6 (nine dependency advisories), R7 (cross-event ordering and per-call financial
+correlation), R8–R13 and the "no live provider was exercised" limits above all
+stand as written. F2 makes a blocked payout visible; it does not make the
+entitlement read atomic with a concurrent refund. Nothing here was deployed, and
+no live Stripe, Supabase, Zoom or email service was contacted.
