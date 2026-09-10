@@ -16,8 +16,13 @@
 //   - `bookmarkLine('walkthrough_held', …)` says nothing was sent
 //   - `validateCreateProjectInput` accepts a boolean, rejects anything else with
 //     `invalid_walkthrough`, and leaves the field ABSENT when it is absent
+//   - `dispositionOf` (lib/emailSequence) tells the three client-facing routes —
+//     the client reply, the approved follow-up and the rate decision — which
+//     hold to store and whether the engagement may move. Walkthrough is the one
+//     hold that still moves it; a chokepoint hold never does (H-4).
 
 import { isWalkthrough, toHeldReason, WALKTHROUGH_HELD_SUMMARY } from '../lib/walkthrough';
+import { dispositionOf } from '../lib/emailSequence';
 import { redactMessageForViewer, type ViewerMessage } from '../lib/conversations';
 import { bookmarkLine, isHeld, isPendingApproval, type ConversationMessage } from '../lib/matchyClient';
 import { validateCreateProjectInput } from '../lib/projectValidation';
@@ -118,6 +123,66 @@ check('an ordinary sent message is not pending',  plainView.pendingApproval === 
 
 const garbageView = redactMessageForViewer(row({ blocked: false, findings: [], held: 'nonsense' }), viewer);
 eq('an unrecognised held value is dropped', garbageView.held, null);
+
+// ─── what the three routes do with a held send (H-4) ──────────────────────────
+
+section('dispositionOf — the branch the three routes share');
+
+// The client reply, the approved follow-up and the rate decision all call this
+// with one of three attempts. Nothing else may decide "did it go out".
+
+const wt = dispositionOf({ kind: 'walkthrough' });
+eq('walkthrough: stored as walkthrough',   wt.held, 'walkthrough');
+check('walkthrough: the engagement still moves — a practised decision has to '
+  + 'leave the project where it really would be', wt.advance === true);
+check('walkthrough: nothing was delivered', wt.delivered === false);
+
+for (const reason of ['trial', 'disabled'] as const) {
+  const d = dispositionOf({ kind: 'outcome', outcome: { sent: false, held: reason } });
+  eq(`${reason}: the reason is stored on the message`, d.held, reason);
+  check(`${reason}: the rate is NOT written, no event is emitted, no times are proposed`,
+    d.advance === false);
+  check(`${reason}: nothing was delivered`, d.delivered === false);
+}
+
+const delivered = dispositionOf({ kind: 'outcome', outcome: { sent: true } });
+eq('sent: no hold on the message',   delivered.held, null);
+check('sent: the engagement moves',  delivered.advance === true);
+check('sent: delivered',             delivered.delivered === true);
+
+const noAddress = dispositionOf({ kind: 'no_recipient' });
+eq('no address yet: nothing to hold',  noAddress.held, null);
+check('no address yet: the decision is still recorded', noAddress.advance === true);
+check('no address yet: nothing was delivered', noAddress.delivered === false);
+
+// The whole point: a walkthrough hold and a chokepoint hold look the same to
+// the reader of the thread and different to the engagement.
+check('both kinds of hold render a tag',
+  wt.held !== null
+  && dispositionOf({ kind: 'outcome', outcome: { sent: false, held: 'trial' } }).held !== null);
+check('only the chokepoint hold freezes the engagement',
+  wt.advance === true
+  && dispositionOf({ kind: 'outcome', outcome: { sent: false, held: 'trial' } }).advance === false);
+
+// The stored hold has to survive the jsonb round trip the routes write it
+// through, or the thread renders a message that looks delivered.
+const trialView = redactMessageForViewer(
+  row({ blocked: false, findings: [], held: 'trial' }),
+  viewer,
+);
+eq('a trial hold reads back off the stored row', trialView.held, 'trial');
+check('a trial hold is not pending approval',    trialView.pendingApproval === false);
+
+// The approved-follow-up route puts the pending flag BACK when the chokepoint
+// held the draft, and records why. Held wins for rendering; the flag is what
+// lets the owner release it once the account is live.
+const restoredView = redactMessageForViewer(
+  row({ blocked: false, findings: [], pending: true, held: 'trial' }),
+  viewer,
+);
+eq('a restored draft still shows its hold',   restoredView.held, 'trial');
+check('a restored draft shows no send button while the hold stands',
+  restoredView.pendingApproval === false);
 
 // ─── the browser's view of the same flags ─────────────────────────────────────
 

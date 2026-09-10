@@ -28,7 +28,17 @@
 // money fields move exactly as they do in live mode — practising a decision has
 // to leave the engagement in the state it really would be in — and the outbound
 // line is written to the thread marked `held: 'walkthrough'` so the client can
-// read what would have gone to the expert. The response carries `held: true`.
+// read what would have gone to the expert. The response carries the reason in
+// `held`.
+//
+// A CHOKEPOINT HOLD IS NOT WALKTHROUGH AND IS NOT AN AGREEMENT. When
+// lib/emailSequence holds the line for any of its own reasons — DISABLE_EMAILS,
+// an organization with no card on file, or the expert being on the global
+// do-not-contact list — the expert never saw the number, so NOTHING moves: no
+// rate is written, no `rate_agreed` / `rate_offered` event is emitted and no
+// times are proposed. The line is stored on the thread with its hold and the
+// response is 200 with `held`, so the client can settle it once the account is
+// live rather than waiting on a reply that cannot come.
 //
 // STATUS IS NOT TOUCHED BY THE DECISION ITSELF. There is no "rate agreed"
 // status in lib/expertPipeline.ts and this is not the place to invent one. What
@@ -57,7 +67,7 @@ import { getProjectForUser, updateExpertStatus, rateFieldsFor } from '../../../.
 import { appendMessage } from '../../../../../../../lib/conversations';
 import { expertRateFor, clientRateCeilingExceeded } from '../../../../../../../lib/pricing';
 import { rateAcceptedTemplate, rateCounterTemplate } from '../../../../../../../lib/matchyTemplates';
-import { sendSequenceEmail } from '../../../../../../../lib/emailSequence';
+import { sendSequenceEmail, dispositionOf, type SendAttempt } from '../../../../../../../lib/emailSequence';
 import { emitEngagementEvent } from '../../../../../../../lib/engagementEvents';
 import { redactExpertForViewer } from '../../../../../../../lib/redactExpert';
 import { getFirm } from '../../../../../../../lib/firmStore';
@@ -151,16 +161,49 @@ export async function POST(
     //    Resend failure throws, the catch answers 500, and no rate is recorded
     //    for a line nobody received. The reverse (money written, send failed)
     //    would leave the engagement claiming an agreement the expert never saw.
-    //    The residual gap is a chokepoint HOLD rather than a throw: the
-    //    SendOutcome is discarded, so a 'trial' or 'disabled' hold still writes
-    //    the money, stores the line without a `held` flag and emits
-    //    `sent: true`. Only walkthrough is detected, and only because this
-    //    route checks it itself.
-    const held = isWalkthrough(project);
-    if (!held && pe.contactEmail && pe.outreachToken) {
-      const base    = pe.outreachSubject?.trim() || 'Paid expert call';
-      const subject = /^re:/i.test(base) ? base : `Re: ${base}`;
-      await sendSequenceEmail(pe.contactEmail, subject, text, pe.outreachToken, 'rate_decision');
+    //    A CHOKEPOINT HOLD IS TREATED THE SAME WAY (H-4): 'trial', 'disabled'
+    //    and the do-not-contact list all return normally rather than throwing,
+    //    so the outcome is read and `dispositionOf` says whether the engagement
+    //    may move. It may not: no rate is written, no event is emitted and no
+    //    times are proposed for a line the expert never received. Walkthrough
+    //    is the deliberate exception — a practised decision moves the money,
+    //    because the mode exists to show the client what really happens.
+    const base    = pe.outreachSubject?.trim() || 'Paid expert call';
+    const subject = /^re:/i.test(base) ? base : `Re: ${base}`;
+
+    const attempt: SendAttempt = isWalkthrough(project)
+      ? { kind: 'walkthrough' }
+      : (!pe.contactEmail || !pe.outreachToken)
+        ? { kind: 'no_recipient' }
+        : {
+            kind:    'outcome',
+            outcome: await sendSequenceEmail(
+              pe.contactEmail, subject, text, pe.outreachToken, 'rate_decision',
+            ),
+          };
+
+    const disposition = dispositionOf(attempt);
+    const held        = disposition.held;
+
+    // Held by the chokepoint: the expert has nothing, so neither does the
+    // engagement. The line is stored with its hold so the client can read what
+    // would have gone out, and the money stays exactly where it was.
+    if (!disposition.advance) {
+      await appendMessage({
+        projectId: params.projectId,
+        expertId:  params.expertId,
+        direction: 'outbound',
+        author:    'matchy',
+        bodyClean: text,
+        summary:   'Held. Nothing was sent to them, so the rate has not moved.',
+        ...(held && { held }),
+      });
+
+      return NextResponse.json({
+        ok:            true,
+        held,
+        projectExpert: redactExpertForViewer(pe, { role }),
+      });
     }
 
     // 7. The money. clientRate is never written on its own — rateFieldsFor
@@ -192,7 +235,7 @@ export async function POST(
         : action === 'accept'
           ? 'Rate agreed. Finding a time next.'
           : 'Held at your rate. Waiting on their answer.',
-      ...(held && { held: 'walkthrough' as const }),
+      ...(held && { held }),
     });
 
     const firm  = await getFirm(project.firmDomain).catch(() => null);
@@ -205,7 +248,7 @@ export async function POST(
       payload:   {
         expertRate: rates.expertRate,
         clientRate: rates.clientRate,
-        sent:       !held && !!pe.contactEmail,
+        sent:       disposition.delivered,
         ...(held && { walkthrough: true }),
       },
     });
@@ -228,7 +271,7 @@ export async function POST(
       ok:            true,
       projectExpert: redactExpertForViewer(current, { role }),
       ...(scheduling && { scheduling }),
-      ...(held && { held: true }),
+      ...(held && { held }),
     });
   } catch (err) {
     console.error('[rate-decision] failed:',

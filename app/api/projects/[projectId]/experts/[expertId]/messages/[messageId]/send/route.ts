@@ -18,9 +18,12 @@
 // this is the belt to that braces — a stale client cannot release anything
 // while the project is not live.
 //
-// IDEMPOTENT: the pending flag is what makes a message sendable, and it is
-// cleared as part of sending. A second POST finds no pending flag and answers
-// 409 rather than mailing the expert twice.
+// IDEMPOTENT: the pending flag is what makes a message sendable. It is SPENT
+// BEFORE the Resend call, not after, so a failure between the two cannot leave
+// a flag that a second click spends again; a second POST finds no pending flag
+// and answers 409 rather than mailing the expert twice. If the message turns
+// out not to have gone (the chokepoint held it), the flag is put back and the
+// answer carries `held` rather than pretending the expert has it.
 //
 // MONEY: the draft already carries `expertRate`, because it was built by
 // lib/matchyTemplates.buildFollowUpEmail for an expert audience. Nothing here
@@ -36,20 +39,50 @@ import { getProjectForUser, updateExpertStatus } from '../../../../../../../../.
 import {
   getMessage,
   updateMessage,
+  clearPendingIfPending,
   redactMessageForViewer,
 } from '../../../../../../../../../lib/conversations';
-import { sendSequenceEmail } from '../../../../../../../../../lib/emailSequence';
+import { sendSequenceEmail, dispositionOf, type SendDisposition } from '../../../../../../../../../lib/emailSequence';
 import { emitEngagementEvent } from '../../../../../../../../../lib/engagementEvents';
 import { isSuppressed } from '../../../../../../../../../lib/outreachSuppressions';
 import { clientRateFor } from '../../../../../../../../../lib/pricing';
 import { getFirm } from '../../../../../../../../../lib/firmStore';
-import { isWalkthrough } from '../../../../../../../../../lib/walkthrough';
+import { isWalkthrough, type HeldReason } from '../../../../../../../../../lib/walkthrough';
 import { isIdentityRevealed } from '../../../../../../../../../lib/redactExpert';
 import type { StoredScreenResult } from '../../../../../../../../../lib/conversations';
 
 const ID_RE         = /^[a-f0-9]{24}$/;
 const EXPERT_ID_RE  = /^[a-zA-Z0-9\-_]+$/;
 const MESSAGE_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * Put the pending flag back on a draft that did not go out.
+ *
+ * Only the flag and its hold change; the screen's own verdict is preserved.
+ * Recording the hold alongside `pending` is deliberate: the client sees WHY it
+ * is still sitting there, and the draft stays releasable once the account is
+ * live again.
+ *
+ * Best effort — the send did not happen either way, and an owner who reloads
+ * sees the truth from the row.
+ */
+async function restorePending(
+  messageId: string,
+  screen:    StoredScreenResult,
+  held?:     HeldReason | null,
+) {
+  return updateMessage(messageId, {
+    screenResult: {
+      blocked:  screen.blocked,
+      findings: screen.findings ?? [],
+      pending:  true,
+      ...(held ? { held } : {}),
+    },
+    // The draft's own summary is left alone unless there is a hold to explain:
+    // it already says the message is waiting on the client.
+    ...(held ? { summary: 'Held. Nothing was sent to them, so the draft is still waiting.' } : {}),
+  });
+}
 
 export async function POST(
   request: NextRequest,
@@ -138,25 +171,57 @@ export async function POST(
     const base = pe.outreachSubject?.trim() || 'Paid expert call';
     const subject = /^re:/i.test(base) ? base : `Re: ${base}`;
 
-    // The stored body is the template's text with the CAN-SPAM footer already
-    // stripped off, so the sender appends a fresh one for this recipient.
-    //
-    // The SendOutcome is discarded. A Resend failure throws and the catch
-    // answers 500 with nothing written, which is the safe half; but a
-    // chokepoint HOLD ('trial' / 'disabled') returns normally, and the code
-    // below then clears the pending flag, moves the expert to 'followup_sent'
-    // and emits `rate_offered` for a message that never left the building.
-    //
-    // The idempotency in the header is also read-then-write, not atomic: two
-    // POSTs racing both see `pending: true` before either clears it, so the
-    // expert can be mailed twice. Rare (one owner, one button) but real.
-    await sendSequenceEmail(pe.contactEmail, subject, body, pe.outreachToken, 'followup_approved');
-
-    // Clearing the flag is what makes this route idempotent.
-    const updatedRow = await updateMessage(stored.id, {
+    // CLEAR THE FLAG BEFORE THE SEND, NOT AFTER (M-30). The pending flag is the
+    // permission to mail this draft, so it is spent first, ATOMICALLY: the
+    // conditional update in lib/conversations.clearPendingIfPending only wins
+    // when the row still carries `pending: true`, so two POSTs racing on the
+    // same message can no longer both spend the flag — the loser sees zero
+    // rows updated and is answered 409 `not_pending` before any send is
+    // attempted. Everything after this point restores the flag if the expert
+    // did not actually receive the draft.
+    const clearedRow = await clearPendingIfPending(stored.id, {
       screenResult: { blocked: screen.blocked, findings: screen.findings ?? [] },
       summary:      'Sent the conflict questions and the rate ask. Waiting on their terms.',
     });
+    if (!clearedRow) {
+      return NextResponse.json(
+        { error: 'not_pending', message: 'That message has already been sent.' },
+        { status: 409 },
+      );
+    }
+
+    // The stored body is the template's text with the CAN-SPAM footer already
+    // stripped off, so the sender appends a fresh one for this recipient.
+    //
+    // THE OUTCOME IS READ (H-4). A Resend failure throws and the catch answers
+    // 500; a chokepoint HOLD ('trial', 'disabled', or the do-not-contact list)
+    // returns normally, and it must not be mistaken for a send. On a hold the
+    // pending flag goes back on the message, the expert stays where they are,
+    // no `rate_offered` is emitted, and the response says what happened.
+    let disposition: SendDisposition;
+    try {
+      disposition = dispositionOf({
+        kind:    'outcome',
+        outcome: await sendSequenceEmail(pe.contactEmail, subject, body, pe.outreachToken, 'followup_approved'),
+      });
+    } catch (err) {
+      await restorePending(stored.id, screen);
+      throw err;
+    }
+
+    if (!disposition.advance) {
+      const restored = await restorePending(stored.id, screen, disposition.held);
+      return NextResponse.json({
+        ok:      true,
+        held:    disposition.held,
+        message: redactMessageForViewer(restored ?? clearedRow ?? stored, {
+          role,
+          revealed:       isIdentityRevealed(pe),
+          expertFullName: pe.expert.name,
+          expertCompany:  pe.expert.company,
+        }),
+      });
+    }
 
     const expertRate = pe.expertRate ?? 0;
 
@@ -179,7 +244,7 @@ export async function POST(
     });
 
     return NextResponse.json({
-      message: redactMessageForViewer(updatedRow ?? stored, {
+      message: redactMessageForViewer(clearedRow ?? stored, {
         role,
         revealed:       isIdentityRevealed(pe),
         expertFullName: pe.expert.name,

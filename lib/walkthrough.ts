@@ -39,19 +39,23 @@ export const WALKTHROUGH_HELD_SUMMARY = 'Held. Walkthrough mode sends nothing.';
  *   'trial'       — the organization has no card on file (lib/entitlements.ts):
  *                   a trial or not-yet-activated account may never reach an
  *                   expert, whatever the project's own mode says
+ *   'suppressed'  — the address is on the global do-not-contact list, or that
+ *                   list could not be read (lib/outreachSuppressions.ts fails
+ *                   closed, and so does the chokepoint that consults it)
  * Both mean "not sent"; they are distinguished so a caller can tell a product
  * state from an operational one.
  */
-export type HeldReason = 'walkthrough' | 'disabled' | 'trial';
+export type HeldReason = 'walkthrough' | 'disabled' | 'trial' | 'suppressed';
 
-const HELD_REASONS: ReadonlySet<string> = new Set<HeldReason>(['walkthrough', 'disabled', 'trial']);
+const HELD_REASONS: ReadonlySet<string> = new Set<HeldReason>(['walkthrough', 'disabled', 'trial', 'suppressed']);
 
 /** The short tag a held message wears in the thread. */
 export function heldLabel(reason: HeldReason | string | null | undefined): string {
   switch (reason) {
-    case 'trial':    return 'Held · activation required';
-    case 'disabled': return 'Held · sending disabled';
-    default:         return 'Held · walkthrough';
+    case 'trial':       return 'Held · activation required';
+    case 'disabled':    return 'Held · sending disabled';
+    case 'suppressed':  return 'Held · they opted out';
+    default:            return 'Held · walkthrough';
   }
 }
 

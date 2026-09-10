@@ -283,6 +283,45 @@ export async function updateMessage(
   }
 }
 
+/**
+ * Spend the review-first `pending` flag, ATOMICALLY.
+ *
+ * The flag is the permission to mail a draft, so releasing it is a
+ * compare-and-set: the filter on the jsonb flag means only one of two racing
+ * approvals can win it. Returns the updated row, or null when the flag was not
+ * there to spend — the caller answers 409 `not_pending` on null.
+ */
+export async function clearPendingIfPending(
+  messageId: string,
+  patch: UpdateMessageInput = {},
+): Promise<ConversationMessageRow | null> {
+  const db = getServiceRoleClient();
+  if (!db || !messageId) return null;
+
+  try {
+    const { data, error } = await db
+      .from('conversation_messages')
+      .update({
+        ...(patch.summary !== undefined ? { summary: patch.summary } : {}),
+        ...(patch.screenResult !== undefined ? { screen_result: patch.screenResult } : {}),
+      } as never)
+      .eq('id', messageId)
+      .eq('screen_result->>pending', 'true')   // PostgREST jsonb text filter
+      .select();
+
+    if (error) {
+      console.warn('[conversations] conditional update failed',
+        JSON.stringify({ reason: error.message.slice(0, 120) }));
+      return null;
+    }
+    return (data && data.length > 0) ? (data[0] as ConversationMessageRow) : null;
+  } catch (err) {
+    console.warn('[conversations] conditional update failed',
+      JSON.stringify({ reason: err instanceof Error ? err.message.slice(0, 120) : 'unknown' }));
+    return null;
+  }
+}
+
 // ─── Read ─────────────────────────────────────────────────────────────────────
 
 /** Hard cap on a thread read — a relay thread never legitimately runs longer. */

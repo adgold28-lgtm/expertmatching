@@ -36,7 +36,11 @@
 //
 // ONLY FROM `outreach_drafted`. Any other status means the intro already went
 // out (or the expert was rejected), and approving again would be a second cold
-// email to the same person.
+// email to the same person. lib/outreachSteps backs that up with a send-once
+// guard on the row itself, so a double click that gets past this status check
+// (two requests reading `outreach_drafted` at the same moment) still sends
+// exactly one email; the second answers `intro_sent` with nothing sent and no
+// event emitted.
 //
 // Never logs: expert name, expert email, project name, token, email content,
 // the why-them line.
@@ -165,6 +169,7 @@ export async function POST(
 
     const firm = await getFirm(project.firmDomain).catch(() => null);
 
+<<<<<<< HEAD
     // Screen, lint and persist the staff line before the step runs.
     if (typeof rawWhyThem === 'string') {
       const line = withWhyThemClause(rawWhyThem);
@@ -204,6 +209,13 @@ export async function POST(
       });
     }
 
+=======
+    // IDENTICAL DENY LIST TO THE BOOKMARK ROUTE (M-29). `firmName` is never
+    // written into the email: lib/matchyTemplates.deriveTopic takes it as a
+    // deny term so a research question containing the client's own firm name
+    // cannot reach the expert. The review-first path must not be blinded any
+    // less carefully than the auto-sent one.
+>>>>>>> 5e21428 (fix(outreach): suppression at the send chokepoint, send-once intro, held outcomes honoured)
     const result = await runSequenceStep({
       projectId: params.projectId,
       expertId:  params.expertId,
@@ -222,6 +234,7 @@ export async function POST(
 
     const updated = result.project.experts.find(e => e.expert.id === params.expertId) ?? pe;
 
+<<<<<<< HEAD
     // The step can decline to send: it holds an intro it has no personal line
     // for (a draft that predates the rubric, or a line that broke it), and the
     // send chokepoint can refuse. Neither is an `intro_sent`.
@@ -236,6 +249,17 @@ export async function POST(
         ok:            true,
         projectExpert: redactExpertForViewer(updated, { role }),
         outcome:       'intro_drafted',
+=======
+    // The send-once guard refused: this expert already has the intro (a double
+    // click, or a bookmark that raced the approval). Nothing was sent and
+    // nothing was written, so no `intro_sent` event is emitted for it either —
+    // the engagement_events stream must not record two intros for one email.
+    if (result.alreadySent) {
+      return NextResponse.json({
+        ok:            true,
+        projectExpert: redactExpertForViewer(updated, { role }),
+        outcome:       'intro_sent',
+>>>>>>> 5e21428 (fix(outreach): suppression at the send chokepoint, send-once intro, held outcomes honoured)
       });
     }
 

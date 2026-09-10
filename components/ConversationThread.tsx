@@ -606,16 +606,17 @@ export default function ConversationThread({
         body:    JSON.stringify({ action }),
       });
       const data = await res.json().catch(() => null) as
-        { message?: string; held?: boolean; projectExpert?: ProjectExpertWithCounter } | null;
+        { message?: string; held?: string; projectExpert?: ProjectExpertWithCounter } | null;
 
       if (!res.ok) {
         setSendError(data?.message ?? 'Something went wrong. Try again.');
         return;
       }
-      // The rate moved either way; in walkthrough the line to the expert did not
-      // go, and saying so is the whole point of the mode.
+      // The rate moved either way; the reply to the expert may have been held
+      // for any reason the chokepoint recognizes (walkthrough, trial,
+      // suppressed, disabled) — say which one rather than assuming walkthrough.
       setDecisionNote(data?.held
-        ? 'Recorded. The reply to them was held — nothing is sent in walkthrough mode.'
+        ? `Recorded. Nothing was sent to them (${heldLabel(data.held)}).`
         : action === 'accept'
           ? 'Rate agreed. I have told them.'
           : 'Held at your rate. I have told them.');

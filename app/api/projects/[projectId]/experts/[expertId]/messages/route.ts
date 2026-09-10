@@ -13,7 +13,8 @@
 //        expert record goes through lib/redactExpert.redactExpertForViewer, so
 //        `contactEmail` and `expertRate` are gone before the response is built.
 //
-// POST { text } → 201 { message }
+// POST { text } → 201 { message }, or 200 { ok, held, message } when the send
+//        was held.
 //        ONLY the project owner or a platform admin may send. Collaborators are
 //        read-only by product decision (spec, founder answer 5) and get 403
 //        `read_only`. The message is screened client→expert first: if the
@@ -21,11 +22,13 @@
 //        findings and NOTHING IS STORED — a blocked message is not a message,
 //        and storing it would put the leaked detail in the database anyway.
 //
-// WALKTHROUGH MODE (lib/walkthrough.ts): the screen still runs, and a blocked
-// message still 422s — practising the compliance rules is the point of a
-// walkthrough. What changes is the send: the message is stored marked
-// `held: 'walkthrough'` and nothing goes to the expert. Still 201, still with
-// the message, so the thread renders the reply the client just wrote.
+// A HELD SEND IS NEVER REPORTED AS A SENT ONE. Four things hold a reply:
+// walkthrough mode (checked here), and the chokepoint's three —
+// DISABLE_EMAILS, an organization with no card on file, and the global
+// do-not-contact list (lib/emailSequence.sendSequenceEmail). The message is
+// still screened and still stored, marked with the reason, and the response
+// carries `held` so the thread renders the grey tag rather than implying the
+// expert has it. Only a message Resend accepted answers 201.
 //
 // 404, NEVER 403, on a project the caller cannot reach: the route must not
 // confirm that a project exists.
@@ -46,7 +49,7 @@ import {
 } from '../../../../../../../lib/conversations';
 import { screenMessage } from '../../../../../../../lib/matchyScreen';
 import { redactExpertForViewer, isIdentityRevealed } from '../../../../../../../lib/redactExpert';
-import { sendSequenceEmail } from '../../../../../../../lib/emailSequence';
+import { sendSequenceEmail, dispositionOf } from '../../../../../../../lib/emailSequence';
 import { isWalkthrough } from '../../../../../../../lib/walkthrough';
 import { loadScreenContext } from '../../../../../../../lib/matchyScreenContext';
 
@@ -187,18 +190,24 @@ export async function POST(
     // skipped. lib/emailSequence would hold it anyway; refusing here is what
     // lets the message be STORED as held rather than as sent.
     //
-    // TWO GAPS A READER SHOULD KNOW ABOUT ON THIS PATH:
-    //   1. The SendOutcome is discarded. The chokepoint can also hold on
-    //      'trial' (no card on file) or 'disabled' (DISABLE_EMAILS), and this
-    //      route cannot see either — it stores the message with no `held` flag
-    //      and answers 201, so the thread shows a message the expert never got.
-    //   2. The global do-not-contact list is NOT consulted here, unlike
-    //      outreach/approve and messages/[id]/send. An expert who used the
-    //      footer opt-out mid-thread can still receive a client reply.
-    const held = isWalkthrough(project);
-    if (!held) {
-      await sendSequenceEmail(pe.contactEmail, subject, text, pe.outreachToken, 'client_reply');
-    }
+    // THE OUTCOME IS READ (H-4). The chokepoint holds on 'trial' (no card on
+    // file), 'disabled' (DISABLE_EMAILS) and the global do-not-contact list
+    // (H-3) as well as on walkthrough, and every one of those means the expert
+    // did not receive this reply. `dispositionOf` turns the attempt into the
+    // one thing this route has to decide: which hold to store on the thread
+    // copy, so the client reads a held tag instead of a message that appears
+    // to have been delivered.
+    const disposition = dispositionOf(
+      isWalkthrough(project)
+        ? { kind: 'walkthrough' }
+        : {
+            kind:    'outcome',
+            outcome: await sendSequenceEmail(
+              pe.contactEmail, subject, text, pe.outreachToken, 'client_reply',
+            ),
+          },
+    );
+    const held = disposition.held;
 
     const stored = await appendMessage({
       projectId: params.projectId,
@@ -207,35 +216,39 @@ export async function POST(
       author:    'client',
       bodyClean: text,
       screenResult,
-      ...(held && { held: 'walkthrough' as const }),
+      ...(held && { held }),
     });
 
     if (!stored) {
-      // The email went out; the copy did not. Say so plainly rather than
-      // pretending the send failed — a resend would double-email the expert.
-      // In walkthrough nothing went out, so the line says only that.
+      // Say plainly which of the two happened rather than pretending the send
+      // failed — after a real send, a resend would double-email the expert.
+      // When the send was held nothing went out, so the line says only that.
       return NextResponse.json(
         {
           error:   'message_not_recorded',
-          message: held
-            ? 'Your message could not be saved to the thread.'
-            : 'Your message was sent but could not be saved to the thread.',
+          message: disposition.delivered
+            ? 'Your message was sent but could not be saved to the thread.'
+            : 'Your message could not be saved to the thread.',
         },
         { status: 500 },
       );
     }
 
-    return NextResponse.json(
-      {
-        message: redactMessageForViewer(stored, {
-          role,
-          revealed:       isIdentityRevealed(pe),
-          expertFullName: pe.expert.name,
-          expertCompany:  pe.expert.company,
-        }),
-      },
-      { status: 201 },
-    );
+    const message = redactMessageForViewer(stored, {
+      role,
+      revealed:       isIdentityRevealed(pe),
+      expertFullName: pe.expert.name,
+      expertCompany:  pe.expert.company,
+    });
+
+    // A held reply is still a 2xx with the stored message — the thread has to
+    // render what the client wrote — but it carries `held` so the browser can
+    // say the expert has not received it. 201 stays the "it went out" answer.
+    if (held) {
+      return NextResponse.json({ ok: true, held, message }, { status: 200 });
+    }
+
+    return NextResponse.json({ message }, { status: 201 });
   } catch (err) {
     console.error('[messages] send failed:',
       err instanceof Error ? err.message.slice(0, 120) : 'unknown');

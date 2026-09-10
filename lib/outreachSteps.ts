@@ -10,9 +10,11 @@
 //
 // All of them call runSequenceStep() so there is exactly one implementation of
 // "send this step and advance the status": one place that resolves the reply
-// token, indexes it in Redis for inbound lookup, sends through Resend and
-// writes the resulting status. The routes own authentication and the pre-send
-// policy checks; this module owns the send itself.
+// token, claims the send with a compare-and-set status write, sends through
+// Resend and indexes the token in Redis for inbound lookup. The routes own
+// authentication and the pre-send policy checks; this module owns the send
+// itself, and the send-once rule that stops a stranger being cold-emailed
+// twice.
 //
 // The intro has one more gate than the legacy step: the rubric's personal line
 // (docs/OUTREACH_EMAIL_RUBRIC.md). When neither the evidence nor one model call
@@ -24,7 +26,7 @@
 
 import type { Project, ProjectExpert } from '../types';
 import { getProject, updateExpertStatus, type UpdateExpertInput } from './projectStore';
-import { generateEmail1, sendSequenceEmail } from './emailSequence';
+import { generateEmail1, sendSequenceEmail, type SendOutcome } from './emailSequence';
 import {
   buildIntroEmail,
   clientDenyTermsFor,
@@ -39,6 +41,15 @@ import { generateOutreachToken } from './outreachToken';
 import { getUpstashClient } from './upstashRedis';
 
 const REPLY_TOKEN_TTL_S = 90 * 24 * 60 * 60;
+
+/**
+ * How long one in-flight intro holds its send lock. Long enough to cover a
+ * slow Resend call and the status write around it, short enough that a process
+ * killed mid-send does not block the client's retry for long. The durable
+ * guard is the row itself (introAlreadySent); this only closes the window
+ * where two callers have both read the row and neither has written it yet.
+ */
+const INTRO_LOCK_TTL_S = 120;
 
 /**
  * What this module can actually execute.
@@ -87,8 +98,30 @@ export type SequenceStepError =
   | 'step_failed';
 
 export type SequenceStepResult =
-  | { ok: true;  project: Project }
+  /**
+   * `alreadySent` marks the send-once refusal: the intro was already delivered
+   * to this expert, so nothing was sent this time and nothing was written. A
+   * caller that emits an `intro_sent` event should skip it when this is set.
+   */
+  | { ok: true;  project: Project; alreadySent?: true }
   | { ok: false; error: SequenceStepError; status: number };
+
+/**
+ * Has the intro already gone to this expert?
+ *
+ * Either marker is enough. `email1SentAt` is written when the send is claimed
+ * (see runSequenceStep) and `outreachStep === 'email1'` is the same claim seen
+ * from the pipeline's side; a row that carries one without the other is a
+ * half-written claim, which still means "an intro may be in flight".
+ *
+ * Pure — tested by scripts/test-send-chokepoint.ts.
+ */
+export function introAlreadySent(
+  pe: Pick<ProjectExpert, 'email1SentAt' | 'outreachStep'>,
+): boolean {
+  return (typeof pe.email1SentAt === 'number' && pe.email1SentAt > 0)
+    || pe.outreachStep === 'email1';
+}
 
 /**
  * Send one step of the sequence and persist the resulting status.
@@ -96,6 +129,16 @@ export type SequenceStepResult =
  * Fails closed on a missing rate: there is no default. A cleared rate used to
  * fall back to $500/hr, which meant a queued email could quote a number nobody
  * chose.
+ *
+ * SEND-ONCE, AND THE ORDER THAT MAKES IT TRUE (H-2). An intro that has already
+ * gone out is refused outright (`alreadySent`). For a fresh one the status
+ * write comes BEFORE the send, not after: it is a compare-and-set, so it is the
+ * only thing in this function that can make two concurrent callers disagree
+ * about who is sending. Losing that write means not sending at all. Winning it
+ * and then failing to send means releasing it again (releaseClaim), which
+ * leaves the row exactly where it started. The Redis reply-token index moved
+ * after the send and is now best-effort: it can no longer turn a delivered
+ * email into a `step_failed` that invites a retry.
  */
 export async function runSequenceStep(input: SequenceStepInput): Promise<SequenceStepResult> {
   const { projectId, expertId, step, token } = input;
@@ -127,6 +170,17 @@ export async function runSequenceStep(input: SequenceStepInput): Promise<Sequenc
     // write as email1, so an expert reply lands on the thread exactly the way
     // it always has.
     if (step === 'intro') {
+      // SEND ONCE (H-2). One cold email per stranger is the product rule
+      // (docs/MATCHY_SPEC.md), and this is the only place that can enforce it:
+      // two bookmarks, a re-queued discovery job and a double-clicked approve
+      // all arrive here. Checked before the draft branch too — re-drafting an
+      // intro that already went out would drag the row back to
+      // 'outreach_drafted' and offer the client a button that sends a second.
+      if (introAlreadySent(pe)) {
+        console.info('[outreachSteps] intro already sent — nothing sent', JSON.stringify({ step }));
+        return { ok: true, project, alreadySent: true };
+      }
+
       const activeToken = token || generateOutreachToken(projectId, expertId).token;
       const arm         = pe.introArm ?? introArmFor(expertId);
       const denyTerms   = clientDenyTermsFor(project, input.firmName);
@@ -182,47 +236,98 @@ export async function runSequenceStep(input: SequenceStepInput): Promise<Sequenc
         return { ok: true, project: await draft(projectId, expertId, activeToken, email.subject, email.text, introFields) };
       }
 
+      // TWO CLAIMS, AND THEY DO DIFFERENT JOBS.
+      //
+      // The Redis SET NX below is the ATOMIC one: it is what makes two callers
+      // that both read an unclaimed row disagree about who is sending. Exactly
+      // one gets the key; the other returns `alreadySent` having sent nothing.
+      // `updateExpertStatus`, a compare-and-set on the row's updated_at, is not
+      // enough on its own — lib/projectStore.mutateExpert RE-READS and retries
+      // on a lost CAS, so the loser's second attempt would write over the
+      // winner's claim and go on to send. Redis being unavailable falls back to
+      // the row check alone (the local store has no Redis at all), which is the
+      // pre-existing behaviour rather than a new opening.
+      //
+      // The status write is the DURABLE one: it is what stops the second email
+      // an hour later, after the lock has expired, and it is written BEFORE the
+      // send so that a claim we could not record means not sending at all.
+      // Both are released again (releaseClaim) when the send is held or throws,
+      // so a genuine failure leaves the expert exactly where they were.
+      const lock = await claimIntroLock(projectId, expertId);
+      if (lock === 'held_by_other') {
+        console.info('[outreachSteps] intro already in flight — nothing sent', JSON.stringify({ step }));
+        return { ok: true, project, alreadySent: true };
+      }
+
+      let claimed: Project;
+      try {
+        claimed = await updateExpertStatus(projectId, expertId, {
+          // The rubric fields ride on the claim, so the arm, the line and the
+          // domain that produced THIS email are recorded in the same write
+          // that says it went (docs/OUTREACH_EMAIL_RUBRIC.md).
+          ...introFields,
+          status:          'contacted',
+          outreachStep:    'email1',
+          outreachSubject: email.subject,
+          outreachDraft:   email.text,
+          email1SentAt:    Date.now(),
+          contactedAt:     pe.contactedAt ?? Date.now(),
+          outreachToken:   activeToken,
+        });
+      } catch (err) {
+        await releaseIntroLock(projectId, expertId);
+        console.error('[outreachSteps] intro claim failed — nothing sent:',
+          err instanceof Error ? err.message.slice(0, 120) : 'unknown');
+        return { ok: false, error: 'step_failed', status: 500 };
+      }
+
       // buildIntroEmail returns a complete message, CAN-SPAM footer included,
       // so the sender must not append a second one.
-      const introOutcome = await sendSequenceEmail(expertEmail, email.subject, email.text, activeToken, 'intro', {
-        footerIncluded: true,
-        html:           email.html,
-      });
+      let introOutcome: SendOutcome;
+      try {
+        introOutcome = await sendSequenceEmail(expertEmail, email.subject, email.text, activeToken, 'intro', {
+          footerIncluded: true,
+          html:           email.html,
+        });
+      } catch (err) {
+        // Resend refused. Release both claims so the client can try again, then
+        // report the failure the way this function always has.
+        await releaseClaim(projectId, expertId, pe);
+        await releaseIntroLock(projectId, expertId);
+        console.error('[outreachSteps] intro send failed:',
+          err instanceof Error ? err.message.slice(0, 120) : 'unknown');
+        return { ok: false, error: 'step_failed', status: 500 };
+      }
 
-      // The chokepoint held it (walkthrough mode, or DISABLE_EMAILS). Land on
-      // exactly the same state the draftOnly branch does rather than writing
-      // 'contacted' for a message nobody received.
+      // The chokepoint held it (walkthrough, DISABLE_EMAILS, no card on file,
+      // or the do-not-contact list). Nothing left the building, so the claim is
+      // released and the row lands on exactly the state the draftOnly branch
+      // writes rather than claiming 'contacted'.
       if (!introOutcome.sent) {
+        await releaseClaim(projectId, expertId, pe);
+        await releaseIntroLock(projectId, expertId);
         return { ok: true, project: await draft(projectId, expertId, activeToken, email.subject, email.text, introFields) };
       }
 
-      // ORDER OF WRITES AFTER A SUCCESSFUL SEND. The email is already gone, so
-      // everything from here is bookkeeping that must not be retried blindly:
-      // if the Redis index write or the status write throws, the catch below
-      // answers `step_failed` (500) while the expert has the intro in hand, and
-      // a caller that retries sends a second cold email. The index is
-      // best-effort by design — inbound-email falls back to the HMAC token
-      // payload when the key is missing — but the status write is not.
-      const redis = getUpstashClient();
-      if (redis) {
-        await redis.set(
-          `reply-token:${activeToken}`,
-          JSON.stringify({ projectId, expertId }),
-          { ex: REPLY_TOKEN_TTL_S },
-        );
+      // The email is gone and the claim that records it is already durable. The
+      // Redis reply-token index is best-effort by design — inbound-email falls
+      // back to the HMAC token payload when the key is missing — so a failure
+      // here must not undo a delivered email or answer `step_failed`.
+      try {
+        const redis = getUpstashClient();
+        if (redis) {
+          await redis.set(
+            `reply-token:${activeToken}`,
+            JSON.stringify({ projectId, expertId }),
+            { ex: REPLY_TOKEN_TTL_S },
+          );
+        }
+      } catch (err) {
+        console.warn('[outreachSteps] reply-token index not written',
+          JSON.stringify({ reason: err instanceof Error ? err.message.slice(0, 80) : 'unknown' }));
       }
 
-      const updated = await updateExpertStatus(projectId, expertId, {
-        ...introFields,
-        status:          'contacted',
-        outreachStep:    'email1',
-        outreachSubject: email.subject,
-        outreachDraft:   email.text,
-        email1SentAt:    Date.now(),
-        contactedAt:     pe.contactedAt ?? Date.now(),
-        outreachToken:   activeToken,
-      });
-      return { ok: true, project: updated };
+      return { ok: true, project: claimed };
     }
 
     if (step === 'email1') {
@@ -263,6 +368,79 @@ export async function runSequenceStep(input: SequenceStepInput): Promise<Sequenc
     console.error('[outreachSteps] step failed:',
       err instanceof Error ? err.message.slice(0, 120) : 'unknown');
     return { ok: false, error: 'step_failed', status: 500 };
+  }
+}
+
+/**
+ * Take the atomic send lock for one (project, expert) intro.
+ *
+ * `SET NX` is the only primitive in this system that two concurrent requests
+ * cannot both win. 'no_lock' means Redis is not configured or did not answer:
+ * the caller proceeds on the row check alone, which is what this function has
+ * always effectively done, rather than refusing every intro whenever Redis is
+ * down.
+ *
+ * Never logs the key's contents; the key itself carries no address.
+ */
+async function claimIntroLock(
+  projectId: string,
+  expertId:  string,
+): Promise<'claimed' | 'held_by_other' | 'no_lock'> {
+  const redis = getUpstashClient();
+  if (!redis) return 'no_lock';
+  try {
+    const result = await redis.set(`intro-lock:${projectId}:${expertId}`, '1', {
+      ex: INTRO_LOCK_TTL_S,
+      nx: true,
+    });
+    return result ? 'claimed' : 'held_by_other';
+  } catch (err) {
+    console.warn('[outreachSteps] intro lock unavailable',
+      JSON.stringify({ reason: err instanceof Error ? err.message.slice(0, 80) : 'unknown' }));
+    return 'no_lock';
+  }
+}
+
+/**
+ * Give the lock back after a send that did not happen, so the client's retry
+ * is not stuck behind the TTL. A failure here costs at most INTRO_LOCK_TTL_S of
+ * waiting and can never cause a second email, so it is swallowed.
+ */
+async function releaseIntroLock(projectId: string, expertId: string): Promise<void> {
+  const redis = getUpstashClient();
+  if (!redis) return;
+  try {
+    await redis.del(`intro-lock:${projectId}:${expertId}`);
+  } catch {
+    // The TTL cleans up.
+  }
+}
+
+/**
+ * Undo the pre-send claim: the intro did not go, so nothing may say it did.
+ *
+ * `email1SentAt: 0`, not null: `UpdateExpertInput.email1SentAt` now accepts
+ * `number | null`, but 0 is what introAlreadySent() reads as falsy, so the
+ * next attempt is allowed through either way — 0 is kept for consistency
+ * with the rest of this file's claim/release pairing.
+ *
+ * Best effort: a failure here leaves the row claimed, which refuses the next
+ * send rather than duplicating one. That is the right way to fail.
+ */
+async function releaseClaim(
+  projectId: string,
+  expertId:  string,
+  previous:  ProjectExpert,
+): Promise<void> {
+  try {
+    await updateExpertStatus(projectId, expertId, {
+      status:       previous.status,
+      email1SentAt: 0,
+      ...(previous.outreachStep ? { outreachStep: previous.outreachStep } : {}),
+    });
+  } catch (err) {
+    console.error('[outreachSteps] claim not released:',
+      err instanceof Error ? err.message.slice(0, 120) : 'unknown');
   }
 }
 
