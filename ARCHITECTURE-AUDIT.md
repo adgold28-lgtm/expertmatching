@@ -6,6 +6,8 @@
 
 **Nothing was fixed.** No behaviour, type, schema, or configuration was changed. Every edit in the tree from this pass is a comment.
 
+**Update 2026-09-10.** The repair plan built from this audit (`docs/REPAIR_PLAN.md`) has been executed on branch `fix/waves`. The findings below are unchanged as written; what changed is that each closed one now carries a `Status:` line, and the "Status 2026-09-10" section after the summary table is the index of what landed, in which commit, with which test behind it. The build state recorded immediately below is the 2026-09-08 state and no longer holds: `npx tsc --noEmit` is clean, `npm run build:local` succeeds, and all 33 offline scripts pass.
+
 **Pre-task and post-task test and build state (identical before and after the annotation pass):**
 
 - `npx tsc --noEmit` reports 4 errors, all pre-existing and all from the uncommitted WIP: `Cannot find name 'firm'` twice in `app/api/inbound-email/route.ts` and twice in `app/api/schedule/[token]/route.ts`.
@@ -20,15 +22,104 @@ ExpertMatch is a Next.js 14 App Router application on Vercel with Supabase Postg
 
 ## Summary
 
-| Severity | Count |
-| --- | ---: |
-| Critical | 4 |
-| High | 23 |
-| Medium | 51 |
-| Low | 51 |
-| **Total** | **129** |
+Counts as of 2026-09-10, after the repair waves in `docs/REPAIR_PLAN.md`. The three findings the waves themselves discovered (H-24, H-25, H-26) are included; see "Found during the repair waves" at the end of the High section.
+
+| Severity | Total | Fixed | Partially fixed | Deferred (founder) | Open |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Critical | 4 | 4 | 0 | 0 | 0 |
+| High | 26 | 23 | 1 | 0 | 2 |
+| Medium | 51 | 22 | 4 | 1 | 24 |
+| Low | 51 | 11 | 3 | 0 | 37 |
+| **Total** | **132** | **60** | **8** | **1** | **63** |
+
+The original count on 2026-09-08 was 129 (4 Critical, 23 High, 51 Medium, 51 Low), all open. Nothing below has been deleted; each fixed block carries a `Status:` line under its `Severity:` line, and the table in the next section is the index.
+
+## Status 2026-09-10
+
+The repair plan in `docs/REPAIR_PLAN.md` was executed on branch `fix/waves` (rebased on `main@5d8be69`) in five waves between 2026-09-09 and 2026-09-10. Wave 0 turned out to be unnecessary: the founder's own commit `5d8be69` had already declared `firm` in both handlers (C-2) and reconciled `deriveTopic` with its test (M-48).
+
+Every row below names the commit that closed the finding and the script that now fails if the fix is removed. A script named here is run with `npx tsx scripts/<name>.ts`; `test-route-authz` and `test-auth-flows` additionally need a local server and `SMOKE_BASE_URL` (see `ARCHITECTURE.md` §9). Where the column says "none", the fix lives in a file that cannot export a helper (a Next route module) or needs a live third party, and the evidence is the gate build plus the reading recorded in the builder's report.
+
+Ids not listed here were not touched by any wave and remain open exactly as written below.
+
+| Id | Title | Status | Test that now covers it |
+| --- | --- | --- | --- |
+| C-1 | Project owner can write money and Stripe fields | Fixed in b821139 | `test-expert-route-authz` (119), `test-route-authz` (116) |
+| C-2 | `firm` undefined in two handlers; build broken | Fixed in 5d8be69 (main, pre-wave) | `test-matchy-templates` (105), `build:local` |
+| C-3 | Shared booking `.ics` leaks both addresses | Fixed in f9794be | `test-booking-ics` (38) |
+| C-4 | Zoom webhook has no replay window or completion guard | Fixed in 885e049 (+ dd1fc01 for the billing half) | `test-zoom-webhook` (39), `test-webhook-signature` (49), `test-billing-guard` (35) |
+| H-1 | Owner can redirect `contactEmail` | Fixed in b821139 | `test-expert-route-authz`, `test-route-authz` |
+| H-2 | No send-once guard on the cold intro | Fixed in 5e21428 | `test-send-chokepoint` (35) |
+| H-3 | Do-not-contact list not enforced at the chokepoint | Fixed in 5e21428 | `test-send-chokepoint` |
+| H-4 | Three routes discard `SendOutcome` | Fixed in 5e21428 | `test-walkthrough` (64) |
+| H-5 | Inbound claims its idempotency key before the work | Fixed in c8748b2 | `test-inbound-claim` (65) |
+| H-6 | A transfer whose write fails is never retried | Fixed in 0030bc9 | `test-payout-state` (75), `test-stripe-flows` (208) |
+| H-7 | No refund, dispute or reversal path | Partially fixed in 0030bc9 (refund and dispute branches, `refunded` state, alert; automatic payout reversal remains a founder decision) | `test-payout-state`, `test-stripe-flows` |
+| H-8 | Charge idempotency key blocks a second real call | Fixed in dd1fc01 | `test-billing-guard`, `test-stripe-flows` |
+| H-9 | Payout onboarding email re-sent every night | Fixed in 0030bc9 | `test-payout-state` |
+| H-10 | Three reconcile sweeps share one budget | Fixed in 0030bc9 | none (route file; per-sweep deadline and ordering verified in the diff) |
+| H-11 | Sourcing worker has no `maxDuration` and is not idempotent | Fixed in 74e9899 | `test-sourcing-idempotency` (27) |
+| H-12 | Exa logs the brief-derived query | Fixed in 74e9899 | none (grep: both the `[exa] query` line and `generateExperts`' `firstChars` are gone) |
+| H-13 | `ENRICHMENT_DAILY_BUDGET` enforced nowhere | Fixed in 74e9899 | `test-contact-discovery` (81) |
+| H-14 | Every auth rate limiter fails open | Fixed in 5ee8277 | `test-auth-guards` (84) |
+| H-15 | No per-account login cap | Fixed in 5ee8277 | `test-auth-guards`, `test-auth-flows` (134) |
+| H-16 | `upsertUser` swallows the claims-sync failure | Fixed in 5ee8277 and 862a35d | `test-auth-guards`, `test-auth-flows` |
+| H-17 | `updateProject` rewrites the whole brief with no concurrency check | Fixed in 1d7f36a | `test-project-update` (38) |
+| H-18 | Nothing validates that a descriptor is anonymous | Fixed in 1d7f36a | `check-redaction` (142) |
+| H-19 | RLS suite's stale B1 assertion | Fixed (docs commit, 2026-09-10): `scripts/rls/verify.sql:558` now expects 0 rows; proof still needs a psql run | `rls-verify.sh` (needs psql) |
+| H-20 | Expert Google scope omits `openid email` | Fixed in 74e9899 | none (OAuth round trip not drivable offline; blocked on the founder re-verifying the consent screen) |
+| H-21 | Free/busy inverted inside a fixed UTC band | Fixed in 74e9899 | `test-freebusy-inversion` (80) |
+| H-22 | Three ops scripts have no environment guard | Fixed in ae682b6 | none (`scripts/opsGuard.ts`; exercised by hand, refuses a remote host with exit 1) |
+| H-23 | Seat subscription can be created twice | Fixed in 0030bc9 | `test-org-billing` (38), `test-stripe-flows` |
+| H-24 | `DELETE /api/admin/users` answered `200 ok` while the account stayed live | Fixed in 862a35d | `test-auth-guards`, `test-auth-flows` |
+| H-25 | `PATCH /api/admin/users` discarded the claims-sync result | Fixed in 862a35d | `test-auth-guards` |
+| H-26 | The inbound route parses a payload shape Resend may not send | **Open** — needs a captured production payload before anything is changed | `test-inbound-claim` covers both shapes in the guards, nothing covers the body extraction |
+| M-1 | Login limiter key contains the raw IP | Fixed in 5ee8277 | `test-auth-guards` |
+| M-2 | `routeAuthGuard`/`adminGuard` admit `pending` | Fixed in 5ee8277 | `test-auth-guards` |
+| M-3 | Org admin can disable a platform admin | Fixed in 5ee8277 | `test-auth-guards`, `test-auth-flows` |
+| M-9 | Four hot cron queries have no index | Partially fixed in ae682b6 (migration written; founder must paste it) | none |
+| M-10 | `database.types.ts` drift and the `system_events` cast | Fixed in ae682b6 | `npx tsc --noEmit` |
+| M-11 | Four token modules re-implement one HMAC | Fixed in ae682b6 | `test-hmac-tokens` (80) |
+| M-13 | `rateExpectation` and `availability` reach the client | Fixed in 1d7f36a | `check-redaction` |
+| M-14 | Two LLM routes with no rate limit | Partially fixed in 1d7f36a (interview guide throttled; `/api/parse-brief` still open) | none |
+| M-15 | Interview guide does not validate the model's JSON | Fixed in 1d7f36a | none (validated by inspection) |
+| M-17 | Two concurrent sourcing starts both enqueue | Fixed in 74e9899 | `test-sourcing-idempotency` |
+| M-22 | `contactPathResolver.ts` dead with a live Redis footprint | Fixed in e71a05d | `check-env-drift` (9) |
+| M-23 | `EMAIL_PROVIDER_ORDER` has no effect; duplicate registry | Partially fixed in ae682b6 (one registry; the knob still does nothing) | none |
+| M-28 | Inbound sender check ignores SPF/DKIM | Partially fixed in c8748b2 (gate implemented, inert until Resend supplies verdicts) | `test-inbound-claim` |
+| M-29 | `outreach/approve` uses a shorter deny list | Fixed in 5e21428 | `test-send-chokepoint` |
+| M-30 | Approve-and-send is read-then-write | Fixed in 5e21428 | `test-walkthrough` |
+| M-32 | Calendly provider appears non-functional | **Deferred (founder decision)** — probed 2026-09-09: `api.calendly.com` answers 401 to every unauthenticated call, so every link yields no slots. Remove or build a Calendly OAuth app | none |
+| M-33 | Typed windows demote a linked Google calendar | Fixed in 74e9899 | `test-scheduling` (171), `test-availability-windows` (109) |
+| M-35 | `meeting.ended` computes a NaN duration | Fixed in 885e049 | `test-zoom-webhook` |
+| M-36 | Bounded scans have no ordering | Fixed in 0030bc9 | none (route file; ordering and `overflow` verified in the diff) |
+| M-37 | Payout sweep bounds disagree; one scan per account | **Open** — both queries are now ordered oldest-first, so the excess is a delay rather than a starved subset, but the N+1 remains | none |
+| M-38 | Payout sweep alerts on the normal steady state | Fixed in 0030bc9 | `test-payout-state` |
+| M-42 | Stripe webhook does not de-duplicate on `event.id` | Fixed in 0030bc9 | `test-payout-state`, `test-stripe-flows` |
+| M-43 | A failed client payment alerts nobody | Fixed in 0030bc9 | `test-stripe-flows` |
+| M-46 | Deleting a project-owning user fails opaquely | Fixed in 862a35d | `test-auth-guards`, `test-auth-flows` |
+| M-48 | `test-matchy-templates` fails 2 of 105 | Fixed in 5d8be69 (main, pre-wave) | `test-matchy-templates` |
+| M-49 | Two OAuth-state implementations | Fixed in ae682b6 | `test-hmac-tokens` |
+| M-50 | Documented-but-unread environment variables | Fixed in e71a05d | `check-env-drift` |
+| M-51 | Read-but-undocumented environment variables | Fixed in e71a05d | `check-env-drift` |
+| L-5 | Dead rate-limiter tiers | Fixed in e71a05d | none (grep table in the W4-1 report) |
+| L-6 | Dead module and Redis helpers | Partially fixed in e71a05d (`lib/supabase/client.ts` still present) | none |
+| L-13 | `lib/extractDomain.ts` has zero callers | Fixed in e71a05d | none |
+| L-16 | Two unused imports, one an unscoped project read | Fixed in e71a05d | none |
+| L-21 | Value-chain diagnostic echoes model output | Fixed in 74e9899 | none |
+| L-25 | `contactCandidates` never written | Fixed in e71a05d | `check-redaction` (still proves the legacy jsonb key is stripped) |
+| L-26 | Retired email cadence dead code | Fixed in e71a05d | none |
+| L-28 | `resend_message_id` never populated | Partially fixed in c8748b2 (written; still no unique index) | `test-inbound-claim` |
+| L-30 | `computeOverlap()` and friends dead | Partially fixed in e71a05d (`deleteZoomMeeting` kept for the deferred cancel route) | none |
+| L-42 | Assertion harness duplicated across scripts | Fixed in ae682b6 | `testHarness` is imported by all 31 test scripts plus `check-redaction` |
+| L-43 | `expertPayout.ts` header claims nothing else retries | Fixed in 0030bc9 | none |
+| L-44 | `agreedRate` dead but rendered | Fixed in e71a05d | none |
+| L-46 | Four dependencies imported by nothing | Fixed in e71a05d | `build:local` from a clean export |
+| L-49 | Duplicate `pseudonymize` | Fixed in ae682b6 | none |
 
 ### The ten that matter most
+
+*As written on 2026-09-08. All ten are now closed; H-19's one-line fix in `scripts/rls/verify.sql` still needs a psql run to prove. H-7 is closed apart from the payout-reversal policy, which is a founder decision.*
 
 1. **C-1** A plain project owner (role `user`) can write `expertRate`, `paymentStatus` and the Stripe id fields through `PUT /api/projects/[projectId]/experts/[expertId]`, setting both sides of the money and suppressing the charge entirely.
 2. **C-2** `firm` is undefined in `app/api/schedule/[token]/route.ts` and `app/api/inbound-email/route.ts`. The build fails, and if shipped the expert's picker page 500s on every load.
@@ -48,6 +139,7 @@ ExpertMatch is a Next.js 14 App Router application on Vercel with Supabase Postg
 ```text
 Finding: The project owner (a normal client, role 'user') can write expertRate, paymentStatus, paidAt and the Stripe id fields through PUT /api/projects/[projectId]/experts/[expertId], setting both sides of the money and suppressing the charge.
 Severity: Critical
+Status: fixed b821139 (scripts/test-expert-route-authz.ts, scripts/test-route-authz.ts)
 File(s): app/api/projects/[projectId]/experts/[expertId]/route.ts:139-146 (the gate), :252-259 (rate validation), :263-275 (payment-field validation); lib/projectsGuard.ts:172-174 (requireProjectOwner); lib/projectStore.ts rateFieldsFor; lib/createAndSendInvoice.ts:276; app/api/projects/[projectId]/experts/[expertId]/complete/route.ts:88; lib/expertPayout.ts:173
 Relevant function/component: PUT, requireProjectOwner, rateFieldsFor, createAndSendInvoice
 What happens: The route's OWNER_ONLY_FIELDS list and header read as "staff only", but the gate is requireProjectOwner, which returns null for session.role === 'user' whenever project.ownerEmail === session.email. A client who owns the project can therefore send {"expertRate": 1} and the route accepts any number from 1 to 9999, writing {expertRate: 1, clientRate: clientRateFor(1)}. The same route accepts paymentStatus: 'paid' and an arbitrary stripePaymentIntentId; createAndSendInvoice short-circuits on `pe.paymentStatus === 'paid' || pe.stripePaymentIntentId`, so an engagement marked paid before completion is never billed and nothing reconciles it against Stripe.
@@ -61,6 +153,7 @@ Existing test coverage: none. scripts/test-pricing.ts covers the conversion arit
 ```text
 Finding: `firm` is referenced but never declared in two route handlers, so the project does not type-check, the build fails, and the expert picker page would 500 on every load.
 Severity: Critical
+Status: fixed 5d8be69 on main, before the waves began (scripts/test-matchy-templates.ts)
 File(s): app/api/schedule/[token]/route.ts:197 (GET); app/api/inbound-email/route.ts:820 (advanceInterested); correct pattern at app/api/inbound-email/route.ts:229 and app/api/schedule/[token]/route.ts:356
 Relevant function/component: GET (schedule picker payload), advanceInterested (auto follow-up)
 What happens: The WIP added a denyTerms option to lib/matchyTemplates.deriveTopic so a client's own firm name cannot leak into the topic clause shown to an expert. The call `deriveTopic(project, { denyTerms: firm?.name ? [firm.name] : [] })` was copy-pasted into two functions that never fetch a firm. `project` is in scope; `firm` is not. npx tsc --noEmit reports TS2304 four times (twice per site), these are the only type errors in the tree, and npm run build:local fails on them.
@@ -74,6 +167,7 @@ Existing test coverage: none. scripts/test-matchy-templates.ts covers deriveTopi
 ```text
 Finding: The booking .ics is shared between both parties, so each side's calendar invite lists the other's email address, including the expert contactEmail that is stripped from every client-facing API response.
 Severity: Critical
+Status: fixed f9794be (scripts/test-booking-ics.ts)
 File(s): lib/bookCall.ts:426-436 (attendees), :439-484 (sendConfirmations); lib/generateIcs.ts; lib/redactExpert.ts:93 (INTERNAL_PROJECT_EXPERT_KEYS); lib/bookCall.ts:494 (bookingIcsEvent, the on-demand download, which does it correctly)
 Relevant function/component: sendConfirmations / buildIcsEvent
 What happens: `attendees = [pe.contactEmail, clientEmail]` builds one IcsEvent that is attached to BOTH sendBookingEmail calls, so generateIcs emits `ATTENDEE;RSVP=TRUE:mailto:<expert>` and `ATTENDEE;RSVP=TRUE:mailto:<client owner>` in each copy. contactEmail is in INTERNAL_PROJECT_EXPERT_KEYS and is stripped at every status, including after the identity reveal, on the stated grounds that the contact path is the whole point of the platform. The on-demand .ics download at bookingIcsEvent lists only the client, so the two paths disagree with each other.
@@ -87,6 +181,7 @@ Existing test coverage: none for attendee content. scripts/check-redaction.ts co
 ```text
 Finding: The Zoom webhook has no replay window and no completion guard, so a redelivered or captured meeting.ended re-completes the engagement and re-enters the invoice path.
 Severity: Critical
+Status: fixed 885e049 and dd1fc01 (scripts/test-zoom-webhook.ts, scripts/test-webhook-signature.ts, scripts/test-billing-guard.ts)
 File(s): app/api/webhooks/zoom/route.ts:47-54 (signature), :70-104 (meeting.ended branch); lib/createAndSendInvoice.ts:276-283 (the only guard); lib/chargeSavedCard.ts:144-156; app/api/projects/[projectId]/experts/[expertId]/complete/route.ts
 Relevant function/component: POST /api/webhooks/zoom, createAndSendInvoice
 What happens: The signature is verified over `v0:{ts}:{rawBody}` but `ts` is never compared against the clock, so a signed body stays valid indefinitely. The meeting.ended branch then writes status 'completed' and calls createAndSendInvoice without checking whether zoomMeetingEndedAt or status are already set, and Zoom retries on any non-2xx, so an ordinary timeout produces a second delivery. The same engagement can also be completed by the manual owner-only complete route, so two independent code paths can enter billing for one call. The only thing preventing a second charge is the durable double-bill guard at createAndSendInvoice.ts:276 (`paymentStatus === 'paid' || stripePaymentIntentId`) plus Stripe's own roughly 24-hour idempotency key.
@@ -102,6 +197,7 @@ Existing test coverage: none. No script imports the Zoom webhook route or create
 ```text
 Finding: The project owner can write contactEmail, redirecting Matchy's intro email to an address of their choosing.
 Severity: High
+Status: fixed b821139 (scripts/test-expert-route-authz.ts, scripts/test-route-authz.ts)
 File(s): app/api/projects/[projectId]/experts/[expertId]/route.ts:186; app/api/projects/[projectId]/experts/[expertId]/bookmark/route.ts:182, :236, :264; lib/redactExpert.ts:93
 Relevant function/component: PUT, bookmark POST
 What happens: contactEmail is sanitized for length but not otherwise restricted, and is writable by the project owner through the same PUT route as C-1. The bookmark route treats a present contactEmail as "we already have an address": it skips contact discovery entirely, runs the suppression check against that address, and sends the intro there. The client cannot read the value back, because redactExpert strips it, but they can set it.
@@ -115,6 +211,7 @@ Existing test coverage: none.
 ```text
 Finding: The intro send has no send-once guard, so two concurrent bookmarks, a retry after a post-send bookkeeping failure, or a second approve click can each deliver a duplicate cold email to the same stranger.
 Severity: High
+Status: fixed 5e21428 (scripts/test-send-chokepoint.ts)
 File(s): lib/outreachSteps.ts:113-163 (runSequenceStep intro), :152-170 (post-send writes), :207-212 (catch); lib/contactDiscovery.ts:711-800; app/api/projects/[projectId]/experts/[expertId]/bookmark/route.ts:121, :142, :180; app/api/projects/[projectId]/experts/[expertId]/outreach/approve/route.ts:125; lib/contactCache.ts (the implemented, unused lock)
 Relevant function/component: runSequenceStep('intro') / runContactDiscoveryJob
 What happens: Three routes into the same gap. (a) The bookmark route treats status 'bookmarked' as a retry and queues another discovery job; isRetry only suppresses the analytics event. Job A can write contactEmail and be mid-send while job B starts, sees the address already set, skips discovery and goes straight to runSequenceStep('intro'), which fails only on a missing address or rate and has no "already sent" check. Status becomes 'contacted' only after the first send completes, so the window is real. (b) After sendSequenceEmail resolves {sent:true}, the Redis reply-token write and updateExpertStatus run inside the same try; if either throws, the catch returns {ok:false, error:'step_failed'} while the expert already has the intro and the status was never advanced, so the next click sends again. (c) Upstash-Retries: 0 prevents QStash redelivery but not re-bookmarking. lib/contactCache.ts already implements a per-lookup Redis lock that nothing calls.
@@ -128,6 +225,7 @@ Existing test coverage: none. scripts/test-contact-discovery.ts is pure-function
 ```text
 Finding: The global do-not-contact list is not enforced at the outbound chokepoint, and four send paths omit the check entirely.
 Severity: High
+Status: fixed 5e21428 (scripts/test-send-chokepoint.ts)
 File(s): lib/emailSequence.ts:200-262 (sendSequenceEmail, no isSuppressed call); app/api/projects/[projectId]/experts/[expertId]/messages/route.ts:227; .../rate-decision/route.ts:163; app/api/inbound-email/route.ts:~860 (advanceInterested); lib/matchyScheduling.ts:1042; lib/outreachSuppressions.ts:35
 Relevant function/component: sendSequenceEmail / isSuppressed
 What happens: isSuppressed is called, fail-closed, at bookmark:236, outreach/approve:102, messages/[messageId]/send:125, jobs/send-nudge:193 and contactDiscovery:751, but not inside sendSequenceEmail itself. The client-reply relay, the rate-decision line, inbound-email's auto follow-up and matchyScheduling's proposal email all send without checking. An expert who clicks the footer opt-out mid-thread is written into outreach_suppressions and can still receive all four.
@@ -141,6 +239,7 @@ Existing test coverage: none for the suppression and send interaction.
 ```text
 Finding: sendSequenceEmail's SendOutcome is discarded by three routes, so a trial or disabled hold is recorded as a successful send.
 Severity: High
+Status: fixed 5e21428 (scripts/test-walkthrough.ts)
 File(s): app/api/projects/[projectId]/experts/[expertId]/messages/route.ts:227; .../messages/[messageId]/send/route.ts:153; .../rate-decision/route.ts:163; lib/emailSequence.ts:200-262
 Relevant function/component: POST handlers; sendSequenceEmail
 What happens: sendSequenceEmail returns { sent:false, held } for walkthrough mode, for an organization without canOutreachExperts, and for DISABLE_EMAILS. All three routes await it without reading the result. Each checks isWalkthrough itself, so that case is handled, but an entitlement hold or the kill switch returns normally and the routes then store the message with no held flag, clear the pending flag, set status 'followup_sent', write the agreed rate and emit rate_offered or rate_agreed as though the email went out.
@@ -154,6 +253,7 @@ Existing test coverage: scripts/e2e-matchy.ts covers the walkthrough branch only
 ```text
 Finding: The inbound email webhook claims its idempotency key before processing, so a partial failure loses the expert's reply permanently.
 Severity: High
+Status: fixed c8748b2 (scripts/test-inbound-claim.ts)
 File(s): app/api/inbound-email/route.ts:155-171 (claimDelivery), :290 (the claim), :364-371 (the swallowing catch)
 Relevant function/component: POST / claimDelivery / handleReply
 What happens: `SET inbound-seen:{svix-id} NX EX 7d` is written before handleReply runs. handleReply's failures are caught, logged, and the handler returns 200 regardless, so Resend never retries. If Supabase, the classifier or a status write fails half way through, the thread is left in a partial state and the redelivery is deduped away. There is no queue to replay from, and resend_message_id, the message-level key the spec names, is never populated (see L-31).
@@ -167,6 +267,7 @@ Existing test coverage: none. scripts/verify-svix.ts checks signature verificati
 ```text
 Finding: A successful Connect transfer whose database write fails is recorded as 'failed', and no retry path ever looks at 'failed' rows.
 Severity: High
+Status: fixed 0030bc9 (scripts/test-payout-state.ts, scripts/test-stripe-flows.ts)
 File(s): lib/expertPayout.ts:190-205 (the inner try), :279 (retry selector); app/api/jobs/reconcile/route.ts:151-153 (sweep selector)
 Relevant function/component: runExpertPayout / retryPendingPayoutsForAccount / sweepPayouts
 What happens: The inner try wraps BOTH transfers.create and the updateExpertStatus that stores stripeTransferId. If the transfer succeeds and the write fails, the catch sets expertOnboardingStatus:'failed' and the transfer id is lost. Both retry paths select rows where data->>expertOnboardingStatus = 'pending', so 'failed' rows are never revisited, and no recordSystemFailure is written, so the row never appears on the admin attention feed either.
@@ -180,6 +281,7 @@ Existing test coverage: none. scripts/test-org-billing.ts asserts only that the 
 ```text
 Finding: No refund, dispute, or payout-reversal path exists anywhere in the codebase.
 Severity: High
+Status: partially fixed 0030bc9 (scripts/test-payout-state.ts, scripts/test-stripe-flows.ts) — refund and dispute branches, a 'refunded' state and an alert now exist; automatic payout reversal is left as a founder decision with a TODO naming the transfers.createReversal call
 File(s): app/api/webhooks/stripe/route.ts:108-191 (no charge.refunded or charge.dispute.* branch); app/terms/page.tsx:130 (the only mention of refunds in the product, as prose)
 Relevant function/component: Stripe webhook POST
 What happens: A grep across the repository finds no handler for charge.refunded, charge.dispute.created, or transfer reversals. A refund issued from the Stripe dashboard leaves paymentStatus 'paid', paidAt set, and the expert payout already transferred with no claw-back and no system_events row.
@@ -193,6 +295,7 @@ Existing test coverage: none.
 ```text
 Finding: The per-(project, expert) charge idempotency key blocks a legitimate second call with the same expert on the same project.
 Severity: High
+Status: fixed dd1fc01 (scripts/test-billing-guard.ts, scripts/test-stripe-flows.ts)
 File(s): lib/chargeSavedCard.ts:144-156 (idempotencyKey 'charge:<pid>:<eid>'); lib/createAndSendInvoice.ts:276-283 (the durable guard)
 Relevant function/component: chargeSavedCard / createAndSendInvoice
 What happens: The Stripe idempotency key is `charge:${projectId}:${expertId}` with no call or duration component. Stripe replays the original response for a duplicate key, so a second call with the same expert inside Stripe's roughly 24-hour key window returns the FIRST PaymentIntent and no new money is taken. The durable guard above it (paymentStatus 'paid' or stripePaymentIntentId set) short-circuits even sooner and returns the earlier intent as though the second call had been billed.
@@ -206,6 +309,7 @@ Existing test coverage: none. scripts/test-pricing.ts covers the amounts; nothin
 ```text
 Finding: The nightly payout sweep re-sends the Stripe onboarding email to the same expert every night, with no cap and no throttle.
 Severity: High
+Status: fixed 0030bc9 (scripts/test-payout-state.ts)
 File(s): app/api/jobs/reconcile/route.ts:165-206 (sweepPayouts); lib/expertPayout.ts:209-219, :325-337 (runExpertPayout / sendOnboardingLink)
 Relevant function/component: sweepPayouts -> retryPendingPayoutsForAccount -> runExpertPayout
 What happens: sweepPayouts selects every project_experts row with expertOnboardingStatus = 'pending', collects the distinct Connect account ids and calls retryPendingPayoutsForAccount for each. runExpertPayout's "account exists but onboarding is not complete" branch calls sendOnboardingLink unconditionally. Nothing counts, dates or rate-limits that branch, and the row stays 'pending' until the expert finishes Stripe. An expert who never onboards therefore receives "Set up your payout account" once every 24 hours indefinitely, while the email itself says the link expires in seven days.
@@ -219,6 +323,7 @@ Existing test coverage: none.
 ```text
 Finding: The three nightly reconcile sweeps share one 60-second budget in a fixed order with no clock check, so a slow seat sweep silently starves the payout and sourcing sweeps.
 Severity: High
+Status: fixed 0030bc9 (no unit script: the deadline and ordering live in the route file, which may export no helpers; covered by the gate build and by scripts/test-payout-state.ts for the payout selector)
 File(s): app/api/jobs/reconcile/route.ts:47 (maxDuration = 60), :50-52 (bounds), :294-319 (the sweep sequence)
 Relevant function/component: GET /api/jobs/reconcile
 What happens: sweepSeats runs first and performs up to MAX_ORGS (500) sequential syncOrgSeatQuantity calls, each making one or more Stripe round trips. At a conservative 200 ms per round trip that exceeds 60 seconds somewhere around 100 to 150 organizations. Nothing in the loop checks elapsed time, so the platform kills the invocation mid-sweep: sweepPayouts and sweepSourcing never run, `steps` keeps its initial 'skipped' value, no response is returned, and no system_events row is written.
@@ -232,6 +337,7 @@ Existing test coverage: none. Nothing exercises the reconcile route at all.
 ```text
 Finding: The sourcing worker declares no maxDuration and is not idempotent, so a platform timeout leaves the project stuck 'running' and a QStash redelivery appends a second copy of the candidates.
 Severity: High
+Status: fixed 74e9899 (scripts/test-sourcing-idempotency.ts)
 File(s): app/api/jobs/source-experts/route.ts:44 (no maxDuration), :62-66; lib/sourcingJob.ts:52 (publishSourcingJob), :112-181 (runSourcingJob); app/api/jobs/reconcile/route.ts:205-227 (the only un-sticker)
 Relevant function/component: POST /api/jobs/source-experts, runSourcingJob, publishSourcingJob
 What happens: Every sibling job route declares a limit (reconcile 60, schedule-nudges 60, send-nudge 30, contact-discovery 60); this one declares none, while the work it awaits is two Haiku calls, up to three Exa searches, one claude-opus-4-6 call at max_tokens 12000 with two retries, and up to three further searches for name resolution. lib/sourcingJob.ts's own header says sourcing takes minutes. Separately, the job body carries only {projectId, businessProblem?, expertType?}: no job id, no Upstash-Deduplication-Id and no Upstash-Retries header, and addExpertsToProject appends with no "already sourced for this run" check. Handled failures return 200, but a timeout or crash triggers redelivery and the redelivered run re-executes from step 0 even if experts were already written.
@@ -245,6 +351,7 @@ Existing test coverage: none for redelivery. scripts/verify-sourcing-prod.ts wai
 ```text
 Finding: The Exa search provider logs the full search query, which is derived from confidential client brief content, in production.
 Severity: High
+Status: fixed 74e9899 (grep evidence; both the [exa] query log and the generateExperts firstChars field are gone)
 File(s): lib/searchProviders/exa.ts:36-38; lib/generateExperts.ts buildSearchQueriesFromBrief and the query-generation prompt; lib/contactPathResolver.ts:230 (the second caller of searchWithFallback)
 Relevant function/component: exaProvider.search
 What happens: `console.log('[exa] query:', query)` is marked a temporary diagnostic and is not gated on NODE_ENV. The queries it prints are built from the client's expertType, industry, target companies and research question. Every other module in this path carries an explicit header rule against logging project names, research questions or brief content, and tavily.ts and scrapingbee.ts log counts only.
@@ -258,6 +365,7 @@ Existing test coverage: none.
 ```text
 Finding: ENRICHMENT_DAILY_BUDGET is enforced nowhere; the three functions that read it have no callers, so the paid contact-provider path has no spend limit at all.
 Severity: High
+Status: fixed 74e9899 (scripts/test-contact-discovery.ts)
 File(s): lib/rateLimiter.ts:79-131 (checkRequestThrottle, checkCreditLimits, checkAndIncrementGlobalBudget, incrementProviderDailyCount); lib/contactDiscovery.ts:456-500 (discoverContact); .env.example (ENRICHMENT_DAILY_BUDGET)
 Relevant function/component: checkAndIncrementGlobalBudget / incrementProviderDailyCount / discoverContact
 What happens: checkAndIncrementGlobalBudget and incrementProviderDailyCount exist and read ENRICHMENT_DAILY_BUDGET (default 500), but a grep across app/, lib/, components/ and scripts/ finds no callers. discoverContact calls Snov and Hunter directly with no counter. The route the module header names as their purpose, app/api/enrich-contact, no longer exists, and checkContactLookupLimits, which that header also advertises, is not in the file at all.
@@ -271,6 +379,7 @@ Existing test coverage: none.
 ```text
 Finding: Every rate limiter on the auth surface fails open, so an Upstash outage removes login, reset, invite and access-request throttling simultaneously.
 Severity: High
+Status: fixed 5ee8277 (scripts/test-auth-guards.ts)
 File(s): app/api/auth/login/route.ts:72-84; app/api/auth/set-password/route.ts:135-144; lib/passwordReset.ts:40-52; app/api/request-access/route.ts:84-96
 Relevant function/component: POST (login), overAttemptLimit, isResetRateLimited, isRateLimited
 What happens: Each helper calls getUpstashClient() and returns "not limited" when the client is null, and wraps the INCR in a try/catch that also returns "not limited". lib/authLinks.ts's own header records that this Upstash account is on a plan that gets rate-limited, so this is a routinely hit condition rather than a theoretical one. When it happens, password guessing against /api/auth/login, reset-link spraying and access-request flooding are all uncapped at once.
@@ -284,6 +393,7 @@ Existing test coverage: none. scripts/smoke-cutover.ts exercises login success a
 ```text
 Finding: Login throttling is per-IP only; there is no per-account attempt cap or lockout.
 Severity: High
+Status: fixed 5ee8277 (scripts/test-auth-guards.ts, scripts/test-auth-flows.ts)
 File(s): app/api/auth/login/route.ts:11-16 (loginRlKey), :67-84; contrast lib/passwordReset.ts:40, which deliberately keys on both ip and email
 Relevant function/component: loginRlKey / POST
 What happens: The only counter is `login-rl:<ip>` at 10 attempts per 15 minutes. Nothing counts failures against the target email, so an attacker distributing attempts across IP addresses faces no cumulative limit on any single account, and the account owner is never notified or locked.
@@ -297,6 +407,7 @@ Existing test coverage: none.
 ```text
 Finding: firmStore.upsertUser swallows the app_metadata sync failure, so revoking a disabled or demoted user's access can silently fail and leave them with full access indefinitely.
 Severity: High
+Status: fixed 5ee8277 and 862a35d (scripts/test-auth-guards.ts, scripts/test-auth-flows.ts)
 File(s): lib/firmStore.ts:448-456 (`await syncUserMetadata(e).catch(() => {})`); lib/supabase/admin.ts:143-157 (syncAppMetadata); app/api/org/members/route.ts:241-276 (PATCH); middleware.ts:72-116; lib/auth.ts:127-205
 Relevant function/component: upsertUser / syncUserMetadata / syncAppMetadata
 What happens: Every authorization decision reads app_metadata from the JWT; the tables are never consulted per request. syncAppMetadata is itself best-effort and returns false on error rather than throwing, and upsertUser then discards even that signal. If the sync fails while disabling a member through PATCH /api/org/members, the database row says 'disabled' while the JWT claims say 'active', and every guard honours the JWT. Nothing retries: there is no status reconciler, and the one self-heal path, GET /api/org/membership, fires only on MISSING org claims, not stale ones.
@@ -310,6 +421,7 @@ Existing test coverage: none. Nothing asserts that disabling a member actually e
 ```text
 Finding: lib/projectStore.updateProject rewrites the entire brief jsonb document with no concurrency check, so unrelated brief keys written by a concurrent job are silently lost.
 Severity: High
+Status: fixed 1d7f36a (scripts/test-project-update.ts)
 File(s): lib/projectStore.ts SupabaseProjectStore.updateProject and projectToBrief; app/api/projects/[projectId]/route.ts PUT; contrast lib/projectStore.ts mutateExpert (which does have compare-and-set)
 Relevant function/component: updateProject, projectToBrief
 What happens: The PUT loads the project, spreads the request over it and writes the whole object back, and projectToBrief rebuilds the brief from that snapshot. mutateExpert has an updated_at compare-and-set; updateProject has nothing equivalent. The briefVersion check only covers the 19 keys in BRIEF_FIELDS, so a sourcing job writing sourcingStatus or sourcingAdjacent, or a settings write to walkthrough, landing between the load and the save is overwritten.
@@ -323,6 +435,7 @@ Existing test coverage: none.
 ```text
 Finding: Nothing validates that an LLM-written anonymizedDescriptor is actually anonymous, and the redactor substitutes it verbatim.
 Severity: High
+Status: fixed 1d7f36a (scripts/check-redaction.ts)
 File(s): lib/anonymizeExpert.ts parseFields (about :110-125); lib/redactExpert.ts anonymizeExpert (about :220); lib/projectValidation.ts:190 (validateProjectExpert); lib/generateExperts.ts step 5 (where the descriptor originates); contrast app/api/projects/[projectId]/interview-guide/route.ts redactGuideText
 Relevant function/component: parseFields, anonymizeExpert, validateProjectExpert
 What happens: parseFields keeps whatever string the model returned, trimmed and truncated to 140 or 200 characters, and anonymizeExpert then substitutes it for the blanked title and company. The only defence is the wording of ANONYMIZATION_RULES in the prompt. validateProjectExpert also accepts a client-supplied anonymizedDescriptor with nothing but a length cap. The interview-guide route implements exactly the post-hoc check that is missing here: redactGuideText masks the expert's name and company out of the model's answer before it is returned.
@@ -349,6 +462,7 @@ Existing test coverage: this file is the test; it is not itself covered.
 ```text
 Finding: The expert-side Google OAuth flow requests calendar.freebusy only, so calendarEmail is never captured and the expert's connected calendar is then silently ignored.
 Severity: High
+Status: fixed 74e9899 (no script: an OAuth round trip cannot be driven offline; the three-field precondition was verified by reading. Blocked on the founder re-verifying the Google consent screen for the added openid/email scope)
 File(s): app/api/availability/[token]/google-auth/route.ts:52 (CALENDAR_SCOPE); app/api/availability/oauth/google/callback/route.ts:114-126, :233-241 (fetchCalendarEmail); lib/matchyScheduling.ts:308-322 (expertKnownWindows), :337-343 (expertHasConnectedCalendar); contrast app/api/onboarding/calendar/google/route.ts:43
 Relevant function/component: fetchCalendarEmail / expertKnownWindows / expertHasConnectedCalendar
 What happens: CALENDAR_SCOPE is freebusy alone with no openid or email scope, so the userinfo call fails and calendarEmail is stored as undefined. expertKnownWindows requires calendarAccessToken, calendarRefreshToken and calendarEmail all present before it will query freebusy, and expertHasConnectedCalendar has the same triple condition. The onboarding route's own header states the problem outright.
@@ -362,6 +476,7 @@ Existing test coverage: none.
 ```text
 Finding: Google free/busy is inverted inside a fixed 08:00 to 19:00 UTC band, which silently shrinks or empties the offerable window for anyone far from UTC.
 Severity: High
+Status: fixed 74e9899 (scripts/test-freebusy-inversion.ts)
 File(s): lib/fetchGoogleFreebusy.ts:104-154 (invertBusyToFree), :122-124; lib/matchyScheduling.ts:536-538 (pickProposals business hours)
 Relevant function/component: invertBusyToFree
 What happens: Each day's free gaps are computed between Date.UTC(...,8,0,0) and Date.UTC(...,19,0,0) and stamped timezone:'UTC'; the user's own zone is never consulted. pickProposals then keeps only starts whose whole call sits inside 09:00 to 17:00 in the owner's zone. For America/New_York the band is 03:00 to 14:00 local, so nothing after about 13:00 Eastern can ever be proposed. For America/Los_Angeles it is 00:00 to 11:00 local, leaving only 09:00 to 11:00 Pacific. For Asia/Singapore the two windows barely intersect.
@@ -375,6 +490,7 @@ Existing test coverage: none. scripts/test-scheduling.ts drives pickProposals fr
 ```text
 Finding: Three operational scripts can mutate or destroy production data with no environment guard, no confirmation and no dry run.
 Severity: High
+Status: fixed ae682b6 (scripts/opsGuard.ts; exercised by hand against a fake remote host, refused with exit 1)
 File(s): scripts/wipe-projects.ts (whole file); scripts/seed-admin.ts:1-45; scripts/smoke-cutover.ts:1-20
 Relevant function/component: main() in each
 What happens: wipe-projects.ts unconditionally deletes every `project:*`, `projects:index`, `projects:lock`, `access-request:*`, `access-requests:list`, `signup-token:*` and `signup-rl:*` key in whichever Upstash instance the ambient environment variables point at, with no --force flag, no printed confirmation of the target, and no dry run. seed-admin.ts creates or updates a real Supabase auth user and organization row in whatever project NEXT_PUBLIC_SUPABASE_URL names. smoke-cutover.ts signs the real admin in and out, which revokes that admin's sessions everywhere.
@@ -388,12 +504,59 @@ Existing test coverage: none; these are the operational scripts themselves and t
 ```text
 Finding: The seat-subscription create can plausibly produce a second live subscription for the same customer, because the Stripe idempotency key expires at the same 24-hour interval the reconcile cron runs on. Plausible, unverified.
 Severity: High
+Status: fixed 0030bc9 (scripts/test-org-billing.ts, scripts/test-stripe-flows.ts)
 File(s): lib/orgBilling.ts:573-586 (subscriptions.create with idempotency key `seat-sub:<organizationId>`), :589 (patchBillingRow); app/api/jobs/reconcile/route.ts:88-107 (sweepSeats, daily at 06:00 UTC)
 Relevant function/component: syncOrgSeatQuantity / sweepSeats
 What happens: When no subscription id is recorded on the billing row, syncOrgSeatQuantity creates one with idempotency key `seat-sub:${organizationId}`. Stripe retains an idempotency key for roughly 24 hours. If patchBillingRow fails after a successful subscriptions.create, the next night's sweep, exactly 24 hours later, sees no recorded subscription, reuses the same key, and the key is by then expired, so Stripe creates a second live per-seat subscription for the same customer. The 24-hour cron interval is what turns a one-off race into a reproducible one. This was reasoned from the code and the documented Stripe key lifetime; it was not reproduced against Stripe, so it is stated as plausible rather than confirmed.
 Why it matters: Recurring double billing of a paying customer, self-perpetuating until someone notices two subscriptions in the Stripe dashboard.
 Recommended future fix: List the customer's existing subscriptions for the seat price before creating one, or include a date component in the idempotency key so an expired key cannot silently permit a create, and record the subscription id in the same transaction as the create wherever possible.
 Existing test coverage: none. scripts/test-org-billing.ts covers orgCancelIdempotencyKey and stripeFailureReason as pure helpers only.
+```
+
+### Found during the repair waves (2026-09-09/10)
+
+Three findings the waves themselves turned up. The first two were found by the Wave 3 auth suite and fixed in Wave 4; the third was found while reading Resend's documentation during Wave 2 and is still open.
+
+**H-24**
+
+```text
+Finding: DELETE /api/admin/users answered 200 { ok: true } while the account was still fully live, because it discarded firmStore.deleteUser's { deleted } result.
+Severity: High
+Status: fixed 862a35d (scripts/test-auth-guards.ts, scripts/test-auth-flows.ts)
+File(s): app/api/admin/users/route.ts (DELETE handler); lib/firmStore.ts:568-575 (deleteUser); lib/supabase/admin.ts:174-185 (deleteSupabaseUser)
+Relevant function/component: DELETE /api/admin/users, classifyDeleteOutcome
+What happens: deleteSupabaseUser reports a foreign-key refusal (the target owns projects) as `false`, firmStore.deleteUser passes it back as `{ deleted: false }`, and the admin route ignored the flag and answered success. M-46 records this as "fails with an opaque 500"; it did not fail at all. W3-3's HTTP suite pinned the behaviour, then W4-0 fixed it: the route now resolves the target's profile id, counts the projects they own, and answers 409 { error: 'owns_projects', count, projectNames } before deleteUser is ever called; any other `deleted: false` is 500 { error: 'delete_failed' }.
+Why it matters: A platform admin revoking a departing user was told the account was gone while it was still able to sign in. That is the same class of silent-revocation failure as H-16, on the console the founder actually uses.
+Recommended future fix: shipped. The decision table classifyDeleteOutcome cannot be exported from a route module, so it is reimplemented verbatim in scripts/test-auth-guards.ts (the precedent M-3 already set in that file).
+Existing test coverage: 9 checks in scripts/test-auth-guards.ts plus the flipped assertions in scripts/test-auth-flows.ts.
+```
+
+**H-25**
+
+```text
+Finding: PATCH /api/admin/users discarded upsertUser's { metadataSynced }, so the platform console reported a revocation as successful even when the JWT claims were never updated.
+Severity: High
+Status: fixed 862a35d (scripts/test-auth-guards.ts)
+File(s): app/api/admin/users/route.ts (PATCH handler, ~:163 before the fix); lib/firmStore.ts (upsertUser); app/api/org/members/route.ts (the sibling route that was fixed in Wave 2)
+Relevant function/component: PATCH /api/admin/users
+What happens: H-16 was closed for the org-admin team page in 5ee8277, which surfaces a failed app_metadata sync as 200 { ok: true, warning: 'metadata_sync_failed' } plus a 'membership' system failure. The platform-admin console does the same write through the same helper and threw the signal away. It now mirrors the org route exactly.
+Why it matters: The claims are what every guard reads. A disable that does not reach app_metadata leaves a live session working until the JWT expires, and nobody was told.
+Recommended future fix: shipped.
+Existing test coverage: scripts/test-auth-guards.ts. An end-to-end assertion needs an injection seam for a syncUserMetadata failure in scripts/test-auth-flows.ts, which does not exist yet.
+```
+
+**H-26**
+
+```text
+Finding: app/api/inbound-email/route.ts parses a FLAT Resend payload, but Resend's documented email.received webhook nests its fields under `data` and carries no body at all.
+Severity: High
+Status: OPEN. Do not change the parser until a real production payload has been captured.
+File(s): app/api/inbound-email/route.ts (step 11, body extraction: payload.to / payload.from / payload.text); app/api/inbound-email/inboundGuards.ts (senderAuthAllows and extractResendMessageId already read both shapes)
+Relevant function/component: POST /api/inbound-email, handleReply
+What happens: Resend's 2026-09 documentation says the email.received webhook delivers metadata only (email_id, from, to, cc, bcc, received_for, message_id, subject, attachments) under a `data` key, explicitly stating that webhooks do not include the body, headers or attachments; the body is reachable only through GET /emails/received/:id and the raw .eml behind raw.download_url. This route reads payload.to, payload.from and payload.text off the top level. Either inbound arrives through something other than the documented event, or this route has never parsed a live payload. The two guards W2-B added tolerate both shapes; the body extraction does not.
+Why it matters: This route is the entire read path for expert replies. If the shape is wrong, every reply is silently ignored or stored empty, and Matchy's whole conversation layer is a one-way street. It is stated as a concern rather than a confirmed break because nobody has captured a real delivery.
+Recommended future fix: capture one real inbound delivery (Resend dashboard webhook log, or a temporary count-only log of the payload's top-level key names — never its values), then either widen the parser to read `data.*` with the flat form as a fallback, or add the GET /emails/received/:id fetch the documented event requires. Add an end-to-end test that drives a signed fixture of the confirmed shape through the route.
+Existing test coverage: scripts/test-inbound-claim.ts covers decideClaim, senderAuthAllows and extractResendMessageId against both shapes; nothing covers the body extraction or drives the route end to end.
 ```
 
 ## Medium
@@ -403,6 +566,7 @@ Existing test coverage: none. scripts/test-org-billing.ts covers orgCancelIdempo
 ```text
 Finding: The login rate-limit Redis key contains the raw client IP, breaking the no-PII-in-key-names rule every other limiter in the repository follows.
 Severity: Medium
+Status: fixed 5ee8277 (scripts/test-auth-guards.ts)
 File(s): app/api/auth/login/route.ts:14-16 (loginRlKey); contrast lib/rateLimiter.ts:68, lib/passwordReset.ts:30, app/api/request-access/route.ts:77
 Relevant function/component: loginRlKey
 What happens: The key is `login-rl:${ip}` verbatim. Three other rlKey implementations first HMAC the value with LOG_HASH_SECRET and truncate it, precisely so an IP or address never lands in a key name. Upstash key names appear in the provider console and in any KEYS or SCAN output.
@@ -416,6 +580,7 @@ Existing test coverage: none.
 ```text
 Finding: routeAuthGuard and adminGuard admit accounts with status 'pending', while orgAdminGuard rejects them.
 Severity: Medium
+Status: fixed 5ee8277 (scripts/test-auth-guards.ts)
 File(s): lib/auth.ts:127-136 (routeAuthGuard), :142-151 (adminGuard), :168-205 (orgAdminGuard)
 Relevant function/component: routeAuthGuard, adminGuard
 What happens: The first two guards reject only status === 'disabled'; orgAdminGuard rejects 'disabled' or 'pending'. In today's code a pending account cannot obtain a session, because it holds only the unguessable random password set by ensureSupabaseUser, so this is not currently exploitable. It is a latent gap: any future path that signs a user in before activation, such as a magic link, an SSO bridge, or a partially failed set-password that signs in before upsertUser, would immediately grant a pending account access to 18 routeAuthGuard-protected routes.
@@ -429,6 +594,7 @@ Existing test coverage: none.
 ```text
 Finding: An org admin at a customer firm can disable or demote a platform admin who holds a seat in their organization, revoking that staff account across the whole platform.
 Severity: Medium
+Status: fixed 5ee8277 (scripts/test-auth-guards.ts, scripts/test-auth-flows.ts)
 File(s): app/api/org/members/route.ts:241-276 (PATCH)
 Relevant function/component: PATCH /api/org/members
 What happens: The only check on the target is member.orgId === orgId. The last-org-admin guard counts organization_members.role = 'org_admin', which is orthogonal to profiles.is_platform_admin. So an org_admin can PATCH {email: <staff address>, status: 'disabled'} for any ExpertMatch staff member who is a member of their organization, and disabling writes app_metadata.status, which middleware.ts enforces globally.
@@ -507,6 +673,7 @@ Existing test coverage: none; the script has no self-test.
 ```text
 Finding: Four hot cron and admin queries scan projects and project_experts with no supporting index.
 Severity: Medium
+Status: partially fixed ae682b6 — the migration supabase/migrations/20260909000000_cron_scan_indexes.sql is written and idempotent; it still has to be pasted into Studio by the founder
 File(s): lib/attention.ts:144-148, :234-238; app/api/jobs/reconcile/route.ts:202-206; app/api/jobs/schedule-nudges/route.ts:137-141; supabase/migrations/20260907100000_availability_windows_and_indexes.sql section 3
 Relevant function/component: listAttentionItems, sweepSourcing, schedule-nudges GET
 What happens: brief->>'sourcingStatus' = 'running' is queried by the admin attention view and by the nightly reconcile sweep, data->nudges->>'scheduledFor' is not null by the stalled-nudge view, and project_experts.status in (WAITING_STATUSES) by the nudge scheduler on every run. Migration 20260907100000 added exactly this kind of partial expression index for zoomMeetingId and expertOnboardingStatus, but not for these predicates, so each is a sequential scan over the whole table. The only other project_experts index is on project_id.
@@ -520,6 +687,7 @@ Existing test coverage: none; there are no query-plan assertions anywhere in the
 ```text
 Finding: lib/supabase/database.types.ts has drifted from the migrations, and system_events is worked around with an ad-hoc inline type cast.
 Severity: Medium
+Status: fixed ae682b6 (npx tsc --noEmit; the ad-hoc system_events cast is gone)
 File(s): lib/supabase/database.types.ts:1-20 (header lists five of eight migrations); lib/engagementEvents.ts:203-224 (the cast)
 Relevant function/component: Database type / recordSystemFailure
 What happens: The hand-authored types file has no system_events table and no user_calendar_connections.weekly_windows column, both created by migration 20260907100000. lib/engagementEvents.ts compensates by declaring a one-off shape and casting the service-role client to it, with a comment saying the generated types do not describe it yet. The header's "keep in sync with" list omits 20260907100000, 20260907300000 and 20260908000000.
@@ -533,6 +701,7 @@ Existing test coverage: npx tsc --noEmit is the only check, and the cast is prec
 ```text
 Finding: Four independent token modules re-implement the same HMAC sign, verify and constant-time-compare logic.
 Severity: Medium
+Status: fixed ae682b6 (scripts/test-hmac-tokens.ts)
 File(s): lib/optOutToken.ts:26-69; lib/outreachToken.ts:25-70; lib/availabilityToken.ts:46-164; lib/onboardingOauthState.ts:45-105
 Relevant function/component: the generate* / verify* pairs in each file
 What happens: Each file duplicates base64url encode and decode helpers, a getSecret() reading AVAILABILITY_TOKEN_SECRET with a 32-character minimum, nonce generation, HMAC-SHA256 signing over a colon-joined payload, and a hand-rolled constant-time comparison. The four implementations are near identical but not shared, and they do not even agree on the comparison idiom: onboardingOauthState returns false on a length mismatch before calling timingSafeEqual, while the other three pad the actual buffer to the expected length first and then separately check equality of lengths. Both idioms are safe as written.
@@ -559,6 +728,7 @@ Existing test coverage: none.
 ```text
 Finding: rateExpectation and availability reach a non-admin client, which the expertRate redaction rule otherwise forbids.
 Severity: Medium
+Status: fixed 1d7f36a (scripts/check-redaction.ts)
 File(s): lib/redactExpert.ts INTERNAL_PROJECT_EXPERT_KEYS (about :91-140); app/api/projects/[projectId]/experts/[expertId]/route.ts:234; components/ClientReadyCard.tsx:136
 Relevant function/component: redactExpertForViewer
 What happens: expertRate, expertCounterRate and counterRateProposed are stripped precisely so the client never sees the expert-side number, but rateExpectation, free text a staffer records during screening and typically shaped like "wants $600/hr", is not on the list, and neither is the free-text availability field. Both are rendered by ClientReadyCard. The field list is certain; how much staff actually use these legacy screening fields today is not, so this may be dead in practice.
@@ -572,6 +742,7 @@ Existing test coverage: scripts/check-redaction.ts asserts specific stripped key
 ```text
 Finding: /api/parse-brief and /api/projects/[projectId]/interview-guide spend paid LLM calls with no rate limiting, and interview-guide skips the shared mutation guard entirely.
 Severity: Medium
+Status: partially fixed 1d7f36a — the interview-guide route now runs guardMutatingRequest plus a 10-per-hour per-user limit; /api/parse-brief is still unthrottled
 File(s): app/api/parse-brief/route.ts:59-105; app/api/projects/[projectId]/interview-guide/route.ts:38-107; lib/projectsGuard.ts
 Relevant function/component: POST handlers
 What happens: parse-brief accepts up to 8 MB of base64 per call with maxDuration = 60 and forwards it to Anthropic. interview-guide calls OpenAI on every POST. Neither uses lib/rateLimiter.ts, and interview-guide does not use guardMutatingRequest, so it also skips the PROJECTS_ENABLED kill switch, the content-type CSRF surrogate and the 250 KB body cap.
@@ -585,6 +756,7 @@ Existing test coverage: none.
 ```text
 Finding: The interview-guide route parses the model's JSON without validating its shape.
 Severity: Medium
+Status: fixed 1d7f36a (shape validation by inspection; scripts/check-redaction.ts covers the redaction half)
 File(s): app/api/projects/[projectId]/interview-guide/route.ts:114-128
 Relevant function/component: POST
 What happens: JSON.parse(text) is cast straight to the expected object. The `?? []` covers a missing array, but a model returning "must_ask" as a string rather than an array makes .map throw, which the catch turns into a 500 with no diagnosis. Nothing checks that the questions are strings before they are rendered.
@@ -611,6 +783,7 @@ Existing test coverage: none.
 ```text
 Finding: Two concurrent sourcing start requests can both pass the 409 guard and enqueue two runs.
 Severity: Medium
+Status: fixed 74e9899 (scripts/test-sourcing-idempotency.ts)
 File(s): app/api/projects/[projectId]/source-experts/route.ts:87-110
 Relevant function/component: POST /api/projects/[projectId]/source-experts
 What happens: The guard reads project.sourcingStatus, then a separate updateProjectFields writes 'running'. There is no conditional update and no lock between the read and the write, so two requests interleaving both see a non-running project and both publish a job. Combined with the non-idempotent worker in H-11, both runs append experts.
@@ -676,6 +849,7 @@ Existing test coverage: none.
 ```text
 Finding: lib/contactPathResolver.ts is dead code with a live Redis footprint, a search-provider dependency and an insecure-secret fallback.
 Severity: Medium
+Status: fixed e71a05d (module deleted; scripts/check-env-drift.ts guards the environment half)
 File(s): lib/contactPathResolver.ts (whole file, about 330 lines); lib/domainSuggestions.ts:194 (suggestDomainsForExpert, its only consumer)
 Relevant function/component: resolveContactPaths
 What happens: A grep for contactPathResolver over .ts and .tsx outside the file itself returns only SECURITY_AUDIT.md references and the module's own log line. resolveContactPaths has zero callers, and the /api/resolve-contact-paths route that SECURITY_AUDIT.md names no longer exists. It is the only consumer of suggestDomainsForExpert and of the `cpath:` Redis namespace, it still pulls in lib/searchProviders, and it contains a `LOG_HASH_SECRET ?? 'dev-insecure-fallback'` path.
@@ -689,6 +863,7 @@ Existing test coverage: none.
 ```text
 Finding: EMAIL_PROVIDER_ORDER has no effect; the waterfall builders are unused and the registry map is duplicated.
 Severity: Medium
+Status: partially fixed ae682b6 — ACTIVE_PROVIDERS is gone and PROVIDER_MAP is the one registry; EMAIL_PROVIDER_ORDER still has no effect and is documented as such in .env.example
 File(s): lib/contactProviders/index.ts:16, :39, :64, :73 (parseProviderOrder, buildProviderWaterfall, getContactProvider, PROVIDER_MAP, ACTIVE_PROVIDERS); lib/contactDiscovery.ts:461
 Relevant function/component: parseProviderOrder / buildProviderWaterfall / getContactProvider
 What happens: discoverContact hardcodes [snovProvider, hunterProvider].filter(p => p.isConfigured()). buildProviderWaterfall and getContactProvider have no callers, and PROVIDER_MAP and ACTIVE_PROVIDERS are byte-identical duplicates of each other. Setting EMAIL_PROVIDER_ORDER=hunter,snov in production changes nothing.
@@ -754,6 +929,7 @@ Existing test coverage: scripts/test-entitlements.ts covers the entitlement itse
 ```text
 Finding: The inbound sender check compares an attacker-controllable header and ignores the SPF/DKIM results Resend supplies.
 Severity: Medium (uncertain: depends on guarantees in Resend's inbound payload that could not be verified from the code)
+Status: partially fixed c8748b2 (scripts/test-inbound-claim.ts) — the DKIM/DMARC gate is implemented and tested against three payload shapes, but Resend supplies no verdicts today, so the gate is inert and raises one mail/inbound_auth_results_missing system failure a day. See H-26
 File(s): app/api/inbound-email/route.ts:352-366 (sender check), :199-213 (extractFromAddress)
 Relevant function/component: POST
 What happens: The handler requires payload.from to equal pe.contactEmail. The Svix signature proves Resend sent the payload, not that the email was authentic. Resend relays whatever arrives at reply+TOKEN@expertmatch.fit, and the From header is trivially forgeable. Resend's inbound payload carries authentication results that this handler does not read.
@@ -767,6 +943,7 @@ Existing test coverage: none.
 ```text
 Finding: outreach/approve derives the intro topic with a shorter deny list than the bookmark route.
 Severity: Medium
+Status: fixed 5e21428 (scripts/test-send-chokepoint.ts)
 File(s): app/api/projects/[projectId]/experts/[expertId]/outreach/approve/route.ts:125-134; .../bookmark/route.ts:264-272; lib/outreachSteps.ts:119
 Relevant function/component: POST / runSequenceStep
 What happens: bookmark passes firmName: firm?.name, which lib/matchyTemplates.deriveTopic adds to the deny list so a brief naming the client's own firm cannot reach the expert. approve loads the same firm, for firmType, firmSize and the event orgId, but does not pass firmName, so the review-first intro is generalized with one fewer protection than the auto-sent one.
@@ -780,6 +957,7 @@ Existing test coverage: scripts/test-matchy-templates.ts covers deriveTopic with
 ```text
 Finding: The approve-and-send idempotency is read-then-write, not atomic.
 Severity: Medium
+Status: fixed 5e21428 (lib/conversations.clearPendingIfPending; scripts/test-walkthrough.ts covers the hold branch)
 File(s): app/api/projects/[projectId]/experts/[expertId]/messages/[messageId]/send/route.ts:103-108 (check), :153 (send), :156 (clear)
 Relevant function/component: POST
 What happens: The route reads screen_result.pending === true, sends, then clears the flag. Two concurrent POSTs, from a double click or a retried fetch, both pass the check before either clears it, and the expert is mailed twice. The header comment states the route is idempotent, which is true only for sequential calls.
@@ -819,6 +997,7 @@ Existing test coverage: none.
 ```text
 Finding: An expert who types free-text availability windows loses their linked Google calendar as a data source.
 Severity: Medium
+Status: fixed 74e9899 (scripts/test-scheduling.ts, scripts/test-availability-windows.ts)
 File(s): app/api/schedule/[token]/route.ts:390-398 (handleUnavailable); lib/matchyScheduling.ts:308-343
 Relevant function/component: handleUnavailable
 What happens: When the reply parser extracts windows, the write sets calendarProvider: 'manual' alongside availabilitySlots. expertHasConnectedCalendar and expertKnownWindows both branch on calendarProvider, so a previously connected Google account stops being queried. The ciphertext stays on the row but is unreachable, and the picker starts offering "Connect Google Calendar" again.
@@ -845,6 +1024,7 @@ Existing test coverage: scripts/e2e-matchy.ts exercises bookCall, but HANDOFF no
 ```text
 Finding: meeting.ended computes a NaN duration when Zoom omits start_time, and that NaN reaches the charge calculation.
 Severity: Medium
+Status: fixed 885e049 (scripts/test-zoom-webhook.ts)
 File(s): app/api/webhooks/zoom/route.ts:71-76, :94-98
 Relevant function/component: POST (meeting.ended branch)
 What happens: startTs = new Date(String(obj?.start_time ?? '')).getTime() is NaN for a missing or unparseable stamp. Math.max(1, Math.ceil((resolvedEnd - NaN)/60000)) is NaN, which is written to actualDurationMin and passed to callChargeDollars. Nothing validates the arithmetic before the invoice is created.
@@ -858,6 +1038,7 @@ Existing test coverage: none.
 ```text
 Finding: Every bounded scan in both cron routes uses .limit() with no .order() and no cursor, so overflow silently drops an arbitrary subset.
 Severity: Medium
+Status: fixed 0030bc9 (every scan now orders by updated_at and reports overflow)
 File(s): app/api/jobs/schedule-nudges/route.ts:137-141 (MAX_ROWS 500); app/api/jobs/reconcile/route.ts:92-96 (MAX_ORGS 500), :169-173 (MAX_PENDING_PAYOUTS 500), :202-206 (MAX_STUCK_PROJECTS 200)
 Relevant function/component: GET handlers, sweepSeats, sweepPayouts, sweepSourcing
 What happens: Each query is .select(...).filter(...).limit(N) with no ORDER BY. Postgres is free to return any N matching rows, and the set is not stable between runs. Once the matching set exceeds N the excess is not processed, and nothing in the response distinguishes "exactly N matched" from "N of 5000 matched"; result.scanned reports the truncated count as if it were the whole set.
@@ -884,6 +1065,7 @@ Existing test coverage: none.
 ```text
 Finding: sweepPayouts records a system_events failure on every night where any pending payout is unpaid, which is the normal steady state.
 Severity: Medium
+Status: fixed 0030bc9 (scripts/test-payout-state.ts)
 File(s): app/api/jobs/reconcile/route.ts:198-203
 Relevant function/component: sweepPayouts
 What happens: After the retries, `if (attempted > paid)` records a system failure reading "N pending payout(s) still unpaid after the nightly retry". But attempted-but-not-paid is the expected outcome for every expert who has not finished Stripe onboarding, since the retry cannot pay them by design. The alert therefore fires every night for as long as one expert has an incomplete Connect account.
@@ -936,6 +1118,7 @@ Existing test coverage: scripts/test-nudges.ts covers shouldSchedule's already_q
 ```text
 Finding: The Stripe webhook does not de-duplicate on event.id and has no ordering protection.
 Severity: Medium
+Status: fixed 0030bc9 (scripts/test-payout-state.ts, scripts/test-stripe-flows.ts)
 File(s): app/api/webhooks/stripe/route.ts:100-191
 Relevant function/component: POST
 What happens: Signature verification is correct and runs before any write, but event.id is never stored, and a grep finds no stripe_events or webhook_events table. Duplicate delivery re-runs every branch. The money branches happen to be idempotent today, because the paid and failed writes are the same values and runExpertPayout guards on stripeTransferId plus a deterministic transfer key, so this is a latent hazard rather than a live double-pay. On ordering, a late customer.subscription.updated can overwrite the past_due status mirrored from invoice.payment_failed.
@@ -949,6 +1132,7 @@ Existing test coverage: none.
 ```text
 Finding: A failed client payment sets paymentStatus 'failed' and alerts nobody.
 Severity: Medium
+Status: fixed 0030bc9 (scripts/test-stripe-flows.ts)
 File(s): app/api/webhooks/stripe/route.ts:81-88, :143-151 (handlePaymentFailed); lib/expertPayout.ts:199-205 (catch); lib/createAndSendInvoice.ts:396-400 (catch); lib/engagementEvents.ts:176 (the 'invoice' and 'payout' areas)
 Relevant function/component: handlePaymentFailed / runExpertPayout catch / createAndSendInvoice catch
 What happens: handlePaymentFailed writes 'failed' and logs. recordSystemFailure supports the areas 'invoice' and 'payout', but the only writers of those areas are lib/orgBilling.cancelOrgSubscription and the nightly reconcile job; no branch here records one. createAndSendInvoice returning null, whether from a Stripe outage or an entitlement refusal, likewise only console.errors.
@@ -988,6 +1172,7 @@ Existing test coverage: none in the component layer; the redaction itself is cov
 ```text
 Finding: Deleting a user who owns any project fails with an opaque 500 rather than a clear message.
 Severity: Medium
+Status: fixed 862a35d (scripts/test-auth-guards.ts, scripts/test-auth-flows.ts). The finding understates it: the route did not 500, it answered 200 ok while the account stayed live. See H-24
 File(s): app/api/admin/users/route.ts:184-222 (DELETE); lib/firmStore.ts:524-531 (deleteUser); supabase/migrations/20260831000000_supabase_cutover_foundation.sql:70, :122
 Relevant function/component: DELETE /api/admin/users, deleteUser
 What happens: profiles.id cascades from auth.users, but projects.owner_id references profiles(id) ON DELETE RESTRICT. deleteUser calls deleteSupabaseUser with no project-ownership pre-check, so an admin deleting a user who owns at least one project gets a raw Postgres foreign-key violation caught by the route's generic catch, surfacing only "Failed to delete user" with no indication of why or what to do.
@@ -1014,6 +1199,7 @@ Existing test coverage: none.
 ```text
 Finding: scripts/test-matchy-templates.ts fails 2 of 105 checks against the current lib/matchyTemplates.ts.
 Severity: Medium
+Status: fixed 5d8be69 on main, before the waves began (scripts/test-matchy-templates.ts, 105/105)
 File(s): scripts/test-matchy-templates.ts:88-90, :216; lib/matchyTemplates.ts deriveTopic
 Relevant function/component: deriveTopic
 What happens: Running the script fails on "structured industry + function wins" (got "anything at all", wanted "operations in veterinary services") and "empty question falls back to industry" (got "this market", wanted "specialty pharma"). The test expects deriveTopic to prefer structured industry and function fields over, or as a fallback from, researchQuestion; the current implementation prefers or echoes researchQuestion instead.
@@ -1027,6 +1213,7 @@ Existing test coverage: this is the failing script itself.
 ```text
 Finding: Two parallel OAuth-state implementations exist for the same purpose, and only one cross-checks the session identity.
 Severity: Medium
+Status: fixed ae682b6 (scripts/test-hmac-tokens.ts)
 File(s): app/api/availability/[token]/google-auth/route.ts:58-66, :136-145 (inline buildState/verifyState); app/api/availability/oauth/google/callback/route.ts:70-74; lib/onboardingOauthState.ts (the client-side implementation); app/api/onboarding/calendar/google/callback/route.ts
 Relevant function/component: buildState / verifyState vs buildOnboardingOAuthState / verifyOnboardingOAuthState
 What happens: The expert-facing calendar flow uses an inline state builder and verifier defined in the route files; the client-facing onboarding flow uses lib/onboardingOauthState.ts. They share AVAILABILITY_TOKEN_SECRET but differ in payload shape, in nonce storage (project_experts.data.oauthState versus user_calendar_connections.oauth_state), and in whether the signed email is compared against the live session. Only the onboarding one does that comparison.
@@ -1040,6 +1227,7 @@ Existing test coverage: none for either implementation.
 ```text
 Finding: Four environment variables are required by validateEnv or documented in .env.example but read by no code, and two of them will block a fresh deploy.
 Severity: Medium
+Status: fixed e71a05d (scripts/check-env-drift.ts)
 File(s): lib/validateEnv.ts:30 (GOOGLE_CALENDAR_REFRESH_TOKEN), :44 (STRIPE_CONNECT_CLIENT_ID); .env.example:33 (SESSION_SECRET), .env.example (CONTACT_ENRICHMENT_ADMIN_TOKEN, CONTACT_PROVIDER)
 Relevant function/component: REQUIRED_VARS / validateEnv
 What happens: A repository-wide grep for process.env.<NAME> across app/, lib/, components/ and scripts/ finds zero reads of GOOGLE_CALENDAR_REFRESH_TOKEN, STRIPE_CONNECT_CLIENT_ID, SESSION_SECRET, CONTACT_ENRICHMENT_ADMIN_TOKEN or CONTACT_PROVIDER. The first two are in REQUIRED_VARS, so validateEnv throws at boot in production if they are absent, crashing the deploy for variables nothing uses. SESSION_SECRET is a remnant of the removed HMAC-cookie session system, CONTACT_ENRICHMENT_ADMIN_TOKEN of the deleted /api/enrich-contact route, and CONTACT_PROVIDER of the superseded single-provider selection.
@@ -1053,6 +1241,7 @@ Existing test coverage: none. scripts/security-scan.sh checks for undocumented e
 ```text
 Finding: Fourteen environment variables that the running code actually reads appear in neither validateEnv list nor .env.example, so the admin env-status console cannot report them.
 Severity: Medium
+Status: fixed e71a05d (scripts/check-env-drift.ts)
 File(s): lib/validateEnv.ts REQUIRED_VARS/OPTIONAL_VARS; .env.example; app/api/admin/env-status/route.ts; read sites: lib/projectsGuard.ts (PROJECTS_ENABLED, PROJECTS_ADMIN_TOKEN), lib/auth.ts (APP_AUTH_ENABLED), lib/firmStore.ts (ADMIN_NOTIFICATION_EMAIL), lib/contactProviders/index.ts (EMAIL_PROVIDER_ORDER), lib/contactCache.ts (CONTACT_CACHE_VERSION), lib/searchProviders/index.ts (SEARCH_PROVIDER, SEARCH_FALLBACK_ENABLED, SEARCH_COMPARE_PROVIDERS), lib/searchProviders/{exa,tavily,scrapingbee}.ts (EXA_API_KEY, TAVILY_API_KEY, SCRAPINGBEE_KEY), seven files reading NEXT_PUBLIC_BASE_URL, seven reading DISABLE_EMAILS
 Relevant function/component: validateEnv / GET /api/admin/env-status
 What happens: Each of these was confirmed present with a process.env read in app/, lib/ or components/. None appears in REQUIRED_VARS, OPTIONAL_VARS or .env.example. Because the env-status route iterates only those two exported lists, none of them can be seen in the admin console, which is described in the code as the one place that answers "did I already add that key?" without opening the Vercel dashboard.
@@ -1120,6 +1309,7 @@ Existing test coverage: none.
 ```text
 Finding: Dead code: the three rate-limiter tiers and their only consumer route are gone.
 Severity: Low
+Status: fixed e71a05d (grep evidence in the W4-1 deletion table)
 File(s): lib/rateLimiter.ts:79-131 (checkRequestThrottle, checkCreditLimits, checkAndIncrementGlobalBudget, incrementProviderDailyCount)
 Relevant function/component: as listed
 What happens: Verified by grep: these four exports appear only in lib/rateLimiter.ts. app/api/enrich-contact, named in the module header as their purpose, does not exist, and checkContactLookupLimits, also advertised in the header, is not in the file. createRateLimiterStore() is still live, used by five token-gated public routes, so the module must stay.
@@ -1133,6 +1323,7 @@ Existing test coverage: none.
 ```text
 Finding: Dead code: lib/supabase/client.ts has no importers, six UpstashRedis methods have none, and two signupToken Redis helpers are reachable only from a test.
 Severity: Low
+Status: partially fixed e71a05d — the six UpstashRedis methods and the two signupToken helpers are gone; lib/supabase/client.ts is still present
 File(s): lib/supabase/client.ts (whole module); lib/upstashRedis.ts:95-124 (getAndDel, sadd, srem, smembers, sismember, scard); lib/signupToken.ts (tokenRedisKey, tokenTtlSeconds)
 Relevant function/component: createClient (browser); UpstashRedis set operations
 What happens: A grep across .ts and .tsx finds no import of supabase/client. The Redis set operations and getAndDel served the Redis-era single-use token flow that lib/authLinks.ts replaced with Supabase recovery tokens; keys() and delMany() survive only in scripts/wipe-projects.ts. The signupToken Redis helpers are reachable only from scripts/test-signup-token.ts. Both files' headers previously described the superseded HMAC-cookie architecture and were corrected during this pass.
@@ -1224,6 +1415,7 @@ Existing test coverage: none.
 ```text
 Finding: lib/extractDomain.ts has zero callers anywhere in the repository, including scripts/.
 Severity: Low
+Status: fixed e71a05d
 File(s): lib/extractDomain.ts:12
 Relevant function/component: extractDomain
 What happens: A grep for extractDomain across the whole repository, excluding node_modules, matches only its own definition. Its header says it is used in Snov.io email lookups, but lib/contactDiscovery.ts implements its own deriveCompanyDomain inline instead.
@@ -1263,6 +1455,7 @@ Existing test coverage: none.
 ```text
 Finding: Two unused imports, one of which is an unscoped project read sitting in an access-controlled route.
 Severity: Low
+Status: fixed e71a05d
 File(s): app/api/projects/[projectId]/route.ts:2 (getProject); app/api/projects/[projectId]/collaborators/route.ts:31 (isApprovedDomain)
 Relevant function/component: module imports
 What happens: Neither symbol is referenced anywhere in its file, verified by grep. getProject is the UNSCOPED store read, so its presence in a route file is actively misleading: a future edit could reach for it and skip the access check that getProjectForUser performs.
@@ -1328,6 +1521,7 @@ Existing test coverage: none.
 ```text
 Finding: The value-chain diagnostic log echoes brief-derived model output in production.
 Severity: Low
+Status: fixed 74e9899
 File(s): lib/generateExperts.ts:512-517 (the 'vci-llm-response' log)
 Relevant function/component: inferValueChain
 What happens: The log prints firstChars, the first 40 characters of the model's JSON, which begins with the endMarket value inferred from the client's brief. Unlike logPerf and the retry logs, it is not gated on NODE_ENV. The adjacent 'vci-parsed-structure' and 'tier-split-diagnostic' logs print shapes and scores only and are fine.
@@ -1380,6 +1574,7 @@ Existing test coverage: none.
 ```text
 Finding: contactCandidates is redacted and type-declared but never written.
 Severity: Low
+Status: fixed e71a05d (the type field is gone; scripts/check-redaction.ts still proves the legacy jsonb key is stripped)
 File(s): types.ts:367; lib/redactExpert.ts:94; scripts/check-redaction.ts:84, :183, :210, :321
 Relevant function/component: ProjectExpert.contactCandidates
 What happens: Nothing in the current discovery path writes contactCandidates; runContactDiscoveryJob writes a single contactEmail. The field survives only in the type, the redaction blocklist and the redaction tests, which synthesise it.
@@ -1393,6 +1588,7 @@ Existing test coverage: scripts/check-redaction.ts (synthetic).
 ```text
 Finding: The retired pre-Matchy email cadence has left dead code across four modules, including the only remaining path that would put an LLM-written body and a dollar figure in a cold email.
 Severity: Low
+Status: fixed e71a05d
 File(s): lib/emailSequence.ts:82 (scheduleNextEmail), :100-138 (generateEmail1), :42 (EmailStep); lib/outreachSteps.ts:173-203 (the 'email1' branch); app/api/email-sequence/trigger/route.ts (whole route); lib/replyDetection.ts (whole module)
 Relevant function/component: scheduleNextEmail / generateEmail1 / POST trigger / parseReply
 What happens: A grep across app/, lib/, components/ and scripts/ finds no caller for scheduleNextEmail, whose comment claimed inbound-email still called it (corrected during this pass), and none for parseReply. Nothing publishes an 'email1' QStash job any more, so the trigger route, generateEmail1 and the 'email1' branch are reachable only by a pre-Matchy job still sitting in the queue, which QStash retries for about 24 hours. The trigger route also passes `step` straight through without validating it against the OutreachStep union.
@@ -1419,6 +1615,7 @@ Existing test coverage: scripts/test-entitlements.ts covers the entitlement itse
 ```text
 Finding: resend_message_id is never populated, so the message-level idempotency key the spec names does not exist in practice.
 Severity: Low
+Status: partially fixed c8748b2 — resend_message_id is now written; there is still no unique index on it, so it is a diagnostic rather than a constraint
 File(s): lib/conversations.ts:222 (insert), :263 (update); app/api/inbound-email/route.ts (stores no message id); docs/MATCHY_SPEC.md
 Relevant function/component: appendMessage / handleReply
 What happens: The column exists and appendMessage and updateMessage both accept a value, but no caller supplies one. The only dedupe is the Redis svix-id claim in H-5.
@@ -1445,6 +1642,7 @@ Existing test coverage: none.
 ```text
 Finding: computeOverlap(), scoreSlot(), formatInTimezone() and deleteZoomMeeting() are dead code, and the first three are a second, divergent implementation of overlap arithmetic.
 Severity: Low
+Status: partially fixed e71a05d — computeOverlap, scoreSlot and formatInTimezone are gone; deleteZoomMeeting is kept because the cancel-booking route is a deferred founder decision
 File(s): lib/computeOverlap.ts:136-179 (computeOverlap), :183-193 (scoreSlot), :205-257 (formatInTimezone); types.ts:338 (OverlapResult, OverlapSlot); lib/createZoomMeeting.ts:121 (deleteZoomMeeting)
 Relevant function/component: computeOverlap
 What happens: Grepping app/, lib/, components/ and scripts/ shows only resolveTimezone, slotToUtcRange, extractTimezone (used by matchyScheduling and bookCall) and localToUtc (used by scripts/test-scheduling.ts) are imported from this module. The headline computeOverlap() lost its last caller when lib/triggerOverlapCheck.ts was retired; the Phase 2 equivalent is intersectRanges over absolute UTC ranges. deleteZoomMeeting is likewise uncalled, and its own comment says so; the call-cancellation route is a known open task.
@@ -1601,6 +1799,7 @@ Existing test coverage: none; no script calls any /api/admin/* route.
 ```text
 Finding: The check()/eq() assertion-helper boilerplate is duplicated across 18 scripts, with visible drift between copies.
 Severity: Low
+Status: fixed ae682b6 (scripts/testHarness.ts, adopted by 31 test scripts plus check-redaction)
 File(s): scripts/test-availability-windows.ts, test-brevity.ts, test-contact-discovery.ts, test-conversations-redaction.ts, test-email-clean.ts, test-email-domains.ts, test-entitlements.ts, test-matchy-classify.ts, test-matchy-client.ts, test-matchy-screen.ts, test-matchy-templates.ts, test-nudges.ts, test-org-billing.ts, test-pricing.ts, test-scheduling.ts, test-signup-token.ts, test-walkthrough.ts, check-redaction.ts
 Relevant function/component: check() / eq() assertion counters
 What happens: Every script hand-defines its own near-identical check(name, ok, detail) counter, and five also define eq(name, actual, expected), each with slightly different formatting and exit-code logic. Some count checks separately from failures and others do not.
@@ -1614,6 +1813,7 @@ Existing test coverage: not applicable; this is a meta-finding about the test sc
 ```text
 Finding: lib/expertPayout.ts's header states that nothing else retries pending payouts, which has been untrue since the reconcile cron shipped.
 Severity: Low
+Status: fixed 0030bc9
 File(s): lib/expertPayout.ts:19-21, :252-254; app/api/jobs/reconcile/route.ts:186
 Relevant function/component: retryPendingPayoutsForAccount
 What happens: Two comments state that pending payouts are retried by retryPendingPayoutsForAccount called from the account.updated branch of the Stripe webhook, and that this is "the only retry path in the system". The nightly reconcile sweep is a second caller and has been since it shipped.
@@ -1627,6 +1827,7 @@ Existing test coverage: none.
 ```text
 Finding: ProjectExpert.agreedRate is a dead field that is still rendered.
 Severity: Low
+Status: fixed e71a05d
 File(s): types.ts:408 (agreedRate); components/ProjectExpertCard.tsx:261 (renders it)
 Relevant function/component: ProjectExpert
 What happens: agreedRate is declared in the type and read by the card, but nothing in the repository ever writes it. It appears to be a pre-Matchy leftover superseded by expertRate and clientRate.
@@ -1653,6 +1854,7 @@ Existing test coverage: none.
 ```text
 Finding: Four dependencies are installed and never imported.
 Severity: Low
+Status: fixed e71a05d (npm uninstall ai @ai-sdk/anthropic nodemailer bcryptjs @types/nodemailer)
 File(s): package.json (nodemailer ^8.0.7, @types/nodemailer ^8.0.0, ai ^6.0.175, @ai-sdk/anthropic ^3.0.75, bcryptjs ^3.0.3)
 Relevant function/component: dependencies
 What happens: A grep over app/, lib/, components/ and scripts/ finds no import of nodemailer, no import from 'ai' or '@ai-sdk/anthropic', and no reference to bcrypt at all. All outbound mail goes through Resend via lib/emailSequence.ts and lib/sendAvailabilityRequest.ts; all Anthropic calls go through @anthropic-ai/sdk directly; password hashing is Supabase Auth's responsibility. The 'ai' and '@ai-sdk/anthropic' packages in particular are large.
@@ -1692,6 +1894,7 @@ Existing test coverage: not applicable.
 ```text
 Finding: app/api/inbound-email/route.ts defines a private pseudonymize identical to the exported one in lib/contactCache.ts.
 Severity: Low
+Status: fixed ae682b6 (scripts/test-hmac-tokens.ts covers the shared crypto; pseudonymize now has one definition)
 File(s): app/api/inbound-email/route.ts:102; lib/contactCache.ts (exported pseudonymize)
 Relevant function/component: pseudonymize
 What happens: The inbound-email route declares its own local copy of the HMAC-and-truncate helper used to keep identifiers out of log lines, rather than importing the existing exported one.
@@ -1728,6 +1931,8 @@ Existing test coverage: none.
 
 ## Dead code and stale integrations
 
+*Written 2026-09-08. Most of this list was executed in commit `e71a05d` (Wave 4): four modules, one route, three rate-limiter tiers, six Redis helpers, two signup-token helpers, three type fields and five npm packages are gone, each with grep evidence in the builder's report. The entries that survive on purpose are `lib/supabase/client.ts`, `createZoomMeeting.deleteZoomMeeting` (blocked on the deferred cancel-booking decision), the `contactProviders` waterfall builders (M-23, a product decision), `contactCache`'s unused lock, and `types.ts`'s `ContactCandidate`, which is now documented as the legacy jsonb shape `redactExpert` still strips. Read the Status table above before treating any line below as current.*
+
 Consolidated across all fourteen batches. Each entry gives the path, why it is dead, and the evidence.
 
 - `lib/contactPathResolver.ts` (whole module, about 330 lines): the `/api/resolve-contact-paths` route it served no longer exists. Grep for `contactPathResolver` over .ts and .tsx returns only SECURITY_AUDIT.md references and its own log line. It still owns the `cpath:` Redis namespace and a `lib/searchProviders` dependency. See M-22.
@@ -1758,6 +1963,8 @@ Consolidated across all fourteen batches. Each entry gives the path, why it is d
 
 ## Duplicated logic
 
+*Written 2026-09-08. Commit `ae682b6` (Wave 4) collapsed the first seven of these into one implementation each: `lib/hmacToken.ts` (both OAuth-state implementations included, wire formats frozen and proved byte-identical by fixtures minted from the old code), one `secretMatches` in `lib/auth.ts`, one `pseudonymize` in `lib/contactCache.ts`, one `PROVIDER_MAP`, and `scripts/testHarness.ts`. `lib/signupToken.ts` is a fifth HMAC module that did not join, because it signs over a different secret. The two double-bill guards, the two ICS builders and the two overlap engines were resolved by the Wave 1 and Wave 4 fixes. The membership resolvers, the design tokens and the seat-sync error policies are untouched.*
+
 - **Four HMAC token modules.** `lib/optOutToken.ts`, `lib/outreachToken.ts`, `lib/availabilityToken.ts` and `lib/onboardingOauthState.ts` each re-implement base64url encoding, `getSecret()` over the same environment variable, nonce generation, HMAC-SHA256 signing over a colon-joined payload, and a constant-time comparison. Two different comparison idioms coexist. See M-11.
 - **Two OAuth state implementations.** The inline `buildState`/`verifyState` pair in the expert calendar routes versus `lib/onboardingOauthState.ts` for the client flow. Same secret, different payload shapes, different nonce stores, and only one checks the session identity. See M-49.
 - **Two `secretMatches` implementations.** `app/api/jobs/reconcile/route.ts:72` and `app/api/jobs/schedule-nudges/route.ts:93` are byte-identical constant-time comparisons of the CRON_SECRET bearer token.
@@ -1776,51 +1983,59 @@ Consolidated across all fourteen batches. Each entry gives the path, why it is d
 
 ## Testing gaps
 
-There is no test runner in this repository. Every script under `scripts/` is a standalone program run with `npx tsx`, each hand-rolling its own assertion counter and exiting non-zero on failure. Ordered by risk, money and authorization first.
+*Rewritten 2026-09-10 for the state after the repair waves. The original 2026-09-08 table is superseded; the ids in each row point at the finding blocks above, which still carry the original text.*
 
-| System | What exists | What is missing |
+There is still no test runner. Every script under `scripts/` is a standalone program run with `npx tsx scripts/<name>.ts`. Since Wave 4 they all import `scripts/testHarness.ts` for `check` / `eq` / `summary`, so the exit-code contract is one implementation: 0 clean, 1 on any failure. Thirty-one `test-*.ts` scripts plus `check-redaction` and `check-env-drift` run offline; two suites (`test-route-authz`, `test-auth-flows`) drive a local server over HTTP with throwaway accounts.
+
+What changed: the two rows that used to say **None** on the money and identity paths now have 208, 116, 134, 84, 75, 49 and 35 checks behind them. What did not change: the sourcing pipeline, the nudge and reconcile routes, the frontend, and the inbound route's own happy path are still uncovered.
+
+| System | What exists now | What is still missing |
 | --- | --- | --- |
-| Per-call charge (`chargeSavedCard`, `createAndSendInvoice`) | `scripts/test-pricing.ts` covers the arithmetic: 251 checks over seat tiers, `clientRateFor`, `callChargeDollars`, `expertPayoutDollars`, the `callCharge >= expertPayout` invariant, band clamping | No script imports either module. The double-bill guard, the idempotency-key scope (H-8), the entitlement gate, the payment-link fallback and the receipt email are all unverified. |
-| Stripe webhook | Nothing | No test at all. Signature verification, duplicate delivery, `handlePaymentSucceeded`, the payout hand-off and the subscription mirror are uncovered. `scripts/verify-svix.ts` covers a different webhook (Resend inbound). |
-| Zoom webhook and completion | Nothing | Signature verification, the replay window (C-4), the duration arithmetic including the NaN path (M-35), and the invoice hand-off are uncovered. `scripts/test-org-billing.ts` asserts only that `findProjectExpertByZoomMeetingId` exists. |
-| Stripe Connect payouts | `scripts/test-org-billing.ts` asserts export shapes on `runExpertPayout` and `retryPendingPayoutsForAccount`, never calls them | No behavioural test. `lib/stripeConnect.ts` has no coverage at all. The `failed`-state trap (H-6), the Redis-only account id (L-36) and the sub-minimum no-op (L-35) are all untested. |
-| Seat billing | `scripts/test-org-billing.ts` (23 checks: `orgCancelIdempotencyKey`, `stripeFailureReason`), `scripts/test-pricing.ts` (tiers) | The Stripe-calling `syncOrgSeatQuantity` and `cancelOrgSubscription` are asserted for shape only. The subscription-create idempotency window (H-23) is untested, as is the SetupIntent-ownership check in `confirm/route.ts:95`. |
-| Route-level authorization on money and identity fields | Nothing | Nothing asserts that a role-`user` project owner is refused `expertRate`, `paymentStatus`, `stripePaymentIntentId` or `contactEmail` (C-1, H-1). This is the highest-value missing test in the repository. |
-| Authentication (login, session, logout) | `scripts/smoke-cutover.ts` covers login success, wrong password, `/api/auth/me`, logout and session-dead-after-logout, live over HTTP | No unit test of the auth code. Rate limiting is untested in both directions: that caps fire, and that a Redis outage degrades as intended (H-14, H-15). |
-| Invite, set-password, activation | `scripts/test-signup-token.ts` covers HMAC generate, verify, expiry and tamper for `lib/signupToken` | No script mints a link and redeems it. Single-use enforcement, the seat-cap-before-redeem ordering, the email-mismatch refusal in `redeemSetPasswordLink`, and the `kind: 'reset'` "touch nothing else" promise are all unverified. |
-| Revocation | Nothing | Nothing asserts that disabling a member actually ends their access, which is exactly the behaviour H-16 says can silently fail. |
-| Cross-organization scoping | `scripts/e2e-matchy.ts` logs in owner, collaborator and intruder personas and asserts the project-access split; `scripts/smoke-cutover.ts` covers a throwaway intruder | `orgAdminGuard` plus `resolveOrgId` cross-org scoping (that an org admin cannot act on another organization's members by passing `orgId`) is untested, as is the `provisionAccountInvite` refusal matrix. |
-| RLS and direct database access | `scripts/rls-verify.sh` plus `scripts/rls/verify.sql`: 153 assertions across `anon`, five authenticated actors and `service_role`, plus a double-application idempotency proof | Currently exits non-zero on a correct database (H-19). Cannot run here (no psql) and has never run against production (no direct Postgres connection). `outreach_suppressions`, `engagement_events` and `system_events` are unasserted (M-6). Nothing ties the dropped policies to `lib/redactExpert.ts` as their replacement. |
-| Blinding and redaction | Strong: `scripts/check-redaction.ts` (366 lines), `scripts/test-conversations-redaction.ts`, `scripts/test-matchy-screen.ts`, `scripts/test-matchy-templates.ts` | Content-level checks are missing: that a generated `anonymizedDescriptor` contains neither surname nor company (H-18), and that the booking ICS attendee list respects the same rules as the API responses (C-3). |
-| Outbound send chokepoint | `scripts/test-walkthrough.ts` and `scripts/test-entitlements.ts` cover the two gates inside `sendSequenceEmail`; `scripts/e2e-matchy.ts` proves one live path (no contact, no send) | Nothing asserts that an opted-out address cannot receive a client reply, a rate line or an auto follow-up (H-3), and nothing asserts the three routes that discard `SendOutcome` behave correctly under a trial hold (H-4). |
-| Duplicate-send protection | Nothing | The bookmark race (H-2), the post-send write failure, `messages/[messageId]/send` concurrency (M-30), and the nudge same-morning double (M-41) are all uncovered. |
-| Inbound email pipeline | Good on the pure stages: `scripts/test-email-clean.ts`, `scripts/test-matchy-screen.ts`, `scripts/test-matchy-classify.ts` (stubbed model), `scripts/verify-svix.ts` | No test drives a signed payload through the route end to end. The sender check, the dedupe claim (H-5), `advanceDeclined`'s global suppression write and the auto follow-up are uncovered. |
-| Background jobs | `scripts/test-nudges.ts` (219 checks on the pure decision layer, including DST and business days) | Nothing exercises `reconcile`, `schedule-nudges` or `send-nudge` as routes. The worker's re-validation ladder, `sweepSeats` against a Stripe stub, `sweepSourcing`'s cutoff arithmetic, and the 503/401 auth behaviour of all three are untested. |
-| Sourcing | `scripts/verify-sourcing-prod.ts` (live, production-pointed, costs real money); `scripts/e2e-matchy.ts:241` asserts a collaborator gets 403 | No unit tests of sourcing logic. `classifySeniority` in particular is a pure, dependency-free function on the money path (it selects the tier that sets `expertRate`) and would be trivial to cover. QStash redelivery, `extractJSON`'s slow path, `normalizeExpert`'s rejection rules and the per-briefType score floors are all uncovered. |
-| Contact discovery | `scripts/test-contact-discovery.ts` (81 checks on the pure helpers and the kill switch) | The provider chain itself has no fake-provider harness, so cache-then-Snov-then-Hunter ordering, abort handling and negative caching after a timeout (M-24) are unverified, as is QStash signature rejection on the worker. |
-| Scheduling and booking | Good: `scripts/test-scheduling.ts` (171 checks), `scripts/test-availability-windows.ts` (109 checks), `scripts/test-matchy-client.ts` | `fetchGoogleFreebusy`'s busy-to-free inversion across zones (H-21), the Calendly path at all (M-32), both OAuth callbacks, `GET /api/schedule/[token]` as an HTTP route (which would have caught C-2), and `rebookCall` against a real Zoom meeting are uncovered. |
-| Expert reply tokens | `scripts/e2e-matchy.ts` uses `lib/outreachToken.ts` to build fixtures | No dedicated unit test of any of the four HMAC token modules' verify paths: malformed, expired and invalid-signature branches are all unexercised. |
-| Admin routes | Nothing | No script calls any `/api/admin/*` route or asserts admin-only authorization. The org-delete-with-Stripe-cancel-first path, the user-delete foreign-key interaction (M-46) and the personal-domain trial branch are all untested. |
-| Password reset | Nothing | `lib/passwordReset.ts` has no coverage anywhere. `scripts/test-signup-token.ts` covers a related but distinct module. |
-| Account and organization deletion | Nothing | No behavioural test of `deleteUser`, `deleteFirm`, or the cascade and RESTRICT interactions they depend on. |
-| Frontend components | Nothing | No script imports any React component or `lib/matchyClient.ts`. Client-side error-state rendering (422 findings, 409 preconditions), the 5-second and 20-second polling loops' cleanup on unmount, and the silent-failure paths in L-37 are all uncovered. |
-| Environment and configuration | `scripts/security-scan.sh` (npm audit, tsc, secret grep, XSS sinks, undocumented environment variables) | Nothing detects a documented-but-never-read variable (M-50) or a read-but-never-documented one (M-51), and nothing asserts that `validateEnv` fails a deploy for the right reasons. |
+| Per-call charge (`chargeSavedCard`, `createAndSendInvoice`) | `test-billing-guard` (35: per-call identity, the durable guard, the idempotency key, legacy rows), `test-stripe-flows` (208, Stripe stubbed through the new `deps` seam: charge writes the intent id and `billedCallId`, declined falls to a payment link, receipt path), `test-pricing` (251, arithmetic) | Nothing drives the real Stripe API; the receipt email's contents are unasserted |
+| Stripe webhook | `test-stripe-flows` (branch by branch, including `event.id` de-duplication and the fail-open path), `test-webhook-signature` (49, real HMAC fixtures from the SDK and hand-computed, plus stale-timestamp rejection) | Ordering between events is still unasserted; no test drives the deployed endpoint |
+| Zoom webhook and completion | `test-zoom-webhook` (39: freshness window, already-ended and already-completed skips, the NaN-duration fallbacks), `test-webhook-signature` (Zoom `v0:{ts}:{body}` fixtures, 301 s past and future both rejected) | The timestamp unit is asserted as seconds from the brief, not from a captured Zoom delivery — worth one live capture before this ships (W1-3's open question) |
+| Stripe Connect payouts | `test-payout-state` (75: the two-phase write, `paidCallIds`, the reminder throttle, the refund transition, the dedupe decision), `test-stripe-flows` (`account.updated` → sweep → transfer, amount and per-call key) | `retryPendingPayoutsForAccount` still reaches straight for the service-role client, so the sweep itself is only reachable with a real database |
+| Seat billing | `test-org-billing` (38, including the adopt-existing decision and the id tail), `test-stripe-flows` (create once, adopt, resize, cancel at zero, never quantity 0) | The SetupIntent-ownership check in `onboarding/billing/confirm` is still unasserted |
+| Route-level authorization on money and identity fields | **The highest-value gap is closed.** `test-expert-route-authz` (119 pure checks over the three write tiers) and `test-route-authz` (116 HTTP checks: intruder 404, collaborator 403, owner 403 `read_only` with the field named, admin 200, across all 16 project-family routes) | `source-experts`, full interview-guide generation and `complete` past the account boundary are asserted at the gate only, because their happy paths spend money |
+| Authentication, login throttling | `test-auth-guards` (84: the pure limiter decisions with Redis up, Redis down and the per-account budget; guard decisions for pending/disabled/active), `test-auth-flows` (the route wiring: the eleventh attempt refused with the right password, per-IP 429 with `retry-after`) | `middleware.ts` branches are still untested |
+| Invite, set-password, activation | `test-auth-flows` mints real links with `lib/authLinks` and redeems them: single use, seat cap evaluated before the recovery hash is burned, email-mismatch refusal, replay | Nothing asserts the emailed link's contents |
+| Revocation | `test-auth-flows` asserts disable → `app_metadata` synced → the live session refused on the very next request (H-16), and `test-auth-guards` covers the nightly repair sweep's decisions | The org-admin UI does not surface the PATCH/DELETE `metadata_sync_failed` warning, so nothing tests that a human sees it |
+| Cross-organization scoping | `test-auth-flows` (another org's `orgId` → 400 `no_organization` on GET/PATCH/DELETE/POST; a member of another org → 404), `test-route-authz` (collaborators same-org only, 422 `collaborator_not_in_organization`), `e2e-matchy` | `provisionAccountInvite`'s refusal matrix is still untested |
+| Platform-staff protection | `test-auth-guards` and `test-auth-flows` (an org admin may not disable or remove platform staff; a platform admin may) | none |
+| Account deletion | `test-auth-guards` (the `classifyDeleteOutcome` decision table), `test-auth-flows` (the 409 `owns_projects` answer) | `deleteFirm` and the organization cascade are still untested |
+| RLS and direct database access | `scripts/rls-verify.sh` plus `scripts/rls/verify.sql` (153 assertions) | **Still exits non-zero on a correct database (H-19, open).** Cannot run here (no psql) and has never run against production |
+| Blinding and redaction | `check-redaction` (142, now including descriptor-anonymity cases and the two newly stripped keys), `test-conversations-redaction` (48), `test-matchy-screen` (82), `test-matchy-templates` (105), `test-booking-ics` (38: no address crosses sides, shared UID/SEQUENCE, a move increments both) | Nothing asserts the rendered email bodies as a whole; the ICS is asserted at the builder, not at Resend |
+| Outbound send chokepoint | `test-send-chokepoint` (35: the four gates as one pure function, fail-closed on every unknown, the send-once intro), `test-walkthrough` (64: the three routes' shared held branch, and that a held rate decision writes no rate) | The Redis `SET NX` intro lock is I/O and is covered by reading, not by a script |
+| Duplicate-send protection | `test-send-chokepoint` (`introAlreadySent`, the concurrent-job refusal), `test-sourcing-idempotency` (27) | The nudge same-morning double (M-41) is still uncovered |
+| Inbound email pipeline | `test-inbound-claim` (65: the two-phase claim including legacy `"1"` keys, the DKIM/DMARC verdicts in three payload shapes, message-id extraction), plus the pure stages (`test-email-clean` 81, `test-matchy-screen` 82, `test-matchy-classify` 86, `verify-svix`) | **No test drives a signed payload through the route end to end, and the payload shape itself is now in doubt (H-26).** `advanceDeclined`'s suppression write and the auto follow-up are still uncovered |
+| HMAC token families | `test-hmac-tokens` (80: nine fixtures minted by the pre-consolidation code prove the wire formats are byte-identical, plus malformed, expired and bad-signature branches for all five kinds) | `lib/signupToken.ts` is a fifth module that did not join `lib/hmacToken`; `test-signup-token` (41) covers it separately |
+| Background jobs | `test-nudges` (219, the pure decision layer) | Still **none** for `reconcile`, `schedule-nudges` and `send-nudge` as routes. The reconcile deadline, `overflow` reporting and the 503/401 behaviour are verified by reading only |
+| Sourcing | `test-sourcing-idempotency` (27, `shouldPersistRun`), `verify-sourcing-prod` (live, costs real money) | Still no unit tests of the pipeline itself. `classifySeniority` is a pure function on the money path and remains uncovered |
+| Contact discovery | `test-contact-discovery` (81, now including the per-provider budget call) | Still no fake-provider harness, so the cache-then-Snov-then-Hunter ordering and negative caching are unverified |
+| Scheduling and booking | `test-scheduling` (171), `test-availability-windows` (109), `test-freebusy-inversion` (80: busy blocks in Los Angeles, New York and Singapore invert across the whole local day), `test-matchy-client` (69) | Both OAuth callbacks and `rebookCall` against a real Zoom meeting are still uncovered; the Calendly path is unreachable (M-32) |
+| Project concurrency | `test-project-update` (38: the brief merge and the compare-and-set conflict) | Nothing exercises a genuine concurrent write against Postgres |
+| Environment and configuration | **`check-env-drift` (9) closes this row.** It scans `app/`, `lib/`, `components/`, `middleware.ts` and `instrumentation.ts` for `process.env` reads and asserts three-way agreement with `REQUIRED_VARS`, `OPTIONAL_VARS` and `.env.example`, reading names only and never values | `npm run security` still stops at step 1 on a pre-existing `npm audit` finding (postcss via `next`), so its later steps have not run for anyone |
+| Admin routes | `test-auth-guards` and `test-auth-flows` cover users, members and the delete paths | `/api/admin/firms`, `/api/admin/requests` and `/api/admin/seat-requests` are still uncovered |
+| Frontend components | Nothing | Unchanged: no script imports a React component. Client-side error states, the polling loops' cleanup and L-37's silent failures are all uncovered |
 
 ## Fragile areas
 
-Places a newcomer should not touch without reading the surrounding documentation first. Most of these are single points of protection with no test behind them.
+*Revised 2026-09-10. Warnings that the waves removed are marked as such; the rest still stand, and several of them now have a script that fails when the protection is removed, which is a different thing from being safe.*
 
-- **`lib/redactExpert.ts` is the blinding boundary, and since migration 20260908000000 it is the only one.** The RLS policies that used to sit beneath it are gone. Every field added to `ProjectExpert` must be considered for `INTERNAL_PROJECT_EXPERT_KEYS`, and `isIdentityRevealed` requires both a status at or past `scheduled` and real booking evidence for a reason (a client can write `status`, and cannot write `booking.bookedAt`).
-- **`lib/projectStore.canAccess` and `getProjectForUser` are the only cross-customer boundary.** Every project route must go through `getProjectForUser`, never `getProject`. An unscoped `getProject` import already sits unused in one route file (L-16). A 404, not a 403, is the intended answer for an inaccessible project, so existence is not leaked.
-- **`lib/createAndSendInvoice.ts:276`, the double-bill guard.** One conditional prevents the Zoom webhook and the manual complete route from charging the same call twice (C-4). It is keyed on the wrong identifier for a second genuine call (H-8) and has no test.
-- **`lib/emailSequence.sendSequenceEmail` is the one outbound chokepoint.** It enforces `DISABLE_EMAILS`, walkthrough mode and entitlements, appends the CAN-SPAM footer and sets the reply-to token. It does not enforce suppression (H-3), and three callers ignore its return value (H-4). Anything added here affects every outbound email in the product.
-- **`lib/expertPipeline.ts` `EXPERT_STATUSES` order is load-bearing.** The identity reveal is computed by index comparison against `REVEAL_AT`. Reordering the array silently moves the reveal. Its "ORDER IS LOAD-BEARING" comment is the single most important comment in the repository and should survive any refactor.
-- **`lib/projectStore.mutateExpert`'s compare-and-set on `updated_at`.** It is the only optimistic-concurrency mechanism on the expert record, it retries three times with no backoff, and it throws a message nothing catches (L-18). `updateProject` has no equivalent at all (H-17).
-- **The service-role client is used everywhere.** `lib/supabase/admin.getServiceRoleClient` bypasses RLS by definition, and after the WIP migration there is no policy layer to fall back on. Every module holding it (`projectStore`, `conversations`, `firmStore`, `entitlements`, `orgBilling`, `expertPayout`, `attention`, `engagementEvents`, `productEvents`, `outreachSuppressions`, `calendarConnections`, every cron route) is effectively a superuser.
-- **Redis is fail-open almost everywhere, including on the credential path.** Rate limiters, the seat-claim lock, the search cache, the contact cache and the inbound dedupe claim all continue on a Redis error. The one exception, `createRateLimiterStore`, throws in production. Assume nothing about Redis being available, and assume the fail-open branch is a routinely taken path rather than an edge case (H-14).
-- **`app/api/webhooks/zoom/route.ts` is where money starts.** `meeting.ended` writes `completed` and enters the invoice path with no replay window, no completion guard and no duration validation (C-4, M-35). It is also entirely untested.
-- **`lib/pricing.ts` is the only rate converter.** `clientRateFor`, `expertRateFor`, `callChargeDollars`, `expertPayoutDollars`, the 15-minute minimum and the band clamp all live here, and it is well covered by `scripts/test-pricing.ts`. The danger is not the arithmetic but the callers: `rateFieldsFor` must write both numbers together, and no route should ever write one side alone.
-- **`app/api/inbound-email/route.ts` claims its idempotency key before doing the work.** A partial failure loses the reply permanently and returns 200 so Resend never retries (H-5). The sender check is an address comparison, not authentication (M-28). This route is the entire read path for expert replies and has no end-to-end test.
-- **`lib/matchyTemplates.deriveTopic` is what stops a client's own brief text reaching an expert.** Its deny-list is passed inconsistently by callers (M-29), one caller does not compile (C-2), and its structured-field behaviour currently disagrees with its own test (M-48).
-- **Migrations are pasted by hand into Supabase Studio.** There is no CLI link, filename order is the only ordering guarantee, re-pasting an applied file is a documented recovery step, and one migration is not inert on re-application (M-7). `20260908000000` has not necessarily been applied at all; its own header says so.
-- **`scripts/wipe-projects.ts`, `scripts/seed-admin.ts` and `scripts/smoke-cutover.ts` act on whatever environment variables happen to be exported.** No guard, no confirmation, no dry run (H-22).
+- **`lib/redactExpert.ts` is the blinding boundary, and since migration 20260908000000 it is the only one.** Unchanged and still true. Every field added to `ProjectExpert` must be considered for `INTERNAL_PROJECT_EXPERT_KEYS`, and `isIdentityRevealed` requires both a status at or past `scheduled` and real booking evidence. Two things are new: `LEGACY_INTERNAL_PROJECT_EXPERT_KEYS` strips keys that no longer exist on the type but may exist in old jsonb rows, and `anonymizeExpert` re-checks at render time that a stored descriptor names no surname, employer word, address or link (H-18). `check-redaction` is 142 assertions and fails if either is removed.
+- **`lib/projectStore.canAccess` and `getProjectForUser` are the only cross-customer boundary.** Unchanged and still true. Every project route must go through `getProjectForUser`, never `getProject` (the unused unscoped import is gone). A 404, not a 403, is the intended answer. `test-route-authz` now proves it over HTTP for all 16 routes with an intruder persona from a second organization.
+- **Billing is keyed on the CALL, not on the (project, expert) pair.** The durable guard in `lib/createAndSendInvoice.ts` skips only when `billedCallId` matches the call id being billed, and the Stripe idempotency key carries the same id (`charge:<project>:<expert>:<callId>`). `callId` is `booking.icsUid`, else `zoomMeetingId`, else an id the manual complete route mints and persists. Two rules are load-bearing and easy to break: a row with no `billedCallId` is treated as already billed for any call, so nothing pre-existing is re-billed; and a call that nothing identifies (`callId === null`) is never billed against an already-billed row, because money fails closed. `test-billing-guard` and `test-stripe-flows` fail the moment either goes.
+- **`lib/emailSequence.sendSequenceEmail` is the one outbound chokepoint, and it now has four gates, not three.** Kill switch, walkthrough, entitlements and the global do-not-contact list, decided by one pure `resolveSendGate` that fails closed on every unknown (including a suppression list it could not read). Every caller reads the outcome. Anything added here affects every outbound email in the product; `test-send-chokepoint` fails if a gate is dropped.
+- **The intro is send-once, and the guard is two mechanisms, not one.** `introAlreadySent(pe)` refuses a row that already carries `email1SentAt` or `outreachStep: 'email1'`, and that marker is written by a compare-and-set BEFORE Resend is called, so a claim we could not record means not sending. A Redis `SET intro-lock:<project>:<expert> NX EX 120` is what separates two callers that both read an unclaimed row, because `mutateExpert` re-reads and retries on a lost CAS and therefore cannot separate them by itself. Do not delete the lock believing the row check covers it.
+- **`lib/expertPipeline.ts` `EXPERT_STATUSES` order is load-bearing.** Unchanged. The identity reveal is an index comparison against `REVEAL_AT`. Its "ORDER IS LOAD-BEARING" comment is still the single most important comment in the repository.
+- **`lib/projectStore` has two optimistic-concurrency mechanisms now, and they read differently.** `mutateExpert` compare-and-sets on `updated_at` and retries three times. `updateProject` MERGES the caller's patch into the brief as stored at write time and pins `updated_at`, throwing `PROJECT_UPDATE_CONFLICT` on a lost race (H-17). `updateProjectFields` still does a read-modify-write and skips undefined values, where the merge path deletes the key — the opposite convention on the same document. `startSourcingRun` is the one conditional transition. Read all four before touching any of them.
+- **The service-role client is used everywhere.** Unchanged and still true. Every module holding `getServiceRoleClient` is effectively a superuser and there is no policy layer beneath it.
+- **Redis is fail-open almost everywhere, but no longer on login.** Rate limiters, the seat-claim lock, the caches, the inbound claim and the Stripe event de-duplication all continue on a Redis error. Login is the exception the waves added: `lib/loginThrottle.ts` degrades to a per-instance in-process `Map` limiter rather than opening (H-14), which is weak across instances but not open. Do not "simplify" it back to a fail-open branch.
+- **`app/api/webhooks/zoom/route.ts` is where money starts, and its helpers live next door.** The route now rejects a signed event whose `x-zm-request-timestamp` is more than 300 seconds from our clock, and skips a `meeting.ended` for a row that already carries `zoomMeetingEndedAt` or is already `completed`. The decision logic is in `app/api/webhooks/zoom/meetingEnd.ts` because a Next 14 route module may export nothing but its HTTP handlers — the same reason `app/api/webhooks/stripe/handlers.ts`, `app/api/inbound-email/inboundGuards.ts` and `lib/expertFieldTiers.ts` exist. If you move logic back into a `route.ts`, `tsc` and `next build` will refuse it.
+- **The timestamp unit on the Zoom header is an assumption.** It is implemented and tested as Unix seconds, exactly as the repair brief specified, and a millisecond value is rejected. If this Zoom account ever sends milliseconds, every signed event becomes a 400 and billing stops silently. One live capture settles it.
+- **`lib/pricing.ts` is the only rate converter.** Unchanged. The danger is the callers: `rateFieldsFor` must write both numbers together and no route may write one side alone. The expert `PUT` route now refuses both numbers to anyone who is not a platform admin (C-1).
+- **`app/api/inbound-email/route.ts` is the entire read path for expert replies, and its claim is now a lease.** `SET inbound-seen:<id> "processing" NX EX 120`, rewritten to `"done" EX 7d` at every terminal decision, deleted when `handleReply` throws so the 500 sends Resend back into an unclaimed window. That trade makes a duplicate possible where a loss used to be certain, and there is no unique index on `resend_message_id` to stop one. The sender check is still an address comparison in practice: the DKIM/DMARC gate is implemented but Resend supplies no verdicts (M-28), and the payload shape the route parses is itself in doubt (H-26). Treat this file as the least-proven route in the repository.
+- **`lib/matchyTemplates.deriveTopic` is what stops a client's own brief text reaching an expert.** Both callers now pass the firm name as a deny term, both handlers declare `firm`, and the test agrees with the code again (105/105). The remaining sharp edge is unchanged: it takes the first sentence only, and `looksLikeCompanyName` is over-eager on geography.
+- **Migrations are pasted by hand into Supabase Studio.** Unchanged, and there are now nine files. Filename order is the only ordering guarantee, re-pasting an applied file is a documented recovery step, and one migration is not inert on re-application (M-7). `20260908000000` may still not have been applied, and `20260909000000_cron_scan_indexes.sql` definitely has not. Code that needs a column must tolerate the column being absent.
+- **The three destructive ops scripts now refuse a non-local target, and that guard is easy to bypass.** `scripts/wipe-projects.ts`, `scripts/seed-admin.ts` and `scripts/smoke-cutover.ts` print every host they resolved and exit 1 unless it is localhost, or `ALLOW_PROD=1` is set (H-22). `ALLOW_PROD=1` is one environment variable away from the old behaviour; `smoke-cutover` still signs the founder out of every session when it runs.
+- **`scripts/test-route-authz.ts` and `scripts/test-auth-flows.ts` create throwaway accounts, including a throwaway PLATFORM ADMIN.** Both clean up in a `finally` block and both are safe beside a logged-in founder, but a crash between provisioning and cleanup leaves accounts on a `.example` domain behind, one of them an admin. Run `test-auth-flows` with `DISABLE_EMAILS=true`.

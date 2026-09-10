@@ -1,10 +1,116 @@
 # ExpertMatch — Session Handoff
 
-**Written:** 2026-09-09 (session 9) · **Branch:** `matchy-2` (unmerged; `main` = deployed = production) · **Status:** live at expertmatch.fit on Session 8; Matchy 2.0 built on `matchy-2`, awaiting browser pass + e2e + merge
+**Written:** 2026-09-10 (session 9) · **Branch:** `fix/waves` in the worktree `.claude/worktrees/docs-architecture-map`, **rebased on `main@b4518b8` (Matchy 2.0)**, not pushed · **Status:** prod is still on `main`; the repair waves are local. All four audit Criticals closed, 21 of 23 Highs closed, `tsc` clean, `build:local` green, offline scripts green, both HTTP suites green
 
 Read with `CLAUDE.md` (operating rules), `TASK_QUEUE.md` (priorities), `docs/MATCHY_SPEC.md` (the contract), `docs/OUTREACH_BOT_AUDIT.md` (why Matchy replaces the outreach bot).
 
-## Session 9 (2026-09-09, evening) — Matchy 2.0 built on branch `matchy-2`. NOT merged, NOT pushed. READ THIS FIRST.
+## Session 9b (2026-09-09/10): architecture map + repair waves, rebased onto Matchy 2.0. NOT PUSHED. READ THIS FIRST.
+
+**What this session was.** Two halves. First, a comment-only annotation pass over the whole repository produced `ARCHITECTURE.md` (the technical map), `ARCHITECTURE-PLAIN.md` (the same thing for a non-engineer) and `ARCHITECTURE-AUDIT.md` (129 findings: 4 Critical, 23 High, 51 Medium, 51 Low, each with the file, what happens, why it matters and what test exists). Then `docs/REPAIR_PLAN.md` was written from the audit and executed in five waves of Opus builders, one builder per disjoint file set, builders never commit, the lead type-checks and commits by brief.
+
+**Branch: `fix/waves` in the worktree `.claude/worktrees/docs-architecture-map`. NOT PUSHED. Originally cut from `main@5d8be69` and REBASED 2026-09-10 onto `main@b4518b8`, the founder's Matchy 2.0 commit** (two-exit composer, draft route, summary-only threads, per-expert rate, rubric intro — see Session 9a below). Every wave fix and every Matchy 2.0 behaviour survives that rebase; the conflicts and the two places where the two sides genuinely disagreed are recorded in the rebase report. `5d8be69` also closed two audit findings on its own before the waves started: C-2 (`firm` undefined in two handlers, which is why the tree did not compile) and M-48 (`test-matchy-templates` disagreeing with `deriveTopic`). Wave 0 was therefore unnecessary.
+
+### The commits, in order
+
+```
+b821139 fix(authz): staff-only tier for money, contact, token and scheduling fields on the expert PUT route   (C-1, H-1)
+f9794be fix(privacy): per-recipient booking ICS so no email address crosses the blinding boundary            (C-3)
+885e049 fix(billing): Zoom webhook replay window, completion guard and NaN-safe duration                     (C-4, M-35)
+dd1fc01 fix(billing): per-call billing identity for charges and the double-bill guard                        (H-8)
+5e21428 fix(outreach): suppression at the send chokepoint, send-once intro, held outcomes honoured           (H-2, H-3, H-4, M-29, M-30)
+c8748b2 fix(inbound): two-phase idempotency claim and sender authentication gate on the reply webhook        (H-5, M-28, L-28)
+0030bc9 fix(payouts): durable transfer record, refund and dispute handling, capped reminders, bounded reconcile (H-6, H-7, H-9, H-10, H-23, M-36, M-38, M-42, M-43)
+5ee8277 fix(auth): per-account login cap with Redis-down fallback, revocation made visible and repaired nightly (H-14, H-15, H-16, M-1, M-2, M-3)
+1d7f36a fix(projects): merge-and-CAS brief updates, anonymous-descriptor validation, guide route hardening    (H-17, H-18, M-13, M-14, M-15)
+74e9899 fix(scheduling,sourcing): usable expert calendars, full-day free/busy, idempotent sourcing, budgeted lookups (H-11, H-12, H-13, H-20, H-21, M-17, M-33, L-21)
+c378379 test: HTTP-level route authorization matrix for the project family                                   (W3-1)
+c83d30d test: Stripe-stubbed money flows and webhook signature fixtures                                      (W3-2)
+a3f0abf docs: point the Stripe client header at handlers.ts for signature verification
+60d4f3a test: invite, reset, revocation, cross-org scoping and login-cap flows over HTTP                     (W3-3)
+862a35d fix(admin): user delete never reports success while the account is live; PATCH surfaces a failed claims sync (M-46, new H-24/H-25)
+e71a05d chore: delete retired flows, unused packages and stale env vars                                      (M-50, M-51, L-5, L-13, L-16, L-25, L-26, L-44, L-46)
+ae682b6 refactor: one HMAC token core, shared test harness, typed event tables, cron indexes, guarded ops scripts (H-22, M-9, M-10, M-11, M-23, M-49, L-42, L-49)
+```
+
+Plus the docs themselves (17 annotation commits ending at `6b3c10a`, and `699df48` for the repair plan).
+
+### Where the audit stands
+
+`ARCHITECTURE-AUDIT.md` now opens with a **Status 2026-09-10** table: every finding id, the commit that closed it, and the script that fails if the fix is removed. Headline: **132 findings (three were found by the waves), 60 fixed, 8 partially fixed, 1 deferred to a founder decision, 63 open.** All four Criticals are closed. Of the 23 original Highs, 21 are closed, H-7 is closed apart from the payout-reversal policy, and **H-19 is the one that did not land**: one line in `scripts/rls/verify.sql:558` still expects 1 row where a correct database now returns 0, so the RLS proof suite exits non-zero. It was queued as a Wave 2 gate item and was missed. It needs psql to verify, which this session did not have.
+
+Three findings the waves themselves turned up, all written into the audit:
+- **H-24 (fixed, 862a35d).** `DELETE /api/admin/users` answered `200 { ok: true }` while the account was still live. M-46 records this as "fails with an opaque 500"; it did not fail at all. It now answers `409 owns_projects` with the blocking project names, and any other refusal is a 500, never a success.
+- **H-25 (fixed, 862a35d).** `PATCH /api/admin/users` threw away the claims-sync result, so the platform console could report a silent revocation failure as success. It now mirrors `org/members` exactly.
+- **H-26 (OPEN, and the most important open item in the repository).** `app/api/inbound-email/route.ts` parses a flat payload; Resend's documented `email.received` webhook nests everything under `data` and explicitly carries no body. Either inbound arrives through some other event, or this route has never parsed a live payload. This is the whole read path for expert replies. **Do not change the parser until a real production delivery has been captured.**
+
+### How it was verified
+
+Gate run at the end of Wave 4, from the worktree, against a local dev server on port 3100:
+
+- `npx tsc --noEmit 2>&1 | grep -v '^\.next/'` -> no output.
+- **33 offline scripts, all green**, 0 failures: pricing 251, nudges 219, stripe-flows 208, scheduling 171, check-redaction 142, expert-route-authz 119, availability-windows 109, matchy-templates 105, matchy-classify 86, auth-guards 84, matchy-screen 82, email-clean 81, contact-discovery 81, freebusy-inversion 80, hmac-tokens 80, payout-state 75, matchy-client 69, inbound-claim 65, walkthrough 64, webhook-signature 49, conversations-redaction 48, brevity 42, signup-token 41, zoom-webhook 39, booking-ics 38, email-domains 38, org-billing 38, project-update 38, billing-guard 35, send-chokepoint 35, entitlements 30, sourcing-idempotency 27, check-env-drift 9.
+- `npm run build:local` -> compiled, 57 static pages, no errors.
+- `SMOKE_BASE_URL=http://localhost:3100 npx tsx scripts/test-route-authz.ts` -> **PASS 116/116**, cleanup complete.
+- `SMOKE_BASE_URL=http://localhost:3100 npx tsx scripts/test-auth-flows.ts` -> **PASS 134/134**, cleanup complete.
+- Local `scripts/e2e-matchy.ts` -> **ALL CHECKS PASSED** after dd623ee updated the fixtures (five stale assertions, no regression):
+  - Two are **stale assertions caused by deliberate API changes in Wave 2**. `POST .../messages` now answers `200 { ok, held, message }` rather than 201 when the chokepoint holds the send, and `held` is now the reason string (`'walkthrough'`, `'trial'`, `'disabled'`, `'suppressed'`) rather than a boolean. The e2e still asserts 201 and `held === true`. Fix the script, not the routes.
+  - Three are the **go-live PATCH answering 403**, because the throwaway org the e2e creates has no card and `entitlements.canGoLive` requires one. That gate came in with `5d8be69` (trial accounts), not with the waves. The e2e needs to set `organization_billing.billing_complete` for its throwaway org, the way `e2e-trial.ts` does.
+- Not run: `scripts/rls-verify.sh` (no psql, and H-19 would fail it anyway), prod `e2e-matchy` (nothing is pushed), `npm run security` (it stops at step 1 on a pre-existing `npm audit` finding in the postcss chain under `next`, so steps 2 to 6 have not actually run for anyone; fixing it needs `next@16`, a breaking major).
+
+### What the founder has to do
+
+Nothing below is optional if the money paths are meant to work.
+
+1. **Paste `20260908000000_identity_boundary_trial_events.sql` into Supabase Studio if it has not been applied.** Nobody has confirmed it either way and its own header says so. Then `npx tsx scripts/verify-schema.ts`.
+2. **Paste `20260909000000_cron_scan_indexes.sql`** (new this session): three idempotent partial indexes for the hot cron scans. Nothing in the code depends on it; it is a speed fix as the tables grow. `scripts/verify-schema.ts` does not know about it yet, which is a one-line addition.
+3. **Stripe webhook events**, on the ExpertMatch endpoint, in **both test and live mode**: add `charge.refunded` and `charge.dispute.created` (both new and now load-bearing: without them a refund from the dashboard leaves the call reading "paid" forever and a chargeback is invisible), and `account.updated` with the **connected accounts** option, not the platform-only default (this is what pays an expert who finished Connect onboarding after their call). The last one has been open in `TASK_QUEUE.md` since Wave 2 of the September 7 run.
+4. **Re-check the Google consent screen / app verification.** The expert-side calendar grant now asks for `openid email` alongside `calendar.freebusy`, because without the address the connection was silently ignored. Experts who granted the old scope keep working and no re-consent campaign is needed, but an unverified external app can show a new expert the "Google hasn't verified this app" interstitial, and an expert who backs out there is a lost call.
+5. **Calendly: remove or fix.** Probed by hand 2026-09-09 against a real public scheduling page: `api.calendly.com` answers 401 to every unauthenticated call, including `event_types`, and there is no Calendly credential anywhere in the codebase. Every Calendly link therefore yields no slots and is indistinguishable from no connection. `lib/fetchCalendlySlots.probeCalendlyLink()` is written and unwired for a connect-time refusal. **Recommendation: remove.** Fixing it means a Calendly OAuth app plus per-user token storage plus refresh, which is the same work as the Google connection that already exists and already works.
+6. **Confirm `CRON_SECRET` is set in Vercel**, or the nightly reconcile answers 503 and none of the payout, seat-sync, stuck-sourcing or membership-claims self-healing runs.
+7. **Upstash plan.** Still rate-limited (`[searchCache] set failed` on every sourcing run), so the platform re-pays the search provider for work it already did. Redis is now also load-bearing for the intro send-once lock and Stripe event de-duplication; both fail open by design, but a rate-limited Redis makes both weaker.
+8. `GOOGLE_CALENDAR_REFRESH_TOKEN` and `STRIPE_CONNECT_CLIENT_ID` can be **deleted from the Vercel dashboard**. Nothing reads them and they are no longer in `REQUIRED_VARS`, where they could previously fail a fresh production boot for values nothing used.
+
+Deferred, needing a decision rather than a click: payout reversal on refund (the code does nothing until you answer, and says so in place), whether ordinary members may save the firm's first card, and what "cancel a booking" means for the engagement's status.
+
+### Verified before each push (updated list)
+
+`npx tsc --noEmit`, then clean-export `npm run build:local`, then every script below. The first block is offline and takes about a minute; the second needs a dev server.
+
+```
+# offline
+npx tsx scripts/check-redaction.ts          npx tsx scripts/check-env-drift.ts
+npx tsx scripts/test-pricing.ts             npx tsx scripts/test-nudges.ts
+npx tsx scripts/test-stripe-flows.ts        npx tsx scripts/test-webhook-signature.ts
+npx tsx scripts/test-billing-guard.ts       npx tsx scripts/test-zoom-webhook.ts
+npx tsx scripts/test-payout-state.ts        npx tsx scripts/test-org-billing.ts
+npx tsx scripts/test-expert-route-authz.ts  npx tsx scripts/test-auth-guards.ts
+npx tsx scripts/test-send-chokepoint.ts     npx tsx scripts/test-walkthrough.ts
+npx tsx scripts/test-inbound-claim.ts       npx tsx scripts/verify-svix.ts
+npx tsx scripts/test-project-update.ts      npx tsx scripts/test-booking-ics.ts
+npx tsx scripts/test-hmac-tokens.ts         npx tsx scripts/test-signup-token.ts
+npx tsx scripts/test-sourcing-idempotency.ts npx tsx scripts/test-contact-discovery.ts
+npx tsx scripts/test-freebusy-inversion.ts  npx tsx scripts/test-scheduling.ts
+npx tsx scripts/test-availability-windows.ts npx tsx scripts/test-matchy-templates.ts
+npx tsx scripts/test-matchy-classify.ts     npx tsx scripts/test-matchy-screen.ts
+npx tsx scripts/test-matchy-client.ts       npx tsx scripts/test-conversations-redaction.ts
+npx tsx scripts/test-email-clean.ts         npx tsx scripts/test-email-domains.ts
+npx tsx scripts/test-entitlements.ts        npx tsx scripts/test-brevity.ts
+
+# needs a local server (throwaway accounts only, safe while you are signed in)
+DISABLE_EMAILS=true PORT=3100 npx next dev -p 3100 &
+SMOKE_BASE_URL=http://localhost:3100 npx tsx scripts/test-route-authz.ts
+SMOKE_BASE_URL=http://localhost:3100 npx tsx scripts/test-auth-flows.ts
+SMOKE_BASE_URL=http://localhost:3100 npx tsx scripts/e2e-matchy.ts
+pkill -f "next dev -p 3100"
+```
+
+Every script imports `scripts/testHarness.ts` now, so they all exit 0 clean and 1 on any failure. `scripts/wipe-projects.ts`, `scripts/seed-admin.ts` and `scripts/smoke-cutover.ts` print the host they resolved and refuse a non-local one unless `ALLOW_PROD=1`; `smoke-cutover` still signs the founder out of every session when it does run.
+
+### Read next
+
+`ARCHITECTURE-AUDIT.md` Status 2026-09-10 (what is closed and what is not), `ARCHITECTURE.md` sections 5 to 9 (the system as it now is), `ARCHITECTURE-PLAIN.md` section 12 (the founder decisions in plain English), and `docs/REPAIR_PLAN.md`'s Execution record at the end (per brief: what was done and what deviated).
+
+## Session 9a (2026-09-09, evening) — Matchy 2.0, now the base of `fix/waves`
 The founder reviewed an interactive design draft (published artifact "Matchy 2.0") and asked for it in the app. Everything below is on branch `matchy-2`, verified locally: `tsc` clean, `npm run build:local` clean, 13 unit suites green (see "Verified" below). Not yet browser-tested and `e2e-matchy` not yet re-run against a running server; do both before merging to `main` (= production).
 
 **What shipped (spec: `docs/MATCHY_SPEC.md` Draft 3; intro contract: `docs/OUTREACH_EMAIL_RUBRIC.md`):**

@@ -553,13 +553,10 @@ select public._rls_verify_eq('B1: sees only org B',
   (select count(*) from public.organizations where id in (:'ORG_A', :'ORG_B', :'ORG_C'))::bigint, 1::bigint);
 select public._rls_verify_eq('B1: the visible organization is B',
   (select id from public.organizations where id in (:'ORG_A', :'ORG_B', :'ORG_C'))::text, (:'ORG_B')::text);
--- STALE AS OF 20260908 (documented, deliberately not changed by the annotation
--- pass): projects now has zero policies, so an `authenticated` B1 sees 0 rows,
--- not 1 — every other project assertion in this file was updated to expect 0
--- and this one was missed. It is the single assertion that will report
--- `expected '1', got '0'` and make scripts/rls-verify.sh exit non-zero.
-select public._rls_verify_eq('B1: sees only own project',
-  (select count(*) from public.projects where id in (:'PA1', :'PA2', :'PB1', :'PC1'))::bigint, 1::bigint);
+-- After 20260908000000 projects has zero authenticated policies, so a session
+-- user sees no project rows directly; access is application-level only.
+select public._rls_verify_eq('B1: sees NO project rows directly',
+  (select count(*) from public.projects where id in (:'PA1', :'PA2', :'PB1', :'PC1'))::bigint, 0::bigint);
 select public._rls_verify_eq('B1: cannot see org-A profiles',
   (select count(*) from public.profiles where id in (:'A1', :'A2', :'A3'))::bigint, 0::bigint);
 select public._rls_verify_eq('B1: cannot see org-A memberships',

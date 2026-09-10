@@ -292,3 +292,65 @@ Delete, with grep evidence in the report that nothing imports them: `lib/contact
 - `npx tsc --noEmit` clean; every script under `scripts/` green; `scripts/rls-verify.sh` green on a fresh database; clean-export `build:local` green; prod `e2e-matchy` ALL PASSED; browser pass of booking, move, complete and refund with throwaway users in Stripe test mode.
 - `ARCHITECTURE-AUDIT.md` updated by the lead with a "Status 2026-09-xx" column per finding; `ARCHITECTURE.md` sections 6.7, 6.8 and "Fragile areas" revised for the new guards.
 - Nothing pushed to `main` without the founder having first committed the WIP the docs branch snapshots.
+
+---
+
+## Execution record
+
+*Written 2026-09-10 by the lead, after Wave 4. Branch `fix/waves`, rebased on `main@5d8be69`, not pushed. Every builder report is quoted in the audit's Status table; this is the per-brief ledger of what actually landed and where it differed from the plan.*
+
+### Wave 0
+
+| Brief | Done | Deviation | Commit |
+| --- | --- | --- | --- |
+| W0-1 (C-2, M-48) | Not needed | The founder's own commit `5d8be69`, which the branch is rebased onto, already declared `firm` in both handlers and reconciled `deriveTopic` with its test. The tree compiled and `test-matchy-templates` was 105/105 before the waves started, so no builder was dispatched | 5d8be69 (main) |
+
+### Wave 1
+
+| Brief | Done | Deviation | Commit |
+| --- | --- | --- | --- |
+| W1-1 (C-1, H-1) | Yes. Three write tiers, `403 { error: 'read_only', field }` before the owner check, `contactEmail` validated and lower-cased, 119 checks | The classifier could not be exported from `route.ts` (Next 14 rejects any non-handler export), so it lives in a new `lib/expertFieldTiers.ts` that the route imports. The 403 body also carries `message`, because `ProjectExpertCard` renders it and would otherwise show the wrong copy | b821139 |
+| W1-2 (C-3) | Yes. Two `IcsEvent`s from one uid and sequence, each naming only its recipient; the on-demand download delegates to the client builder; 38 checks | `lib/generateIcs.ts` needed no change: `organizer` was already required and already emitted | f9794be |
+| W1-3 (C-4, M-35) | Yes. 300-second replay window, completion guard, NaN-safe duration with a booking fallback and a system failure when nothing can be derived; 39 checks | Same route-export constraint: the pure helpers live in a new `app/api/webhooks/zoom/meetingEnd.ts`. Flagged for the founder: the timestamp is implemented as Unix seconds per the brief, and one live capture should confirm it before this ships | 885e049 |
+| W1-4 (H-8) | Yes. `callId` = `booking.icsUid`, else `zoomMeetingId`, else a persisted `manual:` id; per-call guard and idempotency key; `billedCallId` written with the intent id; 35 checks | `billedCallId` is written on the payment-link path too, which the brief did not name; without it a link-paid call would read as legacy and the next call with that expert would never be billed. A call with no identity at all on an already-billed row is skipped, which is stricter than the brief's literal rule and deliberate | dd1fc01 |
+
+### Wave 2
+
+| Brief | Done | Deviation | Commit |
+| --- | --- | --- | --- |
+| W2-A (H-2, H-3, H-4, M-29, M-30) | Yes. Suppression is the chokepoint's fourth gate through one pure `resolveSendGate`; the intro is send-once with a row claim written before the send plus a Redis `SET NX` lock; the three routes read the outcome through one shared `dispositionOf`; 35 + 64 checks | M-30's atomic half needed `clearPendingIfPending` in the lead-owned `lib/conversations.ts`; applied verbatim from the builder's diff, and the send route now answers `409 not_pending` on a lost race. `HeldReason` gained `'suppressed'` in `lib/walkthrough.ts` (lead). `components/ConversationThread.tsx` now renders `heldLabel(held)` instead of a hardcoded walkthrough string | 5e21428 |
+| W2-B (H-5, M-28, L-28) | Yes. Two-phase claim (`processing` 120 s, `done` 7 d, deleted on throw), 409 on an in-flight duplicate, 500 on an unexpected failure, sender-authentication gate, `resendMessageId` stored; 65 checks | Guards live in a new `app/api/inbound-email/inboundGuards.ts` for the same route-export reason. M-28 is only half-closable: Resend supplies no SPF/DKIM/DMARC verdicts, so the gate is inert and raises one system failure a day. **The builder also found that the route parses a payload shape Resend may not send; recorded as the new open finding H-26** | c8748b2 |
+| W2-C (H-6, H-7, H-9, H-10, H-23, M-36, M-38, M-42, M-43) | Yes. Transfer id persisted in its own write, per-call payout guard, `payout` system failures, capped reminder, `failed` rows retried under an attempt cap, refund and dispute branches, event de-duplication, per-sweep deadlines and ordering, adopt-an-existing-subscription; 75 + 38 checks | Added a fifth `types.ts` field, `payoutAttempts`, one more than the brief's enumeration: the retry bound the brief asked for cannot be enforced without a persisted counter. Payout reversal deliberately not implemented; the `TODO(founder decision)` names the question and the call | 0030bc9 |
+| W2-D (H-14, H-15, H-16, M-1, M-2, M-3) | Yes. Per-account failure budget, HMAC'd keys, in-process fallback instead of fail-open, `statusMayUseProduct` shared by all three guards, revocation surfaced and repaired nightly, platform-staff target refusal; 75 checks (now 84 after W4-0) | Pending is refused with `403 { error: 'forbidden' }` rather than a 401, matching `orgAdminGuard` and rule 9. `lib/engagementEvents.ts` gained `'membership'` in `SystemFailureArea`, the one authorised line | 5ee8277 |
+| W2-E (H-17, H-18, M-13, M-14, M-15) | Yes. `updateProject(id, patch, expectedUpdatedAt)` merges into the brief as stored and pins `updated_at`; `descriptorIsAnonymous` applied at both the producer and the renderer; `rateExpectation` and `availability` stripped; the guide route joins `guardMutatingRequest` with a 10-per-hour cap and JSON shape validation; 38 checks plus new redaction cases | The company-word rule is narrower than the brief's letter on purpose: a generic corporate-form word, or one that already appears in the expert's own category, is not treated as identifying, or every descriptor in the house style would degrade to the fallback. The check is applied to `anonymizedJustification` as well as the descriptor. Three forced edits outside `updateProject` in `lib/projectStore.ts` (the interface, the dev store's call sites, and the now-unreachable `projectToBrief`) | 1d7f36a |
+| W2-F (H-11, H-12, H-13, H-20, H-21, M-17, M-33, L-21) | Yes. `openid email` on the expert grant with a `contactEmail` fallback, whole-day free/busy inversion, no calendar demotion from typed windows, `maxDuration = 300`, run identity end to end, budget enforced per provider call, both brief-derived logs removed; 80 + 27 checks | Two changes were outside the WRITE list and applied by the lead from the builder's exact diffs: `startSourcingRun` (a new conditional transition in `lib/projectStore.ts`) and the start route that claims the run. The PostGREST absent-key question was resolved by folding absent and null together in code and guarding the write on `updated_at`, rather than filtering on a jsonb path. **The Calendly probe came back 401 on every unauthenticated call**, so M-32 is a founder decision with a recommendation to remove; `probeCalendlyLink()` is written and unwired | 74e9899 |
+
+Lead diffs applied at the Wave 2 gate, recorded in the wave report: `lib/walkthrough.ts`, `lib/conversations.ts`, `lib/projectStore.ts` (`UpdateExpertInput` gained six fields, two bridge types deleted), `types.ts` (`email1SentAt` widened to `number | null`), `lib/upstashRedis.ts` key-family comment, the `alreadySent` gate on both `intro_sent` emitters, `components/ConversationThread.tsx`, and three new assertions in `scripts/e2e-matchy.ts`.
+
+### Wave 3
+
+| Brief | Done | Deviation | Commit |
+| --- | --- | --- | --- |
+| W3-1 (`test-route-authz`) | Yes. 116 HTTP checks over all 16 project-family routes with owner, collaborator, intruder and admin personas; throwaway data only, cleaned up in a `finally` | Brief asked for at least 60. Three happy paths are asserted at the gate rather than end to end, because they spend a card, a sourcing run or a model call. No production file needed changing | c378379 |
+| W3-2 (`test-stripe-flows`, `test-webhook-signature`) | Yes. 208 + 49 checks. Every money module gained one optional trailing `deps` argument defaulting to the real client, so no call site changed | The Stripe webhook's branches had to move out of `route.ts` into a new `handlers.ts` (route-export rule again), and the Zoom route's inline HMAC into `meetingEnd.ts`. Each guard was removed one at a time to prove the tests fail without it | c83d30d, a3f0abf |
+| W3-3 (`test-auth-flows`) | Yes. 134 HTTP checks over invite, activation, reset, revocation, cross-org scoping, platform-staff refusal, login caps and deletion. No stub seam was needed; the WRITE list came to one file | Two assertions were pinned to the **old** admin-delete behaviour, because the builder found that route answering `200 { ok: true }` while the account was still live. That became brief W4-0, and the assertions were flipped in Wave 4 | 60d4f3a |
+
+### Wave 4
+
+| Brief | Done | Deviation | Commit |
+| --- | --- | --- | --- |
+| W4-0 (M-46, new H-24, H-25) | Yes. `DELETE /api/admin/users` pre-checks owned projects and answers `409 owns_projects` with the names; any other refusal is a 500, never a success. `PATCH` surfaces a failed claims sync exactly as `org/members` does. 9 new checks | Not in the original plan: written after W3-3 found the bug. `classifyDeleteOutcome` stays local to the route and is reimplemented in the test file, following the M-3 precedent already in that script | 862a35d |
+| W4-1 (dead code, env drift) | Yes. Four modules, one route, three rate-limiter tiers, six Redis helpers, two token helpers, three type fields and five npm packages deleted, each with a grep table in the report. Environment surface reconciled in both directions and now machine-checked by the new `scripts/check-env-drift.ts` (9 checks) | Removed `CONTACT_PROVIDER` from `.env.example` as the fourth never-read variable, following M-50's own recommended fix, where the brief's sentence named `STRIPE_CONNECT_CLIENT_ID` (which was only ever in `REQUIRED_VARS`). Two lines of `lib/projectStore.ts` were edited outside the WRITE list, forced by removing `OverlapSlot`. Six `.env.example` and two `OPTIONAL_VARS` entries go beyond M-51's fourteen, all display-only. `lib/supabase/client.ts`, `deleteZoomMeeting` and the provider waterfall builders were deliberately left | e71a05d |
+| W4-2 (consolidation) | Yes. `lib/hmacToken.ts` with a frozen wire-format profile per purpose and fixtures minted by the pre-consolidation code (80 checks); one `secretMatches`, one `pseudonymize`, one `PROVIDER_MAP`; `scripts/testHarness.ts` adopted by 31 test scripts plus `check-redaction`; `database.types.ts` gained `system_events` and `weekly_windows` and the ad-hoc cast is gone; the three destructive ops scripts refuse a non-local host without `ALLOW_PROD=1`; new index migration | `lib/signupToken.ts` is a fifth HMAC module that did not join, because it signs over a different secret and would need a per-purpose secret name in the profile table. `scripts/test-upstash.ts` kept its own counters: it is a live-Redis smoke test, not an assertion suite. The pre-existing `scripts/tsconfig.json` Stripe typing errors are 15, not the 5 the brief predicted | ae682b6 |
+
+### Gate results (Wave 4, final)
+
+`npx tsc --noEmit` clean. `npm run build:local` green, 57 static pages. 33 offline scripts green, 0 failures. `test-route-authz` 116/116 and `test-auth-flows` 134/134 against a local server on port 3100. Local `e2e-matchy` ALL CHECKS PASSED after dd623ee updated five stale assertions: two were caused by W2-A's deliberate response-shape change (`POST .../messages` now answers 200 with `held` as a reason string, not 201 with `held: true`), three are the go-live PATCH getting a 403 because the throwaway org has no card and `entitlements.canGoLive` requires one, which came in with `5d8be69` rather than with any wave. Fixed in `scripts/e2e-matchy.ts` (dd623ee).
+
+### Definition of done: what is not met
+
+- **H-19 did not land.** The one-line fix to `scripts/rls/verify.sql:558` was a Wave 2 gate item and was missed; the RLS suite still exits non-zero on a correct database, and verifying it needs psql.
+- **`npm run security` is not clean.** It stops at step 1 on a pre-existing `npm audit` finding in the postcss chain under `next`, so steps 2 to 6 have not run. Fixing it needs `next@16`.
+- **Nothing is pushed and no prod `e2e-matchy` has run**, per the plan's own last line: not until the founder has committed whatever else is in flight.
+- **The browser pass of booking, move, complete and refund in Stripe test mode has not happened.**
+- **Two migrations are waiting on the founder** (`20260908000000`, unconfirmed; `20260909000000`, new), along with the three Stripe webhook events and the Google consent-screen re-verification.
