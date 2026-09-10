@@ -21,7 +21,7 @@
 // { ok: false } shape; `send: true` is the decision that reaches Resend at all.
 
 import { readFileSync } from 'fs';
-import { resolveSendGate, dispositionOf, type SendGateFacts } from '../lib/emailSequence';
+import { resolveSendGate, dispositionOf, type SendGateFacts, withFromDisplayName } from '../lib/emailSequence';
 import { introAlreadySent } from '../lib/outreachSteps';
 import type { SuppressionCheck } from '../lib/outreachSuppressions';
 import { check, eq, summary } from './testHarness';
@@ -211,4 +211,13 @@ for (const rel of [
 
 // ─── Result ───────────────────────────────────────────────────────────────────
 
+// ── Reply-To display name (the coded address must not be what an expert sees) ──
+check('reply-to takes the From display name',
+  withFromDisplayName('Asher Goldstein <asher@expertmatch.fit>', 'reply+abc@reply.expertmatch.fit') === '"Asher Goldstein" <reply+abc@reply.expertmatch.fit>');
+check('quoted From name is unwrapped',
+  withFromDisplayName('"ExpertMatch" <notifications@expertmatch.fit>', 'reply+x@reply.expertmatch.fit') === '"ExpertMatch" <reply+x@reply.expertmatch.fit>');
+check('bare From keeps a bare reply-to',
+  withFromDisplayName('asher@expertmatch.fit', 'reply+x@reply.expertmatch.fit') === 'reply+x@reply.expertmatch.fit');
+
 summary();
+

@@ -183,6 +183,12 @@ export function dispositionOf(attempt: SendAttempt): SendDisposition {
  *
  * Never logs: the recipient address, the subject, the body, or the token.
  */
+/** `"Name" <address>` when `from` carries a display name, else the bare address. */
+export function withFromDisplayName(from: string, address: string): string {
+  const name = from.match(/^\s*"?([^"<]+?)"?\s*<[^>]+>\s*$/)?.[1]?.trim();
+  return name ? `"${name.replace(/"/g, '')}" <${address}>` : address;
+}
+
 /** Domain that receives expert replies. Override only for local testing. */
 export const REPLY_DOMAIN = process.env.OUTREACH_REPLY_DOMAIN ?? 'reply.expertmatch.fit';
 
@@ -231,7 +237,11 @@ export async function sendSequenceEmail(
   }
 
   const from    = getFromAddress();
-  const replyTo = `reply+${replyToken}@${REPLY_DOMAIN}`;
+  // Reply-To carries the thread token, but it is shown with the SAME display
+  // name as From, so a reply window reads "Asher Goldstein" rather than the
+  // coded address; the address is only visible on hover. Same pattern as
+  // Front / HubSpot threaded replies.
+  const replyTo = withFromDisplayName(from, `reply+${replyToken}@${REPLY_DOMAIN}`);
   const resend  = getResend();
 
   // CAN-SPAM footer: postal address (when configured) plus a per-recipient
