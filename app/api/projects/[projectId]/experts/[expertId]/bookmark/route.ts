@@ -288,19 +288,15 @@ export async function POST(
 
     current = result.project.experts.find(e => e.expert.id === params.expertId) ?? current;
 
-<<<<<<< HEAD
     // What the step actually did is on the status, not on `draftOnly`: the
     // step also holds an intro when Matchy could not write its personal line
     // (introNeedsWhyThem, lib/outreachSteps.ts) or the send chokepoint refused.
     const sent = current.status === 'contacted';
 
-    if (sent) {
-=======
     // A send-once refusal (lib/outreachSteps.introAlreadySent) means the intro
-    // already went out on an earlier call — do not emit a second `intro_sent`
-    // for the one email that was actually sent.
-    if (!draftOnly && !result.alreadySent) {
->>>>>>> 5e21428 (fix(outreach): suppression at the send chokepoint, send-once intro, held outcomes honoured)
+    // already went out on an earlier call — the row reads 'contacted' but THIS
+    // call sent nothing, so it must not emit a second `intro_sent`.
+    if (sent && !result.alreadySent) {
       await emitEngagementEvent({
         projectId: params.projectId,
         expertId:  params.expertId,
