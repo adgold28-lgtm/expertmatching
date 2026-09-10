@@ -274,3 +274,116 @@ length to `[1, MAX_BILLABLE_MINUTES]` and never returns `NaN`. `MAX_BILLABLE_MIN
   it without an early exit. ✓
 - **Webhook signatures:** Stripe `constructEvent` and Zoom `timingSafeEqual` both
   run before any read or write. ✓
+
+### Second pass — findings from an independent Codex/ChatGPT review (2026-09-10)
+
+An independent review (`fix/security-review-20260909`, local only) raised a set
+of findings disjoint from S-1..S-3 above. Each was **re-verified against this
+code** before being fixed; three of its own fixes carried defects, found by a
+third review and corrected here.
+
+#### R1: A failed webhook handler answered 200 [FIXED — HIGH]
+
+**File:** `app/api/webhooks/stripe/route.ts`
+**Finding:** every branch caught its own store failure, logged it, and the route
+returned `{ received: true }` regardless. Stripe treats 200 as "handled" and
+retires the event, so a transient database failure while recording a payment
+lost it permanently — money taken, nothing recorded, no retry ever.
+**Fix:** handlers report success; a failure returns 500 and Stripe redelivers.
+**Defect found in that fix, corrected here (F1):** blanket-500 turns a
+*permanent* failure into a three-day retry loop. Engagement ids ride on payment-
+link metadata minted days earlier, and the row can be deleted before the client
+pays; `projectStore` then throws `Project not found` / `Expert not found` on
+every redelivery, and a persistently failing endpoint gets **disabled by Stripe**
+— which would stop payouts, refunds and subscription events too.
+`isPermanentFailure()` (`lib/stripeEvents.ts`) records those once and
+acknowledges; everything else keeps the retry contract.
+
+#### R2: `checkout.session.completed` was treated as payment [FIXED — HIGH]
+
+**File:** `app/api/webhooks/stripe/route.ts`
+**Finding:** the branch marked the engagement paid and ran the expert payout
+without reading `payment_status`. With a delayed-notification method a session
+completes `unpaid` and settles days later, so platform funds were transferred
+against money that had not cleared and might never.
+`checkout.session.async_payment_succeeded` was not handled at all, so a payment
+that *did* clear later was never recorded.
+**Fix:** `checkoutSessionSettled()` gates on `paid` / `no_payment_required`, and
+the `async_payment_succeeded` event is handled.
+**Deployment note:** enable `checkout.session.async_payment_succeeded` on the
+Stripe endpoint (test **and** live) or delayed payments will never be recorded.
+
+#### R3: Payout retries never checked that the client paid [FIXED — HIGH]
+
+**File:** `lib/expertPayout.ts`
+**Finding:** `retryPendingPayoutsForAccount` sweeps every engagement stuck on
+unfinished Connect onboarding and re-enters `runExpertPayout`, which checked
+only `stripeTransferId`. An expert finishing Stripe onboarding weeks after a
+call the client never paid for — or whose card was declined — was paid out of
+platform funds.
+**Fix:** `payoutBlockReason()` requires a persisted `paid` state and a current
+`canCharge` entitlement.
+**Defect found in that fix, corrected here (F2):** the new checks were bare
+`return`s placed *before* the row is given an `expertOnboardingStatus` — the one
+field both payout sweeps and the reconcile stale-owed alarm select on. Because
+`getEntitlementsForProject` fails closed, a Supabase blip or a legacy project
+with no organization looked identical to a restricted trial, and an expert owed
+real money became invisible to every retry path. A blocked-but-paid payout is
+now parked as `pending` so the sweeps still see it.
+
+#### R4: `pending` accounts were not gated by middleware [FIXED — MEDIUM]
+
+**Files:** `middleware.ts`, `lib/auth.ts`
+**Finding:** middleware rejected only `status === 'disabled'`; so did
+`routeAuthGuard`. An invited user is created `pending`, and a Supabase
+invite/recovery link establishes a **session before** `/api/auth/set-password`
+runs — so a pending session is reachable by anyone who opens their invite and
+navigates away. The project guards deliberately lean on middleware for the
+account-state check.
+**Fix:** one policy, `statusMayUseProduct()`, shared by middleware and every
+route guard. A legacy missing status stays allowed — documented, not silently
+tightened. The set-password flow is unaffected (`/auth/`,
+`/api/auth/set-password` are in `PUBLIC_PREFIXES`).
+**Defect found in that fix, corrected here (F3):** `PUBLIC_PATHS` is consulted
+only in the no-session branch, so the gate trapped the person it blocked —
+`/login` redirected to `/login`, and `/api/auth/logout` answered 403, leaving no
+way to clear the blocking cookie. Public paths now pass the status gate.
+
+#### R5: Two auth verifications per request [FIXED — efficiency]
+
+**File:** `lib/auth.ts`
+**Finding:** a handler calling `routeAuthGuard(request)` then
+`getSessionUser(request)` made two serial `auth.getUser()` round trips for one
+request.
+**Fix:** the in-flight verified-user promise is cached in a `WeakMap` keyed on
+the `NextRequest` object — one verification per handler, shared by concurrent
+callers. Not a process-wide cache and not a decoded-JWT shortcut: a new request
+always re-verifies, so revocation still takes effect on the next request.
+**Measured:** verification attempts per handler 2 → 1 (`test-webhook-recovery.ts`
+measures the per-verification cost rather than hard-coding it). No latency claim
+is made for production; middleware runs in a separate context and is not included.
+
+### Still open after this pass
+
+- **R6 — dependency advisories.** `npm audit` reports 9 affected packages
+  (1 critical, 5 high, 2 moderate, 1 low), notably `next@14.2.35`. Reachability
+  not established; the remedy is a major Next.js upgrade and does not belong in
+  a targeted behaviour fix. **Not fixed.**
+- **R7 — cross-event ordering and per-call financial correlation.** Partially
+  addressed: `paid` is now terminal, so a late `payment_failed` cannot overwrite
+  a successful payment. Still open: events for different ids share no lock, a
+  delayed success can still overwrite a later state, and the entitlement read in
+  the payout gate is not atomic with a concurrent refund.
+- **Refunds are not modelled at all.** Nothing moves `paymentStatus` off `'paid'`,
+  so a refunded call still reads as paid to the payout gate. Needs a
+  `charge.refunded` branch and a payment state to move to. **Not fixed — do not
+  read R3 as refund-safe.**
+- **Browser error capture.** No client-side error reporting exists. Not addressed.
+
+### Not validated by test
+
+The webhook's retry wiring (a transient failure answering 500, a permanent one
+answering 200) is asserted at the predicate level only. The branch wiring itself
+was verified by reading `app/api/webhooks/stripe/route.ts`; exercising it needs
+the `projectStore` boundary mocked. Live Stripe, Supabase, Zoom and email were
+never contacted, and no browser journey was run.

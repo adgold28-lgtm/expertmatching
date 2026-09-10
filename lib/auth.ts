@@ -58,6 +58,32 @@ interface AuthAppMetadata {
  * Fails closed: returns null on any error.
  */
 export async function getSupabaseSessionUser(request: NextRequest): Promise<User | null> {
+  const cached = VERIFIED_USER_BY_REQUEST.get(request);
+  if (cached) return cached;
+  const pending = verifySupabaseSessionUser(request);
+  VERIFIED_USER_BY_REQUEST.set(request, pending);
+  return pending;
+}
+
+/**
+ * Request-scoped cache of the verified user.
+ *
+ * A typical handler calls routeAuthGuard(request) and then
+ * getSessionUser(request), which used to mean TWO auth.getUser() round trips
+ * to Supabase for one request — the same token verified twice, serially, on
+ * every authenticated read.
+ *
+ * The key is the NextRequest object itself, so the entry lives exactly as long
+ * as the request does and cannot leak between requests or users: a new request
+ * is a new object and always re-verifies. The in-flight promise is cached (not
+ * just the result) so concurrent callers within one request share one call.
+ * This is NOT a process-wide session cache and NOT a decoded-JWT shortcut —
+ * revocation still takes effect on the very next request.
+ */
+const VERIFIED_USER_BY_REQUEST = new WeakMap<NextRequest, Promise<User | null>>();
+
+/** The actual verification. Fails closed: null on any error. */
+async function verifySupabaseSessionUser(request: NextRequest): Promise<User | null> {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
   const key = process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY;
   if (!url || !key) return null;
@@ -121,6 +147,32 @@ export async function getSessionUser(request: NextRequest): Promise<SessionUser>
 }
 
 /**
+ * Whether an account status may use the product. THE one status policy —
+ * middleware and every route guard read it, so an account cannot be refused by
+ * one layer and admitted by another.
+ *
+ *   'active'      the normal state, set when set-password completes
+ *   'pending'     invited, password not yet set. A Supabase invite/recovery
+ *                 link establishes a SESSION before /api/auth/set-password
+ *                 runs, so a pending session is reachable by anyone who opens
+ *                 their invite and navigates away. Middleware only ever
+ *                 rejected 'disabled', so such a session reached project routes
+ *                 — the project guards deliberately lean on middleware for the
+ *                 account-state check.
+ *   'disabled'    revoked
+ *   undefined     legacy accounts predating the field. DELIBERATELY ALLOWED:
+ *                 refusing them would lock out every pre-existing user. Not a
+ *                 new hole — it is the status quo, called out rather than
+ *                 quietly tightened.
+ *
+ * The set-password flow is unaffected: '/auth/' and '/api/auth/set-password'
+ * are in the middleware's PUBLIC_PREFIXES and are token-gated at the handler.
+ */
+export function statusMayUseProduct(status: string | undefined): boolean {
+  return status !== 'pending' && status !== 'disabled';
+}
+
+/**
  * Route-level auth guard — supplements middleware (defense in depth).
  * Returns null if authenticated and not disabled, or a 401/403 Response.
  */
@@ -129,7 +181,7 @@ export async function routeAuthGuard(request: NextRequest): Promise<Response | n
   const user = await getSupabaseSessionUser(request);
   if (!user) return Response.json({ error: 'unauthorized' }, { status: 401 });
   const meta = (user.app_metadata ?? {}) as AuthAppMetadata;
-  if (meta.status === 'disabled') {
+  if (!statusMayUseProduct(meta.status)) {
     return Response.json({ error: 'forbidden' }, { status: 403 });
   }
   return null;
@@ -144,7 +196,7 @@ export async function adminGuard(request: NextRequest): Promise<Response | null>
   const user = await getSupabaseSessionUser(request);
   if (!user) return Response.json({ error: 'unauthorized' }, { status: 401 });
   const meta = (user.app_metadata ?? {}) as AuthAppMetadata;
-  if (meta.status === 'disabled' || meta.role !== 'admin') {
+  if (!statusMayUseProduct(meta.status) || meta.role !== 'admin') {
     return Response.json({ error: 'forbidden' }, { status: 403 });
   }
   return null;

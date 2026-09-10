@@ -1,9 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { isAuthEnabled } from './lib/auth';
+import { isAuthEnabled, statusMayUseProduct } from './lib/auth';
 import { updateSession } from './lib/supabase/middleware';
 
 // Paths that bypass auth entirely — keep this list minimal.
-const PUBLIC_PATHS = new Set([
+// Exported so the status gate's escape hatches can be asserted directly
+// (scripts/test-webhook-recovery.ts). Next.js reads only the default export
+// and `config` from this file; the extra named export is inert.
+export const PUBLIC_PATHS = new Set([
   '/login',
   '/api/auth/login',
   '/api/auth/logout',
@@ -76,9 +79,20 @@ export async function middleware(request: NextRequest): Promise<NextResponse> {
       role?:                string;
     };
 
-    // Disabled accounts are kicked to login.
-    if (meta.status === 'disabled') {
-      return NextResponse.redirect(new URL('/login', request.url));
+    // Accounts that may not use the product (disabled, or invited but never
+    // finished set-password) stop here. This uses the SAME policy as the route
+    // guards — middleware used to reject only 'disabled' while the guards were
+    // the only thing looking at status at all, and the project guards lean on
+    // middleware for exactly this check. API callers get a JSON 403 rather than
+    // an HTML redirect they cannot read.
+    // PUBLIC_PATHS come through first, exactly as the onboarding gate below
+    // allows its own escape hatches. Without this the gate traps the person it
+    // blocks: '/login' redirects to '/login' forever, and '/api/auth/logout'
+    // answers 403 — so they cannot clear the cookie that is blocking them.
+    if (!statusMayUseProduct(meta.status) && !PUBLIC_PATHS.has(pathname)) {
+      return pathname.startsWith('/api/')
+        ? NextResponse.json({ error: 'forbidden' }, { status: 403 })
+        : NextResponse.redirect(new URL('/login', request.url));
     }
 
     // Internal tools are admin-only and never indexed.

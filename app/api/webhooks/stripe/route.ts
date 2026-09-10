@@ -33,18 +33,30 @@
 import { NextRequest, NextResponse } from 'next/server';
 import type Stripe from 'stripe';
 import { stripe } from '../../../../lib/stripe';
-import { updateExpertStatus } from '../../../../lib/projectStore';
+import { getProject, updateExpertStatus } from '../../../../lib/projectStore';
 import { runExpertPayout, retryPendingPayoutsForAccount } from '../../../../lib/expertPayout';
 import { recordSubscriptionStatus } from '../../../../lib/orgBilling';
+import { checkoutSessionSettled, isPermanentFailure } from '../../../../lib/stripeEvents';
 
 // ─── Shared branch handlers ───────────────────────────────────────────────────
 
-/** Records a successful client payment, then pays out the expert. */
+/**
+ * Records a successful client payment, then pays out the expert.
+ *
+ * Returns false when the durable write failed. The caller turns that into a
+ * 500 so STRIPE RETRIES the event: this used to swallow the error and still
+ * answer 200, which meant a transient database failure silently lost the
+ * payment — the money was taken, nothing recorded it, and no retry ever came.
+ *
+ * The payout only runs once the paid state is actually persisted. Otherwise a
+ * retry would re-enter with the engagement still 'unpaid', and runExpertPayout
+ * now refuses to move money in that state anyway.
+ */
 async function handlePaymentSucceeded(
   projectId: string,
   expertId:  string,
   intentId:  string | null,
-): Promise<void> {
+): Promise<boolean> {
   try {
     await updateExpertStatus(projectId, expertId, {
       paymentStatus:         'paid',
@@ -54,10 +66,17 @@ async function handlePaymentSucceeded(
     console.log('[stripe] payment-succeeded', { projectId, expertId });
   } catch (err) {
     console.error('[stripe] webhook update error:', err instanceof Error ? err.message.slice(0, 120) : String(err));
+    if (isPermanentFailure(err)) {
+      // The engagement is gone. Acknowledge so Stripe stops redelivering.
+      console.error('[stripe] webhook-permanent-failure', { projectId, expertId, event: 'payment_succeeded' });
+      return true;
+    }
+    return false;
   }
 
   // Never throws — the client payment is already recorded.
   await runExpertPayout(projectId, expertId);
+  return true;
 }
 
 /**
@@ -78,13 +97,36 @@ function subscriptionIdForInvoice(invoice: Stripe.Invoice): string | null {
   return null;
 }
 
-async function handlePaymentFailed(projectId: string, expertId: string): Promise<void> {
+/**
+ * Records a failed client payment. Returns false when the write failed, so the
+ * caller can 500 and let Stripe retry.
+ *
+ * 'paid' is TERMINAL here. Stripe delivers events without an ordering
+ * guarantee, so a late payment_failed for an earlier attempt could otherwise
+ * overwrite a payment that has already succeeded — marking a charged call
+ * unpaid and, worse, re-opening it for a second charge. A failure that arrives
+ * after a success is logged and dropped. (Full per-event ordering across
+ * different event ids is still open — see SECURITY_AUDIT.md R7.)
+ */
+async function handlePaymentFailed(projectId: string, expertId: string): Promise<boolean> {
   try {
+    const project = await getProject(projectId);
+    const pe      = project?.experts.find(e => e.expert.id === expertId);
+    if (pe?.paymentStatus === 'paid') {
+      console.log('[stripe] payment-failed-ignored-already-paid', { projectId, expertId });
+      return true;
+    }
     await updateExpertStatus(projectId, expertId, { paymentStatus: 'failed' });
     console.log('[stripe] payment-failed', { projectId, expertId });
   } catch (err) {
     console.error('[stripe] webhook update error:', err instanceof Error ? err.message.slice(0, 120) : String(err));
+    if (isPermanentFailure(err)) {
+      console.error('[stripe] webhook-permanent-failure', { projectId, expertId, event: 'payment_failed' });
+      return true;
+    }
+    return false;
   }
+  return true;
 }
 
 // ─── Handler ──────────────────────────────────────────────────────────────────
@@ -104,8 +146,19 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: 'invalid_signature' }, { status: 400 });
   }
 
+  // Set by any branch whose durable write failed. A 500 tells Stripe to
+  // redeliver the event; every handler below is safe to re-run.
+  let failed = false;
+
   // ── Checkout (payment-link path) ────────────────────────────────────────
-  if (event.type === 'checkout.session.completed') {
+  // `completed` means the customer finished the session, NOT that the money
+  // arrived: for a delayed-notification method the session completes with
+  // payment_status 'unpaid' and settles (or fails) days later. Paying the
+  // expert on `completed` alone transferred platform funds against a payment
+  // that had not cleared and might never. The money signal is payment_status,
+  // and `async_payment_succeeded` is the event that carries the later 'paid'.
+  if (event.type === 'checkout.session.completed'
+      || event.type === 'checkout.session.async_payment_succeeded') {
     const session   = event.data.object as Stripe.Checkout.Session;
     const projectId = session.metadata?.projectId;
     const expertId  = session.metadata?.expertId;
@@ -113,8 +166,18 @@ export async function POST(request: NextRequest) {
       ? session.payment_intent
       : (session.payment_intent as Stripe.PaymentIntent | null)?.id ?? null;
 
+    const settled = checkoutSessionSettled(session.payment_status);
+
     if (projectId && expertId) {
-      await handlePaymentSucceeded(projectId, expertId, intentId);
+      if (settled) {
+        if (!(await handlePaymentSucceeded(projectId, expertId, intentId))) failed = true;
+      } else {
+        // Not an error, and not a failure either — the session is waiting on an
+        // async payment. Stripe will send async_payment_succeeded/failed.
+        console.log('[stripe] checkout-awaiting-payment', {
+          projectId, expertId, paymentStatus: session.payment_status,
+        });
+      }
     }
   }
 
@@ -124,7 +187,7 @@ export async function POST(request: NextRequest) {
     const expertId  = session.metadata?.expertId;
 
     if (projectId && expertId) {
-      await handlePaymentFailed(projectId, expertId);
+      if (!(await handlePaymentFailed(projectId, expertId))) failed = true;
     }
   }
 
@@ -136,7 +199,7 @@ export async function POST(request: NextRequest) {
     const expertId  = intent.metadata?.expertId;
 
     if (projectId && expertId) {
-      await handlePaymentSucceeded(projectId, expertId, intent.id);
+      if (!(await handlePaymentSucceeded(projectId, expertId, intent.id))) failed = true;
     }
   }
 
@@ -146,7 +209,7 @@ export async function POST(request: NextRequest) {
     const expertId  = intent.metadata?.expertId;
 
     if (projectId && expertId) {
-      await handlePaymentFailed(projectId, expertId);
+      if (!(await handlePaymentFailed(projectId, expertId))) failed = true;
     }
   }
 
@@ -190,6 +253,13 @@ export async function POST(request: NextRequest) {
     }
   }
 
-  // Always return 200
+  // A swallowed failure used to answer 200, which told Stripe the event was
+  // handled and retired it forever. A TRANSIENT failure now gets a 500 and
+  // Stripe's normal retry schedule; a permanent one (the engagement no longer
+  // exists) is recorded and acknowledged, because redelivering it forever only
+  // risks the endpoint being disabled. See isPermanentFailure.
+  if (failed) {
+    return NextResponse.json({ error: 'handler_failed' }, { status: 500 });
+  }
   return NextResponse.json({ received: true });
 }

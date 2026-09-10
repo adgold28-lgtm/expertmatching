@@ -11,10 +11,15 @@
 //            expertRate) over the same minutes; ExpertMatch keeps the difference.
 //
 // Behaviour:
-//   1. Load the ProjectExpert; skip if already paid (stripeTransferId set) or
-//      if there is no contact email.
+//   1. Load the ProjectExpert; skip unless the CLIENT HAS PAID
+//      (paymentStatus === 'paid') and the org may still be charged. Skip if
+//      already paid out (stripeTransferId set) or there is no contact email.
 //   2. If the expert has a Connect account with onboarding complete → transfer.
 //   3. Otherwise → mark payout pending and email a 7-day onboarding link.
+//
+// Step 1's paid check is load-bearing for the retry sweep below: that sweep
+// re-enters this function long after the call, when the client's payment may
+// never have arrived at all.
 //
 // Payouts left pending because the expert had not finished Stripe onboarding
 // are retried by retryPendingPayoutsForAccount(), called from the
@@ -39,6 +44,7 @@ import {
   transferExpertPayout,
 } from './stripeConnect';
 import { generateAvailabilityToken } from './availabilityToken';
+import { getEntitlementsForProject } from './entitlements';
 import { expertPayoutDollars, formatUsdFromCents } from './pricing';
 import { getFromAddress } from './mailFrom';
 
@@ -137,6 +143,38 @@ export async function sendPayoutOnboardingEmail(
   }
 }
 
+// ─── Eligibility ──────────────────────────────────────────────────────────────
+
+/** Why a payout must not run, or null when it may. */
+export type PayoutBlockReason = 'unpaid' | 'not_entitled' | 'already_paid_out' | null;
+
+/**
+ * Whether money may move to the expert for this engagement.
+ *
+ * Pure so the money gate can be asserted directly
+ * (scripts/test-webhook-recovery.ts) instead of only through a live webhook.
+ *
+ * `unpaid` is the check that was missing entirely. runExpertPayout is reached
+ * from the Stripe webhook (which has just recorded the payment) AND from
+ * retryPendingPayoutsForAccount, which sweeps engagements whose payout stalled
+ * on unfinished Connect onboarding — with no idea whether the client's money
+ * ever arrived. An expert finishing onboarding weeks later was therefore paid
+ * out of platform funds for a call the client never paid for.
+ *
+ * Refunds remain uncovered: nothing moves paymentStatus off 'paid' today, so a
+ * refunded call still reads as paid here. That needs a charge.refunded branch
+ * and a payment state to move to (SECURITY_AUDIT.md R7).
+ */
+export function payoutBlockReason(
+  pe: Pick<ProjectExpert, 'paymentStatus' | 'stripeTransferId'>,
+  canCharge: boolean,
+): PayoutBlockReason {
+  if (pe.stripeTransferId)        return 'already_paid_out';
+  if (pe.paymentStatus !== 'paid') return 'unpaid';
+  if (!canCharge)                  return 'not_entitled';
+  return null;
+}
+
 // ─── Public API ───────────────────────────────────────────────────────────────
 
 /**
@@ -153,12 +191,37 @@ export async function runExpertPayout(projectId: string, expertId: string): Prom
 
     if (!pe) return;
 
-    // Idempotency: a recorded transfer means this expert has already been paid
-    // for this call. Webhook replays and the account.updated retry sweep both
-    // land here, so a second call must be a no-op. (stripeConnect's transfer
-    // also carries a deterministic idempotency key for the racing case.)
-    if (pe.stripeTransferId) {
-      console.log('[stripe] payout-already-sent', { projectId, expertId });
+    // ── May money move at all? ────────────────────────────────────────────
+    // payoutBlockReason covers three things: the client actually paid, the org
+    // may still be charged, and this expert has not already been paid for this
+    // call (webhook replays and the account.updated sweep both land here, and
+    // stripeConnect's transfer carries a deterministic idempotency key for the
+    // racing case). The paid check is the one that was missing — see the
+    // function's own comment for what that cost.
+    const entitlements = await getEntitlementsForProject(projectId);
+    const block = payoutBlockReason(pe, entitlements.canCharge);
+    if (block) {
+      console.log('[stripe] payout-skipped', { projectId, expertId, reason: block });
+      // A blocked payout must be DEFERRED, not lost. These returns sit before
+      // the row is ever given an `expertOnboardingStatus` — the field both
+      // payout sweeps and the reconcile stale-owed alarm select on. And
+      // getEntitlementsForProject FAILS CLOSED, so a Supabase blip, an
+      // unreadable organization row, or a legacy project with no organization
+      // all arrive here looking exactly like a restricted trial. Money the
+      // client has already paid would then owe an expert who is invisible to
+      // every retry path there is.
+      //
+      // 'unpaid' needs no parking: if the client pays later, the payment
+      // webhook re-enters this function on its own.
+      if (block === 'not_entitled' && pe.paymentStatus === 'paid') {
+        try {
+          await updateExpertStatus(projectId, expertId, { expertOnboardingStatus: 'pending' });
+          console.warn('[stripe] payout-held-visible-to-sweep', { projectId, expertId });
+        } catch (holdErr) {
+          console.error('[stripe] payout-hold error:',
+            holdErr instanceof Error ? holdErr.message.slice(0, 120) : String(holdErr));
+        }
+      }
       return;
     }
 
