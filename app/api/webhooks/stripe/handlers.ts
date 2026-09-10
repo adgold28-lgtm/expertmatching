@@ -356,8 +356,36 @@ export function subscriptionIdForInvoice(invoice: Stripe.Invoice): string | null
 
 /** What the route answers with. Unchanged from the inline version. */
 export interface StripeEventOutcome {
-  received:   true;
-  duplicate?: boolean;
+  received:       true;
+  duplicate?:     boolean;
+  /** Acknowledged without completing: a redelivery could never succeed. */
+  unprocessable?: boolean;
+}
+
+/**
+ * Failures a redelivery can never repair, as distinct from a transient store or
+ * provider outage.
+ *
+ * This distinction is load-bearing. The engagement ids on a Stripe event come
+ * from metadata baked into a PaymentIntent or payment link days earlier, and
+ * the row they name can be gone by the time the client pays — DELETE
+ * /api/projects/[id]/experts/[id] hard-deletes it with no billed-row guard, and
+ * projectStore.mutateExpert then throws 'Expert not found'. Asking Stripe to
+ * redeliver that for three days achieves nothing and risks Stripe disabling the
+ * endpoint, which would stop delivering every OTHER event too: payouts,
+ * refunds, subscription status. Such an event is recorded and acknowledged.
+ *
+ * A missing Stripe object is the same shape: a charge that belongs to a
+ * connected account has a PaymentIntent the platform account cannot retrieve,
+ * and retrieving it fails permanently with resource_missing.
+ */
+export function isUnprocessableWebhookError(err: unknown): boolean {
+  const message = err instanceof Error ? err.message : String(err ?? '');
+  if (/^Project not found:/.test(message)) return true;
+  if (/^Expert not found:/.test(message)) return true;
+  // Stripe's own wording for an object this account cannot see.
+  if (/^No such /.test(message)) return true;
+  return (err as { code?: unknown } | null)?.code === 'resource_missing';
 }
 
 /**
@@ -505,11 +533,21 @@ export async function handleStripeEvent(
     // Losing the optional dedupe cache must not undo successfully persisted work.
     await d.completeEvent(event.id).catch(() => {});
     return { received: true };
-  } catch {
+  } catch (err) {
     const ref = engagementRefFromMetadata((event.data.object as { metadata?: Stripe$Metadata }).metadata);
+    const unprocessable = isUnprocessableWebhookError(err);
     await d.recordSystemFailure({
-      area: 'invoice', reason: `stripe_webhook_failed:${event.type}`, ...(ref ?? {}),
+      area:   'invoice',
+      reason: `${unprocessable ? 'stripe_webhook_unprocessable' : 'stripe_webhook_failed'}:${event.type}`,
+      ...(ref ?? {}),
     }).catch(() => {});
+    // Recorded, then acknowledged: the operator sees one attention row instead
+    // of one per redelivery for three days, and the endpoint stays alive for
+    // the events that CAN be processed.
+    if (unprocessable) {
+      await d.completeEvent(event.id).catch(() => {});
+      return { received: true, unprocessable: true };
+    }
     throw new Error('stripe_webhook_processing_failed');
   } finally {
     await d.releaseEvent(event.id, owner).catch(() => {});

@@ -115,6 +115,36 @@ async function main() {
       assert.equal(f.payouts.length,1); checks++;
     } finally { globalThis.fetch=originalFetch; }
   }
+  // A redelivery cannot conjure back a deleted engagement or a charge that
+  // lives on a connected account. Those are recorded and acknowledged, so one
+  // dead event cannot fail the endpoint into being disabled for three days.
+  for (const message of ['Expert not found: expert', 'Project not found: project', 'No such payment_intent: pi_x']) {
+    const f = fixture();
+    f.deps.updateExpertStatus = async () => { throw Error(message); };
+    const outcome = await handleStripeEvent(paid, f.deps);
+    assert.equal(outcome.unprocessable, true); checks++;
+    assert.equal(f.done.has(paid.id), true, 'acknowledged, never redelivered'); checks++;
+    assert.equal(f.active.size, 0, 'lease released'); checks++;
+    assert.equal(f.payouts.length, 0, 'no payout on a row that does not exist'); checks++;
+    assert.equal(JSON.stringify(f.alerts).includes('stripe_webhook_unprocessable'), true); checks++;
+    // A second delivery is answered from the done marker, not re-alerted.
+    await handleStripeEvent(paid, f.deps);
+    assert.equal(f.alerts.length, 1); checks++;
+  }
+  {
+    // Stripe's typed error shape, not just its message.
+    const f = fixture();
+    f.deps.updateExpertStatus = async () => { throw Object.assign(Error('resource gone'), { code: 'resource_missing' }); };
+    assert.equal((await handleStripeEvent(paid, f.deps)).unprocessable, true); checks++;
+  }
+  {
+    // A transient store failure keeps the old contract: 500, no done marker.
+    const f = fixture();
+    f.deps.updateExpertStatus = async () => { throw Error('fetch failed'); };
+    await assert.rejects(handleStripeEvent(paid, f.deps)); checks++;
+    assert.equal(f.done.size, 0); checks++;
+    assert.equal(JSON.stringify(f.alerts).includes('stripe_webhook_failed'), true); checks++;
+  }
   process.stdout.write(`PASS Stripe recovery: ${checks} assertions\n`);
 }
 main().catch(err => { console.error(err); process.exitCode=1; });
