@@ -10,6 +10,14 @@
 // State comes from GET /api/onboarding/calendar/status, which returns the
 // caller's own provider, timezone, weekly windows and one-off dates so the
 // editor opens pre-filled rather than blank.
+//
+// CALENDLY: hidden here for the same reason and by the same mechanism as in
+// onboarding — CalendarStep asks GET /api/onboarding/calendar whether this
+// deployment offers Calendly (CALENDLY_ENABLED, lib/calendlyFlag.ts) and drops
+// the option when it does not. This panel needs no flag of its own: with the
+// flag off connectionIsUsable() reports a stored Calendly row as NOT connected,
+// so `status.connected` is false and the summary below tells the user there is
+// no calendar linked yet — which is the truth, since the link yields no slots.
 
 import { useCallback, useEffect, useState } from 'react';
 import CalendarStep, { type CalendarProvider } from '../onboarding/CalendarStep';
@@ -68,6 +76,7 @@ export default function CalendarPanel() {
     : !status.connected    ? 'No calendar linked yet. We cannot propose call times until there is one.'
     : status.hasWeekly     ? 'Your weekly hours repeat every week. Specific dates sit on top of them.'
     : status.provider === 'google'   ? 'We read free/busy times only — never event titles or guests.'
+    // Only reachable with CALENDLY_ENABLED=true; otherwise `connected` is false.
     : status.provider === 'calendly' ? 'We read your booking link when an expert says yes.'
     : 'Specific dates only. Add weekly hours so you do not have to keep topping them up.';
 

@@ -12,6 +12,13 @@
 //              which returns to /onboarding?calendar=connected|calendar_error=…
 //              (the parent page owns those query params and the banner)
 //   calendly → POST /api/onboarding/calendar { provider, calendlyUrl, timezone }
+//              OFFERED ONLY when the server says so. GET /api/onboarding/calendar
+//              answers { calendlyEnabled }, read once on mount; until it answers
+//              (and whenever it says false, or the request fails) Calendly is
+//              not in the chooser at all, because a saved Calendly link yields
+//              no slots and the POST would answer 400 calendly_disabled. There
+//              is no NEXT_PUBLIC copy of the flag — the server is the only
+//              place it lives.
 //   manual   → POST /api/onboarding/calendar { provider, timezone,
 //                                              weeklyWindows, slots }
 //
@@ -133,6 +140,8 @@ function isValidCalendlyUrl(url: string): boolean {
 /** Human copy for the POST /api/onboarding/calendar error codes. */
 function messageForSaveError(status: number, code: string, reason?: string): string {
   switch (code) {
+    case 'calendly_disabled':
+      return 'Calendly is not available on ExpertMatch right now. Connect Google Calendar or set your weekly hours instead.';
     case 'invalid_calendly_url':
       return 'That does not look like a Calendly link. It should start with https://calendly.com/ followed by your booking path.';
     case 'invalid_timezone':
@@ -266,6 +275,10 @@ export default function CalendarStep({
   const [timezone,    setTimezone]    = useState('');
   const [zones,       setZones]       = useState<string[]>([]);
   const [calendlyUrl, setCalendlyUrl] = useState('');
+  // Server-owned feature flag, false until GET /api/onboarding/calendar says
+  // otherwise. Starting false means a slow or failed request hides Calendly
+  // rather than offering a path the POST would refuse.
+  const [calendlyAllowed, setCalendlyAllowed] = useState(false);
   const [weeklyRows,  setWeeklyRows]  = useState<WeeklyRow[]>([emptyWeeklyRow(0)]);
   const [slotRows,    setSlotRows]    = useState<SlotRow[]>([]);
   const [showDates,   setShowDates]   = useState(false);
@@ -288,6 +301,28 @@ export default function CalendarStep({
     setTimezone(initial);
     setMinDate(todayIso());
   }, [initialTimezone]);
+
+  // Which providers this deployment offers. One read on mount; if Calendly is
+  // off and it was the stored choice, fall back to Google so the chooser never
+  // sits on an option that is not rendered.
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const res = await fetch('/api/onboarding/calendar');
+        if (!res.ok) return;
+        const data = await res.json() as { calendlyEnabled?: boolean };
+        if (!cancelled && data.calendlyEnabled === true) setCalendlyAllowed(true);
+      } catch {
+        // Leave Calendly hidden — see the initial state.
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
+  useEffect(() => {
+    if (!calendlyAllowed) setChoice(current => (current === 'calendly' ? 'google' : current));
+  }, [calendlyAllowed]);
 
   // Pre-fill the editor from whatever is on file. Runs when the parent finishes
   // loading the status response, so it must tolerate arriving after mount.
@@ -355,6 +390,7 @@ export default function CalendarStep({
   }
 
   function submitCalendly(): void {
+    if (!calendlyAllowed) return;   // the button is not rendered; belt and braces
     const url = calendlyUrl.trim();
     if (!isValidCalendlyUrl(url)) {
       setError('Enter your full Calendly link — it should start with https://calendly.com/ followed by your booking path.');
@@ -555,7 +591,7 @@ export default function CalendarStep({
 
           {/* ── Option chooser ────────────────────────────────────────────── */}
           <div className="space-y-2 mb-6">
-            {OPTIONS.map(option => {
+            {OPTIONS.filter(option => option.id !== 'calendly' || calendlyAllowed).map(option => {
               const selected = choice === option.id;
               return (
                 <button
@@ -598,7 +634,7 @@ export default function CalendarStep({
           )}
 
           {/* ── Calendly ──────────────────────────────────────────────────── */}
-          {choice === 'calendly' && (
+          {choice === 'calendly' && calendlyAllowed && (
             <div className="mb-4">
               <label htmlFor="ob-calendly" className={LABEL_CLASS} style={MICRO_LS}>
                 Calendly link

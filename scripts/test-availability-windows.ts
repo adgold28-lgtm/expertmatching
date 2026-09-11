@@ -1,4 +1,6 @@
-// scripts/test-availability-windows.ts — unit tests for lib/availabilityWindows.ts.
+// scripts/test-availability-windows.ts — unit tests for lib/availabilityWindows.ts
+// and for the CALENDLY_ENABLED flag that decides whether a Calendly connection
+// counts as a calendar at all (lib/calendlyFlag.ts, lib/calendarConnections.ts).
 //
 // Pure functions only: no database, no network, no env vars.
 //
@@ -32,6 +34,9 @@ import {
   isHhMm,
   type WeeklyWindow,
 } from '../lib/availabilityWindows';
+import { calendlyEnabled } from '../lib/calendlyFlag';
+import { connectionIsUsable } from '../lib/calendarConnections';
+import type { UserCalendarConnectionRow } from '../lib/supabase/database.types';
 import type { AvailabilitySlot } from '../types';
 import { check, eq, summary } from './testHarness';
 
@@ -341,6 +346,78 @@ eq('merging nothing with nothing is empty', mergeAvailability([], [], MONDAY, 14
 eq('weekly windows alone still merge',      mergeAvailability([window(2, '09:00', '10:00')], [], MONDAY, 14).length, 2);
 eq('one-offs alone still merge',            mergeAvailability([], [slot('2026-09-20')], MONDAY, 14).length, 1);
 
+// ─── CALENDLY_ENABLED ─────────────────────────────────────────────────────────
+//
+// Wave 5: Calendly is hidden, not deleted. The flag is a string comparison and
+// nothing else — only the exact 'true' turns it on, so a deployment that typed
+// '1' gets the safe answer rather than a calendar that silently offers nothing.
+
+section('CALENDLY_ENABLED parsing');
+
+check('unset is off',                calendlyEnabled({}) === false);
+check('undefined is off',            calendlyEnabled({ CALENDLY_ENABLED: undefined }) === false);
+check("'true' is on",                calendlyEnabled({ CALENDLY_ENABLED: 'true' }) === true);
+check("'TRUE' is off — exact match", calendlyEnabled({ CALENDLY_ENABLED: 'TRUE' }) === false);
+check("'True' is off",               calendlyEnabled({ CALENDLY_ENABLED: 'True' }) === false);
+check("'1' is off",                  calendlyEnabled({ CALENDLY_ENABLED: '1' }) === false);
+check("'yes' is off",                calendlyEnabled({ CALENDLY_ENABLED: 'yes' }) === false);
+check("'false' is off",              calendlyEnabled({ CALENDLY_ENABLED: 'false' }) === false);
+check("' true' is off — no trimming", calendlyEnabled({ CALENDLY_ENABLED: ' true' }) === false);
+check("'' is off",                   calendlyEnabled({ CALENDLY_ENABLED: '' }) === false);
+
+section('connectionIsUsable respects the flag');
+
+const ON  = { CALENDLY_ENABLED: 'true' };
+const OFF = {};
+
+function row(over: Partial<UserCalendarConnectionRow>): UserCalendarConnectionRow {
+  return {
+    profile_id:     '00000000-0000-0000-0000-000000000000',
+    provider:       'manual',
+    access_token:   null,
+    refresh_token:  null,
+    token_expiry:   null,
+    calendar_email: null,
+    calendly_url:   null,
+    manual_slots:   null,
+    weekly_windows: null,
+    timezone:       null,
+    oauth_state:    null,
+    created_at:     '2026-09-10T00:00:00.000Z',
+    updated_at:     '2026-09-10T00:00:00.000Z',
+    ...over,
+  } as UserCalendarConnectionRow;
+}
+
+const calendlyRow = row({ provider: 'calendly', calendly_url: 'https://calendly.com/someone/30min' });
+
+check('a Calendly link is usable with the flag on',   connectionIsUsable(calendlyRow, ON)  === true);
+check('a Calendly link is NOT usable with it off',    connectionIsUsable(calendlyRow, OFF) === false);
+check('a Calendly row with no link is never usable',
+  connectionIsUsable(row({ provider: 'calendly' }), ON) === false);
+
+// The flag must not touch the providers that work.
+const googleRow = row({ provider: 'google', refresh_token: 'ciphertext' });
+check('Google is usable with the flag off', connectionIsUsable(googleRow, OFF) === true);
+check('Google is usable with the flag on',  connectionIsUsable(googleRow, ON)  === true);
+
+const manualRow = row({
+  provider:     'manual',
+  manual_slots: [{ startTime: '9:00 AM', endTime: '10:00 AM', timezone: NY, date: '2026-09-20' }],
+});
+check('manual slots are usable with the flag off', connectionIsUsable(manualRow, OFF) === true);
+check('manual slots are usable with the flag on',  connectionIsUsable(manualRow, ON)  === true);
+
+const weeklyRow = row({
+  provider:       'manual',
+  weekly_windows: [{ dayOfWeek: 2, from: '09:00', to: '11:30', timezone: NY }],
+});
+check('weekly windows alone are usable with the flag off', connectionIsUsable(weeklyRow, OFF) === true);
+
+check('a null row is never usable with either flag',
+  connectionIsUsable(null, ON) === false && connectionIsUsable(null, OFF) === false);
+
 // ─── Result ───────────────────────────────────────────────────────────────────
 
 summary();
+

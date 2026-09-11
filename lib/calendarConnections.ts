@@ -9,7 +9,11 @@
 // Providers:
 //   google   — AES-256-GCM ciphertext access/refresh tokens (lib/encryption.ts),
 //              free/busy read at scheduling time via lib/fetchGoogleFreebusy.ts
-//   calendly — a public scheduling URL, resolved lazily via lib/fetchCalendlySlots.ts
+//   calendly — a public scheduling URL, resolved lazily via lib/fetchCalendlySlots.ts.
+//              HIDDEN unless CALENDLY_ENABLED === 'true' (lib/calendlyFlag.ts):
+//              with the flag off an existing Calendly row is treated as NOT
+//              connected and yields no slots, so the user is prompted to link
+//              Google or type their hours instead.
 //   manual   — slots the user typed, stored as jsonb
 //
 // Required env vars (via lib/supabase/admin.ts + lib/encryption.ts):
@@ -26,6 +30,7 @@ import { getServiceRoleClient, getAuthUserIdByEmail } from './supabase/admin';
 import type { Json, UserCalendarConnectionRow }       from './supabase/database.types';
 import { fetchGoogleFreebusy }                        from './fetchGoogleFreebusy';
 import { fetchCalendlySlots }                         from './fetchCalendlySlots';
+import { calendlyEnabled, type CalendlyEnv }          from './calendlyFlag';
 import {
   sanitizeWeeklyWindows,
   weeklyWindowToJson,
@@ -205,20 +210,26 @@ export async function getCalendarConnection(
 /**
  * True when a row represents a connection the scheduler can actually use:
  *   google   → an offline refresh token is on file
- *   calendly → a scheduling URL is on file
+ *   calendly → a scheduling URL is on file AND CALENDLY_ENABLED === 'true'
  *   manual   → at least one usable one-off slot OR one recurring weekly window
  * A row that only holds an in-flight `oauth_state` is NOT connected.
  *
  * A user who says "Tuesdays and Thursdays, 9–11" and nothing else has given us
  * everything the scheduler needs, so weekly windows alone complete this step.
+ *
+ * With the Calendly flag off a stored Calendly link is reported as NOT usable:
+ * the link resolves to no slots anyway, and saying "connected" would leave the
+ * user with a calendar step that looks finished and a scheduler with nothing to
+ * offer. `env` is a seam for the tests; production passes nothing.
  */
 export function connectionIsUsable(
   row: UserCalendarConnectionRow | null,
+  env?: CalendlyEnv,
 ): row is UserCalendarConnectionRow {
   if (!row) return false;
   switch (row.provider) {
     case 'google':   return Boolean(row.refresh_token);
-    case 'calendly': return Boolean(row.calendly_url);
+    case 'calendly': return calendlyEnabled(env) && Boolean(row.calendly_url);
     case 'manual':
       return slotsFromJson(row.manual_slots).length > 0
         || weeklyWindowsFromRow(row).length > 0;
@@ -424,7 +435,7 @@ export async function updateGoogleAccessToken(
  * (lib/availabilityWindows.ts) and one-off dates. Duplicates collapse and
  * anything already in the past is dropped, judged in each slot's own zone.
  *
- * Google and Calendly are NOT merged with weekly windows: those providers
+ * Google and Calendly (when enabled) are NOT merged with weekly windows: those providers
  * report what the user is actually free for, and layering a standing rule on
  * top would offer an expert a time the user is already booked. The recurring
  * rule is the manual path's way of saying the same thing.
@@ -451,7 +462,10 @@ export async function getClientSlotsForUser(
     }
 
     if (row.provider === 'calendly') {
-      if (!row.calendly_url) return [];
+      // Flag off: the row is treated exactly like no connection — the same
+      // answer connectionIsUsable() gives, so the calendar step keeps asking
+      // for a calendar that works instead of silently proposing nothing.
+      if (!calendlyEnabled() || !row.calendly_url) return [];
       return await fetchCalendlySlots(row.calendly_url, windowDays);
     }
 

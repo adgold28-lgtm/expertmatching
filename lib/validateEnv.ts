@@ -128,6 +128,13 @@ export const OPTIONAL_VARS = [
   // POST /api/onboarding/billing answer 503 billing_unavailable rather than
   // failing the production boot. Listed here for visibility only.
   'NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY',
+  // ── Added 2026-09-10 (Wave 5): Calendly is hidden unless this is exactly
+  // 'true'. Calendly's public API answers 401 to every unauthenticated call, so
+  // a Calendly connection yields no slots and looks like no connection at all
+  // (ARCHITECTURE.md 8). Off: the onboarding and settings calendar steps do not
+  // offer it, POST /api/onboarding/calendar answers 400 calendly_disabled, and
+  // an existing Calendly row reads as not connected (lib/calendlyFlag.ts).
+  'CALENDLY_ENABLED',
 ] as const;
 
 /**
