@@ -26,6 +26,18 @@ Relevant files:
 
 The repair plan explicitly defers cancellation semantics and payout reversal policy. Its refund/dispute handling does not decide who should bear a commercial loss. A Zoom meeting ending is not, by itself, proof that both people attended or that every elapsed minute was billable.
 
+## Founder decisions (2026-09-10, approved)
+
+These answer the questions in "Decisions for the founder" below and in docs/REPAIR_PLAN.md Part H. They are the policy to build.
+
+1. **Cancellation window: 24 hours.** Either side may cancel outright when the call starts more than 24 hours from the moment of cancellation (server time versus booked UTC start). Inside 24 hours either side may still *move* the call; an outright cancel inside the window is a late cancellation.
+2. **Client late cancel or no-show:** the client is charged 15 minutes at the agreed client rate; the expert is paid 15 minutes at the agreed expert rate. Confirmation must show the amount before the client submits.
+3. **Expert no-show or expert late cancel:** no charge to the client. Matchy sends the client an apology on behalf of ExpertMatch stating that the expert has been removed from our database. The expert's address goes on the global do-not-contact list (`outreach_suppressions`, reason `manual`, source project recorded) and the engagement ends. No payout.
+4. **Cancel ends the booking; move keeps it.** After a cancel, "Find another time" is an explicit separate action, never automatic.
+5. **Refunds:** default is to leave the expert's payout in place and decide manually; provide a staff-only clawback action (Stripe transfer reversal) for the cases where the expert was at fault. No automatic reversal.
+6. **First card: champion only.** An ordinary member sees "ask your champion to add a card". The champion role must be transferable by the current champion (and by a platform admin) from the Team page.
+7. **Calendly: hidden, not deleted.** Remove the option from the onboarding and settings UI and refuse it on the API behind a feature flag (`CALENDLY_ENABLED`, default off), keep `lib/fetchCalendlySlots.ts` and its probe so it can be re-enabled once a Calendly integration exists.
+
 ## Recommended pilot policy — all amounts and windows need founder approval
 
 | Scenario | Proposed client treatment | Proposed expert treatment | Required evidence / action |
