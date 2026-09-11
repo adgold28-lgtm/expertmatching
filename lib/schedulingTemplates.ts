@@ -325,3 +325,95 @@ export function noTimesLeftEmail(input: NoTimesLeftInput): MatchyEmail {
     subject:        input.subject,
   });
 }
+
+// ─── Wave 5: cancelling a booked call ─────────────────────────────────────────
+//
+// docs/CALL_POLICIES_DRAFT.md founder decisions 3 and 4. Three templates, all
+// under the same two-sentence rule as everything above:
+//
+//   cancelledEmail            the EXPERT's copy. Names no client, no firm, no
+//                             project, and no money, exactly like every other
+//                             expert-facing body here.
+//   clientCancelledEmail      the CLIENT's copy. May name the expert (the
+//                             booking already revealed them) and may name the
+//                             late-cancellation fee, because the client is the
+//                             only party the client-side number belongs to.
+//   expertRemovedApologyEmail the apology when the EXPERT was at fault. Names
+//                             nobody at all: not the expert, not their company,
+//                             not the project.
+
+export interface CancelledInput {
+  /** The expert's first name; assemble() shortens it. */
+  expertFirstName: string;
+  /** Pre-formatted, in the recipient's zone. */
+  whenLabel:       string;
+  recipientEmail:  string;
+  subject:         string;
+}
+
+/**
+ * The expert's copy of a cancelled call. The withdrawal itself rides in the
+ * attached METHOD:CANCEL invite, so the body only has to say it plainly.
+ */
+export function cancelledEmail(input: CancelledInput): MatchyEmail {
+  return assemble({
+    firstName:      input.expertFirstName,
+    sentences:      `The call on ${input.whenLabel} is cancelled. The calendar invite has been withdrawn.`,
+    recipientEmail: input.recipientEmail,
+    subject:        input.subject,
+    omitFooter:     true,
+  });
+}
+
+export interface ClientCancelledInput {
+  clientFirstName: string;
+  whenLabel:       string;
+  /** The expert's real name. By this point the identity is revealed. */
+  expertName:      string;
+  /**
+   * Whole dollars charged for the late cancellation, when one was. Omitted or
+   * zero means the cancel was free and the body says nothing about money.
+   */
+  feeDollars?:     number | null;
+  recipientEmail:  string;
+  subject:         string;
+}
+
+/** The client's copy. Says what the cancel cost, when it cost anything. */
+export function clientCancelledEmail(input: ClientCancelledInput): MatchyEmail {
+  const fee = typeof input.feeDollars === 'number' && input.feeDollars > 0
+    ? ` The 15 minute late cancellation fee of $${input.feeDollars.toLocaleString('en-US')} applies.`
+    : '';
+
+  return assemble({
+    firstName:      input.clientFirstName,
+    sentences:      `Your call with ${input.expertName} on ${input.whenLabel} is cancelled.${fee}`,
+    recipientEmail: input.recipientEmail,
+    subject:        input.subject,
+    omitFooter:     true,
+  });
+}
+
+export interface ExpertRemovedApologyInput {
+  clientFirstName: string;
+  recipientEmail:  string;
+  subject:         string;
+}
+
+/**
+ * The apology, on ExpertMatch's behalf, when the expert cancelled late or did
+ * not turn up (founder decision 3).
+ *
+ * IT NAMES NOBODY. Not the expert, not their employer, not the project: a
+ * removal is our decision about our database, and the client needs the outcome
+ * rather than the identity. There is no charge, and the body says so.
+ */
+export function expertRemovedApologyEmail(input: ExpertRemovedApologyInput): MatchyEmail {
+  return assemble({
+    firstName:      input.clientFirstName,
+    sentences:      'I am sorry: the expert did not hold up their end, so they have been removed from our database and you have not been charged. Say the word and I will find you someone else.',
+    recipientEmail: input.recipientEmail,
+    subject:        input.subject,
+    omitFooter:     true,
+  });
+}

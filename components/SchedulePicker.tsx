@@ -35,6 +35,9 @@ interface Payload {
   topic:           string;
   calendarLinked:  boolean;
   booked:          { startUtc: string; endUtc: string } | null;
+  cancelled:       boolean;
+  /** 'free' when the call is more than 24 hours away; see lib/callPolicies.ts. */
+  cancelWindow:    'free' | 'late' | 'started' | null;
 }
 
 interface Booked { startUtc: string; endUtc: string; joinUrl: string | null }
@@ -106,6 +109,11 @@ export default function SchedulePicker({ token, connected, oauthError }: Props) 
   const [showMore,  setShowMore]  = useState(false);
   const [note,      setNote]      = useState('');
 
+  // Cancelling is two steps on purpose: inside 24 hours it removes the expert
+  // from the platform, so the consequence is on screen before the second tap.
+  const [confirmCancel, setConfirmCancel] = useState(false);
+  const [cancelled,     setCancelled]     = useState(false);
+
   const zone = useMemo(browserZone, []);
   const base = `/api/schedule/${encodeURIComponent(token)}`;
 
@@ -125,6 +133,7 @@ export default function SchedulePicker({ token, connected, oauthError }: Props) 
       }
       const data = await res.json() as Payload;
       setPayload(data);
+      if (data.cancelled) { setCancelled(true); return; }
       if (data.booked) setBooked({ ...data.booked, joinUrl: null });
     } catch {
       setLoadError('We could not load your times. Please try again.');
@@ -164,6 +173,38 @@ export default function SchedulePicker({ token, connected, oauthError }: Props) 
     }
   }
 
+  /**
+   * Cancel the booked call. `confirmLate` is only ever sent from the second
+   * step of the confirm, which is the step that carries the removal warning.
+   */
+  async function cancelCall(confirmLate: boolean): Promise<void> {
+    setBusy('cancel');
+    setActionErr('');
+    try {
+      const res = await fetch(base, {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({ action: 'cancel', confirmLate, timezone: zone }),
+      });
+      if (res.status === 409) {
+        const data = await res.json().catch(() => null) as { error?: string } | null;
+        if (data?.error === 'late_not_confirmed') { setConfirmCancel(true); return; }
+        setActionErr('That call can no longer be cancelled here.');
+        return;
+      }
+      if (!res.ok) {
+        setActionErr('We could not cancel that. Please try again.');
+        return;
+      }
+      setBooked(null);
+      setCancelled(true);
+    } catch {
+      setActionErr('We could not cancel that. Please try again.');
+    } finally {
+      setBusy(null);
+    }
+  }
+
   async function sendUnavailable(): Promise<void> {
     setBusy('unavailable');
     setActionErr('');
@@ -198,8 +239,20 @@ export default function SchedulePicker({ token, connected, oauthError }: Props) 
     );
   }
 
+  if (cancelled) {
+    return (
+      <Shell>
+        <h1 className="font-display text-2xl text-navy mb-3">Cancelled.</h1>
+        <p className="text-sm text-muted leading-relaxed">
+          The call is off and the calendar invite has been withdrawn.
+        </p>
+      </Shell>
+    );
+  }
+
   if (booked) {
     const { day, time } = formatSlot(booked, zone);
+    const late = payload?.cancelWindow !== null && payload?.cancelWindow !== 'free';
     return (
       <Shell>
         <div className="w-12 h-12 rounded-full bg-gold-pale border border-gold flex items-center justify-center mb-6"
@@ -218,6 +271,52 @@ export default function SchedulePicker({ token, connected, oauthError }: Props) 
             Join link
           </a>
         )}
+
+        {actionErr && (
+          <p role="alert"
+             className="mt-6 border border-status-danger/40 bg-status-danger/5 text-status-danger text-sm px-4 py-3">
+            {actionErr}
+          </p>
+        )}
+
+        {/* Cancelling. Step one asks; step two states the consequence. */}
+        <div className="mt-8 border-t border-frame pt-6 w-full">
+          {!confirmCancel ? (
+            <button type="button"
+                    onClick={() => { setActionErr(''); setConfirmCancel(true); }}
+                    className="text-sm text-navy underline underline-offset-4">
+              Cancel this call
+            </button>
+          ) : (
+            <div>
+              <p className="text-sm text-ink leading-relaxed mb-4">
+                {late
+                  ? 'This call is less than 24 hours away: cancelling now removes you from ExpertMatch. Ask to move it instead if you can.'
+                  : 'This will cancel the call and withdraw the invite.'}
+              </p>
+              <div className="flex flex-col sm:flex-row gap-3">
+                <button
+                  type="button"
+                  onClick={() => void cancelCall(late)}
+                  disabled={busy !== null}
+                  className="w-full sm:w-auto bg-navy text-gold px-6 py-3 text-sm font-semibold
+                             tracking-wide disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  {busy === 'cancel' ? 'Cancelling…' : 'Cancel the call'}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setConfirmCancel(false)}
+                  disabled={busy !== null}
+                  className="w-full sm:w-auto border border-frame px-6 py-3 text-sm text-muted
+                             disabled:opacity-50"
+                >
+                  Keep it
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
       </Shell>
     );
   }

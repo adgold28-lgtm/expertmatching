@@ -3,6 +3,23 @@
 //   GET  /api/schedule/:token  → what to render
 //   POST /api/schedule/:token  → { action: 'pick' } books it
 //                                { action: 'unavailable' } says none work
+//                                { action: 'cancel' } cancels a booked call
+//
+// CANCELLING, added in Wave 5 (docs/CALL_POLICIES_DRAFT.md founder decisions 1
+// and 3). More than 24 hours out it is free. Inside 24 hours it is a LATE
+// cancel, which under the approved policy REMOVES the expert from the platform
+// (lib/expertRemoval.ts), so the page says exactly that and the POST refuses
+// with `409 late_not_confirmed` until the body carries `confirmLate: true`.
+// The expert is never charged and never told a number.
+//
+// AFTER A CANCEL THE LINK IS DEAD. lib/bookCall.cancelCall clears
+// `scheduling.pickTokenHash` in the same compare-and-set that writes the
+// cancellation, so the very next request fails the revocation check and gets
+// the ordinary `410 { error: 'expired' }` every revoked link gets. The
+// `cancelled` flag on the GET payload and the `410 { error: 'booking_cancelled' }`
+// on the actions cover the other way a booking can be cancelled under a live
+// token (a staff cancel through the admin path, or a token minted again for a
+// later round).
 //
 // ACCESS is the signed picker token and nothing else: HMAC signature, 7-day
 // expiry (lib/availabilityToken.ts), and SHA-256(token) equal to the hash
@@ -34,7 +51,7 @@ import { screenMessage } from '../../../../lib/matchyScreen';
 import { appendMessage } from '../../../../lib/conversations';
 import { emitEngagementEvent } from '../../../../lib/engagementEvents';
 import { getFirm } from '../../../../lib/firmStore';
-import { bookCall, rebookCall } from '../../../../lib/bookCall';
+import { bookCall, cancelCall, rebookCall } from '../../../../lib/bookCall';
 import {
   CALL_DURATION_MIN,
   MAX_PROPOSAL_ROUNDS,
@@ -54,6 +71,7 @@ import { noTimesLeftEmail, threadSubject } from '../../../../lib/schedulingTempl
 import { sendSequenceEmail } from '../../../../lib/emailSequence';
 import { isWalkthrough, WALKTHROUGH_HELD_SUMMARY } from '../../../../lib/walkthrough';
 import { cleanEmailBody } from '../../../../lib/emailClean';
+import { cancelWindow as windowFor, type CancelWindow } from '../../../../lib/callPolicies';
 import type { AvailabilitySlot, Project, ProjectExpert, ProposedSlot } from '../../../../types';
 
 const MAX_BODY       = 4096;
@@ -131,6 +149,13 @@ interface SchedulePayload {
   calendarLinked:  boolean;
   /** Set when a call is already booked, so the page shows it instead. */
   booked:          { startUtc: string; endUtc: string } | null;
+  /** True once that booking has been cancelled: nothing on this link acts. */
+  cancelled:       boolean;
+  /**
+   * Whether cancelling RIGHT NOW would be late. The picker renders the removal
+   * warning and demands a confirm when it is 'late' or 'started'.
+   */
+  cancelWindow:    CancelWindow | null;
 }
 
 /**
@@ -198,6 +223,8 @@ export async function GET(
     topic:           deriveTopic(project, { denyTerms: firm?.name ? [firm.name] : [] }),
     calendarLinked:  expertHasConnectedCalendar(pe),
     booked:          pe.booking ? { startUtc: pe.booking.startUtc, endUtc: pe.booking.endUtc } : null,
+    cancelled:       Boolean(pe.booking?.cancelledAt),
+    cancelWindow:    pe.booking ? windowFor(Date.now(), pe.booking.startUtc) : null,
   };
 
   return NextResponse.json(payload, { headers: { 'Cache-Control': 'no-store' } });
@@ -232,7 +259,7 @@ export async function POST(
   }
 
   const action = body.action;
-  if (action !== 'pick' && action !== 'unavailable') {
+  if (action !== 'pick' && action !== 'unavailable' && action !== 'cancel') {
     return NextResponse.json({ error: 'invalid_action' }, { status: 400 });
   }
 
@@ -248,6 +275,13 @@ export async function POST(
 
   const { project, pe } = resolved;
 
+  // A cancelled booking is the end of this link's usefulness. The token itself
+  // is normally already revoked (cancelCall clears the hash), so this only
+  // catches a cancel that happened some other way.
+  if (pe.booking?.cancelledAt) {
+    return NextResponse.json({ error: 'booking_cancelled' }, { status: 410 });
+  }
+
   // The zone the expert's own browser reported. Validated against the runtime's
   // zone database before it can be stored (lib/calendarConnections).
   const timezone = normalizeTimezone(body.timezone);
@@ -258,9 +292,9 @@ export async function POST(
   }
 
   try {
-    return action === 'pick'
-      ? await handlePick(project, pe, body)
-      : await handleUnavailable(project, pe, body, rawToken);
+    if (action === 'pick')   return await handlePick(project, pe, body);
+    if (action === 'cancel') return await handleCancel(project, pe, body);
+    return await handleUnavailable(project, pe, body, rawToken);
   } catch (err) {
     console.error('[schedule] action failed:',
       err instanceof Error ? err.message.slice(0, 120) : 'unknown');
@@ -326,6 +360,47 @@ async function handlePick(
       joinUrl:  result.joinUrl,
     },
   });
+}
+
+// ─── cancel ───────────────────────────────────────────────────────────────────
+
+/**
+ * The expert is cancelling a booked call.
+ *
+ * lib/bookCall.cancelCall owns every consequence: the state, the Zoom meeting,
+ * the two METHOD:CANCEL withdrawals, the thread line and, for a LATE cancel,
+ * the removal from the platform. This handler is the token-gated door in front
+ * of it, and the one thing it adds is the confirm: a late cancel comes back
+ * `409 { error: 'late_not_confirmed' }` until the body says `confirmLate: true`,
+ * which is what makes the picker's warning unskippable.
+ *
+ * No money is ever mentioned to an expert. `fee` is deliberately not echoed.
+ */
+async function handleCancel(
+  project: Project,
+  pe:      ProjectExpert,
+  body:    Record<string, unknown>,
+): Promise<NextResponse> {
+  if (!pe.booking) {
+    return NextResponse.json({ error: 'not_booked' }, { status: 409 });
+  }
+
+  const window = windowFor(Date.now(), pe.booking.startUtc);
+  if (window !== 'free' && body.confirmLate !== true) {
+    return NextResponse.json({ error: 'late_not_confirmed', window }, { status: 409 });
+  }
+
+  const result = await cancelCall({
+    projectId: project.id,
+    expertId:  pe.expert.id,
+    by:        'expert',
+  });
+
+  if (!result.ok) {
+    return NextResponse.json({ error: result.error }, { status: 409 });
+  }
+
+  return NextResponse.json({ ok: true, cancelled: true, window: result.window });
 }
 
 // ─── unavailable ──────────────────────────────────────────────────────────────

@@ -32,9 +32,13 @@
 // still happens: practising the flow has to leave the engagement in the state
 // it really would be in, which is the same rule the rate decision follows.
 //
-// CANCELLING a booked call is deliberately NOT in scope for this phase — there
-// is no cancelBooking() here, and lib/createZoomMeeting.deleteZoomMeeting is
-// the primitive whoever adds it will want.
+// CANCELLING a booked call is cancelCall(), added in Wave 5 (the policy is
+// docs/CALL_POLICIES_DRAFT.md, the arithmetic is lib/callPolicies.ts). It is
+// the one function here that must resolve to a single outcome before anything
+// leaves the building, so it takes a Redis SET NX lock, decides and writes
+// under projectStore.mutateExpert's compare-and-set, and only then deletes the
+// Zoom meeting, withdraws both invites (METHOD:CANCEL, same UID, SEQUENCE + 1)
+// and applies the money or the removal the policy calls for.
 //
 // Never throws. Never logs: names, addresses, project names, call times, the
 // join URL.
@@ -47,11 +51,23 @@ import type {
   ProjectExpert,
 } from '../types';
 import type { IcsEvent } from './generateIcs';
-import { getProject } from './projectStore';
+import { getProject, mutateExpert } from './projectStore';
+import { getUpstashClient } from './upstashRedis';
+import {
+  cancelOutcome,
+  cancelWindow,
+  lateCancelFee,
+  type CancelDecision,
+  type CancelWindow,
+  type CancelledBy,
+  type LateCancelFee,
+} from './callPolicies';
+import { applyClientLateCancelMoney } from './lateCancelBilling';
+import { removeExpertForFault } from './expertRemoval';
 import { getFirm, getUser } from './firmStore';
 import { appendMessage } from './conversations';
 import { emitEngagementEvent } from './engagementEvents';
-import { createZoomMeeting, updateZoomMeeting } from './createZoomMeeting';
+import { createZoomMeeting, deleteZoomMeeting, updateZoomMeeting } from './createZoomMeeting';
 import { getEntitlementsForProject, recordRestrictedAttempt } from './entitlements';
 import { sendBookingEmail } from './sendAvailabilityRequest';
 import { getFromAddress, bareAddress } from './mailFrom';
@@ -64,6 +80,8 @@ import {
   type SchedulingPatch,
 } from './matchyScheduling';
 import {
+  cancelledEmail,
+  clientCancelledEmail,
   clientConfirmedEmail,
   confirmedEmail,
   formatSlotLine,
@@ -561,4 +579,302 @@ export function bookingIcsEvent(project: Project, pe: ProjectExpert): IcsEvent |
     booking: pe.booking,
     joinUrl: pe.zoomJoinUrl ?? null,
   });
+}
+
+// ─── Cancel ───────────────────────────────────────────────────────────────────
+
+/** How long one in-flight cancel/move/book holds the engagement's lock. */
+const BOOKING_LOCK_TTL_S = 60;
+
+export interface CancelCallInput {
+  projectId: string;
+  expertId:  string;
+  by:        CancelledBy;
+  /** The client's or expert's free-text reason. Stored, never logged. */
+  reason?:   string;
+  /** Server time. Injected so the policy is testable; defaults to the clock. */
+  now?:      number;
+  /**
+   * The client has seen the fee and pressed confirm. Required for a LATE client
+   * cancel and ignored otherwise; an expert or staff cancel never charges.
+   */
+  confirmLate?: boolean;
+}
+
+export type CancelCallError =
+  /** Nothing is booked on this engagement. */
+  | 'not_booked'
+  /** The booking already carries a cancelledAt. */
+  | 'already_cancelled'
+  /** A late client cancel that has not been confirmed. `fee` says what it costs. */
+  | 'late_not_confirmed'
+  /** Another cancel / move / book is in flight for this engagement. */
+  | 'locked'
+  /** The row moved under us more times than the store will retry. */
+  | 'conflict';
+
+export type CancelCallResult =
+  | {
+      ok:       true;
+      outcome:  CancelDecision;
+      window:   CancelWindow;
+      fee:      LateCancelFee;
+      booking:  BookingState;
+      project:  Project;
+    }
+  | { ok: false; error: CancelCallError; window?: CancelWindow; fee?: LateCancelFee };
+
+/** Thrown from inside `mutateExpert` so the decision refuses without writing. */
+class CancelRefused extends Error {
+  constructor(public readonly error: CancelCallError) {
+    super(error);
+  }
+}
+
+/**
+ * Cancel a booked call, from either side.
+ *
+ * THE ORDER IS THE POINT (docs/HANDOFF_WAVE5_CALL_POLICIES.md: "cancel, move
+ * and book on the same engagement must resolve to one outcome before any
+ * Zoom/email/Stripe side effect"):
+ *
+ *   1. Read, price the cancel (lib/callPolicies.ts), and refuse an unconfirmed
+ *      late CLIENT cancel BEFORE anything is locked or written. The refusal
+ *      carries the fee, which is what the confirm dialog renders.
+ *   2. Take the Redis SET NX lock. Fail OPEN when Redis is unavailable, exactly
+ *      as lib/outreachSteps.ts does: the compare-and-set below is the durable
+ *      guard, and Upstash being down must not make a call uncancellable.
+ *   3. Decide and write in ONE compare-and-set (projectStore.mutateExpert). The
+ *      decision is re-run against the freshly read row on every retry, so a
+ *      booking that was cancelled or removed in the meantime refuses here
+ *      rather than in step 4 with half the side effects already done.
+ *   4. Only then the side effects: the Zoom meeting, the two withdrawals, the
+ *      thread line, the event, and the money or the removal the policy asks
+ *      for. Each one is independently survivable; the state is already right.
+ *
+ * The picker token is invalidated in the same write (`pickTokenHash: null`), so
+ * the expert's live link stops booking anything the moment the call is off, and
+ * nudges are cleared because a terminal engagement has nothing to wait for.
+ *
+ * Never throws. Never logs the reason text, either address, or the time.
+ */
+export async function cancelCall(input: CancelCallInput): Promise<CancelCallResult> {
+  const { projectId, expertId, by } = input;
+  const now = Number.isFinite(input.now) ? (input.now as number) : Date.now();
+
+  const project = await getProject(projectId).catch(() => null);
+  const pe = project?.experts.find(e => e.expert.id === expertId) ?? null;
+  if (!project || !pe) return { ok: false, error: 'not_booked' };
+
+  if (!pe.booking) return { ok: false, error: 'not_booked' };
+  if (pe.booking.cancelledAt) return { ok: false, error: 'already_cancelled' };
+
+  const window  = cancelWindow(now, pe.booking.startUtc);
+  const fee     = lateCancelFee(pe.expertRate ?? 0);
+  const outcome = cancelOutcome(by, window);
+
+  // The one refusal that happens before the lock: a client cancelling late has
+  // to have been shown the number first.
+  if (by === 'client' && outcome.late && input.confirmLate !== true) {
+    return { ok: false, error: 'late_not_confirmed', window, fee };
+  }
+
+  const lock = await claimBookingLock(projectId, expertId);
+  if (lock === 'held_by_other') return { ok: false, error: 'locked' };
+
+  const reason = typeof input.reason === 'string' ? input.reason.trim().slice(0, 500) : '';
+
+  let updated:  Project;
+  let cancelled: BookingState;
+  try {
+    let written: BookingState | null = null;
+
+    updated = await mutateExpert(projectId, expertId, current => {
+      const booking = current.booking;
+      if (!booking) throw new CancelRefused('not_booked');
+      if (booking.cancelledAt) throw new CancelRefused('already_cancelled');
+
+      written = {
+        ...booking,
+        // SEQUENCE + 1 on the same UID is what makes the attached METHOD:CANCEL
+        // withdraw the event already sitting in both calendars.
+        icsSequence:  booking.icsSequence + 1,
+        cancelledAt:  now,
+        cancelledBy:  by,
+        cancelReason: reason || null,
+        lateCancel:   outcome.late,
+      };
+
+      return {
+        ...current,
+        booking:   written,
+        status:    outcome.status,
+        // Nudges stop because the engagement is terminal: lib/nudges.shouldSchedule
+        // answers 'no_stage' for a status that is not in NUDGE_STATUSES, and the
+        // worker re-reads this state before sending, so a job already queued
+        // finds nothing to match and sends nothing.
+        nudges:    null,
+        scheduling: current.scheduling
+          ? { ...current.scheduling, pickTokenHash: null, pickTokenExpiry: null }
+          : current.scheduling,
+        updatedAt: Date.now(),
+      };
+    });
+
+    cancelled = written ?? { ...pe.booking, icsSequence: pe.booking.icsSequence + 1 };
+  } catch (err) {
+    await releaseBookingLock(projectId, expertId);
+    if (err instanceof CancelRefused) return { ok: false, error: err.error };
+    console.error('[bookCall] cancel write failed:',
+      err instanceof Error ? err.message.slice(0, 120) : 'unknown');
+    return { ok: false, error: 'conflict' };
+  }
+
+  try {
+    const fresh = updated.experts.find(e => e.expert.id === expertId) ?? pe;
+
+    // ── Zoom. A failure here leaves an empty meeting nobody will join. ──
+    if (cancelled.zoomMeetingId) await deleteZoomMeeting(cancelled.zoomMeetingId);
+
+    // ── The two withdrawals ────────────────────────────────────────────
+    const clientZone = await clientZoneOf(project);
+    await sendCancellations({
+      project,
+      pe:      fresh,
+      booking: cancelled,
+      clientZone,
+      feeDollars: outcome.clientCharged ? fee.clientCharge : null,
+    });
+
+    // ── The thread, and the event ──────────────────────────────────────
+    const whenClient = formatSlotLine(cancelled.startUtc, clientZone);
+    await appendMessage({
+      projectId, expertId,
+      direction: 'outbound',
+      author:    'matchy',
+      bodyClean: `The call on ${whenClient} is cancelled.`,
+      summary:   `Cancelled ${whenClient}.`,
+    });
+
+    const firm = await getFirm(project.firmDomain).catch(() => null);
+    await emitEngagementEvent({
+      projectId, expertId, orgId: firm?.id ?? null,
+      type:    'call_cancelled',
+      payload: { by, late: outcome.late },
+    });
+
+    // ── The money, or the removal ──────────────────────────────────────
+    if (outcome.clientCharged) await applyClientLateCancelMoney(project, fresh);
+    if (outcome.expertRemoved) await removeExpertForFault(project, fresh, 'late_cancel');
+  } catch (err) {
+    // The cancel itself has already landed. A side effect that throws is worth
+    // a count-only line and nothing more: re-running the whole thing would
+    // double-charge.
+    console.error('[bookCall] cancel side effect failed:',
+      err instanceof Error ? err.message.slice(0, 120) : 'unknown');
+  } finally {
+    await releaseBookingLock(projectId, expertId);
+  }
+
+  return { ok: true, outcome, window, fee, booking: cancelled, project: updated };
+}
+
+/**
+ * The engagement's SET NX lock, shared by every action that resolves a booking.
+ * 'no_lock' means Redis is not configured or did not answer, and the caller
+ * proceeds on the compare-and-set alone — the same fail-open rule
+ * lib/outreachSteps.ts applies to the intro.
+ */
+async function claimBookingLock(
+  projectId: string,
+  expertId:  string,
+): Promise<'claimed' | 'held_by_other' | 'no_lock'> {
+  const redis = getUpstashClient();
+  if (!redis) return 'no_lock';
+  try {
+    const result = await redis.set(`booking-lock:${projectId}:${expertId}`, '1', {
+      ex: BOOKING_LOCK_TTL_S,
+      nx: true,
+    });
+    return result ? 'claimed' : 'held_by_other';
+  } catch (err) {
+    console.warn('[bookCall] booking lock unavailable',
+      JSON.stringify({ reason: err instanceof Error ? err.message.slice(0, 80) : 'unknown' }));
+    return 'no_lock';
+  }
+}
+
+/** Give the lock back on every exit. A failure costs at most the TTL. */
+async function releaseBookingLock(projectId: string, expertId: string): Promise<void> {
+  const redis = getUpstashClient();
+  if (!redis) return;
+  try {
+    await redis.del(`booking-lock:${projectId}:${expertId}`);
+  } catch {
+    // The TTL cleans up.
+  }
+}
+
+interface CancellationInput {
+  project:    Project;
+  pe:         ProjectExpert;
+  booking:    BookingState;
+  clientZone: string;
+  /** Whole dollars charged, when the policy charged anything. */
+  feeDollars: number | null;
+}
+
+/**
+ * Both withdrawals, built the same way the confirmations are: one ICS per
+ * recipient, each naming only that recipient, both carrying the SAME UID and
+ * the SAME incremented SEQUENCE with METHOD:CANCEL, which is what removes the
+ * event from a calendar instead of adding a third copy of it.
+ *
+ * The expert's copy never names the client, the project or any money. The
+ * client's copy may name the expert (the booking revealed them) and is the only
+ * one that may name the fee.
+ */
+async function sendCancellations(input: CancellationInput): Promise<void> {
+  const { project, pe, booking, clientZone, feeDollars } = input;
+  const projectId = project.id;
+  const subject   = threadSubject(pe.outreachSubject);
+
+  const expertZone = pe.scheduling?.expertTimezone
+    ? resolveTimezone(pe.scheduling.expertTimezone)
+    : clientZone;
+
+  const clientEmail = clientAddressOf(project);
+  const joinUrl     = pe.zoomJoinUrl ?? null;
+
+  const expertIcs: IcsEvent = { ...expertIcsEvent({ pe, booking, joinUrl }), method: 'CANCEL' };
+  const clientIcs: IcsEvent = { ...clientIcsEvent({ project, pe, booking, joinUrl }), method: 'CANCEL' };
+
+  if (pe.contactEmail) {
+    const email = cancelledEmail({
+      expertFirstName: pe.expert.name,
+      whenLabel:       formatSlotLine(booking.startUtc, expertZone),
+      recipientEmail:  pe.contactEmail,
+      subject,
+    });
+    await sendBookingEmail(
+      pe.contactEmail, email.subject, email.text, email.html, expertIcs,
+      { recipient: 'expert', projectId },
+    );
+  }
+
+  if (clientEmail) {
+    const whenClient = formatSlotLine(booking.startUtc, clientZone);
+    const email = clientCancelledEmail({
+      clientFirstName: await clientFirstNameOf(project),
+      whenLabel:       whenClient,
+      expertName:      pe.expert.name,
+      feeDollars,
+      recipientEmail:  clientEmail,
+      subject:         `Call cancelled: ${whenClient}`,
+    });
+    await sendBookingEmail(
+      clientEmail, email.subject, email.text, email.html, clientIcs,
+      { recipient: 'client', projectId },
+    );
+  }
 }

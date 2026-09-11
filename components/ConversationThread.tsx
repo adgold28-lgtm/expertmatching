@@ -433,6 +433,16 @@ function ClientMessage({ message }: { message: ConversationMessage }) {
 
 // ─── Component ────────────────────────────────────────────────────────────────
 
+/**
+ * What GET .../booking/cancel answers: which side of the 24-hour line the call
+ * is on, and what a late cancel would cost (lib/callPolicies.ts). Declared here
+ * rather than imported because a route module may export nothing but handlers.
+ */
+interface CancelPreview {
+  window: 'free' | 'late' | 'started';
+  fee:    { clientCharge: number; expertPayout: number; minutes: number };
+}
+
 export default function ConversationThread({
   projectId,
   projectExpert,
@@ -471,6 +481,16 @@ export default function ConversationThread({
   const [scheduleError,    setScheduleError]    = useState('');
   const [scheduleFindings, setScheduleFindings] = useState<ScreenFinding[]>([]);
   const [confirmMove,      setConfirmMove]      = useState(false);
+
+  // ── Cancelling the booked call (Wave 5) ──
+  // Two steps, and the second one only opens after the server has told us what
+  // the cancel costs: `cancelInfo` is the GET on the cancel route, so the
+  // number on screen is the number that will be charged rather than one the
+  // browser worked out for itself.
+  const [cancelOpen,  setCancelOpen]  = useState(false);
+  const [cancelInfo,  setCancelInfo]  = useState<CancelPreview | null>(null);
+  const [cancelBusy,  setCancelBusy]  = useState(false);
+  const [cancelError, setCancelError] = useState('');
 
   // ── Ask Matchy (Matchy 2.0) ──
   // One card at a time, never stored. `askDraft` is the draft route's answer,
@@ -674,6 +694,69 @@ export default function ConversationThread({
           ?? `Working on times with ${firstName}.`,
     );
     await load(false);
+  }
+
+  /**
+   * Open the cancel confirm. The GET is what the dialog renders: "Free to
+   * cancel" or the exact 15-minute charge. Nothing is cancelled here.
+   */
+  async function openCancel() {
+    setCancelError('');
+    setCancelInfo(null);
+    setCancelBusy(true);
+    try {
+      const res  = await fetch(`/api/projects/${projectId}/experts/${expertId}/booking/cancel`, { cache: 'no-store' });
+      const data = await res.json().catch(() => null) as CancelPreview | { error?: string } | null;
+      if (!res.ok || !data || !('window' in data)) {
+        setCancelError('We could not check that call. Please try again.');
+        return;
+      }
+      setCancelInfo(data);
+      setCancelOpen(true);
+    } catch {
+      setCancelError('We could not check that call. Please try again.');
+    } finally {
+      setCancelBusy(false);
+    }
+  }
+
+  /**
+   * Cancel it. `confirmLate` goes only when the preview said the cancel is
+   * late, which is the same condition the server re-checks before charging.
+   */
+  async function runCancel() {
+    if (cancelBusy) return;
+    setCancelBusy(true);
+    setCancelError('');
+    try {
+      const res = await fetch(`/api/projects/${projectId}/experts/${expertId}/booking/cancel`, {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({ confirmLate: cancelInfo !== null && cancelInfo.window !== 'free' }),
+      });
+      const data = await res.json().catch(() => null) as
+        { ok?: boolean; projectExpert?: ProjectExpertWithCounter; error?: string; fee?: CancelPreview['fee'] } | null;
+
+      if (!res.ok || !data?.ok || !data.projectExpert) {
+        if (data?.error === 'late_not_confirmed' && data.fee) {
+          setCancelInfo({ window: 'late', fee: data.fee });
+          return;
+        }
+        setCancelError('We could not cancel that call. Please try again.');
+        return;
+      }
+
+      setThreadPE(data.projectExpert);
+      onExpertUpdate(data.projectExpert);
+      setCancelOpen(false);
+      setConfirmMove(false);
+      setScheduleNote('The call is cancelled and both invites have been withdrawn.');
+      await load(false);
+    } catch {
+      setCancelError('We could not cancel that call. Please try again.');
+    } finally {
+      setCancelBusy(false);
+    }
   }
 
   /** Review-first: the intro is written and waiting on the client. */
@@ -932,7 +1015,10 @@ export default function ConversationThread({
   const scheduleLine  = schedulingLine(pe, firstName);
   const zoneLabel     = viewerZoneLabel();
 
-  const showBooked   = booking !== null && status === 'scheduled';
+  // A cancelled booking is history, not a call: cancelCall moves the status to
+  // 'rejected_after_outreach' as well, so this is belt and braces against a
+  // payload that has one field and not the other.
+  const showBooked   = booking !== null && !booking.cancelledAt && status === 'scheduled';
   const showProposed = !showBooked
     && (status === 'scheduling_sent' || outcome === 'times_proposed' || outcome === 'link_sent');
   // Terms are settled and nothing has been proposed yet — or the last attempt
@@ -1373,15 +1459,61 @@ export default function ConversationThread({
               <div className="space-y-2">
                 {outcome === 'reschedule_requested' ? (
                   <MatchyLine tone="quiet">Finding a new time with {firstName}.</MatchyLine>
+                ) : cancelOpen && cancelInfo ? (
+                  <div className="space-y-2">
+                    <MatchyLine>
+                      {cancelInfo.window === 'free'
+                        ? `Free to cancel. I will tell ${firstName} and withdraw both invites.`
+                        : `Cancelling now charges $${cancelInfo.fee.clientCharge.toLocaleString('en-US')} (${cancelInfo.fee.minutes} minutes). Moving the call instead costs nothing.`}
+                    </MatchyLine>
+                    <div className="flex flex-col sm:flex-row gap-2 sm:pl-[52px]">
+                      <button
+                        type="button"
+                        onClick={() => { void runCancel(); }}
+                        disabled={cancelBusy}
+                        className="w-full sm:w-auto inline-flex items-center justify-center gap-1.5 text-[10px] uppercase tracking-widest bg-navy text-cream px-3 py-2 hover:bg-navy/90 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                        style={{ letterSpacing: '0.1em' }}
+                      >
+                        {cancelBusy && <Spinner />}
+                        {cancelBusy ? 'Working…' : 'Cancel the call'}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => { setCancelOpen(false); setCancelError(''); }}
+                        disabled={cancelBusy}
+                        className="w-full sm:w-auto text-[10px] uppercase tracking-widest text-muted hover:text-navy border border-frame px-3 py-2 disabled:opacity-40 transition-colors"
+                        style={{ letterSpacing: '0.1em' }}
+                      >
+                        Keep this call
+                      </button>
+                    </div>
+                    {cancelError && (
+                      <p role="alert" className="text-[11px] text-status-danger sm:pl-[52px]">{cancelError}</p>
+                    )}
+                  </div>
                 ) : !confirmMove ? (
-                  <button
-                    type="button"
-                    onClick={() => { setConfirmMove(true); setScheduleError(''); }}
-                    className="w-full sm:w-auto text-[10px] uppercase tracking-widest text-navy border border-navy/30 hover:border-navy px-3 py-2 transition-colors"
-                    style={{ letterSpacing: '0.1em' }}
-                  >
-                    Move the call
-                  </button>
+                  <div className="flex flex-col sm:flex-row gap-2">
+                    <button
+                      type="button"
+                      onClick={() => { setConfirmMove(true); setScheduleError(''); }}
+                      className="w-full sm:w-auto text-[10px] uppercase tracking-widest text-navy border border-navy/30 hover:border-navy px-3 py-2 transition-colors"
+                      style={{ letterSpacing: '0.1em' }}
+                    >
+                      Move the call
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => { void openCancel(); }}
+                      disabled={cancelBusy}
+                      className="w-full sm:w-auto text-[10px] uppercase tracking-widest text-muted hover:text-navy border border-frame px-3 py-2 disabled:opacity-40 transition-colors"
+                      style={{ letterSpacing: '0.1em' }}
+                    >
+                      {cancelBusy ? 'Checking…' : 'Cancel the call'}
+                    </button>
+                    {cancelError && (
+                      <p role="alert" className="text-[11px] text-status-danger">{cancelError}</p>
+                    )}
+                  </div>
                 ) : (
                   <div className="space-y-2">
                     <MatchyLine>
