@@ -27,10 +27,10 @@ Counts as of 2026-09-10, after the repair waves in `docs/REPAIR_PLAN.md`. The th
 | Severity | Total | Fixed | Partially fixed | Deferred (founder) | Open |
 | --- | ---: | ---: | ---: | ---: | ---: |
 | Critical | 4 | 4 | 0 | 0 | 0 |
-| High | 26 | 23 | 1 | 0 | 2 |
-| Medium | 51 | 22 | 4 | 1 | 24 |
+| High | 26 | 24 | 0 | 0 | 2 |
+| Medium | 51 | 23 | 4 | 0 | 24 |
 | Low | 51 | 11 | 3 | 0 | 37 |
-| **Total** | **132** | **60** | **8** | **1** | **63** |
+| **Total** | **132** | **62** | **7** | **0** | **63** |
 
 The original count on 2026-09-08 was 129 (4 Critical, 23 High, 51 Medium, 51 Low), all open. Nothing below has been deleted; each fixed block carries a `Status:` line under its `Severity:` line, and the table in the next section is the index.
 
@@ -54,7 +54,7 @@ Ids not listed here were not touched by any wave and remain open exactly as writ
 | H-4 | Three routes discard `SendOutcome` | Fixed in 5e21428 | `test-walkthrough` (64) |
 | H-5 | Inbound claims its idempotency key before the work | Fixed in c8748b2 | `test-inbound-claim` (65) |
 | H-6 | A transfer whose write fails is never retried | Fixed in 0030bc9 | `test-payout-state` (75), `test-stripe-flows` (208) |
-| H-7 | No refund, dispute or reversal path | Partially fixed in 0030bc9 (refund and dispute branches, `refunded` state, alert; automatic payout reversal remains a founder decision) | `test-payout-state`, `test-stripe-flows` |
+| H-7 | No refund, dispute or reversal path | Fixed: 0030bc9 (refund and dispute branches, `refunded` state, alert) + Wave 5 e18bdfa (founder decided: no automatic reversal; staff clawback `POST /api/admin/payouts/reverse`) | `test-payout-state` (91), `test-stripe-flows` (265) |
 | H-8 | Charge idempotency key blocks a second real call | Fixed in dd1fc01 | `test-billing-guard`, `test-stripe-flows` |
 | H-9 | Payout onboarding email re-sent every night | Fixed in 0030bc9 | `test-payout-state` |
 | H-10 | Three reconcile sweeps share one budget | Fixed in 0030bc9 | none (route file; per-sweep deadline and ordering verified in the diff) |
@@ -89,7 +89,7 @@ Ids not listed here were not touched by any wave and remain open exactly as writ
 | M-28 | Inbound sender check ignores SPF/DKIM | Partially fixed in c8748b2 (gate implemented, inert until Resend supplies verdicts) | `test-inbound-claim` |
 | M-29 | `outreach/approve` uses a shorter deny list | Fixed in 5e21428 | `test-send-chokepoint` |
 | M-30 | Approve-and-send is read-then-write | Fixed in 5e21428 | `test-walkthrough` |
-| M-32 | Calendly provider appears non-functional | **Deferred (founder decision)** — probed 2026-09-09: `api.calendly.com` answers 401 to every unauthenticated call, so every link yields no slots. Remove or build a Calendly OAuth app | none |
+| M-32 | Calendly provider appears non-functional | Fixed in Wave 5 c6c07c2 (founder decided: hidden behind `CALENDLY_ENABLED`, default off; `fetchCalendlySlots` kept) | `test-availability-windows` (128), `check-env-drift` |
 | M-33 | Typed windows demote a linked Google calendar | Fixed in 74e9899 | `test-scheduling` (171), `test-availability-windows` (109) |
 | M-35 | `meeting.ended` computes a NaN duration | Fixed in 885e049 | `test-zoom-webhook` |
 | M-36 | Bounded scans have no ordering | Fixed in 0030bc9 | none (route file; ordering and `overflow` verified in the diff) |
@@ -110,7 +110,7 @@ Ids not listed here were not touched by any wave and remain open exactly as writ
 | L-25 | `contactCandidates` never written | Fixed in e71a05d | `check-redaction` (still proves the legacy jsonb key is stripped) |
 | L-26 | Retired email cadence dead code | Fixed in e71a05d | none |
 | L-28 | `resend_message_id` never populated | Partially fixed in c8748b2 (written; still no unique index) | `test-inbound-claim` |
-| L-30 | `computeOverlap()` and friends dead | Partially fixed in e71a05d (`deleteZoomMeeting` kept for the deferred cancel route) | none |
+| L-30 | `computeOverlap()` and friends dead | Partially fixed in e71a05d; `deleteZoomMeeting` is now used by `cancelCall` (Wave 5 3b7f0ea) | `test-call-policies` (122) |
 | L-42 | Assertion harness duplicated across scripts | Fixed in ae682b6 | `testHarness` is imported by all 31 test scripts plus `check-redaction` |
 | L-43 | `expertPayout.ts` header claims nothing else retries | Fixed in 0030bc9 | none |
 | L-44 | `agreedRate` dead but rendered | Fixed in e71a05d | none |

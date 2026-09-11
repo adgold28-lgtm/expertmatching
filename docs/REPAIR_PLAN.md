@@ -279,10 +279,7 @@ Delete, with grep evidence in the report that nothing imports them: `lib/contact
 
 ## Part H. Explicitly deferred (founder decisions needed first)
 
-- Cancel-booking route (status after cancel; HANDOFF Session 6).
-- Payout reversal on refund (W2-C leaves a TODO).
-- Whether ordinary members may save the firm's first card (M, billing route).
-- Calendly: fix or remove (W2-F reports the probe result).
+- ~~Cancel-booking route~~, ~~payout reversal on refund~~, ~~first-card rule~~, ~~Calendly~~: all decided 2026-09-10 and built in Wave 5 (`docs/HANDOFF_WAVE5_CALL_POLICIES.md`, `docs/WAVE5_BRIEFS.md`, commits 8aa5b16..c6c07c2).
 - Trial-seat product work (`TASK_QUEUE.md` NEXT BUILD) stays separate from this plan.
 - Legal placeholders in `app/terms/page.tsx`.
 
