@@ -22,7 +22,17 @@
 //
 // 503 billing_unavailable (NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY unset) is its own
 // state, not an error toast: nothing the end user does can fix it. So is 409
-// no_organization — the account is not attached to a firm yet.
+// no_organization — the account is not attached to a firm yet, and so is
+// 403 champion_required (Wave 5): the firm's FIRST card is the champion's to
+// add, so a member is told who to ask instead of being shown a card field they
+// are not allowed to use.
+//
+// champion_required does NOT dead-end onboarding. The step is marked done with
+// the 'trial' context, which is the truth of the account until a card exists:
+// lib/entitlements keeps the organization in walkthrough — briefs, sourcing and
+// bookmarks work, outreach and billing do not — so the member continues to the
+// profile step and into the product, and the firm converts when the champion
+// adds the card. Nothing here can create a SetupIntent, so nothing is orphaned.
 
 import { useState, useEffect, useRef } from 'react';
 import type { Stripe, StripeCardElement } from '@stripe/stripe-js';
@@ -32,7 +42,8 @@ import {
   MICRO_LS, LABEL_CLASS, BUTTON_CLASS, NOTE_CLASS,
 } from './shared';
 
-type InitState = 'loading' | 'ready' | 'unavailable' | 'no_organization' | 'failed';
+type InitState =
+  | 'loading' | 'ready' | 'unavailable' | 'no_organization' | 'champion_required' | 'failed';
 
 /** Where a blocked customer can reach a human. */
 const SUPPORT_EMAIL = 'ashergoldsteinbusiness@gmail.com';
@@ -53,6 +64,8 @@ interface BillingInitResponse {
   alreadyComplete?:    boolean;
   /** lib/entitlements.ts: a trial organization skips the card here. */
   trial?:              boolean;
+  /** 403 champion_required — who to ask (null when the firm has no champion). */
+  championEmail?:      string | null;
   orgName?:            string;
   activeSeats?:        number;
   seatUnitPriceCents?: number;
@@ -77,6 +90,8 @@ export default function BillingStep({ complete, orgName, onComplete, onContinue 
   // True for a trial organization: no card is asked for; outreach stays closed.
   const [trialAccount,     setTrialAccount]     = useState(false);
   const [seatInfo,         setSeatInfo]         = useState<SeatInfo | null>(null);
+  // Set with initState 'champion_required': the org_admin who can add the card.
+  const [championEmail,    setChampionEmail]    = useState<string | null>(null);
   // Set when Stripe confirmed the card but our own confirm call did not land —
   // the card IS saved, so the retry must not re-run confirmCardSetup.
   const [pendingConfirmId, setPendingConfirmId] = useState<string | null>(null);
@@ -116,6 +131,24 @@ export default function BillingStep({ complete, orgName, onComplete, onContinue 
         }
         if (res.status === 409 || data.error === 'no_organization') {
           if (active) setInitState('no_organization');
+          return;
+        }
+        // The firm's first card is the champion's decision. Read the seat
+        // summary first (the refusal carries it) so the firm can be named.
+        if (res.status === 403 && data.error === 'champion_required') {
+          if (!active) return;
+          if (data.orgName) {
+            setSeatInfo({
+              orgName:            data.orgName,
+              activeSeats:        data.activeSeats ?? 0,
+              seatUnitPriceCents: data.seatUnitPriceCents ?? 0,
+            });
+          }
+          setChampionEmail(data.championEmail ?? null);
+          setInitState('champion_required');
+          // Not a dead end — see the header. The account behaves as a trial
+          // until the champion adds the card.
+          onCompleteRef.current('trial');
           return;
         }
 
@@ -342,6 +375,25 @@ export default function BillingStep({ complete, orgName, onComplete, onContinue 
             </p>
           </div>
         </div>
+      ) : initState === 'champion_required' ? (
+        <div
+          className={`${NOTE_CLASS} mb-6`}
+          style={{ borderColor: GOLD, background: 'rgba(198,167,94,0.06)' }}
+        >
+          <span aria-hidden="true" style={{ color: GOLD }}>✓</span>
+          <div>
+            <p className="font-medium text-navy">
+              {championEmail
+                ? `Ask your champion (${championEmail}) to add a card`
+                : `${firmLabel} does not have a card on file yet`}
+            </p>
+            <p className="mt-1 text-xs leading-relaxed" style={{ color: MUTED }}>
+              {championEmail
+                ? 'One card covers the whole firm, and it is your firm’s ExpertMatch champion who puts it on file. You can continue now — write a brief, source candidates and bookmark them. Outreach, scheduling and billing unlock the moment they add it.'
+                : 'Your firm has no champion set up yet, so nobody here can add the card. Continue for now and contact us — we will sort it out with your team.'}
+            </p>
+          </div>
+        </div>
       ) : (
         <div className="mb-6">
           <label className={LABEL_CLASS} style={MICRO_LS}>Card details</label>
@@ -366,7 +418,7 @@ export default function BillingStep({ complete, orgName, onComplete, onContinue 
 
       {error && <p role="alert" className="text-xs text-red-600 mb-4 leading-relaxed">{error}</p>}
 
-      {showSetUpState ? (
+      {showSetUpState || initState === 'champion_required' ? (
         <button
           type="button"
           onClick={onContinue}
@@ -427,7 +479,10 @@ export default function BillingStep({ complete, orgName, onComplete, onContinue 
         </button>
       )}
 
-      {!showSetUpState && initState !== 'unavailable' && initState !== 'no_organization' && (
+      {!showSetUpState
+        && initState !== 'unavailable'
+        && initState !== 'no_organization'
+        && initState !== 'champion_required' && (
         <p className="mt-4 text-[11px] text-center leading-relaxed" style={{ color: FAINT }}>
           Your card is stored by Stripe. Calls are charged only after they happen; seats are billed monthly.
         </p>

@@ -25,6 +25,13 @@
 //                            is reported as ok:true. See the note above that
 //                            section for why it is reimplemented here too.
 //
+//   6. app/api/org/members/championTransfer — the two Wave 5 champion
+//                            decisions: who may hand the championship over and
+//                            to whom (PATCH action: 'transfer_champion'), and
+//                            who may put the firm's FIRST card on file
+//                            (POST /api/onboarding/billing). Both imported for
+//                            real — they are pure modules, not route handlers.
+//
 // Exits non-zero on the first failing assertion set, so it can gate a deploy.
 
 import {
@@ -42,6 +49,13 @@ import {
   DegradingLoginThrottleBackend,
 } from '../lib/loginThrottle';
 import { statusMayUseProduct } from '../lib/auth';
+import {
+  decideChampionTransfer,
+  resultingChampions,
+  mayAddFirstCard,
+  type ChampionCaller,
+  type ChampionTarget,
+} from '../app/api/org/members/championTransfer';
 import {
   membershipClaimsAreStale,
   sweepMembershipStatus,
@@ -435,6 +449,150 @@ const ownsProjectsEvenIfDeletedTrue = classifyDeleteOutcome({
 });
 eq('owned-projects refusal takes priority over any deleted flag',
   ownsProjectsEvenIfDeletedTrue.status, 409);
+
+// ── 6. Champion transfer and the first card (Wave 5, brief B3) ───────────────
+// These two are imported for real: championTransfer.ts exists precisely so the
+// decisions are not trapped inside a route module.
+//
+// FAILS ON OLD CODE: app/api/org/members/championTransfer.ts does not exist
+// before Wave 5, so every check in this section fails at import time.
+
+section('decideChampionTransfer');
+
+const ORG = 'org_alpha';
+
+const champion: ChampionCaller = {
+  email: 'champion@firm.test', role: 'user', orgRole: 'org_admin', orgId: ORG,
+};
+const plainMember: ChampionCaller = {
+  email: 'member@firm.test', role: 'user', orgRole: 'org_member', orgId: ORG,
+};
+const platformAdmin: ChampionCaller = {
+  email: 'staff@expertmatch.fit', role: 'admin', orgRole: null, orgId: null,
+};
+
+const activeTarget: ChampionTarget = {
+  email: 'Deputy@Firm.test', orgId: ORG, status: 'active', role: 'user', orgRole: 'org_member',
+};
+
+const happy = decideChampionTransfer({
+  caller: champion, orgId: ORG, target: activeTarget,
+  currentChampions: ['champion@firm.test'],
+});
+check('the sitting champion may hand it over', happy.ok === true);
+eq('the target is promoted, lower-cased', happy.ok ? happy.promote : '', 'deputy@firm.test');
+eq('the outgoing champion is demoted', happy.ok ? happy.demote.join(',') : '', 'champion@firm.test');
+
+const byStaff = decideChampionTransfer({
+  caller: platformAdmin, orgId: ORG, target: activeTarget,
+  currentChampions: ['champion@firm.test'],
+});
+check('a platform admin outside the org may do it too', byStaff.ok === true);
+eq('and the org\'s sitting champion is still the one demoted',
+  byStaff.ok ? byStaff.demote.join(',') : '', 'champion@firm.test');
+
+const byMember = decideChampionTransfer({
+  caller: plainMember, orgId: ORG, target: activeTarget,
+  currentChampions: ['champion@firm.test'],
+});
+check('a plain member may not', byMember.ok === false);
+eq('  refused 403 forbidden', byMember.ok === false ? byMember.status : 0, 403);
+
+const otherOrgAdmin = decideChampionTransfer({
+  caller: { ...champion, orgId: 'org_beta' }, orgId: ORG, target: activeTarget,
+  currentChampions: ['champion@firm.test'],
+});
+check('another firm\'s champion may not reach into this org', otherOrgAdmin.ok === false);
+
+const noSuchMember = decideChampionTransfer({
+  caller: champion, orgId: ORG, target: null, currentChampions: ['champion@firm.test'],
+});
+check('an unknown address is refused', noSuchMember.ok === false);
+eq('  refused 404 member_not_found',
+  noSuchMember.ok === false ? noSuchMember.error : '', 'member_not_found');
+
+const foreignMember = decideChampionTransfer({
+  caller: champion, orgId: ORG,
+  target: { ...activeTarget, orgId: 'org_beta' },
+  currentChampions: ['champion@firm.test'],
+});
+check('a member of another org is refused as not found', foreignMember.ok === false);
+eq('  and it is 404, not 403 (no cross-org existence leak)',
+  foreignMember.ok === false ? foreignMember.status : 0, 404);
+
+const staffTarget = decideChampionTransfer({
+  caller: champion, orgId: ORG,
+  target: { ...activeTarget, role: 'admin' },
+  currentChampions: ['champion@firm.test'],
+});
+check('a customer champion may not promote ExpertMatch staff', staffTarget.ok === false);
+eq('  refused read_only', staffTarget.ok === false ? staffTarget.error : '', 'read_only');
+
+const staffTargetByStaff = decideChampionTransfer({
+  caller: platformAdmin, orgId: ORG,
+  target: { ...activeTarget, role: 'admin' },
+  currentChampions: ['champion@firm.test'],
+});
+check('but ExpertMatch staff may', staffTargetByStaff.ok === true);
+
+for (const status of ['pending', 'disabled'] as const) {
+  const notActive = decideChampionTransfer({
+    caller: champion, orgId: ORG,
+    target: { ...activeTarget, status },
+    currentChampions: ['champion@firm.test'],
+  });
+  check(`a ${status} seat cannot become champion`, notActive.ok === false);
+  eq(`  refused member_not_active (${status})`,
+    notActive.ok === false ? notActive.error : '', 'member_not_active');
+}
+
+// Promoting the sitting champion to champion: legal, and it must NOT demote
+// them — that is the one path that could leave a firm with zero champions.
+const selfTransfer = decideChampionTransfer({
+  caller: champion, orgId: ORG,
+  target: { ...activeTarget, email: 'champion@firm.test', orgRole: 'org_admin' },
+  currentChampions: ['champion@firm.test'],
+});
+check('promoting the current champion is a no-op, not a demotion', selfTransfer.ok === true);
+eq('  nobody is demoted', selfTransfer.ok ? selfTransfer.demote.length : -1, 0);
+
+// Two champions (a legacy state) collapse to one in a single transfer.
+const twoSitting = decideChampionTransfer({
+  caller: champion, orgId: ORG, target: activeTarget,
+  currentChampions: ['champion@firm.test', 'cochampion@firm.test'],
+});
+eq('every other sitting champion is demoted',
+  twoSitting.ok ? twoSitting.demote.sort().join(',') : '',
+  'champion@firm.test,cochampion@firm.test');
+
+section('resultingChampions');
+
+check('a firm is never left with zero champions',
+  resultingChampions('deputy@firm.test', ['champion@firm.test'], ['champion@firm.test']).length === 1);
+eq('and the survivor is the promoted address',
+  resultingChampions('deputy@firm.test', ['champion@firm.test'], ['champion@firm.test'])[0],
+  'deputy@firm.test');
+eq('a promoted sitting champion is not double-counted',
+  resultingChampions('champion@firm.test', ['champion@firm.test'], []).length, 1);
+eq('a champion who is not demoted stays',
+  resultingChampions('deputy@firm.test', ['a@firm.test', 'b@firm.test'], ['a@firm.test']).length, 2);
+
+section('mayAddFirstCard');
+
+check('the champion may put the firm\'s first card on file',
+  mayAddFirstCard({ role: 'user', orgRole: 'org_admin' }).ok === true);
+check('a platform admin may too',
+  mayAddFirstCard({ role: 'admin', orgRole: null }).ok === true);
+
+const memberCard = mayAddFirstCard({ role: 'user', orgRole: 'org_member' });
+check('a plain member may not', memberCard.ok === false);
+eq('  and the refusal is champion_required',
+  memberCard.ok === false ? memberCard.error : '', 'champion_required');
+
+check('an account with no org role at all may not (fails closed)',
+  mayAddFirstCard({ role: 'user', orgRole: null }).ok === false);
+check('an undefined org role may not either',
+  mayAddFirstCard({ role: 'user', orgRole: undefined }).ok === false);
 
 // ── Run the async sections, then report ──────────────────────────────────────
 

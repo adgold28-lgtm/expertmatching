@@ -8,7 +8,8 @@
 //   - Log only expertId and projectId for transfer operations
 //   - Redis keys use HMAC-hashed email (no PII in key names)
 //
-// TEST SEAM: isOnboardingComplete() and transferExpertPayout() take an optional
+// TEST SEAM: isOnboardingComplete(), transferExpertPayout() and
+// reverseExpertPayout() take an optional
 // trailing Stripe client, defaulting to the real one, so
 // scripts/test-stripe-flows.ts can assert the transferred amount and the
 // idempotency key without a Stripe account. Every caller in the app is
@@ -84,6 +85,12 @@ export interface ConnectStripeClient {
       params:   Stripe.TransferCreateParams,
       options?: { idempotencyKey?: string },
     ): Promise<{ id: string }>;
+    /** Staff clawback — see reverseExpertPayout. */
+    createReversal(
+      transferId: string,
+      params:     Stripe.TransferCreateReversalParams,
+      options?:   { idempotencyKey?: string },
+    ): Promise<{ id: string }>;
   };
 }
 
@@ -156,4 +163,92 @@ export async function transferExpertPayout(
   console.log('[stripe-connect] transfer-initiated', { expertId, projectId });
 
   return transfer.id;
+}
+
+// ─── Payout reversal (staff clawback) ─────────────────────────────────────────
+
+/**
+ * The slice of a ProjectExpert a reversal reads. Narrow on purpose: a
+ * ProjectExpert satisfies it structurally, and a test fixture is three keys.
+ */
+export interface PayoutReversalView {
+  stripeTransferId?:        string  | null;
+  expertPayoutReversedAt?:  number  | null;
+  /** Calls already transferred for — the last one is the transfer being reversed. */
+  paidCallIds?:             string[] | null;
+}
+
+export type PayoutReversalRefusal = 'no_transfer' | 'already_reversed';
+
+/**
+ * May this engagement's payout be clawed back? Pure, so the admin console and
+ * the route agree on one answer (scripts/test-payout-state.ts asserts it).
+ *
+ * Reversal is refused with no transfer to reverse, and refused a second time
+ * once `expertPayoutReversedAt` is stamped — money leaving an expert's account
+ * twice is the failure this guard exists to prevent, so it fails closed on
+ * anything it does not recognise.
+ */
+export function canReversePayout(
+  pe: PayoutReversalView,
+): { ok: true } | { ok: false; reason: PayoutReversalRefusal } {
+  if (!pe.stripeTransferId) return { ok: false, reason: 'no_transfer' };
+  if (pe.expertPayoutReversedAt) return { ok: false, reason: 'already_reversed' };
+  return { ok: true };
+}
+
+/**
+ * The call whose transfer a reversal undoes: the most recent paid call on the
+ * row, which is the one `stripeTransferId` currently holds. `null` (a legacy
+ * row written before paidCallIds existed) keeps the legacy per-engagement key,
+ * exactly as payoutIdempotencyKey does. Pure.
+ */
+export function reversedCallId(pe: PayoutReversalView): string | null {
+  const ids = pe.paidCallIds;
+  if (!Array.isArray(ids) || ids.length === 0) return null;
+  return ids[ids.length - 1] ?? null;
+}
+
+/** Idempotency key for one clawback — the payout's own key, prefixed. Pure. */
+export function payoutReversalIdempotencyKey(
+  projectId: string,
+  expertId:  string,
+  callId:    string | null,
+): string {
+  return `expert-payout-reversal:${payoutIdempotencyKey(projectId, expertId, callId)}`;
+}
+
+/**
+ * Reverse one expert payout (POST /api/admin/payouts/reverse, adminGuard).
+ *
+ * Deliberately NOT automatic: the Stripe webhook's refund branch records the
+ * refund and leaves the payout alone, because reversing money out of an
+ * expert's bank account by accident is worse than an accountant's adjustment.
+ * A staff member decides, this sends it, and the route stamps the row.
+ *
+ * The full transfer is reversed (no `amount`), keyed on the payout's own
+ * idempotency key so a double-click replays the first reversal instead of
+ * sending a second. Never logs the transfer, reversal or account id.
+ */
+export async function reverseExpertPayout(
+  pe:        PayoutReversalView,
+  projectId: string,
+  expertId:  string,
+  /** Test seam only — see the header. */
+  client:    ConnectStripeClient = stripe,
+): Promise<{ ok: true; reversalId: string } | { ok: false; reason: PayoutReversalRefusal }> {
+  const allowed = canReversePayout(pe);
+  if (!allowed.ok) return allowed;
+
+  const transferId = pe.stripeTransferId as string;
+  const reversal   = await client.transfers.createReversal(
+    transferId,
+    { metadata: { projectId, expertId } },  // no PII in metadata
+    { idempotencyKey: payoutReversalIdempotencyKey(projectId, expertId, reversedCallId(pe)) },
+  );
+
+  // Log only safe identifiers — never the transfer or reversal id.
+  console.log('[stripe-connect] payout-reversed', { expertId, projectId });
+
+  return { ok: true, reversalId: reversal.id };
 }

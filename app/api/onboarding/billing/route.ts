@@ -19,6 +19,16 @@
 // instead of a second copy of it. /confirm then promotes the new payment
 // method to the org customer's default, which is what replacing means.
 //
+// THE FIRST CARD IS THE CHAMPION'S TOO (Wave 5). The firm's card commits the
+// whole firm to per-seat and per-call charges, so the plain first-time POST now
+// carries the same gate `replace` and `activate` do: a member gets
+// 403 { error: 'champion_required', championEmail } and BillingStep tells them
+// who to ask. The `alreadyComplete` short-circuit answers BEFORE the gate, so a
+// member onboarding into a firm that already has a card is unaffected — which
+// is the common case — and so is a trial organization, which is asked for no
+// card at all. The decision itself is
+// app/api/org/members/championTransfer.mayAddFirstCard, pure and unit-tested.
+//
 // `replace` is ORG-ADMIN ONLY (or platform admin) — a member must not be able
 // to change the firm's card. The gate lives here, at the point the SetupIntent
 // is minted, because /confirm can only ever promote a SetupIntent that already
@@ -52,6 +62,24 @@ import {
   ensureOrgStripeCustomer,
 } from '../../../../lib/orgBilling';
 import { getOrgEntitlements } from '../../../../lib/entitlements';
+import { listOrgMembers } from '../../../../lib/firmStore';
+import { mayAddFirstCard } from '../../org/members/championTransfer';
+
+/**
+ * The champion to name in a `champion_required` refusal: the org's first
+ * not-disabled org_admin, or null when the firm has none (then the member is
+ * told to contact ExpertMatch instead). Never throws — a refusal without a name
+ * is better than a 500.
+ */
+async function findChampionEmail(organizationId: string): Promise<string | null> {
+  try {
+    const members = await listOrgMembers(organizationId);
+    const champion = members.find(m => m.orgRole === 'org_admin' && m.status !== 'disabled');
+    return champion?.email ?? null;
+  } catch {
+    return null;
+  }
+}
 
 export async function POST(request: NextRequest): Promise<Response> {
   const authError = await routeAuthGuard(request);
@@ -130,6 +158,18 @@ export async function POST(request: NextRequest): Promise<Response> {
     const entitlements = await getOrgEntitlements(organizationId);
     if (entitlements.kind === 'trial' && !replace && !activate) {
       return Response.json({ trial: true, alreadyComplete: false, ...seatSummary });
+    }
+
+    // ─── First card: the champion's decision ───────────────────────────────
+    // Reached only when this firm has NO card (the short-circuits above) and a
+    // card is actually being asked for. `replace` and `activate` were gated
+    // earlier, so this is the plain first-time POST.
+    const firstCard = mayAddFirstCard({ role: sessionUser.role, orgRole: sessionUser.orgRole });
+    if (!firstCard.ok) {
+      return Response.json(
+        { error: 'champion_required', championEmail: await findChampionEmail(organizationId), ...seatSummary },
+        { status: 403 },
+      );
     }
 
     // ─── Org Stripe customer (create once, reuse forever) ──────────────────

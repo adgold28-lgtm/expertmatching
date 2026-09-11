@@ -1436,6 +1436,106 @@ function TrialTesterForm({ onDone }: { onDone: () => void }) {
   );
 }
 
+// ─── Expert payout state (clawback) ───────────────────────────────────────────
+// Payout state is not rendered anywhere else in the console today: there is no
+// per-engagement admin view, and the attention feed is the only place a single
+// engagement (projectId + expertId) is named. So the "Reverse payout" control
+// lives here, on the attention items that carry both ids — which is exactly the
+// population a staff clawback follows from (a refund, a chargeback, a no-show
+// review). It reads GET /api/admin/payouts/reverse for the state, which returns
+// whether a transfer exists and never the Stripe ids themselves.
+
+interface PayoutState {
+  reversible:             boolean;
+  reason?:                string;
+  expertPaidAt:           number | null;
+  expertPayoutReversedAt: number | null;
+}
+
+const PAYOUT_REASON_LABEL: Record<string, string> = {
+  no_transfer:      'No payout has been sent for this engagement.',
+  already_reversed: 'This payout has already been reversed.',
+};
+
+function PayoutControl({ projectId, expertId }: { projectId: string; expertId: string }) {
+  const [state,   setState]   = useState<PayoutState | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [busy,    setBusy]    = useState(false);
+  const [errMsg,  setErrMsg]  = useState('');
+
+  const load = useCallback(() => {
+    setLoading(true);
+    const query = `projectId=${encodeURIComponent(projectId)}&expertId=${encodeURIComponent(expertId)}`;
+    fetch(`/api/admin/payouts/reverse?${query}`)
+      .then(async (r) => {
+        // 404 = this attention item does not name a live engagement; show nothing.
+        if (r.status === 404) return null;
+        if (!r.ok) throw new Error(await readError(r));
+        return r.json() as Promise<PayoutState>;
+      })
+      .then(setState)
+      .catch((e: unknown) => setErrMsg(e instanceof Error ? e.message : 'Failed to load payout state'))
+      .finally(() => setLoading(false));
+  }, [projectId, expertId]);
+
+  useEffect(() => { load(); }, [load]);
+
+  async function reverse() {
+    const reason = prompt(
+      'Why is this payout being reversed? (recorded on the engagement, shown in this feed)'
+    );
+    if (reason === null) return;
+    if (reason.trim() === '') {
+      setErrMsg('A reason is required.');
+      return;
+    }
+    setBusy(true);
+    setErrMsg('');
+    try {
+      const res = await fetch('/api/admin/payouts/reverse', {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({ projectId, expertId, reason: reason.trim() }),
+      });
+      if (!res.ok) throw new Error(await readError(res));
+      load();
+    } catch (e) {
+      setErrMsg(e instanceof Error ? e.message : 'Could not reverse the payout.');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  if (loading || !state) return null;
+
+  const paidLine = state.expertPayoutReversedAt
+    ? `Payout reversed ${formatDate(state.expertPayoutReversedAt)}`
+    : state.expertPaidAt
+      ? `Expert paid ${formatDate(state.expertPaidAt)}`
+      : 'No expert payout sent';
+
+  return (
+    <div className="mt-2 pt-2 border-t border-frame flex flex-wrap items-center gap-2">
+      <span className="text-[10px] uppercase tracking-widest text-muted" style={{ letterSpacing: '0.12em' }}>
+        {paidLine}
+      </span>
+      <button
+        type="button"
+        onClick={reverse}
+        disabled={busy || !state.reversible}
+        title={state.reversible
+          ? 'Claw this transfer back from the expert'
+          : PAYOUT_REASON_LABEL[state.reason ?? ''] ?? 'This payout cannot be reversed.'}
+        className={DANGER_CLASS}
+        style={{ letterSpacing: '0.12em' }}
+      >
+        {busy ? 'Reversing…' : 'Reverse payout'}
+      </button>
+      {errMsg && <span className="text-[10px] text-red-600">{errMsg}</span>}
+    </div>
+  );
+}
+
 // ─── Needs attention ──────────────────────────────────────────────────────────
 
 function AttentionSection() {
@@ -1492,6 +1592,9 @@ function AttentionSection() {
                 >
                   Open project →
                 </Link>
+              )}
+              {item.projectId && item.expertId && (
+                <PayoutControl projectId={item.projectId} expertId={item.expertId} />
               )}
             </div>
           ))}

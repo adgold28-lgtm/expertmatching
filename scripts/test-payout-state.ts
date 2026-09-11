@@ -27,7 +27,13 @@ import {
   retryPendingPayoutsForAccount,
   type PayoutGuardView,
 } from '../lib/expertPayout';
-import { payoutIdempotencyKey } from '../lib/stripeConnect';
+import {
+  payoutIdempotencyKey,
+  canReversePayout,
+  reversedCallId,
+  payoutReversalIdempotencyKey,
+  type PayoutReversalView,
+} from '../lib/stripeConnect';
 import {
   decideEventDedup,
   decideRefundTransition,
@@ -35,6 +41,7 @@ import {
   stripeEventKey,
   STRIPE_EVENT_TTL_SECONDS,
 } from '../app/api/webhooks/stripe/handlers';
+import { reverseExpertPayout as reverseExpertPayoutFn } from '../lib/stripeConnect';
 import { check, eq, summary } from './testHarness';
 
 function section(title: string): void {
@@ -291,6 +298,68 @@ check('a null status moves too', decideRefundTransition(null, 'refund').write ==
 const refundedRow: Pick<ProjectExpert, 'paymentStatus'> = { paymentStatus: 'refunded' };
 eq('refunded is a valid paymentStatus', refundedRow.paymentStatus, 'refunded');
 
+// ── Payout reversal (staff clawback, Wave 5 brief B3) ────────────────────────
+// canReversePayout is the one decision both the admin console and
+// POST /api/admin/payouts/reverse consult, so money never leaves an expert's
+// account twice. Fails closed: anything it does not recognise is a refusal.
+// FAILS ON OLD CODE: canReversePayout / reversedCallId /
+// payoutReversalIdempotencyKey do not exist in lib/stripeConnect before Wave 5.
+
+section('canReversePayout');
+
+const PAID_ROW: PayoutReversalView = {
+  stripeTransferId: 'tr_TEST',
+  paidCallIds:      [CALL_A, CALL_B],
+};
+
+check('a paid, unreversed row is reversible', canReversePayout(PAID_ROW).ok === true);
+
+const noTransfer = canReversePayout({ paidCallIds: [CALL_A] });
+check('no transfer is refused', noTransfer.ok === false);
+eq('  with reason no_transfer', noTransfer.ok === false ? noTransfer.reason : '', 'no_transfer');
+
+const nullTransfer = canReversePayout({ stripeTransferId: null, expertPayoutReversedAt: null });
+check('a null transfer id is refused too', nullTransfer.ok === false);
+
+const twice = canReversePayout({ ...PAID_ROW, expertPayoutReversedAt: 1757000000000 });
+check('an already-reversed row is refused', twice.ok === false);
+eq('  with reason already_reversed', twice.ok === false ? twice.reason : '', 'already_reversed');
+
+check('an empty row is refused (fails closed)', canReversePayout({}).ok === false);
+
+section('reversedCallId');
+
+eq('the most recent paid call is the one reversed', reversedCallId(PAID_ROW), CALL_B);
+eq('a legacy row with no paidCallIds keeps the legacy key', reversedCallId({ stripeTransferId: 'tr_X' }), null);
+eq('an empty paidCallIds is legacy too', reversedCallId({ paidCallIds: [] }), null);
+
+section('payoutReversalIdempotencyKey');
+
+eq('the reversal key is the payout key, prefixed',
+  payoutReversalIdempotencyKey('proj_1', 'exp_1', CALL_B),
+  `expert-payout-reversal:${payoutIdempotencyKey('proj_1', 'exp_1', CALL_B)}`);
+
+check('two different calls on one engagement get different reversal keys',
+  payoutReversalIdempotencyKey('proj_1', 'exp_1', CALL_A)
+  !== payoutReversalIdempotencyKey('proj_1', 'exp_1', CALL_B));
+
+check('two engagements get different reversal keys',
+  payoutReversalIdempotencyKey('proj_1', 'exp_1', CALL_A)
+  !== payoutReversalIdempotencyKey('proj_2', 'exp_1', CALL_A));
+
+check('the reversal key never collides with the payout key it reverses',
+  payoutReversalIdempotencyKey('proj_1', 'exp_1', CALL_A)
+  !== payoutIdempotencyKey('proj_1', 'exp_1', CALL_A));
+
+// A ProjectExpert must satisfy the narrow reversal view structurally, and must
+// carry the two fields the route stamps.
+const reversedRow: Pick<ProjectExpert, 'expertPayoutReversedAt' | 'stripeTransferReversalId'> = {
+  expertPayoutReversedAt:   1757000000000,
+  stripeTransferReversalId: 'trr_TEST',
+};
+check('ProjectExpert carries the reversal stamps',
+  reversedRow.expertPayoutReversedAt === 1757000000000);
+
 // ── Import shape ─────────────────────────────────────────────────────────────
 // These do real network work, so they are asserted, never invoked.
 
@@ -298,6 +367,8 @@ section('import shape');
 
 eq('runExpertPayout is still exported', typeof runExpertPayout, 'function');
 eq('retryPendingPayoutsForAccount is still exported', typeof retryPendingPayoutsForAccount, 'function');
+
+eq('reverseExpertPayout is exported', typeof reverseExpertPayoutFn, 'function');
 
 // ── Result ───────────────────────────────────────────────────────────────────
 

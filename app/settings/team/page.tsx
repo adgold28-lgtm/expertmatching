@@ -8,7 +8,10 @@ import { formatUsdFromCents } from '../../../lib/pricing';
 // /settings/team — org-admin ("champion") seat management: invite, disable/
 // enable, promote/demote, and remove teammates, plus the seat-tier billing
 // summary (lib/pricing.ts SEAT_TIERS). Every mutation goes through
-// /api/org/members (POST invite, PATCH status/role, DELETE); this page adds
+// /api/org/members (POST invite, PATCH status/role or action:
+// 'transfer_champion', DELETE); "Make champion" is the transfer — it promotes
+// the target and demotes the current champion in one request, confirmed first
+// because the caller gives up the role by doing it. This page adds
 // no authorization of its own — a 401/403 from that route flips `denied` and
 // swaps in the "ask your champion" panel, so the real gate lives server-side
 // and this is purely the UI reaction to it. Never renders another org's data:
@@ -189,6 +192,34 @@ function MemberRow({
   const isSelf     = member.email.toLowerCase() === viewerEmail.toLowerCase();
   const isOrgAdmin = member.orgRole === 'org_admin';
 
+  /**
+   * Handing the championship over is one request (PATCH { action:
+   * 'transfer_champion' }): the target is promoted and the caller is demoted
+   * together, so the firm is never left with two champions or none. Demoting a
+   * champion back to a member is still the plain role PATCH below.
+   */
+  async function makeChampion() {
+    if (!confirm(
+      `Make ${displayName(member)} your firm's ExpertMatch champion? `
+      + 'You will become a member: the champion manages the team and the firm’s card.'
+    )) return;
+    setBusy('role');
+    setErrMsg('');
+    try {
+      const res = await fetch('/api/org/members', {
+        method:  'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({ action: 'transfer_champion', email: member.email }),
+      });
+      if (!res.ok) throw new Error(await readError(res));
+      onChanged();
+    } catch (e) {
+      setErrMsg(e instanceof Error ? e.message : 'Something went wrong.');
+    } finally {
+      setBusy('');
+    }
+  }
+
   async function patch(payload: Record<string, string>, kind: 'status' | 'role') {
     setBusy(kind);
     setErrMsg('');
@@ -261,7 +292,7 @@ function MemberRow({
 
           {member.role !== 'admin' && member.status === 'active' && (
             <button
-              onClick={() => patch({ orgRole: isOrgAdmin ? 'org_member' : 'org_admin' }, 'role')}
+              onClick={() => isOrgAdmin ? patch({ orgRole: 'org_member' }, 'role') : makeChampion()}
               disabled={busy !== ''}
               className={actionClass}
               style={{ letterSpacing: '0.1em' }}

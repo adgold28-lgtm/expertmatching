@@ -24,6 +24,15 @@
 //      — the write did happen, so this is not a 500 the caller should retry —
 //      and record a 'membership' system failure so the admin attention feed
 //      shows it and lib/membershipReconcile repairs it that night.
+//
+// CHAMPION TRANSFER (Wave 5): PATCH { action: 'transfer_champion', email }
+// hands the championship over in ONE request — the target is promoted and every
+// other sitting champion (the caller, normally) is demoted — so the firm never
+// passes through a state with two champions or none. Allowed for the sitting
+// champion of that org and for platform admins. Who may do it, to whom, and who
+// is demoted is decided by the pure decideChampionTransfer in
+// ./championTransfer.ts; this route only performs the writes it names, promote
+// first so a failure between the two leaves a champion in place.
 
 import { NextRequest } from 'next/server';
 import { orgAdminGuard, type SessionUser } from '../../../../lib/auth';
@@ -31,6 +40,10 @@ import { provisionAccountInvite } from '../../../../lib/accountProvisioning';
 import { syncOrgSeatQuantity } from '../../../../lib/orgBilling';
 import { recordSystemFailure } from '../../../../lib/engagementEvents';
 import { seatUnitPriceCents, monthlySeatTotalCents, nextSeatTier } from '../../../../lib/pricing';
+import {
+  decideChampionTransfer,
+  type ChampionTarget,
+} from './championTransfer';
 import {
   getFirmById,
   getUser,
@@ -255,6 +268,79 @@ export async function POST(request: NextRequest): Promise<Response> {
 
 // ─── PATCH — change a member's status or organization role ────────────────────
 
+/**
+ * PATCH { action: 'transfer_champion', email } — see the header.
+ *
+ * Promote-then-demote, both through updateOrgMemberRole, so the app_metadata
+ * mirror is reported the same way every other membership change reports it.
+ */
+async function transferChampion(
+  guard: { user: SessionUser },
+  orgId: string,
+  email: string,
+): Promise<Response> {
+  if (!email || !email.includes('@')) {
+    return Response.json({ error: 'valid_email_required' }, { status: 400 });
+  }
+
+  const [member, members] = await Promise.all([
+    getUser(email),
+    listOrgMembers(orgId),
+  ]);
+
+  const target: ChampionTarget | null = member
+    ? {
+        email:   member.email,
+        orgId:   member.orgId,
+        status:  member.status,
+        role:    member.role,
+        orgRole: member.orgRole,
+      }
+    : null;
+
+  const decision = decideChampionTransfer({
+    caller: {
+      email:   guard.user.email,
+      role:    guard.user.role,
+      orgRole: guard.user.orgRole,
+      orgId:   guard.user.orgId,
+    },
+    orgId,
+    target,
+    currentChampions: members
+      .filter(m => m.orgRole === 'org_admin' && m.status !== 'disabled')
+      .map(m => m.email),
+  });
+
+  if (!decision.ok) {
+    return Response.json(
+      { error: decision.error, message: decision.message },
+      { status: decision.status },
+    );
+  }
+
+  let metadataSynced = true;
+
+  // Promote FIRST: an interrupted transfer must leave the firm with a champion,
+  // never with none.
+  const promoted = await updateOrgMemberRole(decision.promote, 'org_admin');
+  if (!promoted.metadataSynced) metadataSynced = false;
+
+  for (const outgoing of decision.demote) {
+    const r = await updateOrgMemberRole(outgoing, 'org_member');
+    if (!r.metadataSynced) metadataSynced = false;
+  }
+
+  await syncSeats(orgId);
+
+  if (!metadataSynced) {
+    await recordSyncGap(orgId, 'a champion transfer');
+    return Response.json({ ok: true, champion: decision.promote, warning: 'metadata_sync_failed' });
+  }
+
+  return Response.json({ ok: true, champion: decision.promote });
+}
+
 export async function PATCH(request: NextRequest): Promise<Response> {
   const guard = await orgAdminGuard(request);
   if ('error' in guard) return guard.error;
@@ -266,6 +352,21 @@ export async function PATCH(request: NextRequest): Promise<Response> {
   if (!orgId) return noOrg();
 
   const email   = typeof body.email === 'string' ? body.email.trim().toLowerCase() : '';
+
+  // Champion transfer is its own action: it writes two roles at once and has
+  // its own permission rule, so it never reaches the status/role table below.
+  if (body.action === 'transfer_champion') {
+    try {
+      return await transferChampion(guard, orgId, email);
+    } catch {
+      console.error('[org/members] failed to transfer the championship');
+      return Response.json(
+        { error: 'update_failed', message: 'Could not transfer the championship.' },
+        { status: 500 },
+      );
+    }
+  }
+
   const status  = body.status  === 'active'    || body.status  === 'disabled'   ? body.status  : null;
   const orgRole = body.orgRole === 'org_admin' || body.orgRole === 'org_member' ? body.orgRole : null;
 
