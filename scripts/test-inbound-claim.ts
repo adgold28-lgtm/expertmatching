@@ -18,6 +18,9 @@ import {
   decideClaim,
   extractResendMessageId,
   senderAuthAllows,
+  normalizeInboundEnvelope,
+  htmlToPlainText,
+  fetchReceivedEmailBody,
 } from '../app/api/inbound-email/inboundGuards';
 import { check, eq, summary } from './testHarness';
 
@@ -165,4 +168,25 @@ check('an absurd id is capped',
 
 // ── Result ───────────────────────────────────────────────────────────────────
 
-summary();
+
+// ── Resend email.received envelope (shape verified in production 2026-09-10) ──
+{
+  const real = { type: 'email.received', created_at: 'x', data: { email_id: 'e1', from: 'Jane <jane@acme.com>', to: ['reply+tok@reply.expertmatch.fit'], subject: 's', message_id: '<m@x>', attachments: [] } };
+  const env = normalizeInboundEnvelope(real);
+  check('real envelope: to from data.to[0]', env.toAddress === 'reply+tok@reply.expertmatch.fit');
+  check('real envelope: from from data.from', env.fromField === 'Jane <jane@acme.com>');
+  check('real envelope: no inline body', env.text === null);
+  check('real envelope: email id captured', env.emailId === 'e1');
+  const legacy = { to: [{ email: 'reply+tok@expertmatch.fit' }], from: 'jane@acme.com', text: 'hi' };
+  const lenv = normalizeInboundEnvelope(legacy);
+  check('legacy flat: to from object', lenv.toAddress === 'reply+tok@expertmatch.fit');
+  check('legacy flat: inline text kept', lenv.text === 'hi' && lenv.emailId === null);
+  check('html to text strips tags', htmlToPlainText('<p>Hi<br>there &amp; you</p><style>x{}</style>') === 'Hi\nthere & you');
+}
+void (async () => {
+  const stub = (body: unknown, ok = true) => (async () => ({ ok, status: ok ? 200 : 404, json: async () => body })) as unknown as typeof fetch;
+  check('fetch body: text preferred', await fetchReceivedEmailBody('e1', 'k', stub({ text: 'plain', html: '<b>x</b>' })) === 'plain');
+  check('fetch body: html fallback', await fetchReceivedEmailBody('e1', 'k', stub({ text: null, html: '<b>bold</b>' })) === 'bold');
+  check('fetch body: empty on failure', await fetchReceivedEmailBody('e1', 'k', stub({}, false)) === '');
+  summary();
+})();

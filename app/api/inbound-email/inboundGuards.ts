@@ -214,3 +214,78 @@ export function extractResendMessageId(payload: unknown): string | null {
   }
   return null;
 }
+
+// ─── Resend `email.received` envelope ────────────────────────────────────────
+// Resend's inbound webhook (verified in production 2026-09-10) is
+//   { type: 'email.received', created_at, data: { email_id, from, to[], subject,
+//     message_id, attachments[] } }
+// and carries NO body: the text/html must be fetched afterwards from
+// GET /emails/receiving/{email_id}. The older flat shape ({ to, from, text })
+// is still accepted so replayed fixtures and any legacy relay keep working.
+
+export interface InboundEnvelope {
+  toAddress: string;
+  fromField: unknown;
+  /** Body when the payload carried one inline; null means fetch it by emailId. */
+  text: string | null;
+  emailId: string | null;
+}
+
+export function normalizeInboundEnvelope(payload: Record<string, unknown>): InboundEnvelope {
+  const data = payload.type === 'email.received' && payload.data && typeof payload.data === 'object'
+    ? payload.data as Record<string, unknown>
+    : null;
+  const toField = data ? data.to : payload.to;
+  let toAddress = '';
+  if (Array.isArray(toField) && toField.length > 0) {
+    const first = toField[0] as unknown;
+    if (typeof first === 'string') toAddress = first;
+    else if (first && typeof first === 'object' && typeof (first as Record<string, unknown>).email === 'string') {
+      toAddress = (first as Record<string, unknown>).email as string;
+    }
+  } else if (typeof toField === 'string') {
+    toAddress = toField;
+  }
+  const emailId = data && typeof data.email_id === 'string' ? data.email_id : null;
+  const text = typeof payload.text === 'string' ? payload.text : null;
+  return { toAddress, fromField: data ? data.from : payload.from, text, emailId };
+}
+
+/** Very small HTML-to-text for the fallback when a reply has no text part. */
+export function htmlToPlainText(html: string): string {
+  return html
+    .replace(/<style[\s\S]*?<\/style>|<script[\s\S]*?<\/script>/gi, '')
+    .replace(/<br\s*\/?>|<\/p>|<\/div>|<\/tr>/gi, '\n')
+    .replace(/<[^>]+>/g, '')
+    .replace(/&nbsp;/g, ' ').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#39;/g, "'")
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
+/**
+ * Fetch a received email's body from Resend. Returns '' when the message has
+ * neither text nor html, or when the API call fails (the caller treats an
+ * empty body as "nothing to act on" and closes the claim). Never throws.
+ */
+export async function fetchReceivedEmailBody(
+  emailId: string,
+  apiKey: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<string> {
+  try {
+    const res = await fetchImpl(`https://api.resend.com/emails/receiving/${encodeURIComponent(emailId)}`, {
+      headers: { Authorization: `Bearer ${apiKey}` },
+    });
+    if (!res.ok) {
+      console.warn('[inbound-email] received-email fetch failed', { status: res.status });
+      return '';
+    }
+    const body = await res.json() as { text?: unknown; html?: unknown };
+    if (typeof body.text === 'string' && body.text.trim()) return body.text;
+    if (typeof body.html === 'string' && body.html.trim()) return htmlToPlainText(body.html);
+    return '';
+  } catch {
+    console.warn('[inbound-email] received-email fetch threw');
+    return '';
+  }
+}

@@ -84,6 +84,8 @@ import {
   extractResendMessageId,
   senderAuthAllows,
   type ClaimDecision,
+  normalizeInboundEnvelope,
+  fetchReceivedEmailBody,
 } from './inboundGuards';
 import { isIdentityRevealed } from '../../../lib/redactExpert';
 import { buildFollowUpEmail, deriveTopic } from '../../../lib/matchyTemplates';
@@ -389,14 +391,10 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
   }
 
   // ── 6. Extract "to" address and reply token ───────────────────────────────
-  const toField = payload.to;
-  let toAddress = '';
-  if (Array.isArray(toField) && toField.length > 0) {
-    const first = toField[0] as Record<string, unknown>;
-    toAddress = typeof first.email === 'string' ? first.email : '';
-  } else if (typeof toField === 'string') {
-    toAddress = toField;
-  }
+  // Resend's `email.received` envelope nests the addresses under `data` and
+  // carries no body (fetched in step 11); see inboundGuards.normalizeInboundEnvelope.
+  const envelope  = normalizeInboundEnvelope(payload);
+  const toAddress = envelope.toAddress;
 
   // Every deliberate ignore below closes the claim first: the decision would
   // come out the same on a redelivery, so the id is spent, not released.
@@ -465,7 +463,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
   }
 
   // ── 10. Sender check — only the address we mailed can move the thread ────
-  const fromAddress    = extractFromAddress(payload.from);
+  const fromAddress    = extractFromAddress(envelope.fromField);
   const expectedSender = pe.contactEmail?.trim().toLowerCase() ?? '';
   if (!expectedSender || fromAddress !== expectedSender) {
     const keyHash = pseudonymize(`${resolvedProjectId}:${resolvedExpertId}`);
@@ -482,7 +480,13 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
   }
 
   // ── 11. Body ──────────────────────────────────────────────────────────────
-  const emailText = typeof payload.text === 'string' ? payload.text : '';
+  // Inline `text` for the legacy flat shape; otherwise the body lives behind
+  // Resend's received-email API and is fetched only now, after the token and
+  // sender checks, so an unauthenticated delivery never costs an API call.
+  const emailText = envelope.text
+    ?? (envelope.emailId && process.env.RESEND_API_KEY
+      ? await fetchReceivedEmailBody(envelope.emailId, process.env.RESEND_API_KEY)
+      : '');
   if (!emailText.trim()) {
     console.warn('[inbound-email] empty email body');
     await markDeliveryDone(claimId);
