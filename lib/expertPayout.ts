@@ -5,7 +5,7 @@
 //
 // The payout amount is ALWAYS recomputed server-side from the stored
 // expertRate and duration. A webhook payload is never trusted for money:
-//   payout = expertPayoutDollars(expertRate, actualDurationMin ?? callDurationMin)
+//   payout = expertPayoutDollars(expertRate, payoutMinutesFor(pe, callId))
 //          = the hourly offer the expert accepted × billable minutes (15-min
 //            minimum), lib/pricing.ts. The client was charged clientRateFor(
 //            expertRate) over the same minutes; ExpertMatch keeps the difference.
@@ -59,7 +59,7 @@ import {
   transferExpertPayout,
 } from './stripeConnect';
 import { generateAvailabilityToken } from './availabilityToken';
-import { expertPayoutDollars, formatUsdFromCents } from './pricing';
+import { expertPayoutDollars, formatUsdFromCents, MIN_BILLABLE_MINUTES } from './pricing';
 import { getFromAddress } from './mailFrom';
 import { resolveCallId } from './createAndSendInvoice';
 import { recordSystemFailure } from './engagementEvents';
@@ -203,6 +203,37 @@ export function payoutAlreadySent(pe: PayoutGuardView, callId: string | null): b
   if (!pe.stripeTransferId) return false;
   // Transferred at least once, and this call is not in the list.
   return paidIds.length === 0 || !callId;
+}
+
+/**
+ * Suffix that marks a call id as the 15-minute late-cancellation / no-show fee
+ * rather than a call that happened (lib/lateCancelBilling.lateCancelCallId).
+ * The two ids differ ONLY by this suffix, which is what keeps the fee and the
+ * real call apart in both the billing guard and the payout guard.
+ */
+export const LATE_CANCEL_CALL_SUFFIX = ':late-cancel';
+
+/** True when this payout is for the late-cancel fee rather than a call. Pure. */
+export function isLateCancelCallId(callId: string | null | undefined): boolean {
+  return typeof callId === 'string' && callId.endsWith(LATE_CANCEL_CALL_SUFFIX);
+}
+
+/** The minutes a payout is computed over, given the call it is for. */
+export type PayoutMinutesView = Pick<ProjectExpert, 'actualDurationMin' | 'callDurationMin'>;
+
+/**
+ * How many minutes the expert is paid for.
+ *
+ * Normally the measured call length, falling back to the booked one. A
+ * late-cancel / no-show fee is ALWAYS the 15-minute minimum
+ * (docs/CALL_POLICIES_DRAFT.md, founder decision 2) and never the booked
+ * duration — the row still carries the hour the call was booked for, so
+ * deriving the payout from it would pay a full hour for a call that never
+ * happened. Pure.
+ */
+export function payoutMinutesFor(pe: PayoutMinutesView, callId: string | null): number {
+  if (isLateCancelCallId(callId)) return MIN_BILLABLE_MINUTES;
+  return pe.actualDurationMin ?? pe.callDurationMin ?? 0;
 }
 
 /** The paidCallIds to store after a successful transfer. Pure, no duplicates. */
@@ -380,7 +411,9 @@ export async function runExpertPayout(
 
     // Compute payout server-side — NEVER trust webhook amount
     const rate        = pe.expertRate ?? 0;
-    const durationMin = pe.actualDurationMin ?? pe.callDurationMin ?? 0;
+    // 15 minutes when this payout is the late-cancel / no-show fee, whatever
+    // the row says the call was booked for — see payoutMinutesFor.
+    const durationMin = payoutMinutesFor(pe, callId);
     // The expert is paid the rate they accepted over the billable minutes
     // (lib/pricing.ts) — never a share of what the client was charged.
     const expertAmountCents = Math.round(expertPayoutDollars(rate, durationMin) * 100);

@@ -18,6 +18,13 @@
 // client, the store writes and the mailer with stubs so
 // scripts/test-stripe-flows.ts can drive both paths offline (see InvoiceDeps).
 //
+// NOT EVERY CHARGE IS A CALL (Wave 5). The 15-minute late-cancellation /
+// no-show fee is billed through this same path with its own call id
+// (`${icsUid}:late-cancel`, lib/lateCancelBilling.ts) so the per-call guard
+// treats it as a distinct call, and with an `options.lineLabel` so the invoice
+// and the receipt say "Late cancellation (15 min)" rather than claiming a call
+// was completed. Nothing else about the path changes.
+//
 // Required env vars:
 //   STRIPE_SECRET_KEY    — server-side Stripe key
 //   RESEND_API_KEY       — invoice / receipt email (optional; skipped if absent)
@@ -86,15 +93,23 @@ ${innerHtml}
 </html>`;
 }
 
-/** Line-item table shared by both email variants. */
-function renderLineItem(expertName: string, durationMin: number, amount: number): string {
+/**
+ * Line-item table shared by both email variants.
+ *
+ * `lineLabel` overrides the description cell for a charge that is not the call
+ * itself — the 15-minute late-cancellation / no-show fee passes
+ * "Late cancellation (15 min)" so the receipt never claims a call happened
+ * (lib/lateCancelBilling.ts). The expert's name is still not in the label the
+ * caller supplies; only the default description carries it, exactly as before.
+ */
+function renderLineItem(expertName: string, durationMin: number, amount: number, lineLabel?: string): string {
   return `            <table cellpadding="0" cellspacing="0" style="margin:0 0 24px;width:100%;border:1px solid #e2e8f0;">
               <tr style="background:#f8fafc;">
                 <td style="padding:10px 16px;font-size:12px;color:#64748b;font-weight:bold;text-transform:uppercase;letter-spacing:1px;">Description</td>
                 <td style="padding:10px 16px;font-size:12px;color:#64748b;font-weight:bold;text-transform:uppercase;letter-spacing:1px;text-align:right;">Amount</td>
               </tr>
               <tr>
-                <td style="padding:12px 16px;font-size:13px;color:#1e293b;">Expert call — ${escapeHtml(expertName)} (${durationMin} min)</td>
+                <td style="padding:12px 16px;font-size:13px;color:#1e293b;">${escapeHtml(lineLabel ?? `Expert call — ${expertName} (${durationMin} min)`)}</td>
                 <td style="padding:12px 16px;font-size:13px;color:#1e293b;text-align:right;font-weight:bold;">$${amount.toLocaleString()}</td>
               </tr>
             </table>`;
@@ -106,14 +121,19 @@ export function buildInvoiceHtml(
   durationMin: number,
   amount:      number,
   paymentUrl:  string,
+  /** Non-call charges (the late-cancel fee) replace the line item and the lead sentence. */
+  lineLabel?:  string,
 ): string {
+  const lead = lineLabel
+    ? `${escapeHtml(lineLabel)} for your booking with <strong>${escapeHtml(expertName)}</strong>. Please find your invoice below.`
+    : `Your expert call with <strong>${escapeHtml(expertName)}</strong> has been completed
+              (${durationMin} minute${durationMin !== 1 ? 's' : ''}).
+              Please find your invoice below.`;
   return renderEmailShell(`            <p style="margin:0 0 16px;">Hi ${escapeHtml(clientName)},</p>
             <p style="margin:0 0 16px;">
-              Your expert call with <strong>${escapeHtml(expertName)}</strong> has been completed
-              (${durationMin} minute${durationMin !== 1 ? 's' : ''}).
-              Please find your invoice below.
+              ${lead}
             </p>
-${renderLineItem(expertName, durationMin, amount)}
+${renderLineItem(expertName, durationMin, amount, lineLabel)}
             <table cellpadding="0" cellspacing="0" style="margin:0 0 28px;">
               <tr>
                 <td style="background:#0d9488;padding:0;">
@@ -141,11 +161,14 @@ export function buildInvoiceText(
   durationMin: number,
   amount:      number,
   paymentUrl:  string,
+  lineLabel?:  string,
 ): string {
   return [
     `Hi ${clientName},`,
     '',
-    `Your expert call with ${expertName} has been completed (${durationMin} minutes).`,
+    lineLabel
+      ? `${lineLabel} for your booking with ${expertName}.`
+      : `Your expert call with ${expertName} has been completed (${durationMin} minutes).`,
     '',
     `Invoice amount: $${amount.toLocaleString()}`,
     '',
@@ -161,14 +184,19 @@ export function buildReceiptHtml(
   expertName:  string,
   durationMin: number,
   amount:      number,
+  /** Non-call charges (the late-cancel fee) replace the line item and the lead sentence. */
+  lineLabel?:  string,
 ): string {
+  const lead = lineLabel
+    ? `${escapeHtml(lineLabel)} for your booking with <strong>${escapeHtml(expertName)}</strong>. We charged the card on file — no action is needed.`
+    : `Your expert call with <strong>${escapeHtml(expertName)}</strong> has been completed
+              (${durationMin} minute${durationMin !== 1 ? 's' : ''}).
+              We charged the card on file — no action is needed.`;
   return renderEmailShell(`            <p style="margin:0 0 16px;">Hi ${escapeHtml(clientName)},</p>
             <p style="margin:0 0 16px;">
-              Your expert call with <strong>${escapeHtml(expertName)}</strong> has been completed
-              (${durationMin} minute${durationMin !== 1 ? 's' : ''}).
-              We charged the card on file — no action is needed.
+              ${lead}
             </p>
-${renderLineItem(expertName, durationMin, amount)}
+${renderLineItem(expertName, durationMin, amount, lineLabel)}
             <p style="margin:0 0 24px;font-size:13px;color:#1e293b;">
               <strong>Total charged: $${amount.toLocaleString()}</strong>
             </p>
@@ -186,11 +214,14 @@ export function buildReceiptText(
   expertName:  string,
   durationMin: number,
   amount:      number,
+  lineLabel?:  string,
 ): string {
   return [
     `Hi ${clientName},`,
     '',
-    `Your expert call with ${expertName} has been completed (${durationMin} minutes).`,
+    lineLabel
+      ? `${lineLabel} for your booking with ${expertName}.`
+      : `Your expert call with ${expertName} has been completed (${durationMin} minutes).`,
     '',
     `We charged the card on file — no action is needed.`,
     '',
@@ -349,6 +380,16 @@ export function isRepeatCallForBilledRow(pe: BillingGuardView, callId: string | 
 
 // ─── Public API ───────────────────────────────────────────────────────────────
 
+/** Copy overrides for a charge that is not a completed call. */
+export interface InvoiceOptions {
+  /**
+   * Replaces the line-item description and the lead sentence in both emails —
+   * e.g. 'Late cancellation (15 min)'. A fixed label, never free text from a
+   * request body.
+   */
+  lineLabel?: string;
+}
+
 export interface InvoiceResult {
   /** True when the client's saved card was charged off-session. */
   charged:         boolean;
@@ -379,6 +420,8 @@ export async function createAndSendInvoice(
   callId?:       string | null,
   /** Test seam only — see InvoiceDeps. Production omits it. */
   deps?:         Partial<InvoiceDeps>,
+  /** Copy overrides for a non-call charge — see InvoiceOptions. */
+  options?:      InvoiceOptions,
 ): Promise<InvoiceResult | null> {
   const d = { ...defaultInvoiceDeps(), ...deps };
   try {
@@ -456,9 +499,9 @@ export async function createAndSendInvoice(
 
       await d.sendEmail({
         to:      recipientEmail,
-        subject: 'Receipt for your expert call',
-        html:    buildReceiptHtml(clientName, pe.expert.name, durationMin, invoiceAmount),
-        text:    buildReceiptText(clientName, pe.expert.name, durationMin, invoiceAmount),
+        subject: options?.lineLabel ? `Receipt — ${options.lineLabel}` : 'Receipt for your expert call',
+        html:    buildReceiptHtml(clientName, pe.expert.name, durationMin, invoiceAmount, options?.lineLabel),
+        text:    buildReceiptText(clientName, pe.expert.name, durationMin, invoiceAmount, options?.lineLabel),
       });
 
       console.log('[stripe] auto-charge-invoice-sent', { amount: invoiceAmount, projectId });
@@ -531,9 +574,9 @@ export async function createAndSendInvoice(
     if (project.clientEmail) {
       await d.sendEmail({
         to:      project.clientEmail,
-        subject: 'Invoice for your expert call',
-        html:    buildInvoiceHtml(clientName, pe.expert.name, durationMin, invoiceAmount, paymentLink.url),
-        text:    buildInvoiceText(clientName, pe.expert.name, durationMin, invoiceAmount, paymentLink.url),
+        subject: options?.lineLabel ? `Invoice — ${options.lineLabel}` : 'Invoice for your expert call',
+        html:    buildInvoiceHtml(clientName, pe.expert.name, durationMin, invoiceAmount, paymentLink.url, options?.lineLabel),
+        text:    buildInvoiceText(clientName, pe.expert.name, durationMin, invoiceAmount, paymentLink.url, options?.lineLabel),
       });
     }
 

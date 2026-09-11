@@ -6,11 +6,34 @@
 //
 //   meeting.started  → `zoomMeetingStarted: true` on the ProjectExpert, which is
 //                      what the Staff panel reads to show a call is live.
+//   meeting.participant_joined
+//                    → `zoomAttendance.expertJoined / clientJoined`, matched by
+//                      the participant's address (or the host role) against the
+//                      expert's contactEmail and the project's client contact.
+//                      This is the ONLY evidence of who turned up, and without
+//                      it a finished meeting is never billed — see below.
 //   meeting.ended    → the ACTUAL duration (end_time - start_time, rounded up,
-//                      floor of 1 minute), status → 'completed', and — when an
-//                      expertRate was agreed — the client's card is charged via
-//                      lib/createAndSendInvoice. This is the ONLY automatic path
-//                      from "a call happened" to "money moves".
+//                      floor of 1 minute) and then, Wave 5, a branch on WHO
+//                      ATTENDED (resolveAttendance):
+//                        both           → status 'completed' and the ordinary
+//                                         charge via lib/createAndSendInvoice.
+//                                         This is the ONLY automatic path from
+//                                         "a call happened" to "money moves".
+//                        client_no_show → engagement ends, no_show event, the
+//                                         15-minute fee (lib/lateCancelBilling).
+//                        expert_no_show → engagement ends, no_show event, the
+//                                         expert is removed; no charge.
+//                        unknown        → NOTHING is billed and nothing is
+//                                         completed: the row is parked with
+//                                         attendanceReviewPending and a staff
+//                                         member decides at
+//                                         POST /api/admin/attendance. Missing
+//                                         telemetry is never read as a no-show
+//                                         (docs/CALL_POLICIES_DRAFT.md). Until
+//                                         meeting.participant_joined is enabled
+//                                         on the Zoom app, EVERY call lands
+//                                         here — that subscription is a
+//                                         prerequisite for automatic billing.
 //
 // The meeting id is the only join key Zoom gives us; lib/zoomLookup.ts resolves
 // it back to { projectId, expertId } through `project_experts.data->>zoomMeetingId`.
@@ -32,20 +55,23 @@
 // NEVER log: expert names, project names, meeting topics.
 // Meeting IDs and durations are safe to log.
 
-import { callChargeDollars } from '../../../../lib/pricing';
 import { NextRequest, NextResponse } from 'next/server';
-import { getProject, updateExpertStatus } from '../../../../lib/projectStore';
+import { getProject, mutateExpert, updateExpertStatus } from '../../../../lib/projectStore';
 import { recordSystemFailure } from '../../../../lib/engagementEvents';
 import { findProjectExpertByZoomMeetingId } from '../../../../lib/zoomLookup';
+import { applyAttendanceOutcome } from '../../../../lib/lateCancelBilling';
 // The pure decisions on this path — the v0 signature, the replay window and
 // what a meeting.ended means — live next door so they can be unit tested: a
 // route.ts may not export helper values (Next type-checks its exports). See
 // ./meetingEnd.ts, scripts/test-zoom-webhook.ts and
 // scripts/test-webhook-signature.ts.
 import {
+  classifyParticipant,
+  resolveAttendance,
   resolveMeetingEnd,
   verifyZoomWebhook,
   zoomUrlValidationHash,
+  type ZoomParticipant,
 } from './meetingEnd';
 
 // ─── Route handler ────────────────────────────────────────────────────────────
@@ -108,15 +134,58 @@ export async function POST(request: NextRequest) {
     }
   }
 
-  // ── meeting.ended: duration, completion, and the charge ─────────────────
-  // resolveMeetingEnd() (./meetingEnd.ts) owns the two decisions that matter: whether
-  // this engagement has already been completed by an earlier delivery or by the
-  // manual complete route, and how many minutes to bill when Zoom's own stamps
-  // are unusable. Everything downstream of the status write is money:
-  // lib/pricing.callChargeDollars applies the 15-minute minimum and the
-  // per-minute rate, and lib/createAndSendInvoice charges the client's saved
-  // card. An invoice failure is logged and swallowed so the completion still
-  // stands — a call that happened must never be un-completed by a Stripe blip.
+  // ── meeting.participant_joined: the only evidence of who turned up ──────
+  // Matched by address, lower-cased on both sides, against the expert's
+  // contactEmail and the project's client contact; the host fallback covers an
+  // expert who joined without signing in to Zoom (classifyParticipant). A
+  // participant we cannot place writes nothing at all — an unrecognised guest
+  // must never make the other side look absent, because an absence is billable.
+  // The flags are merged under compare-and-set: the two sides arrive as two
+  // deliveries and neither may clobber the other.
+  if (eventType === 'meeting.participant_joined') {
+    const match = await findProjectExpertByZoomMeetingId(meetingId);
+    if (match) {
+      const { projectId, expertId } = match;
+      const project = await getProject(projectId);
+      const pe      = project?.experts.find(e => e.expert.id === expertId);
+      const who = classifyParticipant(
+        obj?.participant as ZoomParticipant | undefined,
+        {
+          expertEmail: pe?.contactEmail ?? null,
+          ownerEmail:  project?.ownerEmail ?? null,
+          clientEmail: project?.clientEmail ?? null,
+        },
+      );
+
+      if (who !== 'unknown' && project && pe) {
+        await mutateExpert(projectId, expertId, current => ({
+          ...current,
+          zoomAttendance: {
+            ...(current.zoomAttendance ?? {}),
+            ...(who === 'expert' ? { expertJoined: true } : { clientJoined: true }),
+          },
+          updatedAt: Date.now(),
+        })).catch(err => {
+          console.error('[zoom] attendance write failed',
+            err instanceof Error ? err.message.slice(0, 120) : 'unknown');
+        });
+      }
+      // Count-only: 'expert' | 'client' | 'unknown' is a fixed label.
+      console.log('[zoom] participant-joined', { meetingId, who });
+    }
+  }
+
+  // ── meeting.ended: duration, attendance, and the charge ─────────────────
+  // resolveMeetingEnd() (./meetingEnd.ts) owns the two decisions that come
+  // first: whether this engagement has already been completed by an earlier
+  // delivery or by the manual complete route, and how many minutes the call
+  // ran when Zoom's own stamps are unusable. resolveAttendance() then decides
+  // WHETHER those minutes are billable at all, and
+  // lib/lateCancelBilling.applyAttendanceOutcome performs whichever branch it
+  // names — the same function the staff override calls, so the two can never
+  // drift. An invoice failure inside it is logged and swallowed so the
+  // completion still stands: a call that happened must never be un-completed by
+  // a Stripe blip.
   if (eventType === 'meeting.ended') {
     const match = await findProjectExpertByZoomMeetingId(meetingId);
     if (match) {
@@ -139,27 +208,49 @@ export async function POST(request: NextRequest) {
             expertId,
           });
         }
+      } else if (!project || !pe) {
+        // The lookup found the row but the project did not load — never guess.
+        console.log('[zoom] meeting-ended-skip', { meetingId, reason: 'row_not_loaded' });
       } else {
         const { actualDurationMin, endedAt } = resolved;
+        const attendance = resolveAttendance(pe.zoomAttendance);
 
-        await updateExpertStatus(projectId, expertId, {
-          actualDurationMin,
-          zoomMeetingEndedAt: endedAt,
-          status:             'completed',
-        });
-
-        console.log('[zoom] meeting-ended', { meetingId, durationMin: actualDurationMin });
-
-        // Auto-invoice if rate is set — amount computed from the stored expertRate
-        // (client rate × billable minutes, lib/pricing.ts), never from webhook payload
-        if (pe?.expertRate) {
-          const invoiceAmount = callChargeDollars(pe.expertRate, actualDurationMin);
-          try {
-            const { createAndSendInvoice } = await import('../../../../lib/createAndSendInvoice');
-            await createAndSendInvoice(projectId, expertId, invoiceAmount, actualDurationMin);
-          } catch (err) {
-            console.error('[zoom] auto-invoice failed', err instanceof Error ? err.message : String(err));
-          }
+        if (attendance === 'unknown') {
+          // NO TELEMETRY, NO MONEY. The meeting is stamped as ended so a
+          // redelivery is still a no-op, but the engagement is neither
+          // completed nor billed: a staff member decides at
+          // POST /api/admin/attendance. Charging on silence is exactly what
+          // the founder's policy forbids.
+          await mutateExpert(projectId, expertId, current => ({
+            ...current,
+            actualDurationMin,
+            zoomMeetingEndedAt:      endedAt,
+            attendanceReviewPending: true,
+            updatedAt:               Date.now(),
+          })).catch(err => {
+            console.error('[zoom] attendance-review write failed',
+              err instanceof Error ? err.message.slice(0, 120) : 'unknown');
+          });
+          await recordSystemFailure({
+            area:   'invoice',
+            reason: 'attendance_unconfirmed',
+            projectId,
+            expertId,
+          });
+          console.log('[zoom] meeting-ended-review', { meetingId, durationMin: actualDurationMin });
+        } else {
+          // both / client_no_show / expert_no_show — one implementation,
+          // shared with the staff override (lib/lateCancelBilling.ts).
+          const result = await applyAttendanceOutcome(project, pe, attendance, {
+            durationMin: actualDurationMin,
+            endedAt,
+          });
+          console.log('[zoom] meeting-ended', {
+            meetingId,
+            durationMin: actualDurationMin,
+            attendance:  result.outcome,
+            charged:     result.charged,
+          });
         }
       }
     }

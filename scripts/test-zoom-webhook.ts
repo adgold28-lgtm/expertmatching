@@ -1,8 +1,10 @@
-// scripts/test-zoom-webhook.ts — unit tests for the two pure decisions inside
+// scripts/test-zoom-webhook.ts — unit tests for the pure decisions inside
 // app/api/webhooks/zoom/meetingEnd.ts, the pure half of the Zoom webhook: is
-// this signed delivery fresh enough to act on (the replay window, C-4), and
-// what does meeting.ended mean for a row that may already be completed or may
-// carry no usable duration (C-4, M-35).
+// this signed delivery fresh enough to act on (the replay window, C-4), what
+// does meeting.ended mean for a row that may already be completed or may carry
+// no usable duration (C-4, M-35), and — Wave 5 — who actually turned up
+// (classifyParticipant / resolveAttendance), which is what decides whether a
+// finished meeting is billed, refunded to silence, or held for staff review.
 //
 // Pure functions only: no Zoom, no Stripe, no database, no network. The route
 // handler itself is never imported or called here.
@@ -13,7 +15,9 @@
 
 import {
   ZOOM_TIMESTAMP_TOLERANCE_SEC,
+  classifyParticipant,
   isFreshTimestamp,
+  resolveAttendance,
   resolveMeetingEnd,
   type MeetingEndRow,
 } from '../app/api/webhooks/zoom/meetingEnd';
@@ -129,6 +133,76 @@ const nanProbes = [
 check('no resolution ever carries a NaN duration',
   nanProbes.every(r => r.skip || Number.isFinite(r.actualDurationMin)),
   nanProbes.map(r => String(durationOf(r))).join(', '));
+
+// ── Attendance: who joined (Wave 5) ──────────────────────────────────────────
+// The only evidence of a no-show, and a no-show is billable, so every one of
+// these is a money decision.
+
+section('classifyParticipant: matching a Zoom participant to a side of the call');
+
+const IDS = {
+  expertEmail: 'Expert@Example.com',
+  ownerEmail:  'Owner@Firm.com',
+  clientEmail: 'Client@Firm.com',
+};
+
+eq('the expert\'s own address is the expert',
+  classifyParticipant({ email: 'expert@example.com' }, IDS), 'expert');
+eq('case and padding do not matter',
+  classifyParticipant({ email: '  EXPERT@EXAMPLE.COM ' }, IDS), 'expert');
+eq('the project owner is the client',
+  classifyParticipant({ email: 'owner@firm.com' }, IDS), 'client');
+eq('the client contact is the client too',
+  classifyParticipant({ email: 'client@firm.com' }, IDS), 'client');
+eq('a stranger is unknown',
+  classifyParticipant({ email: 'someone@else.com' }, IDS), 'unknown');
+eq('no email and no host flag is unknown',
+  classifyParticipant({ user_name: 'Guest' }, IDS), 'unknown');
+eq('a missing participant is unknown',
+  classifyParticipant(undefined, IDS), 'unknown');
+eq('a null participant is unknown',
+  classifyParticipant(null, IDS), 'unknown');
+eq('the host with no address is the expert',
+  classifyParticipant({ role: 'host' }, IDS), 'expert');
+eq('Zoom\'s numeric host role counts too',
+  classifyParticipant({ role: 1 }, IDS), 'expert');
+eq('the boolean host flag counts too',
+  classifyParticipant({ host: true }, IDS), 'expert');
+eq('the CLIENT joining as host is still the client',
+  classifyParticipant({ email: 'owner@firm.com', role: 'host' }, IDS), 'client');
+eq('with no identities on file, an address matches nothing',
+  classifyParticipant({ email: 'expert@example.com' }, {}), 'unknown');
+eq('empty identities never match an empty address',
+  classifyParticipant({ email: '' }, { expertEmail: '', ownerEmail: '' }), 'unknown');
+eq('a non-string email is ignored',
+  classifyParticipant({ email: 12345 }, IDS), 'unknown');
+
+section('resolveAttendance: the verdict on a finished meeting');
+
+eq('both joined → both',
+  resolveAttendance({ expertJoined: true, clientJoined: true }), 'both');
+eq('expert only → the client did not show',
+  resolveAttendance({ expertJoined: true, clientJoined: false }), 'client_no_show');
+eq('expert only, client flag absent → the client did not show',
+  resolveAttendance({ expertJoined: true }), 'client_no_show');
+eq('client only → the expert did not show',
+  resolveAttendance({ clientJoined: true }), 'expert_no_show');
+eq('neither flag set → unknown, never a no-show',
+  resolveAttendance({ expertJoined: false, clientJoined: false }), 'unknown');
+eq('an empty record → unknown',        resolveAttendance({}), 'unknown');
+eq('no telemetry at all → unknown',    resolveAttendance(undefined), 'unknown');
+eq('a null record → unknown',          resolveAttendance(null), 'unknown');
+
+// The point of the section: silence is never chargeable. A row with no
+// participant data can only ever be 'unknown', which the webhook parks for
+// staff review rather than billing.
+check('missing telemetry never resolves to a billable no-show',
+  [undefined, null, {}, { expertJoined: false }, { clientJoined: false }]
+    .every(a => resolveAttendance(a) === 'unknown'),
+  'all unknown');
+check('only a POSITIVE expert-joined can produce a client no-show',
+  resolveAttendance({ clientJoined: false }) !== 'client_no_show',
+  resolveAttendance({ clientJoined: false }));
 
 // ── Result ───────────────────────────────────────────────────────────────────
 

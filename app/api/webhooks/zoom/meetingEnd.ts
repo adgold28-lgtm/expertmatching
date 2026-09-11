@@ -1,8 +1,8 @@
-// The two pure decisions behind POST /api/webhooks/zoom (see ./route.ts):
-// is this signed delivery recent enough to act on, and what does a
-// `meeting.ended` mean for an engagement that may already be completed or may
-// carry no usable duration? Both are money decisions, so both are tested by
-// scripts/test-zoom-webhook.ts.
+// The pure decisions behind POST /api/webhooks/zoom (see ./route.ts): is this
+// signed delivery recent enough to act on, what does a `meeting.ended` mean for
+// an engagement that may already be completed or may carry no usable duration,
+// and — Wave 5 — WHO ACTUALLY TURNED UP. All of them are money decisions, so
+// all of them are tested by scripts/test-zoom-webhook.ts.
 //
 // It also owns the SIGNATURE itself (zoomSignature / verifyZoomWebhook): the
 // route reads the headers and answers, this file decides — which is what lets
@@ -159,4 +159,98 @@ export function verifyZoomWebhook(input: {
 
   if (!isFreshTimestamp(timestamp, now)) return { ok: false, error: 'stale_timestamp' };
   return { ok: true };
+}
+
+
+// ─── Attendance (Wave 5) ──────────────────────────────────────────────────────
+//
+// A no-show is only chargeable if we can prove who was absent, and the only
+// evidence Zoom gives is `meeting.participant_joined`. These two functions turn
+// that stream into a decision; app/api/webhooks/zoom/route.ts stores the
+// matches on `pe.zoomAttendance` and lib/lateCancelBilling.applyAttendanceOutcome
+// acts on the verdict. Both pure — no clock, no I/O.
+
+/** The participant fields Zoom sends that we are willing to read. */
+export interface ZoomParticipant {
+  email?:     unknown;
+  user_name?: unknown;
+  role?:      unknown;
+  host?:      unknown;
+}
+
+/** The two addresses a participant can belong to. */
+export interface ParticipantIdentities {
+  /** The expert's contactEmail. */
+  expertEmail?: string | null;
+  /** The project owner's login address. */
+  ownerEmail?:  string | null;
+  /** The project's client contact, when it differs from the owner. */
+  clientEmail?: string | null;
+}
+
+function normalizeEmail(value: unknown): string {
+  return typeof value === 'string' ? value.trim().toLowerCase() : '';
+}
+
+/**
+ * Which side of the call a Zoom participant is.
+ *
+ * Email first, lower-cased on both sides, because that is the only identifier
+ * both systems share. Zoom omits the address for participants who joined
+ * without signing in, which is the usual case for an expert clicking a join
+ * link — hence the host fallback: the meeting is created by ExpertMatch's
+ * Service-to-Server app with the expert as the intended host, so a participant
+ * Zoom marks as host and whose address is not the client's is the expert.
+ *
+ * Anything else is 'unknown' and contributes nothing: silence must never be
+ * read as an absence, because an absence is billable.
+ */
+export function classifyParticipant(
+  participant: ZoomParticipant | undefined | null,
+  identities:  ParticipantIdentities,
+): 'expert' | 'client' | 'unknown' {
+  const email  = normalizeEmail(participant?.email);
+  const expert = normalizeEmail(identities.expertEmail);
+  const owner  = normalizeEmail(identities.ownerEmail);
+  const client = normalizeEmail(identities.clientEmail);
+
+  if (email) {
+    if (expert && email === expert) return 'expert';
+    if ((owner && email === owner) || (client && email === client)) return 'client';
+  }
+
+  const isHost = participant?.role === 'host' || participant?.role === 1 || participant?.host === true;
+  if (isHost && !(email && ((owner && email === owner) || (client && email === client)))) {
+    return 'expert';
+  }
+
+  return 'unknown';
+}
+
+/** What the webhook recorded about who joined. */
+export interface ZoomAttendanceView {
+  expertJoined?: boolean;
+  clientJoined?: boolean;
+}
+
+/**
+ * The verdict on one finished meeting.
+ *
+ * 'unknown' is the default and covers both "we have no telemetry at all" and
+ * "neither side was ever matched" — a call with no participant data is NOT
+ * treated as attended, and is never treated as a no-show either. The founder's
+ * rule (docs/HANDOFF_WAVE5_CALL_POLICIES.md item 2) is that missing telemetry
+ * requires staff confirmation rather than a charge, so this function fails to
+ * 'unknown' and the caller parks the row for review. Pure.
+ */
+export function resolveAttendance(
+  attendance: ZoomAttendanceView | null | undefined,
+): 'both' | 'client_no_show' | 'expert_no_show' | 'unknown' {
+  const expert = attendance?.expertJoined === true;
+  const client = attendance?.clientJoined === true;
+
+  if (expert && client) return 'both';
+  if (expert && !client) return 'client_no_show';
+  if (!expert && client) return 'expert_no_show';
+  return 'unknown';
 }

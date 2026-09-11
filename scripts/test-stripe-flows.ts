@@ -32,9 +32,20 @@ import {
 } from '../lib/createAndSendInvoice';
 import {
   runExpertPayout,
+  isLateCancelCallId,
+  payoutMinutesFor,
   type PayoutDeps,
   type PayoutProjectView,
 } from '../lib/expertPayout';
+import {
+  applyClientLateCancelMoney,
+  applyAttendanceOutcome,
+  lateCancelCallId,
+  LATE_CANCEL_LINE_LABEL,
+  LATE_CANCEL_MINUTES,
+  type LateCancelDeps,
+} from '../lib/lateCancelBilling';
+import type { Project, ProjectExpert } from '../types';
 import {
   isOnboardingComplete,
   payoutIdempotencyKey,
@@ -953,6 +964,186 @@ async function main(): Promise<void> {
     eq('and Stripe is never called',            env.listed, 0);
   }
 
+  // ── 6. The late-cancel / no-show fee (Wave 5) ───────────────────────────────
+  //
+  // Founder decision 2 (docs/CALL_POLICIES_DRAFT.md): 15 minutes at the agreed
+  // rates, billed under a call id that is NOT the call's own so the per-call
+  // guard never confuses the fee with the consultation.
+
+  const FEE_USD   = callChargeDollars(EXPERT_RATE, LATE_CANCEL_MINUTES);
+  const FEE_CENTS = Math.round(expertPayoutDollars(EXPERT_RATE, LATE_CANCEL_MINUTES) * 100);
+  const FEE_CALL  = `${CALL_ID}:late-cancel`;
+
+  interface FeeEnv {
+    deps:     Partial<LateCancelDeps>;
+    project:  Project;
+    pe:       ProjectExpert;
+    invoices: Array<{ amount: number; minutes: number; callId?: string | null; lineLabel?: string }>;
+    patches:  Array<Partial<ProjectExpert>>;
+    events:   Array<{ type: string; who: unknown }>;
+    failures: string[];
+    removals: Array<'late_cancel' | 'no_show'>;
+  }
+
+  function feeEnv(opts: {
+    expert?:    Partial<ProjectExpert>;
+    canCharge?: boolean;
+    invoiceNull?: boolean;
+  } = {}): FeeEnv {
+    const pe = {
+      expert: { id: EXPERT_ID, name: 'Dana Example' },
+      status: 'scheduled',
+      contactEmail: 'expert@example.com',
+      expertRate:   EXPERT_RATE,
+      booking:      { icsUid: CALL_ID, durationMin: DURATION },
+      ...opts.expert,
+    } as ProjectExpert;
+    const project = { id: PROJECT_ID, ownerEmail: 'owner@firm.com', experts: [pe] } as Project;
+
+    const env: FeeEnv = {
+      project, pe, invoices: [], patches: [], events: [], failures: [], removals: [],
+      deps: {},
+    };
+    env.deps = {
+      getEntitlementsForProject: async () => ({ ...NO_ORG_ENTITLEMENTS, canCharge: opts.canCharge !== false }),
+      createAndSendInvoice: async (_p, _e, amount, minutes, callId, _d, options) => {
+        env.invoices.push({ amount, minutes, callId, lineLabel: options?.lineLabel });
+        if (opts.invoiceNull) return null;
+        return { charged: true, paymentLinkUrl: null, paymentIntentId: 'pi_fee_1' };
+      },
+      patchExpert: async (_p, _e, patch) => { env.patches.push(patch); Object.assign(pe, patch); },
+      emitEngagementEvent: async input => { env.events.push({ type: input.type, who: input.payload?.who }); },
+      recordSystemFailure: async input => { env.failures.push(input.reason); },
+      removeExpertForFault: async (_pr, _pe, fault) => { env.removals.push(fault); return { ok: true }; },
+      now: () => 1_700_000_000_000,
+    };
+    return env;
+  }
+
+  section('applyClientLateCancelMoney charges 15 minutes under its own call id');
+  {
+    const env = feeEnv();
+    const res = await applyClientLateCancelMoney(env.project, env.pe, env.deps);
+    eq('it succeeds',                    res.ok, true);
+    eq('the fee is 15 minutes at the client rate', res.amount, FEE_USD);
+    eq('...which is what was billed',    env.invoices[0]?.amount, FEE_USD);
+    eq('...over 15 minutes, not the booked hour', env.invoices[0]?.minutes, LATE_CANCEL_MINUTES);
+    check('...and the booked hour would have cost more',
+      callChargeDollars(EXPERT_RATE, DURATION) > FEE_USD);
+    eq('the call id is the booking uid plus the suffix', env.invoices[0]?.callId, FEE_CALL);
+    eq('...which is what lateCancelCallId says',        lateCancelCallId(env.pe), FEE_CALL);
+    check('...and is NOT the call\'s own id',           env.invoices[0]?.callId !== CALL_ID);
+    eq('the receipt says what it is, not that a call happened',
+      env.invoices[0]?.lineLabel, LATE_CANCEL_LINE_LABEL);
+    eq('exactly one row write',        env.patches.length, 1);
+    eq('...recording the fee call id', env.patches[0]?.lateCancelCallId, FEE_CALL);
+    eq('nothing was recorded as a failure', env.failures.length, 0);
+  }
+  {
+    // The distinct id is the whole point: the real call's guard is untouched.
+    const env = invoiceEnv({ charge: 'charged', expert: { paymentStatus: 'paid', billedCallId: FEE_CALL, stripePaymentIntentId: 'pi_fee_1' } });
+    await createAndSendInvoice(PROJECT_ID, EXPERT_ID, CHARGE_USD, DURATION, CALL_ID, env.deps);
+    eq('a row billed for the FEE is still billable for the real call', env.charges.length, 1);
+    eq('...under the call\'s own id',                                  env.charges[0]?.callId, CALL_ID);
+  }
+  {
+    const env = feeEnv({ expert: { lateCancelCallId: FEE_CALL } });
+    const res = await applyClientLateCancelMoney(env.project, env.pe, env.deps);
+    eq('a second call for the same fee is refused', res.reason, 'already_charged');
+    eq('and nothing is billed',                     env.invoices.length, 0);
+    eq('and nothing is written',                    env.patches.length, 0);
+  }
+  {
+    const env = feeEnv({ canCharge: false });
+    const res = await applyClientLateCancelMoney(env.project, env.pe, env.deps);
+    eq('a trial account is not charged a fee', res.reason, 'trial');
+    eq('and nothing is billed',                env.invoices.length, 0);
+  }
+  {
+    const env = feeEnv({ expert: { expertRate: null } });
+    eq('no agreed rate → no fee',
+      (await applyClientLateCancelMoney(env.project, env.pe, env.deps)).reason, 'no_rates');
+  }
+  {
+    const env = feeEnv({ expert: { booking: null, zoomMeetingId: null } });
+    eq('nothing identifies the call → no fee',
+      (await applyClientLateCancelMoney(env.project, env.pe, env.deps)).reason, 'no_call_id');
+  }
+  {
+    const env = feeEnv({ invoiceNull: true });
+    const res = await applyClientLateCancelMoney(env.project, env.pe, env.deps);
+    eq('a refused charge is reported',   res.reason, 'charge_failed');
+    eq('and surfaced to the admin feed', env.failures[0], 'late_cancel_fee_not_charged');
+    eq('and the row is NOT stamped',     env.patches.length, 0);
+  }
+
+  section('the payout for a late-cancel fee is 15 minutes, never the booked call');
+  {
+    eq('the suffix marks the id',    isLateCancelCallId(FEE_CALL), true);
+    eq('a plain call id is not one', isLateCancelCallId(CALL_ID), false);
+    eq('null is not one',            isLateCancelCallId(null), false);
+    eq('a fee id pays 15 minutes',
+      payoutMinutesFor({ actualDurationMin: 60, callDurationMin: 60 }, FEE_CALL), LATE_CANCEL_MINUTES);
+    eq('a real call pays what it ran',
+      payoutMinutesFor({ actualDurationMin: 47, callDurationMin: 60 }, CALL_ID), 47);
+
+    const env = payoutEnv({ expert: { billedCallId: FEE_CALL, actualDurationMin: DURATION } });
+    await runExpertPayout(PROJECT_ID, EXPERT_ID, env.deps);
+    eq('one transfer',                        env.transfers.length, 1);
+    eq('for 15 minutes at the expert rate',   env.transfers[0]?.params.amount, FEE_CENTS);
+    check('...not the booked hour',           env.transfers[0]?.params.amount !== PAYOUT_CENTS);
+    eq('keyed on the fee call id',            env.transfers[0]?.key, `expert-payout:${PROJECT_ID}:${EXPERT_ID}:${FEE_CALL}`);
+    eq('and the fee id is recorded as paid',  env.patches[0]?.paidCallIds?.join(','), FEE_CALL);
+  }
+  {
+    const env = payoutEnv({ expert: { billedCallId: FEE_CALL, paidCallIds: [FEE_CALL], stripeTransferId: 'tr_fee' } });
+    await runExpertPayout(PROJECT_ID, EXPERT_ID, env.deps);
+    eq('a fee already paid is not paid twice', env.transfers.length, 0);
+  }
+  {
+    const env = payoutEnv({ expert: { billedCallId: FEE_CALL, paidCallIds: [CALL_ID], stripeTransferId: 'tr_call' } });
+    await runExpertPayout(PROJECT_ID, EXPERT_ID, env.deps);
+    eq('a fee after a paid call is still paid', env.transfers.length, 1);
+    eq('...for 15 minutes',                     env.transfers[0]?.params.amount, FEE_CENTS);
+  }
+
+  section('applyAttendanceOutcome: one implementation for Zoom and for staff');
+  {
+    const env = feeEnv();
+    const res = await applyAttendanceOutcome(env.project, env.pe, 'both', { durationMin: 47, endedAt: 1_700_000_000_000 }, env.deps);
+    eq('both attended → charged',          res.charged, true);
+    eq('the row completes',                env.patches[0]?.status, 'completed');
+    eq('...with the measured duration',    env.patches[0]?.actualDurationMin, 47);
+    eq('...and the review flag cleared',   env.patches[0]?.attendanceReviewPending, false);
+    eq('the ordinary per-minute charge',   env.invoices[0]?.amount, callChargeDollars(EXPERT_RATE, 47));
+    check('...with no late-cancel label',  env.invoices[0]?.lineLabel === undefined);
+    eq('no no_show event',                 env.events.length, 0);
+  }
+  {
+    const env = feeEnv();
+    const res = await applyAttendanceOutcome(env.project, env.pe, 'client_no_show', { durationMin: 60 }, env.deps);
+    eq('the engagement ends',            env.patches[0]?.status, 'rejected_after_outreach');
+    eq('a no_show event names the client', env.events[0]?.who, 'client');
+    eq('no ordinary call charge',        res.charged, false);
+    eq('the fee is billed instead',      env.invoices[0]?.amount, FEE_USD);
+    eq('...under the fee call id',       env.invoices[0]?.callId, FEE_CALL);
+    eq('and the fee is recorded',        env.patches[1]?.lateCancelCallId, FEE_CALL);
+  }
+  {
+    const env = feeEnv();
+    const res = await applyAttendanceOutcome(env.project, env.pe, 'expert_no_show', { durationMin: 60 }, env.deps);
+    eq('a no_show event names the expert', env.events[0]?.who, 'expert');
+    eq('the expert is removed for fault',  env.removals[0], 'no_show');
+    eq('nothing is charged',               env.invoices.length, 0);
+    eq('...and nothing is claimed to be',  res.charged, false);
+  }
+  {
+    const env = feeEnv();
+    await applyAttendanceOutcome(env.project, env.pe, 'neither', { durationMin: 60 }, env.deps);
+    eq('the engagement ends',   env.patches[0]?.status, 'rejected_after_outreach');
+    eq('with no money at all',  env.invoices.length, 0);
+    eq('and nobody removed',    env.removals.length, 0);
+  }
 }
 
 // ── Result ───────────────────────────────────────────────────────────────────
