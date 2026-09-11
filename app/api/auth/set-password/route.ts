@@ -21,6 +21,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createServerClient } from '@supabase/ssr';
 import { verifySignupToken, hashToken, type SignupTokenKind } from '../../../../lib/signupToken';
+import { passwordError, isWeakPasswordError } from '../../../../lib/passwordPolicy';
 import { redeemSetPasswordLink } from '../../../../lib/authLinks';
 import { getUpstashClient } from '../../../../lib/upstashRedis';
 import { getSupabaseAdminClient, getAuthUserIdByEmail } from '../../../../lib/supabase/admin';
@@ -53,10 +54,14 @@ type SetCookieOption = {
   secure?:      boolean;
 };
 
-function passwordError(password: string): string | null {
-  if (password.length < 8) return 'Password must be at least 8 characters.';
-  if (!/\d/.test(password)) return 'Password must contain at least one number.';
-  return null;
+// The password rule lives in lib/passwordPolicy and mirrors Supabase's own,
+// because the link is REDEEMED before the password is written: a password our
+// check accepts but Supabase refuses would burn the link for nothing.
+function weakPasswordResponse(message: string | undefined): Response {
+  return Response.json(
+    { error: 'invalid_password', message: message || 'Password does not meet the requirements.' },
+    { status: 400 },
+  );
 }
 
 function linkSpent(kind: SignupTokenKind): Response {
@@ -252,6 +257,7 @@ async function handleReset(
 
   const { error } = await admin.auth.admin.updateUserById(redeemed.userId, { password });
   if (error) {
+    if (isWeakPasswordError(error)) return weakPasswordResponse(error.message);
     console.error('[auth/set-password] reset failed to update the password');
     return Response.json({ error: 'internal_error' }, { status: 500 });
   }
@@ -341,6 +347,7 @@ async function handleInvite(
   }
   const { error: pwError } = await admin.auth.admin.updateUserById(authId, { password });
   if (pwError) {
+    if (isWeakPasswordError(pwError)) return weakPasswordResponse(pwError.message);
     console.error('[auth/set-password] failed to set password');
     return Response.json({ error: 'internal_error' }, { status: 500 });
   }

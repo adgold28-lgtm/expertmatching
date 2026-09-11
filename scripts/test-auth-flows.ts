@@ -350,15 +350,26 @@ async function main(): Promise<void> {
     check('a password under eight characters is 400 invalid_password',
       tooShort.status === 400 && err(await json(tooShort)) === 'invalid_password', `status ${tooShort.status}`);
 
-    const noDigit = await req(anon, 'POST', setPasswordPath(probeToken, BOGUS_TH), { password: 'abcdefghij', confirmPassword: 'abcdefghij' });
+    const noDigit = await req(anon, 'POST', setPasswordPath(probeToken, BOGUS_TH), { password: 'Abcdefghij!', confirmPassword: 'Abcdefghij!' });
     check('a password with no digit is 400 invalid_password',
       noDigit.status === 400 && err(await json(noDigit)) === 'invalid_password', `status ${noDigit.status}`);
+
+    // Supabase refuses a password without upper, lower, digit AND symbol. The
+    // route must refuse it first, or the link is redeemed for a 422 from Supabase.
+    // Their own token: the per-link attempt cap below counts body-stage refusals.
+    const ruleToken = generateSignupToken(E.invitee, 'Authflow Firm', { kind: 'invite', orgId: org.id }).token;
+    const noSymbol = await req(anon, 'POST', setPasswordPath(ruleToken, BOGUS_TH), { password: 'Abcdefgh12', confirmPassword: 'Abcdefgh12' });
+    check('a password with no symbol is 400 invalid_password (Supabase policy mirrored)',
+      noSymbol.status === 400 && err(await json(noSymbol)) === 'invalid_password', `status ${noSymbol.status}`);
+    const noUpper = await req(anon, 'POST', setPasswordPath(ruleToken, BOGUS_TH), { password: 'abcdefgh12!', confirmPassword: 'abcdefgh12!' });
+    check('a password with no uppercase letter is 400 invalid_password',
+      noUpper.status === 400 && err(await json(noUpper)) === 'invalid_password', `status ${noUpper.status}`);
 
     const badJson = await rawReq(anon, 'POST', setPasswordPath(probeToken, BOGUS_TH), 'not json at all');
     check('an unreadable body is 400 invalid_json',
       badJson.status === 400 && err(await json(badJson)) === 'invalid_json', `status ${badJson.status}`);
 
-    check('after five refusals the invitee is still pending — no write happened',
+    check('after these refusals the invitee is still pending — no write happened',
       (await getUser(E.invitee))?.status === 'pending');
 
     // The per-link attempt cap: five per hour, keyed on OUR token's hash, and
