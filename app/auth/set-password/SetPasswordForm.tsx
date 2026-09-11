@@ -16,6 +16,7 @@
 // deliberate: without session cookies, pushing to a guarded route would bounce
 // the user straight back out.
 
+import { PASSWORD_RULE, passwordError } from '../../../lib/passwordPolicy';
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 
@@ -50,6 +51,14 @@ export default function SetPasswordForm({
 
     if (password !== confirm) {
       setError('Passwords do not match.');
+      return;
+    }
+
+    // Same rule the server (and Supabase) applies. Checking here means a weak
+    // password costs nothing: no round trip, no per-link attempt consumed.
+    const weak = passwordError(password);
+    if (weak) {
+      setError(weak);
       return;
     }
 
@@ -162,7 +171,7 @@ export default function SetPasswordForm({
                 disabled={loading}
               />
               <p id="password-rule" className="mt-1.5 text-[11px] text-muted leading-snug">
-                At least 8 characters, including one number.
+                {PASSWORD_RULE}
               </p>
             </div>
 
