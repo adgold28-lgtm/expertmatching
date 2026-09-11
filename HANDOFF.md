@@ -4,6 +4,13 @@
 
 Read with `CLAUDE.md` (operating rules), `TASK_QUEUE.md` (priorities), `docs/MATCHY_SPEC.md` (the contract), `docs/OUTREACH_BOT_AUDIT.md` (why Matchy replaces the outreach bot).
 
+## Session 10 (2026-09-10): inbound email was never wired; now proven end to end
+- Root cause: the root domain's MX records pointed at ImprovMX (Gmail forwarding), so every expert reply was forwarded to the founder's Gmail and Resend never received it. Resend's inbound webhook had zero events in four months.
+- Fix, live in prod (46aeb5e, 69404ff, 92f4acb): replies go to `reply+TOKEN@reply.expertmatch.fit` (`OUTREACH_REPLY_DOMAIN`), a Resend receiving subdomain (MX `inbound-smtp.us-east-1.amazonaws.com` prio 9 on `reply`; DKIM/SPF on `send.reply`). Root MX restored to ImprovMX so `@expertmatch.fit` still forwards to Gmail. Reply-To carries the From display name so the coded address is not what an expert sees. The route now parses Resend's real `email.received` envelope (addresses under `data`, no body) and fetches text/html from `GET /emails/receiving/{email_id}` after the token and sender checks.
+- Verified: test to the subdomain -> webhook delivered -> `[inbound-email] invalid outreach token: malformed` (address parsed, fake token refused). A real reply on a live thread is the next thing to watch in Vercel logs.
+- Also done this session: Terms name ExpertMatch LLC (Arkansas); Google Auth Platform published, scopes registered, branding submitted, Search Console verified; Stripe refund/dispute + connected-account events added; migrations 20260908 and 20260909 applied; CRON_SECRET confirmed.
+- Open: Google Workspace for a real `asher@expertmatch.fit` inbox (replace ImprovMX MX rows with Google's when set up; the `reply` subdomain is unaffected); founder decisions on Calendly, refund clawback, first-card rule, cancel-booking.
+
 ## Session 9b (2026-09-09/10): architecture map + repair waves, rebased onto Matchy 2.0. NOT PUSHED. READ THIS FIRST.
 
 **What this session was.** Two halves. First, a comment-only annotation pass over the whole repository produced `ARCHITECTURE.md` (the technical map), `ARCHITECTURE-PLAIN.md` (the same thing for a non-engineer) and `ARCHITECTURE-AUDIT.md` (129 findings: 4 Critical, 23 High, 51 Medium, 51 Low, each with the file, what happens, why it matters and what test exists). Then `docs/REPAIR_PLAN.md` was written from the audit and executed in five waves of Opus builders, one builder per disjoint file set, builders never commit, the lead type-checks and commits by brief.

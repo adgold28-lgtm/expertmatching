@@ -2,6 +2,8 @@
 Last updated: 2026-09-10
 
 ## NOW (blocking or broken)
+- [x] 2026-09-10: inbound expert replies proven end to end via reply.expertmatch.fit (see HANDOFF Session 10). H-26 closed.
+- [ ] Founder: Google Workspace for asher@expertmatch.fit (optional); decisions: Calendly remove/keep, refund clawback, first-card rule, cancel-booking semantics.
 - [ ] 2026-09-09 (session 9): MATCHY 2.0 is on `main` (b4518b8) and is now the BASE of `fix/waves`. Still owed before the next push: browser pass (owner + collaborator + admin), `e2e-matchy` against a running server, copy-audit rows for the new strings. Founder: set `OUTREACH_LINKEDIN_URL`; decide `INTRO_ARM` (unset = 4-arm split). See HANDOFF Session 9a.
 - [x] 2026-09-10 (session 9): ARCHITECTURE MAP + REPAIR WAVES done on branch `fix/waves` (worktree, rebased 2026-09-10 onto main b4518b8 = Matchy 2.0, pushed 2026-09-10 after rebase onto b44a02c). 17 fix/test commits. All four audit Criticals closed, 21 of 23 Highs closed, 60 of 132 findings fixed with a script behind each. tsc clean, build:local green, 33 offline scripts green, test-route-authz 116/116, test-auth-flows 134/134. See HANDOFF Session 9b and ARCHITECTURE-AUDIT "Status 2026-09-10".
 - [ ] **Founder: paste migration `20260908000000_identity_boundary_trial_events.sql`** if it has not been applied. Nobody has confirmed it either way. Then `npx tsx scripts/verify-schema.ts`.
