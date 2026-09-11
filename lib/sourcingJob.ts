@@ -83,12 +83,14 @@ export async function publishSourcingJob(job: SourcingJob): Promise<void> {
   //
   // Upstash-Deduplication-Id makes a double publish of the SAME run (a
   // double-clicked button, a client retry) one delivery instead of two. It is
-  // keyed on the run, `sourcing:<projectId>:<runId>`, so a legitimate re-run —
+  // keyed on the run, `sourcing-<projectId>-<runId>`, so a legitimate re-run —
   // which always gets a fresh sourcingStartedAt — is never deduplicated away.
   // Without a runId there is nothing safe to key on, so the header is omitted
   // rather than guessed: a constant per-project id would swallow real re-runs.
+  // HYPHENS, NOT COLONS: QStash answers 400 "DeduplicationId cannot contain ':'"
+  // and the whole run fails at enqueue (broke every sourcing run on 2026-09-10).
   const dedupId = typeof job.runId === 'number' && Number.isFinite(job.runId)
-    ? `sourcing:${job.projectId}:${job.runId}`
+    ? `sourcing-${job.projectId}-${job.runId}`
     : null;
 
   const res = await fetch(`${qstashHost}/v2/publish/${endpoint}`, {
