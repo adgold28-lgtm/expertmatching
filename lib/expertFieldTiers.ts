@@ -89,6 +89,15 @@ export const STAFF_ONLY_FIELDS: readonly string[] = [
   'introArm',
   'introNeedsWhyThem',
   'rateAgreedAt',
+  // Wave 5 (call policies): every one of these is money, attendance evidence
+  // or a removal stamp, written only by the server.
+  'lateCancelCallId',
+  'attendanceReviewPending',
+  'zoomAttendance',
+  'expertPayoutReversedAt',
+  'stripeTransferReversalId',
+  'expertRemovedAt',
+  'expertRemovedFor',
 ];
 
 const STAFF_ONLY_SET: ReadonlySet<string> = new Set(STAFF_ONLY_FIELDS);

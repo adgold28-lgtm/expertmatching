@@ -278,20 +278,20 @@ async function handlePaymentFailed(
  * paymentStatus moves to the terminal 'refunded' and a system_events row puts
  * the engagement on the attention list. The state change is all this does.
  *
- * TODO(founder decision): PAYOUT REVERSAL POLICY. The expert has usually
- * already been transferred their half by the time a refund or chargeback
- * arrives, and nothing here claws it back — the platform absorbs it. The
- * question is a product one, not a technical one: does ExpertMatch reverse the
- * expert's transfer when the client is refunded (and if so, for a dispute the
- * platform may still win?), or does it absorb the cost and treat the expert as
- * having done the work? Implementing "reverse" is one call —
- * `stripe.transfers.createReversal(pe.stripeTransferId, { amount, metadata:
- * { projectId, expertId } })` with an idempotency key mirroring
- * lib/stripeConnect.payoutIdempotencyKey — plus clearing the row's
- * stripeTransferId/paidCallIds entry. It is deliberately NOT implemented until
- * the policy is decided: reversing money out of an expert's bank account by
- * accident is worse than an accountant's adjustment. Deferred in
- * docs/REPAIR_PLAN.md Part H.
+ * FOUNDER DECISION (2026-09-10, Wave 5): a refund or a dispute moves the
+ * engagement to `refunded` and raises the alert, and the expert's transfer is
+ * deliberately LEFT ALONE here. Pulling money back out of an expert's bank
+ * account is a judgement call about a person we asked to show up, not an
+ * automatic consequence of a client's card event, and an unwarranted reversal
+ * costs us the expert permanently.
+ *
+ * Staff decide instead, with a reason, through
+ * POST /api/admin/payouts/reverse { projectId, expertId, reason }
+ * (adminGuard; lib/stripeConnect.reverseExpertPayout / canReversePayout). The
+ * control sits on the Needs Attention item this alert creates, so the refund
+ * surfaces and the clawback is one click away from it. The route is idempotent
+ * on `expertPayoutReversedAt` and keyed on the payout's own idempotency key, so
+ * a double-click replays the first reversal rather than sending a second.
  */
 async function handleRefundOrDispute(
   ref:  EngagementRef,
@@ -395,7 +395,7 @@ export interface StripeEventOutcome {
  *   * REFUNDS CHANGE STATE, NOT MONEY. charge.refunded and
  *     charge.dispute.created move the engagement to 'refunded' and raise a
  *     system_events row. The expert's payout is NOT reversed — see the
- *     TODO(founder decision) on handleRefundOrDispute.
+ *     FOUNDER DECISION note on handleRefundOrDispute.
  *   * ALWAYS 200. A branch that fails logs and is dropped, rather than asking
  *     Stripe to redeliver.
  */

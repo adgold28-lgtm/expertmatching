@@ -76,7 +76,10 @@ export type EngagementEventType =
   // Matchy Phase 2 (supabase/migrations/20260907300000_matchy_phase2_events.sql)
   | 'nudge_sent'
   | 'rescheduled'
-  | 'time_declined';
+  | 'time_declined'
+  // Wave 5 (supabase/migrations/20260910000000_call_cancelled_event.sql)
+  | 'call_cancelled'
+  | 'no_show';
 
 export interface Database {
   public: {

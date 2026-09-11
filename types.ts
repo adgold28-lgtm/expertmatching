@@ -274,6 +274,15 @@ export interface BookingState {
   bookedAt:         number;
   rescheduledCount: number;
   history:          BookingMove[];    // previous times, oldest first
+  // Wave 5 (docs/CALL_POLICIES_DRAFT.md): a cancelled booking keeps its record.
+  // All three are server-written by lib/bookCall.cancelCall; absent on a live
+  // booking. `cancelledBy: 'staff'` is reserved for an admin action.
+  cancelledAt?:     number | null;
+  cancelledBy?:     'client' | 'expert' | 'staff' | null;
+  cancelReason?:    string | null;
+  // True when the cancel fell inside the 24-hour window (lib/callPolicies.ts),
+  // which is what makes a client cancel billable and an expert cancel a removal.
+  lateCancel?:      boolean | null;
 }
 
 // ─── Matchy Phase 2: follow-up nudges (lib/nudges.ts) ─────────────────────────
@@ -465,6 +474,25 @@ export interface ProjectExpert {
   // A repeat consultation carries a new id and is paid again; rows written
   // before this field existed have none and fall back to stripeTransferId.
   paidCallIds?:             string[];
+  // Wave 5: a staff clawback (POST /api/admin/payouts/reverse) reversed the
+  // transfer in stripeTransferId. Server-written only; the transfer id stays so
+  // the reversal can be traced. Absent unless a reversal happened.
+  expertPayoutReversedAt?:  number | null;
+  stripeTransferReversalId?: string | null;
+  // Wave 5: the client no-show / late-cancel fee was charged for this call id
+  // (`${icsUid}:late-cancel`). Absent otherwise. Written by the money path only.
+  lateCancelCallId?:        string | null;
+  // Wave 5: a Zoom meeting.ended without usable participant telemetry is held
+  // here until a staff member confirms who attended (never charged on silence).
+  attendanceReviewPending?: boolean | null;
+  // Wave 5: who Zoom reported joining (meeting.participant_joined, matched by
+  // the participant's email or host role). Server-written by the Zoom webhook.
+  zoomAttendance?:          { expertJoined?: boolean; clientJoined?: boolean } | null;
+  // Wave 5: lib/expertRemoval.removeExpertForFault ran for this engagement
+  // (suppression + apology). Its idempotence key: the terminal status alone
+  // cannot be, because cancelCall writes that status before calling it.
+  expertRemovedAt?:         number | null;
+  expertRemovedFor?:        'late_cancel' | 'no_show' | null;
   // Payout-onboarding email throttle (H-9): at most one every 7 days and four
   // in total, instead of one every night for as long as the row stays pending.
   payoutReminderSentAt?:    number;

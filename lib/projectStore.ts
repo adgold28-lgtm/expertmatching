@@ -114,6 +114,15 @@ export interface UpdateExpertInput {
   scheduling?: SchedulingState | null;
   booking?:    BookingState    | null;
   nudges?:     NudgeState      | null;
+  // Wave 5 (call policies): server-written only, never accepted from a client
+  // body (lib/expertFieldTiers.ts keeps them staff-only).
+  lateCancelCallId?:         string | null;
+  attendanceReviewPending?:  boolean | null;
+  zoomAttendance?:           { expertJoined?: boolean; clientJoined?: boolean } | null;
+  expertPayoutReversedAt?:   number | null;
+  stripeTransferReversalId?: string | null;
+  expertRemovedAt?:          number | null;
+  expertRemovedFor?:         'late_cancel' | 'no_show' | null;
   // Matchy 2.0 — intro rubric fields and the rate lock (types.ts). Data jsonb, no migration.
   introArm?:          IntroArm | null;
   whyThem?:           string | null;
@@ -314,6 +323,8 @@ interface ProjectStore {
   deleteProject(id: string): Promise<{ success: boolean }>;
   addExpertsToProject(id: string, experts: Array<{ expert: Expert; status?: ExpertStatus }>): Promise<Project>;
   updateExpertStatus(id: string, expertId: string, input: UpdateExpertInput): Promise<Project>;
+  /** Decide-then-write on one expert row under compare-and-set; see the public export. */
+  mutateExpert(id: string, expertId: string, mutate: (current: ProjectExpert) => ProjectExpert): Promise<Project>;
   updateProjectFields(id: string, input: UpdateProjectInput): Promise<Project>;
 
   /**
@@ -409,11 +420,18 @@ class InMemoryProjectStore implements ProjectStore {
   }
 
   async updateExpertStatus(id: string, expertId: string, input: UpdateExpertInput): Promise<Project> {
+    return this.mutateExpert(id, expertId, current => applyExpertInput(current, input));
+  }
+
+  async mutateExpert(
+    id: string,
+    expertId: string,
+    mutate: (current: ProjectExpert) => ProjectExpert,
+  ): Promise<Project> {
     const project = await this.getProject(id);
     if (!project) throw new Error(`Project not found: ${id}`);
-    const experts = project.experts.map(pe =>
-      pe.expert.id !== expertId ? pe : applyExpertInput(pe, input),
-    );
+    if (!project.experts.some(pe => pe.expert.id === expertId)) throw new Error(`Expert not found: ${expertId}`);
+    const experts = project.experts.map(pe => (pe.expert.id !== expertId ? pe : mutate(pe)));
     return this.updateProject(project.id, { experts });
   }
 
@@ -951,7 +969,7 @@ class SupabaseProjectStore implements ProjectStore {
   // the whole `data` blob is rewritten, so the UPDATE only applies if
   // `updated_at` still matches what we read (the row's trigger bumps it on
   // every write). On conflict, re-read and re-apply `mutate` on fresh state.
-  private async mutateExpert(
+  async mutateExpert(
     id: string,
     expertId: string,
     mutate: (current: ProjectExpert) => ProjectExpert,
@@ -1216,6 +1234,23 @@ export function updateExpertStatus(
   input: UpdateExpertInput,
 ): Promise<Project> {
   return getProjectStore().updateExpertStatus(id, expertId, input);
+}
+
+/**
+ * Wave 5: DECIDE AND WRITE IN ONE COMPARE-AND-SET. `mutate` runs against the
+ * freshly read row on every attempt (the Supabase store retries on an
+ * `updated_at` mismatch), so a caller that must refuse when the row has moved —
+ * cancel versus move versus book on the same engagement — throws from inside
+ * `mutate` and nothing is written. `mutate` must be pure and re-runnable.
+ * Exhausted retries reject with 'expert_update_conflict'. No access control:
+ * the route has already run getProjectForUser / requireProjectOwner.
+ */
+export function mutateExpert(
+  id: string,
+  expertId: string,
+  mutate: (current: ProjectExpert) => ProjectExpert,
+): Promise<Project> {
+  return getProjectStore().mutateExpert(id, expertId, mutate);
 }
 
 /**
