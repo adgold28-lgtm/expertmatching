@@ -93,19 +93,19 @@ interface EnvGroup { name: string; vars: EnvVar[] }
 // expert, so the founder gets to correct it before the invite goes out.
 
 const FIRM_TYPE_OPTIONS: { value: FirmTypeValue; label: string }[] = [
-  { value: 'pe_firm',         label: 'PE firm' },
+  { value: 'pe_firm',         label: 'Private equity (PE) firm' },
   { value: 'family_office',   label: 'Family office' },
   { value: 'consulting_firm', label: 'Consulting firm' },
   { value: 'law_firm',        label: 'Law firm' },
   { value: 'hedge_fund',      label: 'Hedge fund' },
-  { value: 'corporate',       label: 'Corporate' },
-  { value: 'other',           label: 'Other' },
+  { value: 'corporate',       label: 'Corporate team' },
+  { value: 'other',           label: 'Other firm type' },
 ];
 
 const FIRM_SIZE_OPTIONS: { value: FirmSizeValue; label: string }[] = [
-  { value: 'boutique', label: 'Boutique' },
+  { value: 'boutique', label: 'Boutique (small)' },
   { value: 'mid_size', label: 'Mid-size' },
-  { value: 'large',    label: 'Large' },
+  { value: 'large',    label: 'Large (enterprise)' },
 ];
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -121,6 +121,12 @@ function formatTimestamp(iso: string): string {
   return new Date(ms).toLocaleString('en-US', {
     month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit',
   });
+}
+
+/** 'call_no_show' → 'Call no show' — enum values are not staff-readable as stored. */
+function attentionKindLabel(kind: string): string {
+  const words = kind.replace(/_/g, ' ').trim();
+  return words ? words.charAt(0).toUpperCase() + words.slice(1) : 'Needs review';
 }
 
 /** "Jane Q. Okafor" → { first: 'Jane', last: 'Q. Okafor' } */
@@ -148,8 +154,8 @@ function seatSummaryLine(firm: FirmInfo): string {
     `${formatUsdFromCents(firm.seatUnitPriceCents)}/seat`,
     `${formatUsdFromCents(firm.monthlySeatTotalCents)}/mo`,
   ];
-  if (firm.seatLimit !== null)  parts.push(`cap ${firm.seatLimit}`);
-  if (firm.seatPending > 0)     parts.push(`${firm.seatPending} pending`);
+  if (firm.seatLimit !== null)  parts.push(`seat cap ${firm.seatLimit}`);
+  if (firm.seatPending > 0)     parts.push(`${firm.seatPending} invite${firm.seatPending === 1 ? '' : 's'} pending`);
   return parts.join(' · ');
 }
 
@@ -173,13 +179,13 @@ function statusLabel(status: string): string {
 
 /** "5 seats synced" — with " (app has 6)" appended when Stripe has drifted. */
 function syncedSegment(billing: FirmBilling, seatUsed: number): string {
-  if (billing.seatQuantitySynced === null) return 'seat count not yet synced';
-  const base = `${pluralSeats(billing.seatQuantitySynced)} synced`;
-  return billing.seatQuantitySynced === seatUsed ? base : `${base} (app has ${seatUsed})`;
+  if (billing.seatQuantitySynced === null) return 'seat count not yet sent to Stripe';
+  const base = `Stripe billing ${pluralSeats(billing.seatQuantitySynced)}`;
+  return billing.seatQuantitySynced === seatUsed ? base : `${base}, but this app counts ${seatUsed}`;
 }
 
 function autoBillingText(billing: FirmBilling, seatUsed: number, status: string): string {
-  return `Auto-billing on · Stripe subscription ${statusLabel(status)} · ${syncedSegment(billing, seatUsed)}`;
+  return `Automatic monthly billing on · Stripe subscription ${statusLabel(status)} · ${syncedSegment(billing, seatUsed)}`;
 }
 
 function billingLineParts(firm: FirmInfo): BillingLineParts {
@@ -203,7 +209,7 @@ function billingLineParts(firm: FirmInfo): BillingLineParts {
   const status = billing.subscriptionStatus;
 
   if (status === null) {
-    return { text: 'Card on file · subscription pending', tone: 'muted' };
+    return { text: 'Card on file · Stripe subscription not created yet', tone: 'muted' };
   }
   if (LIVE_STATUSES.includes(status)) {
     return { text: autoBillingText(billing, firm.seatUsed, status), tone: 'ink' };
@@ -216,9 +222,9 @@ function billingLineParts(firm: FirmInfo): BillingLineParts {
     };
   }
   if (DEAD_STATUSES.includes(status)) {
-    return { text: `Subscription ${statusLabel(status)} — no active billing`, tone: 'warn' };
+    return { text: `Stripe subscription ${statusLabel(status)} — this organization is not being billed`, tone: 'warn' };
   }
-  return { text: `Subscription ${statusLabel(status)}`, tone: 'muted' };
+  return { text: `Stripe subscription ${statusLabel(status)}`, tone: 'muted' };
 }
 
 const TONE_CLASS: Record<BillingTone, string> = {
@@ -286,7 +292,7 @@ function ErrorBox({ message, onRetry }: { message: string; onRetry: () => void }
         className="mt-2 text-[10px] uppercase tracking-widest text-red-500 hover:text-red-700 transition-colors"
         style={{ letterSpacing: '0.12em' }}
       >
-        Retry
+        Try again
       </button>
     </div>
   );
@@ -379,7 +385,7 @@ function AccessRequestCard({
     return (
       <div className="border border-frame bg-cream px-5 py-4 space-y-2">
         <span className="text-[10px] uppercase tracking-widest text-muted" style={{ letterSpacing: '0.14em' }}>
-          {status === 'approved' ? '✓ Invite sent' : 'Rejected'}
+          {status === 'approved' ? '✓ Approved — invite email sent' : 'Request rejected'}
         </span>
         {warnMsg && (
           <div className="flex flex-col sm:flex-row sm:items-center gap-2">
@@ -435,7 +441,7 @@ function AccessRequestCard({
             />
           </div>
           <div>
-            <label className={LABEL_CLASS} style={{ letterSpacing: '0.12em' }}>Organization</label>
+            <label className={LABEL_CLASS} style={{ letterSpacing: '0.12em' }}>Organization name</label>
             <input
               type="text"
               value={firmName}
@@ -464,7 +470,7 @@ function AccessRequestCard({
               disabled={loading}
               className={SELECT_CLASS}
             >
-              <option value="">Not given</option>
+              <option value="">Not provided by the requester</option>
               {FIRM_TYPE_OPTIONS.map(o => (
                 <option key={o.value} value={o.value}>{o.label}</option>
               ))}
@@ -485,7 +491,7 @@ function AccessRequestCard({
               disabled={loading}
               className={SELECT_CLASS}
             >
-              <option value="">Not given</option>
+              <option value="">Not provided by the requester</option>
               {FIRM_SIZE_OPTIONS.map(o => (
                 <option key={o.value} value={o.value}>{o.label}</option>
               ))}
@@ -506,7 +512,7 @@ function AccessRequestCard({
             className="mt-[2px] shrink-0 accent-navy"
           />
           <span className="text-[11px] text-ink leading-relaxed">
-            Trial account — no card at onboarding. They can brief, source and bookmark; nothing reaches
+            Approve as a trial account — no payment card required at onboarding. They can brief, source and bookmark; nothing reaches
             an expert until a card is added.
             {personalDomain && (
               <span className="block text-[10px] text-muted mt-0.5">
@@ -528,16 +534,18 @@ function AccessRequestCard({
               disabled={loading}
               className="text-[10px] uppercase tracking-widest text-muted hover:text-red-600 border border-frame hover:border-red-300 px-3 py-1.5 transition-colors disabled:opacity-40"
               style={{ letterSpacing: '0.12em' }}
+              title="Decline this access request. No account or organization is created and no email is sent."
             >
-              Reject
+              Reject request
             </button>
             <button
               onClick={() => act('approve')}
               disabled={loading || !firstName.trim() || !lastName.trim()}
               className="text-[10px] uppercase tracking-widest px-4 py-1.5 transition-colors disabled:opacity-40"
               style={{ background: '#0B1F3B', color: '#C6A75E', letterSpacing: '0.12em' }}
+              title="Create the organization and account, then email this person an invitation link."
             >
-              {loading ? 'Sending…' : trial ? 'Approve as Trial + Send Invite' : 'Approve + Send Invite'}
+              {loading ? 'Sending invite…' : trial ? 'Approve as trial and send invite' : 'Approve and send invite'}
             </button>
           </div>
         </div>
@@ -589,7 +597,7 @@ function SeatRequestCard({ req, onDone }: { req: SeatRequest; onDone: () => void
   if (done) {
     return (
       <div className="border border-frame bg-cream px-5 py-4">
-        <span className="text-[10px] uppercase tracking-widest text-muted" style={{ letterSpacing: '0.14em' }}>Done</span>
+        <span className="text-[10px] uppercase tracking-widest text-muted" style={{ letterSpacing: '0.14em' }}>Seat request handled</span>
       </div>
     );
   }
@@ -611,16 +619,18 @@ function SeatRequestCard({ req, onDone }: { req: SeatRequest; onDone: () => void
             disabled={loading}
             className="text-[10px] uppercase tracking-widest text-muted hover:text-red-600 border border-frame hover:border-red-300 px-3 py-1.5 transition-colors disabled:opacity-40"
             style={{ letterSpacing: '0.12em' }}
+            title="Decline this request for a seat. No seat is added and no invitation is sent."
           >
-            Reject
+            Reject request
           </button>
           <button
             onClick={() => act('approve')}
             disabled={loading || !firstName.trim() || !lastName.trim()}
             className="text-[10px] uppercase tracking-widest px-4 py-1.5 transition-colors disabled:opacity-40"
             style={{ background: '#0B1F3B', color: '#C6A75E', letterSpacing: '0.12em' }}
+            title="Add a billed seat to this organization and email this person an invitation link."
           >
-            {loading ? 'Sending…' : 'Approve + Invite'}
+            {loading ? 'Sending invite…' : 'Approve and send invite'}
           </button>
         </div>
       </div>
@@ -659,14 +669,30 @@ function SeatRequestCard({ req, onDone }: { req: SeatRequest; onDone: () => void
 
 // ─── Status / role pills ──────────────────────────────────────────────────────
 
+const USER_STATUS_LABEL: Record<UserStatus, string> = {
+  active:   'Active',
+  pending:  'Invite not accepted',
+  disabled: 'Sign-in disabled',
+};
+
+const USER_STATUS_HINT: Record<UserStatus, string> = {
+  active:   'This person has accepted their invite and can sign in. The seat is billed.',
+  pending:  'Invitation sent but not yet accepted. This person cannot sign in yet.',
+  disabled: 'Sign-in is blocked for this account. The seat is no longer billed.',
+};
+
 function StatusPill({ status }: { status: UserStatus }) {
   const color =
     status === 'active'  ? 'text-green-700' :
     status === 'pending' ? 'text-amber-600' :
     'text-red-600';
   return (
-    <span className={`text-[10px] uppercase tracking-widest font-medium ${color}`} style={{ letterSpacing: '0.1em' }}>
-      {status}
+    <span
+      className={`text-[10px] uppercase tracking-widest font-medium ${color}`}
+      style={{ letterSpacing: '0.1em' }}
+      title={USER_STATUS_HINT[status]}
+    >
+      {USER_STATUS_LABEL[status]}
     </span>
   );
 }
@@ -684,8 +710,15 @@ function RolePill({ user }: { user: UserInfo }) {
             : 'border border-frame text-muted'
       }`}
       style={{ letterSpacing: '0.1em' }}
+      title={
+        isPlatformAdmin
+          ? 'ExpertMatch staff: can open this admin console and manage every organization.'
+          : isOrgAdmin
+            ? 'Organization admin: manages billing, seats and members for their own organization only.'
+            : 'Standard member: can use the app inside their organization but cannot manage it.'
+      }
     >
-      {isPlatformAdmin ? 'Platform admin' : isOrgAdmin ? 'Champion' : 'User'}
+      {isPlatformAdmin ? 'ExpertMatch staff' : isOrgAdmin ? 'Organization admin' : 'Standard member'}
     </span>
   );
 }
@@ -785,7 +818,7 @@ function MemberRow({ user, onChanged }: { user: UserInfo; onChanged: () => void 
         <div className="flex-1 min-w-0">
           <p className="text-xs text-navy font-medium truncate">{fullName(user)}</p>
           <p className="text-[10px] text-muted truncate">
-            {user.email} · {user.orgRole === 'org_admin' ? 'Champion' : 'Member'} · {formatDate(user.createdAt)}
+            {user.email} · {user.orgRole === 'org_admin' ? 'Organization admin' : 'Standard member'} · Added {formatDate(user.createdAt)}
           </p>
         </div>
 
@@ -798,8 +831,13 @@ function MemberRow({ user, onChanged }: { user: UserInfo; onChanged: () => void 
               disabled={loading}
               className={ACTION_CLASS}
               style={{ letterSpacing: '0.1em' }}
+              title={
+                user.status === 'active'
+                  ? 'Block this person from signing in and stop billing their seat. Reversible.'
+                  : 'Let this person sign in again and start billing their seat.'
+              }
             >
-              {busy === 'status' ? '…' : user.status === 'active' ? 'Disable' : 'Enable'}
+              {busy === 'status' ? '…' : user.status === 'active' ? 'Block sign-in' : 'Restore sign-in'}
             </button>
           )}
 
@@ -811,11 +849,11 @@ function MemberRow({ user, onChanged }: { user: UserInfo; onChanged: () => void 
               style={{ letterSpacing: '0.1em' }}
               title={
                 user.status === 'pending'
-                  ? 'Send the invitation link again.'
-                  : 'Email this person a password-reset link. Nothing else changes.'
+                  ? 'Email the invitation link to this person again. The previous link stops working.'
+                  : 'Email this person a link to set a new password. Nothing else about the account changes.'
               }
             >
-              {busy === 'link' ? '…' : user.status === 'pending' ? 'Resend invite' : 'Send reset link'}
+              {busy === 'link' ? '…' : user.status === 'pending' ? 'Resend invite email' : 'Send password reset email'}
             </button>
           )}
 
@@ -827,14 +865,14 @@ function MemberRow({ user, onChanged }: { user: UserInfo; onChanged: () => void 
                 className={CONFIRM_DANGER_CLASS}
                 style={{ letterSpacing: '0.1em' }}
               >
-                {busy === 'delete' ? '…' : 'Confirm delete'}
+                {busy === 'delete' ? '…' : 'Yes, delete this account'}
               </button>
               <button
                 onClick={() => setConfirmDelete(false)}
                 disabled={loading}
                 className="text-[10px] text-muted hover:text-navy transition-colors disabled:opacity-40"
               >
-                Cancel
+                Keep account
               </button>
             </>
           ) : (
@@ -843,8 +881,9 @@ function MemberRow({ user, onChanged }: { user: UserInfo; onChanged: () => void 
               disabled={loading}
               className={DANGER_CLASS}
               style={{ letterSpacing: '0.1em' }}
+              title="Permanently delete this account and free its billed seat. This cannot be undone."
             >
-              Delete
+              Delete account
             </button>
           )}
         </div>
@@ -967,13 +1006,13 @@ function FirmPanel({
           className="text-[10px] uppercase tracking-widest text-muted hover:text-navy transition-colors shrink-0"
           style={{ letterSpacing: '0.1em' }}
         >
-          Close
+          Close organization panel
         </button>
       </div>
 
       <div className="px-5 py-4 space-y-3">
         <p className="text-[10px] uppercase tracking-widest text-muted" style={{ letterSpacing: '0.16em' }}>
-          Members
+          Members of this organization
         </p>
 
         {domain === null ? (
@@ -985,7 +1024,7 @@ function FirmPanel({
         ) : usersErr ? (
           <ErrorBox message={usersErr} onRetry={loadUsers} />
         ) : users.length === 0 ? (
-          <p className="text-xs text-muted">No members yet.</p>
+          <p className="text-xs text-muted">No members yet. Use the invite form below to add the first one.</p>
         ) : (
           <div className="space-y-2">
             {users.map(u => (
@@ -998,7 +1037,7 @@ function FirmPanel({
         {domain !== null && (
           <form onSubmit={sendInvite} className="pt-2 space-y-3">
             <p className="text-[10px] uppercase tracking-widest text-muted" style={{ letterSpacing: '0.16em' }}>
-              Invite member
+              Invite a new member
             </p>
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
               <input
@@ -1038,7 +1077,7 @@ function FirmPanel({
                   style={{ letterSpacing: '0.12em' }}
                   htmlFor={`invite-role-${firm.id}`}
                 >
-                  Role
+                  Account role
                 </label>
                 <select
                   id={`invite-role-${firm.id}`}
@@ -1047,14 +1086,14 @@ function FirmPanel({
                   disabled={inviting}
                   className={SELECT_CLASS}
                 >
-                  <option value="user">User</option>
-                  <option value="admin">Platform admin</option>
+                  <option value="user">Standard member — uses the app only</option>
+                  <option value="admin">ExpertMatch staff — full admin console access</option>
                 </select>
               </div>
             </div>
             <p className="text-[10px] text-muted leading-relaxed" style={{ fontWeight: 300 }}>
-              Each accepted invite adds a billed seat to this organization. Platform admins count as
-              a seat for this organization.
+              Each accepted invite adds a billed seat to this organization. ExpertMatch staff accounts
+              also count as a billed seat for this organization.
             </p>
             <button
               type="submit"
@@ -1062,7 +1101,7 @@ function FirmPanel({
               className="text-[10px] uppercase tracking-widest px-4 py-2.5 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
               style={{ background: '#0B1F3B', color: '#C6A75E', letterSpacing: '0.14em' }}
             >
-              {inviting ? 'Sending…' : 'Send invite'}
+              {inviting ? 'Sending invite…' : 'Send invite email'}
             </button>
             {inviteErr && <p className="text-[11px] text-red-600">{inviteErr}</p>}
             {inviteOk  && <p className="text-[11px] text-green-700">{inviteOk}</p>}
@@ -1128,7 +1167,7 @@ function FirmRow({ firm, onUpdated }: { firm: FirmInfo; onUpdated: () => void })
     if (!trimmed) return save(null);
     const parsed = Number(trimmed);
     if (!Number.isFinite(parsed) || parsed < 1) {
-      setErrMsg('Seat cap must be a whole number of at least 1, or empty for unlimited.');
+      setErrMsg('Maximum seats must be a whole number of at least 1, or left blank for unlimited.');
       return;
     }
     return save(Math.floor(parsed));
@@ -1150,11 +1189,11 @@ function FirmRow({ firm, onUpdated }: { firm: FirmInfo; onUpdated: () => void })
       const seats = data.activeSeats ?? firm.seatUsed;
 
       if (data.outcome === 'updated') {
-        setSync({ tone: 'ok', text: `Synced ${pluralSeats(seats)}.` });
+        setSync({ tone: 'ok', text: `Stripe subscription updated to ${pluralSeats(seats)}.` });
       } else if (data.outcome === 'unchanged') {
-        setSync({ tone: 'muted', text: `Already in sync — ${pluralSeats(seats)}.` });
+        setSync({ tone: 'muted', text: `Stripe already had the right number — ${pluralSeats(seats)}.` });
       } else if (data.outcome === 'skipped') {
-        setSync({ tone: 'muted', text: 'Nothing to sync — billing not set up.' });
+        setSync({ tone: 'muted', text: 'Nothing to update — this organization has no Stripe subscription yet.' });
       } else {
         setSync({ tone: 'error', text: 'Stripe refused the seat update. Check the subscription in Stripe.' });
       }
@@ -1215,7 +1254,7 @@ function FirmRow({ firm, onUpdated }: { firm: FirmInfo; onUpdated: () => void })
                   style={{ letterSpacing: '0.12em' }}
                   htmlFor={`seat-cap-${firm.id}`}
                 >
-                  Seat cap (optional)
+                  Maximum seats (leave blank for unlimited)
                 </label>
                 <input
                   id={`seat-cap-${firm.id}`}
@@ -1228,7 +1267,8 @@ function FirmRow({ firm, onUpdated }: { firm: FirmInfo; onUpdated: () => void })
                   className="w-full text-xs border border-frame bg-white px-2 py-1.5 focus:outline-none focus:border-navy"
                 />
                 <p className="text-[10px] text-muted mt-1 leading-relaxed" style={{ fontWeight: 300 }}>
-                  Blocks new invites above this number. Billing is per active seat regardless.
+                  Blocks new invites once the organization reaches this many members. Billing is still
+                  per active seat, whatever the limit.
                 </p>
               </div>
               <div className="flex items-center gap-2 pb-0.5">
@@ -1238,7 +1278,7 @@ function FirmRow({ firm, onUpdated }: { firm: FirmInfo; onUpdated: () => void })
                   className="text-[10px] uppercase tracking-widest text-navy border border-navy px-2.5 py-1 transition-colors disabled:opacity-40"
                   style={{ letterSpacing: '0.1em' }}
                 >
-                  {loading ? '…' : 'Save'}
+                  {loading ? '…' : 'Save seat limit'}
                 </button>
                 <button
                   onClick={() => {
@@ -1248,7 +1288,7 @@ function FirmRow({ firm, onUpdated }: { firm: FirmInfo; onUpdated: () => void })
                   }}
                   className="text-[10px] text-muted hover:text-navy transition-colors"
                 >
-                  Cancel
+                  Discard changes
                 </button>
               </div>
             </div>
@@ -1259,25 +1299,25 @@ function FirmRow({ firm, onUpdated }: { firm: FirmInfo; onUpdated: () => void })
                 className={ACTION_CLASS}
                 style={{ letterSpacing: '0.1em' }}
               >
-                {expanded ? 'Collapse' : 'Manage'}
+                {expanded ? 'Hide members' : 'Manage members'}
               </button>
               <button
                 onClick={() => { setConfirmRemove(false); setEditing(true); }}
                 disabled={!canManage}
-                title={canManage ? 'Set or clear the invite cap for this organization.' : 'This organization has no domain and cannot be edited here.'}
+                title={canManage ? 'Set or clear the maximum number of members this organization may invite.' : 'This organization has no email domain, so it cannot be edited here.'}
                 className={ACTION_CLASS}
                 style={{ letterSpacing: '0.1em' }}
               >
-                Seat cap
+                Edit seat limit
               </button>
               <button
                 onClick={syncSeats}
                 disabled={syncing || loading || !canManage}
-                title={canManage ? 'Push the current active-seat count to the Stripe subscription.' : 'This organization has no domain and cannot be synced here.'}
+                title={canManage ? 'Push the current number of active seats to this organization\u2019s Stripe subscription so the next invoice is correct.' : 'This organization has no email domain, so its seat count cannot be synced here.'}
                 className={ACTION_CLASS}
                 style={{ letterSpacing: '0.1em' }}
               >
-                {syncing ? 'Syncing…' : 'Sync seats to Stripe'}
+                {syncing ? 'Updating Stripe…' : 'Update seat count in Stripe'}
               </button>
               {confirmRemove ? (
                 <>
@@ -1287,25 +1327,25 @@ function FirmRow({ firm, onUpdated }: { firm: FirmInfo; onUpdated: () => void })
                     className={CONFIRM_DANGER_CLASS}
                     style={{ letterSpacing: '0.1em' }}
                   >
-                    {loading ? '…' : 'Confirm remove'}
+                    {loading ? '…' : 'Yes, remove this organization'}
                   </button>
                   <button
                     onClick={() => setConfirmRemove(false)}
                     disabled={loading}
                     className="text-[10px] text-muted hover:text-navy transition-colors disabled:opacity-40"
                   >
-                    Cancel
+                    Keep organization
                   </button>
                 </>
               ) : (
                 <button
                   onClick={() => setConfirmRemove(true)}
                   disabled={loading || !canManage}
-                  title={canManage ? undefined : 'This organization has no domain and cannot be removed here.'}
+                  title={canManage ? 'Delete this organization and all of its memberships, cancelling its Stripe subscription first.' : 'This organization has no email domain, so it cannot be removed here.'}
                   className={DANGER_CLASS}
                   style={{ letterSpacing: '0.1em' }}
                 >
-                  Remove
+                  Remove organization
                 </button>
               )}
             </div>
@@ -1412,7 +1452,7 @@ function TrialTesterForm({ onDone }: { onDone: () => void }) {
           <label className={LABEL_CLASS} style={{ letterSpacing: '0.14em' }} htmlFor="trial-firm">
             Firm name <span className="normal-case tracking-normal text-muted">(optional)</span>
           </label>
-          <input id="trial-firm" type="text" value={firmName} onChange={e => setFirmName(e.target.value)} className={INPUT_CLASS} autoComplete="off" placeholder="Shown to them as their firm" />
+          <input id="trial-firm" type="text" value={firmName} onChange={e => setFirmName(e.target.value)} className={INPUT_CLASS} autoComplete="off" placeholder="Shown to the tester as their firm" />
         </div>
       </div>
       <p className="text-[10px] text-muted leading-relaxed" style={{ fontWeight: 300 }}>
@@ -1428,7 +1468,7 @@ function TrialTesterForm({ onDone }: { onDone: () => void }) {
         className="text-[10px] uppercase tracking-widest px-4 py-2 transition-colors disabled:opacity-40"
         style={{ background: '#0B1F3B', color: '#C6A75E', letterSpacing: '0.12em' }}
       >
-        {busy ? 'Sending…' : 'Create trial + send invite'}
+        {busy ? 'Sending invite…' : 'Create trial account and send invite'}
       </button>
       {errMsg && <p className="text-[11px] text-red-600">{errMsg}</p>}
       {okMsg  && <p className="text-[11px] text-green-700">{okMsg}</p>}
@@ -1509,10 +1549,10 @@ function PayoutControl({ projectId, expertId }: { projectId: string; expertId: s
   if (loading || !state) return null;
 
   const paidLine = state.expertPayoutReversedAt
-    ? `Payout reversed ${formatDate(state.expertPayoutReversedAt)}`
+    ? `Expert payout reversed on ${formatDate(state.expertPayoutReversedAt)}`
     : state.expertPaidAt
-      ? `Expert paid ${formatDate(state.expertPaidAt)}`
-      : 'No expert payout sent';
+      ? `Expert was paid on ${formatDate(state.expertPaidAt)}`
+      : 'No payout has been sent to the expert';
 
   return (
     <div className="mt-2 pt-2 border-t border-frame flex flex-wrap items-center gap-2">
@@ -1524,12 +1564,12 @@ function PayoutControl({ projectId, expertId }: { projectId: string; expertId: s
         onClick={reverse}
         disabled={busy || !state.reversible}
         title={state.reversible
-          ? 'Claw this transfer back from the expert'
+          ? 'Take back the money already transferred to this expert. You will be asked for a reason, which is recorded on the engagement.'
           : PAYOUT_REASON_LABEL[state.reason ?? ''] ?? 'This payout cannot be reversed.'}
         className={DANGER_CLASS}
         style={{ letterSpacing: '0.12em' }}
       >
-        {busy ? 'Reversing…' : 'Reverse payout'}
+        {busy ? 'Reversing payout…' : 'Take back expert payout'}
       </button>
       {errMsg && <span className="text-[10px] text-red-600">{errMsg}</span>}
     </div>
@@ -1563,14 +1603,14 @@ function AttentionSection() {
 
   return (
     <section>
-      <SectionHeader title="Needs Attention" />
+      <SectionHeader title="Needs Attention — Problems To Resolve" />
 
       {loading ? (
         <SkeletonRows count={2} />
       ) : errMsg ? (
         <ErrorBox message={errMsg} onRetry={load} />
       ) : items.length === 0 ? (
-        <p className="text-sm text-muted py-2">Nothing needs attention.</p>
+        <p className="text-sm text-muted py-2">Nothing needs attention right now. Failed payments, missed calls and refunds appear here.</p>
       ) : (
         <div className="space-y-2">
           {items.map(item => (
@@ -1578,7 +1618,7 @@ function AttentionSection() {
               <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-2">
                 <div className="min-w-0">
                   <p className="text-[10px] uppercase tracking-widest text-amber-600 font-medium" style={{ letterSpacing: '0.12em' }}>
-                    {item.kind.replace(/_/g, ' ')}
+                    {attentionKindLabel(item.kind)}
                   </p>
                   <p className="text-xs text-ink leading-relaxed mt-1">{item.message}</p>
                 </div>
@@ -1590,7 +1630,7 @@ function AttentionSection() {
                   className="inline-block mt-2 text-[10px] uppercase tracking-widest text-muted hover:text-navy transition-colors"
                   style={{ letterSpacing: '0.12em' }}
                 >
-                  Open project →
+                  Open this project →
                 </Link>
               )}
               {item.projectId && item.expertId && (
@@ -1629,10 +1669,11 @@ function EnvironmentSection() {
 
   return (
     <section>
-      <SectionHeader title="Environment" />
+      <SectionHeader title="Environment Variables" />
 
       <p className="text-[11px] text-muted mb-4 leading-relaxed" style={{ fontWeight: 300 }}>
-        Presence only — no value is ever read back into this page.
+        Shows only whether each variable has a value, never the value itself. Green means configured,
+        red means a required variable is missing.
       </p>
 
       {loading ? (
@@ -1640,7 +1681,7 @@ function EnvironmentSection() {
       ) : errMsg ? (
         <ErrorBox message={errMsg} onRetry={load} />
       ) : groups.length === 0 ? (
-        <p className="text-sm text-muted py-2">No environment report available.</p>
+        <p className="text-sm text-muted py-2">No environment report available — the status endpoint did not respond.</p>
       ) : (
         <div className="space-y-4">
           {groups.map(group => (
@@ -1650,7 +1691,8 @@ function EnvironmentSection() {
               </p>
               {group.vars.some(v => v.optional) && (
                 <p className="text-[11px] text-muted mb-2 leading-relaxed" style={{ fontWeight: 300 }}>
-                  Feature switches. The app runs without these; a grey dot means the feature is off, not broken.
+                  Optional feature switches. The app runs without these; a grey dot means the feature is
+                  turned off, not broken.
                 </p>
               )}
               <ul className="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-1.5">
@@ -1661,7 +1703,9 @@ function EnvironmentSection() {
                       className={`w-1.5 h-1.5 rounded-full shrink-0 ${v.set ? 'bg-green-600' : v.optional ? 'bg-muted/40' : 'bg-red-400'}`}
                     />
                     <span className="text-[11px] text-ink truncate font-mono">{v.name}</span>
-                    <span className="sr-only">{v.set ? 'set' : 'not set'}</span>
+                    <span className="sr-only">
+                      {v.set ? 'configured' : v.optional ? 'not configured, optional' : 'not configured, required'}
+                    </span>
                   </li>
                 ))}
               </ul>
@@ -1796,7 +1840,7 @@ export default function AdminConsolePage() {
     if (trimmedCap) {
       const parsed = Number(trimmedCap);
       if (!Number.isFinite(parsed) || parsed < 1) {
-        setAddErr('Seat cap must be a whole number of at least 1, or empty for unlimited.');
+        setAddErr('Maximum seats must be a whole number of at least 1, or left blank for unlimited.');
         return;
       }
       seatLimit = Math.floor(parsed);
@@ -1845,7 +1889,7 @@ export default function AdminConsolePage() {
               className="text-[10px] uppercase tracking-widest text-gold/80"
               style={{ letterSpacing: '0.18em' }}
             >
-              Admin
+              Admin console
             </span>
           </nav>
         </div>
@@ -1855,7 +1899,7 @@ export default function AdminConsolePage() {
 
         {/* ── 1. Pending access requests ── */}
         <section>
-          <SectionHeader title="Pending Requests" />
+          <SectionHeader title="Access Requests Awaiting Your Decision" />
 
           {reqLoad ? (
             <div className="space-y-2">
@@ -1869,7 +1913,7 @@ export default function AdminConsolePage() {
           ) : reqErr ? (
             <ErrorBox message={reqErr} onRetry={loadRequests} />
           ) : requests.length === 0 ? (
-            <p className="text-sm text-muted py-6">No pending access requests.</p>
+            <p className="text-sm text-muted py-6">No one is waiting for access. New sign-up requests from the website appear here.</p>
           ) : (
             <div className="space-y-3">
               {requests.map(req => (
@@ -1882,12 +1926,12 @@ export default function AdminConsolePage() {
         {/* ── Seat requests — only when a capped organization has one waiting ── */}
         {seatReqLoad ? null : seatReqErr ? (
           <section>
-            <SectionHeader title="Seat Requests" />
+            <SectionHeader title="Requests To Join An Existing Organization" />
             <ErrorBox message={seatReqErr} onRetry={loadSeatRequests} />
           </section>
         ) : seatReqs.length > 0 ? (
           <section>
-            <SectionHeader title="Seat Requests" />
+            <SectionHeader title="Requests To Join An Existing Organization" />
             <div className="space-y-3">
               {seatReqs.map(req => (
                 <SeatRequestCard key={req.email} req={req} onDone={afterSeatRequest} />
@@ -1901,11 +1945,12 @@ export default function AdminConsolePage() {
 
         {/* ── 3. Organizations ── */}
         <section>
-          <SectionHeader title="Organizations" />
+          <SectionHeader title="Customer Organizations" />
 
           <p className="text-[11px] text-muted mb-4 leading-relaxed" style={{ fontWeight: 300 }}>
-            Every organization is billed per active seat at its volume tier. The subscription is created
-            automatically when the first member adds a card during onboarding.
+            Every organization is billed monthly for each active seat, at the per-seat price for its size.
+            The Stripe subscription is created automatically when the first member adds a payment card
+            during onboarding.
           </p>
 
           {firmsLoad ? (
@@ -1913,7 +1958,7 @@ export default function AdminConsolePage() {
           ) : firmsErr ? (
             <ErrorBox message={firmsErr} onRetry={loadFirms} />
           ) : firms.length === 0 ? (
-            <p className="text-sm text-muted">No organizations yet.</p>
+            <p className="text-sm text-muted">No customer organizations yet. Approve an access request, or add one below.</p>
           ) : (
             <div className="space-y-2">
               {firms.map(f => (
@@ -1925,18 +1970,18 @@ export default function AdminConsolePage() {
 
         {/* ── 3b. Provision a trial tester ── */}
         <section>
-          <SectionHeader title="Provision Trial Tester" />
+          <SectionHeader title="Create A Trial Account (No Payment Card)" />
           <TrialTesterForm onDone={afterMemberChange} />
         </section>
 
         {/* ── 4. Add organization ── */}
         <section>
-          <SectionHeader title="Add Organization" />
+          <SectionHeader title="Add A Customer Organization Manually" />
 
           <form onSubmit={addFirm} className="space-y-3">
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
               <div>
-                <label className={LABEL_CLASS} style={{ letterSpacing: '0.14em' }} htmlFor="new-firm-domain">Domain</label>
+                <label className={LABEL_CLASS} style={{ letterSpacing: '0.14em' }} htmlFor="new-firm-domain">Email domain</label>
                 <input
                   id="new-firm-domain"
                   type="text"
@@ -1948,7 +1993,7 @@ export default function AdminConsolePage() {
                 />
               </div>
               <div>
-                <label className={LABEL_CLASS} style={{ letterSpacing: '0.14em' }} htmlFor="new-firm-name">Name</label>
+                <label className={LABEL_CLASS} style={{ letterSpacing: '0.14em' }} htmlFor="new-firm-name">Organization name</label>
                 <input
                   id="new-firm-name"
                   type="text"
@@ -1961,7 +2006,7 @@ export default function AdminConsolePage() {
                 />
               </div>
               <div>
-                <label className={LABEL_CLASS} style={{ letterSpacing: '0.14em' }} htmlFor="new-firm-cap">Seat cap (optional)</label>
+                <label className={LABEL_CLASS} style={{ letterSpacing: '0.14em' }} htmlFor="new-firm-cap">Maximum seats (leave blank for unlimited)</label>
                 <input
                   id="new-firm-cap"
                   type="number"
@@ -1973,7 +2018,8 @@ export default function AdminConsolePage() {
                   className={INPUT_CLASS}
                 />
                 <p className="text-[10px] text-muted mt-1 leading-relaxed" style={{ fontWeight: 300 }}>
-                  Blocks new invites above this number. Billing is per active seat regardless.
+                  Blocks new invites once the organization reaches this many members. Billing is still
+                  per active seat, whatever the limit.
                 </p>
               </div>
             </div>
@@ -1993,11 +2039,12 @@ export default function AdminConsolePage() {
 
         {/* ── 5. All users ── */}
         <section>
-          <SectionHeader title={`All Users${userCount > 0 ? ` (${userCount})` : ''}`} />
+          <SectionHeader title={`All Accounts, Every Organization${userCount > 0 ? ` (${userCount})` : ''}`} />
 
           <p className="text-[11px] text-muted mb-4 leading-relaxed" style={{ fontWeight: 300 }}>
-            Every account across every organization. Invite, disable and delete from the
-            organization&rsquo;s own panel above — that is where seat counts and billing follow along.
+            A read-only list of every account across every organization. To invite, block or delete
+            someone, open their organization above under Manage members — seat counts and billing only
+            follow along there.
           </p>
 
           {usersLoad ? (
@@ -2006,7 +2053,7 @@ export default function AdminConsolePage() {
             <ErrorBox message={usersErr} onRetry={loadUsers} />
           ) : users.length === 0 ? (
             <p className="text-sm text-muted py-2">
-              No users yet. Add an organization, then invite its first member.
+              No accounts yet. Add an organization, then invite its first member.
             </p>
           ) : (
             <div className="space-y-2">
@@ -2022,7 +2069,7 @@ export default function AdminConsolePage() {
                       {' · '}
                       {u.firmName || u.firmDomain || (u.role === 'admin' ? 'ExpertMatch' : '—')}
                       {' · '}
-                      {formatDate(u.createdAt)}
+                      Added {formatDate(u.createdAt)}
                     </p>
                   </div>
                   <div className="flex items-center gap-3 shrink-0">

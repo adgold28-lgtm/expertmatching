@@ -224,7 +224,10 @@ export async function chargeSavedCard(
         amount:               Math.round(amount * 100),
         currency:             'usd',
         payment_method:       paymentMethodId,
-        payment_method_types: ['card'],
+        // Mirrors the SetupIntent in app/api/onboarding/billing/route.ts: a card
+        // saved through Stripe Link is a `link` payment method, and omitting it
+        // here would make every Link-saved card unchargeable.
+        payment_method_types: ['card', 'link'],
         off_session:          true,
         confirm:              true,
         metadata:             { projectId, expertId },

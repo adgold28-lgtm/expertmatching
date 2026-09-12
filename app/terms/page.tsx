@@ -137,7 +137,7 @@ export default function TermsPage() {
             <p>
               Calls are billed separately from your seats. Each engagement has a rate, shown to you
               before the call is scheduled and quoted per hour. <strong className="font-medium text-ink">
-              That rate is all in: it includes both the expert&rsquo;s fee and the ExpertMatch fee.</strong>{' '}
+              That rate is all-in.</strong>{' '}
               There is no separate research fee, retainer, or per-call markup added afterwards.
             </p>
             <p>

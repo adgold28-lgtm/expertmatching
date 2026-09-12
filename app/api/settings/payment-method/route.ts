@@ -68,7 +68,14 @@ function prettyBrand(brand: string): string {
 
 function cardFrom(paymentMethod: Stripe.PaymentMethod): CardSummary | null {
   const card = paymentMethod.card;
-  if (!card) return null;
+  if (!card) {
+    // A method saved through Link has no `card` object; still a real,
+    // chargeable payment method, so report it rather than "no card".
+    if (paymentMethod.type === 'link') {
+      return { brand: 'Link', last4: '', expMonth: 0, expYear: 0 };
+    }
+    return null;
+  }
   return {
     brand:    prettyBrand(card.brand ?? 'card'),
     last4:    card.last4 ?? '••••',

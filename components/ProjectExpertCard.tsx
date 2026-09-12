@@ -10,11 +10,9 @@ import MatchyLine from './MatchyLine';
 import {
   bookmarkExpert,
   unbookmarkExpert,
-  bookmarkLine,
   firstNameOf,
   formatRate,
   formatSlot,
-  matchyLineFor,
   schedulingLine,
 } from '../lib/matchyClient';
 
@@ -83,12 +81,10 @@ export default function ProjectExpertCard({
   const [rejNoteSaving,    setRejNoteSaving]    = useState(false);
   // Matchy's one line about this expert — the outcome of the last thing it did.
   const [matchyNote, setMatchyNote] = useState<{ text: string; tone: 'default' | 'quiet' | 'alert' } | null>(null);
-  // After a poll or a fresh load the local note is empty; the server-derived
-  // outcome (matchyOutcome, set by lib/redactExpert) says what Matchy did.
-  // Scheduling sits later in the engagement than the bookmark, so its line wins
-  // whenever there is one — the bookmark outcome is old news by then.
-  const serverNote = schedulingLine(projectExpert, firstNameOf(expert.name))
-    ?? matchyLineFor(projectExpert, firstNameOf(expert.name));
+  // After a poll or a fresh load the local note is empty; scheduling is the one
+  // thing still worth a line here. The bookmark itself says nothing — the
+  // filled/unfilled toggle is the whole feedback.
+  const serverNote = schedulingLine(projectExpert, firstNameOf(expert.name));
   const shownNote  = matchyNote ?? serverNote;
   // The one fact a booked card carries in Matches. "Open" goes to the thread,
   // where the Zoom link and the calendar file live; there are no buttons here.
@@ -97,51 +93,46 @@ export default function ProjectExpertCard({
     : '';
   const [bookmarking, setBookmarking] = useState(false);
 
-  const firstName  = firstNameOf(expert.name);
   // What the client pays. Falls back to the tier's opening position until the
   // engagement seeds a number. `expertRate` is never read here.
   const clientRate = projectExpert.clientRate ?? pricing.callRate;
 
   // ── Bookmark: the one action that starts an engagement ─────────────────────
 
+  // Silent optimistic toggle: the icon state flips immediately and flips back
+  // if the server says no. No retry affordance, no outcome line.
   async function handleBookmark() {
     if (bookmarking) return;
     setBookmarking(true);
-    setMatchyNote(null);
-    // Optimistic — the button should never look like it did nothing.
-    const now = Date.now();
-    onUpdate({ ...projectExpert, status: 'bookmarked', updatedAt: now });
+    const before = projectExpert;
+    onUpdate({ ...projectExpert, status: 'bookmarked', updatedAt: Date.now() });
 
     const res = await bookmarkExpert(projectId, expert.id);
     setBookmarking(false);
 
     if (!res.ok) {
-      // Put the card back the way it was and say what happened.
-      onUpdate({ ...projectExpert, updatedAt: now });
-      setMatchyNote({ text: res.message, tone: 'alert' });
+      onUpdate(before);
+      console.error('bookmark failed', res.message);
       return;
     }
-
     onUpdate(res.projectExpert);
-    setMatchyNote({
-      text: bookmarkLine(res.outcome, firstName),
-      tone: res.outcome === 'intro_sent' || res.outcome === 'intro_drafted' ? 'default' : 'quiet',
-    });
   }
 
   async function handleUnbookmark() {
     if (bookmarking) return;
     setBookmarking(true);
+    const before = projectExpert;
+    onUpdate({ ...projectExpert, status: 'shortlisted', updatedAt: Date.now() });
+
     const res = await unbookmarkExpert(projectId, expert.id);
     setBookmarking(false);
 
     if (!res.ok) {
-      setMatchyNote({ text: res.message, tone: 'alert' });
+      onUpdate(before);
+      console.error('unbookmark failed', res.message);
       return;
     }
-    setMatchyNote(null);
     if (res.projectExpert) onUpdate(res.projectExpert);
-    else onUpdate({ ...projectExpert, status: 'shortlisted', updatedAt: Date.now() });
   }
 
   /**
@@ -257,7 +248,7 @@ export default function ProjectExpertCard({
             className={`text-[9px] text-muted ${hasConversation(status) ? '' : 'cursor-help'}`}
             title={hasConversation(status) ? undefined : RATE_DISCLAIMER}
           >
-            {formatRate(clientRate)}/hr · includes ExpertMatch fee
+            {formatRate(clientRate)}/hr all-in
           </span>
         </div>
 
@@ -274,11 +265,13 @@ export default function ProjectExpertCard({
             <button
               onClick={handleBookmark}
               disabled={saving || bookmarking || !canBookmark}
+              aria-pressed={false}
+              aria-label="Bookmark this expert"
               className="flex-1 text-[11px] uppercase tracking-widest border-2 border-navy text-navy bg-navy/5 hover:bg-navy hover:text-cream py-2 font-medium transition-colors disabled:opacity-40"
               style={{ letterSpacing: '0.1em' }}
               title={canBookmark ? undefined : 'Only the project owner can start outreach.'}
             >
-              {bookmarking ? 'Bookmarking…' : 'Bookmark'}
+              ☆ Bookmark
             </button>
             {/* Passing is a decision about the engagement, so it rides the
                 same permission as Bookmark — the server enforces it too. */}
@@ -294,32 +287,17 @@ export default function ProjectExpertCard({
           </div>
         ) : status === 'bookmarked' ? (
           <div className="flex items-center gap-2 flex-wrap">
-            <span className="flex-1 text-center text-[11px] uppercase tracking-widest border-2 border-navy text-navy bg-navy/5 py-2 font-medium">
-              Bookmarked
-            </span>
-            {canBookmark && (
-              <>
-                {/* Still 'bookmarked' means nothing has gone out — no address,
-                    or the send failed. Nothing retries on its own, so the
-                    client needs a way to ask again. */}
-                <button
-                  onClick={handleBookmark}
-                  disabled={bookmarking}
-                  className="text-[10px] uppercase tracking-widest text-muted hover:text-navy border border-frame px-2.5 py-2 transition-colors disabled:opacity-40"
-                  title="Try the intro again"
-                >
-                  {bookmarking ? '…' : 'Retry'}
-                </button>
-                <button
-                  onClick={handleUnbookmark}
-                  disabled={bookmarking}
-                  className="text-[10px] uppercase tracking-widest text-muted hover:text-navy border border-frame px-2.5 py-2 transition-colors disabled:opacity-40"
-                  title="Undo the bookmark"
-                >
-                  Undo
-                </button>
-              </>
-            )}
+            {/* The toggle in its filled state. Clicking it un-bookmarks. */}
+            <button
+              onClick={handleUnbookmark}
+              disabled={bookmarking || !canBookmark}
+              aria-pressed={true}
+              aria-label="Bookmark this expert"
+              className="flex-1 text-[11px] uppercase tracking-widest border-2 border-navy text-navy bg-navy/5 py-2 font-medium transition-colors disabled:opacity-40"
+              style={{ letterSpacing: '0.1em' }}
+            >
+              ★ Bookmarked
+            </button>
           </div>
         ) : status !== 'rejected' ? (
           <div className="flex items-center gap-2">

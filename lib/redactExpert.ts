@@ -88,7 +88,7 @@ function omitKeys<T extends object>(obj: T, keys: readonly PropertyKey[]): T {
  *
  * Note on `expert.tierPricing`: it stays, and it carries the TIER DEFAULT
  * opening offer, not this engagement's number. The 50/50 split is published
- * on the pricing page and clientRate is shown "includes ExpertMatch fee", so
+ * on the pricing page and clientRate is shown as an all-in number, so
  * the default is derivable either way. What must not leak is the negotiated
  * `expertRate` above — that is the expert's own counter.
  */

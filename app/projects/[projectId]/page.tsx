@@ -667,16 +667,12 @@ function RotatingLoadingMessage() {
 
 function SourcePanel({
   project,
-  existingExpertIds,
-  onExpertsAdded,
   onStartSourcing,
   sourcingActive,
   sourcingStale,
   sourcingError,
 }: {
   project: Project;
-  existingExpertIds: Set<string>;
-  onExpertsAdded: (experts: ProjectExpert[]) => void;
   /** Starts the server-side run. Resolves to an error message, or null on success. */
   onStartSourcing: (overrides: { businessProblem?: string; expertType?: string }) => Promise<string | null>;
   sourcingActive: boolean;
@@ -684,18 +680,10 @@ function SourcePanel({
   sourcingError:  string | null;
 }) {
   const [starting,    setStarting]    = useState(false);
-  const [addedIds,    setAddedIds]    = useState<Set<string>>(new Set());
-  const [addingId,    setAddingId]    = useState<string | null>(null);
-  const [addingAll,   setAddingAll]   = useState(false);
   const [startError,  setStartError]  = useState('');
-  // A failed add used to just reset the button — the client had no way to tell
-  // "not added" from "already there".
-  const [addError,    setAddError]    = useState('');
   const depth = briefContextDepth(project);
 
-  // Core experts are persisted by the worker straight into the discovery pool
-  // below. Adjacent candidates are held on the project for manual selection.
-  const adjacentResults: Expert[] = project.sourcingAdjacent ?? [];
+  // Core experts are persisted by the worker straight into the discovery pool below.
   const limitedPool = project.sourcingLimitedPool === true;
 
   const srcError = startError || (sourcingStale ? 'Sourcing timed out — try again.' : sourcingError) || '';
@@ -712,7 +700,6 @@ function SourcePanel({
     if (starting || sourcingActive) return;
     setStarting(true);
     setStartError('');
-    setAddedIds(new Set());
     try {
       const err = await onStartSourcing({});
       if (err) setStartError(err);
@@ -721,64 +708,6 @@ function SourcePanel({
     }
   }
 
-  async function addExpert(expert: Expert) {
-    if (addingId || existingExpertIds.has(expert.id) || addedIds.has(expert.id)) return;
-    setAddingId(expert.id);
-    setAddError('');
-    try {
-      const res = await fetch(`/api/projects/${project.id}/experts`, {
-        method:  'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body:    JSON.stringify({ experts: [{ expert }] }),
-      });
-      const data = await res.json().catch(() => null) as { project?: { experts: ProjectExpert[] } } | null;
-      const added = res.ok && data?.project
-        ? data.project.experts.filter(pe => pe.expert.id === expert.id)
-        : [];
-      if (added.length === 0) {
-        setAddError("Couldn't add that candidate. Try again.");
-        return;
-      }
-      setAddedIds(prev => { const n = new Set(prev); n.add(expert.id); return n; });
-      onExpertsAdded(added);
-    } catch {
-      setAddError("Couldn't add that candidate. Try again.");
-    } finally {
-      setAddingId(null);
-    }
-  }
-
-  async function addAll() {
-    const toAdd = adjacentResults.filter(e => !existingExpertIds.has(e.id) && !addedIds.has(e.id));
-    if (toAdd.length === 0 || addingAll) return;
-    setAddingAll(true);
-    setAddError('');
-    try {
-      const res = await fetch(`/api/projects/${project.id}/experts`, {
-        method:  'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body:    JSON.stringify({ experts: toAdd.map(expert => ({ expert })) }),
-      });
-      const data = await res.json().catch(() => null) as { project?: { experts: ProjectExpert[] } } | null;
-      const newIds = new Set(toAdd.map(e => e.id));
-      const added  = res.ok && data?.project
-        ? data.project.experts.filter(pe => newIds.has(pe.expert.id))
-        : [];
-      if (added.length === 0) {
-        setAddError("Couldn't add that candidate. Try again.");
-        return;
-      }
-      setAddedIds(prev => { const n = new Set(prev); added.forEach(pe => n.add(pe.expert.id)); return n; });
-      onExpertsAdded(added);
-    } catch {
-      setAddError("Couldn't add that candidate. Try again.");
-    } finally {
-      setAddingAll(false);
-    }
-  }
-
-  const alreadyInProject = (id: string) => existingExpertIds.has(id) || addedIds.has(id);
-  const pendingCount = adjacentResults.filter(e => !alreadyInProject(e.id)).length;
   // Core experts sourced by the last completed run, already in the pool below.
   const sourcedCoreCount = project.experts.filter(pe => pe.status === 'discovered').length;
 
@@ -854,7 +783,7 @@ function SourcePanel({
                 <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126zM12 15.75h.007v.008H12v-.008z" />
               </svg>
               <p className="text-[11px] text-amber-700 leading-relaxed">
-                Few exact matches for this one. The closest fits are first; related perspectives are below.
+                Few exact matches for this one. The closest fits are listed first.
               </p>
             </div>
           )}
@@ -864,89 +793,8 @@ function SourcePanel({
               {sourcedCoreCount > 0
                 ? `${sourcedCoreCount} direct match${sourcedCoreCount !== 1 ? 'es' : ''} below.`
                 : 'No direct matches this time.'}
-              {adjacentResults.length > 0 && ' Related perspectives are listed below — add the ones worth pursuing.'}
             </p>
           </div>
-          {/* Adjacent count / Add All */}
-          {adjacentResults.length > 0 && pendingCount > 0 && (
-            <div className="px-5 py-3 border-b border-frame/60 flex items-center justify-between gap-4">
-              <p className="text-[10px] text-muted">
-                {pendingCount} related candidate{pendingCount !== 1 ? 's' : ''} not yet added
-              </p>
-              <button
-                onClick={addAll}
-                disabled={addingAll}
-                className="text-[10px] uppercase tracking-widest text-navy border border-navy/30 hover:border-navy px-3 py-1 transition-colors disabled:opacity-40"
-                style={{ letterSpacing: '0.12em' }}
-              >
-                {addingAll ? 'Adding…' : `Add All (${pendingCount})`}
-              </button>
-            </div>
-          )}
-          {/* A failed add says so — the button no longer just springs back. */}
-          {addError && (
-            <div className="px-5 py-2.5 border-b border-red-100 bg-red-50">
-              <p className="text-xs text-red-600" role="alert">{addError}</p>
-            </div>
-          )}
-          {/* Adjacent Perspectives section */}
-          {adjacentResults.length > 0 && (
-            <div className="border-t border-frame">
-              <div className="px-5 py-3 bg-amber-50/50 border-b border-amber-100/80">
-                <p className="text-[10px] uppercase tracking-widest text-amber-700 font-semibold" style={{ letterSpacing: '0.14em' }}>
-                  Related Perspectives
-                </p>
-                <p className="text-[11px] text-amber-700/70 mt-0.5 leading-relaxed">
-                  Not a direct match, but close enough to be useful — suppliers, buyers, regulators, adjacent operators.
-                </p>
-              </div>
-              <div className="divide-y divide-frame/60">
-                {adjacentResults.map(expert => {
-                  const inProject = alreadyInProject(expert.id);
-                  const isAdding  = addingId === expert.id;
-                  return (
-                    <div key={expert.id} className="px-5 py-3.5 flex items-start gap-3 bg-amber-50/20">
-                      <div className="shrink-0 font-display text-base font-semibold w-8 text-right text-muted">
-                        {expert.relevance_score > 0 ? expert.relevance_score : '—'}
-                      </div>
-                      <div className="flex-1 min-w-0">
-                        <div className="flex items-center gap-2 flex-wrap">
-                          <p className="text-sm font-semibold text-navy/80">{expert.name}</p>
-                          <span className="text-[10px] text-amber-700 border border-amber-200 bg-amber-50 px-1.5 py-0.5">
-                            {expert.valueChainLabel ?? expert.category}
-                          </span>
-                        </div>
-                        {expert.anonymizedDescriptor && !expert.title ? (
-                          <p className="text-xs text-muted mt-0.5">{expert.anonymizedDescriptor}</p>
-                        ) : (
-                          (expert.title || expert.company) && (
-                            <p className="text-xs text-muted mt-0.5">
-                              {[expert.title, expert.company].filter(Boolean).join(' · ')}
-                            </p>
-                          )
-                        )}
-                        {expert.justification && (
-                          <p className="text-[11px] text-muted/80 mt-1 leading-relaxed line-clamp-2">{expert.justification}</p>
-                        )}
-                      </div>
-                      <button
-                        onClick={() => addExpert(expert)}
-                        disabled={inProject || isAdding}
-                        className={`shrink-0 text-[10px] uppercase tracking-widest px-3 py-1.5 border transition-colors whitespace-nowrap ${
-                          inProject
-                            ? 'border-green-200 bg-green-50 text-green-700 cursor-default'
-                            : 'border-amber-200 text-amber-700 hover:bg-amber-700 hover:text-cream hover:border-amber-700 disabled:opacity-40'
-                        }`}
-                        style={{ letterSpacing: '0.1em' }}
-                      >
-                        {isAdding ? '…' : inProject ? '✓ Added' : 'Add'}
-                      </button>
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
-          )}
         </div>
       )}
     </div>
@@ -1780,17 +1628,6 @@ function ProjectPageInner() {
             {/* Inline sourcing panel */}
             <SourcePanel
               project={project}
-              existingExpertIds={new Set(project.experts.map(pe => pe.expert.id))}
-              onExpertsAdded={newPEs => {
-                setProject(prev => {
-                  if (!prev) return prev;
-                  const existingIds = new Set(prev.experts.map(pe => pe.expert.id));
-                  const trulyNew = newPEs.filter(pe => !existingIds.has(pe.expert.id));
-                  return trulyNew.length > 0
-                    ? { ...prev, experts: [...prev.experts, ...trulyNew] }
-                    : prev;
-                });
-              }}
               onStartSourcing={startSourcing}
               sourcingActive={isSourcing}
               sourcingStale={sourcingStale}

@@ -11,14 +11,21 @@
 // never from client state — a colleague may have saved the card seconds ago.
 //
 // Stripe is driven through @stripe/stripe-js only (@stripe/react-stripe-js is
-// not a dependency of this project), so Elements is mounted imperatively:
+// not a dependency of this project), so Elements is mounted imperatively. This
+// is the PAYMENT ELEMENT, not the legacy Card Element, so Stripe Link is
+// offered and a returning Link user can save a card in two clicks:
 //   POST /api/onboarding/billing → { clientSecret, publishableKey, … }
-//   loadStripe → elements() → create('card') → mount(ref)
-//   confirmCardSetup → POST /confirm { setupIntentId }
+//   loadStripe → elements({ clientSecret, appearance }) → create('payment') → mount(ref)
+//   confirmSetup({ elements, redirect: 'if_required' }) → POST /confirm { setupIntentId }
+//
+// redirect: 'if_required' keeps the in-page flow: card and Link never redirect,
+// so confirmSetup resolves here with the SetupIntent and the stepper advances
+// without leaving the page. return_url is still supplied because Stripe
+// requires one for any method that *could* redirect; it lands back on this step.
 //
 // The mount target is rendered unconditionally and covered by a skeleton while
 // loading — a ref inside a `loading ? … : …` branch is null at the moment the
-// async init finishes, which would leave the card element unmounted forever.
+// async init finishes, which would leave the payment element unmounted forever.
 //
 // 503 billing_unavailable (NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY unset) is its own
 // state, not an error toast: nothing the end user does can fix it. So is 409
@@ -35,7 +42,9 @@
 // adds the card. Nothing here can create a SetupIntent, so nothing is orphaned.
 
 import { useState, useEffect, useRef } from 'react';
-import type { Stripe, StripeCardElement } from '@stripe/stripe-js';
+import type {
+  Stripe, StripeElements, StripePaymentElement, Appearance,
+} from '@stripe/stripe-js';
 import { formatUsdFromCents } from '../../lib/pricing';
 import {
   GOLD, NAVY, MUTED, FAINT,
@@ -47,6 +56,21 @@ type InitState =
 
 /** Where a blocked customer can reach a human. */
 const SUPPORT_EMAIL = 'ashergoldsteinbusiness@gmail.com';
+
+/** Payment Element styling — the house palette, not Stripe's default blue. */
+const STRIPE_APPEARANCE: Appearance = {
+  theme: 'stripe',
+  variables: {
+    colorPrimary:    NAVY,
+    colorText:       NAVY,
+    colorTextPlaceholder: FAINT,
+    colorDanger:     '#BE3A2B',
+    fontFamily:      'inherit',
+    fontSizeBase:    '14px',
+    borderRadius:    '0px',
+    spacingUnit:     '4px',
+  },
+};
 
 interface BillingStepProps {
   complete:   boolean;
@@ -93,26 +117,26 @@ export default function BillingStep({ complete, orgName, onComplete, onContinue 
   // Set with initState 'champion_required': the org_admin who can add the card.
   const [championEmail,    setChampionEmail]    = useState<string | null>(null);
   // Set when Stripe confirmed the card but our own confirm call did not land —
-  // the card IS saved, so the retry must not re-run confirmCardSetup.
+  // the card IS saved, so the retry must not re-run confirmSetup.
   const [pendingConfirmId, setPendingConfirmId] = useState<string | null>(null);
   const [attempt,          setAttempt]          = useState(0);
 
   const cardMountRef    = useRef<HTMLDivElement>(null);
   const stripeRef       = useRef<Stripe | null>(null);
-  const cardElRef       = useRef<StripeCardElement | null>(null);
+  const elementsRef     = useRef<StripeElements | null>(null);
   const clientSecretRef = useRef<string | null>(null);
   // onComplete identity is not stable across renders; a ref keeps the init
   // effect from re-running (and re-creating SetupIntents) because of it.
   const onCompleteRef = useRef(onComplete);
   useEffect(() => { onCompleteRef.current = onComplete; }, [onComplete]);
 
-  // ── Create the SetupIntent and mount the card element ──────────────────────
+  // ── Create the SetupIntent and mount the payment element ───────────────────
   useEffect(() => {
     // A user resuming with billing already done needs no new SetupIntent.
     if (complete) return;
 
     let active = true;
-    let cardEl: StripeCardElement | null = null;
+    let paymentEl: StripePaymentElement | null = null;
 
     async function init(): Promise<void> {
       setInitState('loading');
@@ -199,19 +223,18 @@ export default function BillingStep({ complete, orgName, onComplete, onContinue 
         }
 
         stripeRef.current = stripe;
-        cardEl = stripe.elements().create('card', {
-          style: {
-            base: {
-              color:          NAVY,
-              fontFamily:     'inherit',
-              fontSize:       '14px',
-              '::placeholder': { color: FAINT },
-            },
-            invalid: { color: '#BE3A2B' },
-          },
+        // clientSecret on the Elements group is what makes this the
+        // Payment Element flow: Stripe reads the SetupIntent and renders every
+        // method it allows (card + Link) instead of a bare card field.
+        const elements = stripe.elements({
+          clientSecret: data.clientSecret,
+          appearance:   STRIPE_APPEARANCE,
         });
-        cardEl.mount(cardMountRef.current);
-        cardElRef.current = cardEl;
+        paymentEl = elements.create('payment', {
+          layout: { type: 'tabs', defaultCollapsed: false },
+        });
+        paymentEl.mount(cardMountRef.current);
+        elementsRef.current = elements;
         setInitState('ready');
       } catch {
         if (active) {
@@ -225,8 +248,8 @@ export default function BillingStep({ complete, orgName, onComplete, onContinue 
 
     return () => {
       active = false;
-      cardEl?.destroy();
-      cardElRef.current = null;
+      paymentEl?.destroy();
+      elementsRef.current = null;
     };
   }, [complete, attempt]);
 
@@ -259,16 +282,21 @@ export default function BillingStep({ complete, orgName, onComplete, onContinue 
 
   async function handleSave(): Promise<void> {
     const stripe       = stripeRef.current;
-    const cardElement  = cardElRef.current;
+    const elements     = elementsRef.current;
     const clientSecret = clientSecretRef.current;
-    if (!stripe || !cardElement || !clientSecret || saving) return;
+    if (!stripe || !elements || !clientSecret || saving) return;
 
     setSaving(true);
     setError(null);
 
     try {
-      const { setupIntent, error: stripeError } = await stripe.confirmCardSetup(clientSecret, {
-        payment_method: { card: cardElement },
+      // redirect: 'if_required' keeps card and Link in-page; return_url is only
+      // used by a method that insists on redirecting, and brings the user back
+      // to this onboarding step.
+      const { setupIntent, error: stripeError } = await stripe.confirmSetup({
+        elements,
+        confirmParams: { return_url: `${window.location.origin}/onboarding` },
+        redirect:      'if_required',
       });
 
       if (stripeError) {
@@ -396,14 +424,12 @@ export default function BillingStep({ complete, orgName, onComplete, onContinue 
         </div>
       ) : (
         <div className="mb-6">
-          <label className={LABEL_CLASS} style={MICRO_LS}>Card details</label>
+          <label className={LABEL_CLASS} style={MICRO_LS}>Payment details</label>
           <div className="relative">
-            {/* Always in the DOM — the Stripe element mounts into this node. */}
-            <div
-              ref={cardMountRef}
-              className="border border-frame bg-cream px-3 py-3"
-              style={{ minHeight: '2.75rem' }}
-            />
+            {/* Always in the DOM — the Stripe element mounts into this node.
+                The Payment Element draws its own bordered fields, so this
+                wrapper only reserves space while it loads. */}
+            <div ref={cardMountRef} style={{ minHeight: '5.5rem' }} />
             {initState === 'loading' && (
               <div className="absolute inset-0 skeleton" aria-hidden="true" />
             )}

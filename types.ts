@@ -435,7 +435,7 @@ export interface ProjectExpert {
   // The two numbers of the engagement — see lib/pricing.ts, the only place
   // that converts between them. clientRate is client-facing everywhere;
   // expertRate is expert- and staff-only and never reaches a client.
-  clientRate?:           number | null;  // hourly rate billed to the client, incl. the ExpertMatch fee
+  clientRate?:           number | null;  // all-in hourly rate billed to the client
   expertRate?:           number | null;  // hourly rate offered to / paid the expert; clientRateFor() derives clientRate
   callDurationMin?:      number | null;  // actual call duration in minutes, set at completion
   invoiceAmount?:        number | null;  // computed: rate * duration / 60

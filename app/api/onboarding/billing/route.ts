@@ -182,7 +182,13 @@ export async function POST(request: NextRequest): Promise<Response> {
     const setupIntent = await stripe.setupIntents.create({
       customer:             customerId,
       usage:                'off_session',
-      payment_method_types: ['card'],
+      // Payment Element (see components/onboarding/BillingStep.tsx). 'link' is
+      // listed alongside 'card' so Stripe Link can save and later be charged;
+      // automatic_payment_methods is deliberately NOT used, because every
+      // method saved here must be chargeable OFF SESSION by
+      // lib/chargeSavedCard.ts, and a dashboard toggle must not silently add
+      // one that is not. Adding a method here means adding it there too.
+      payment_method_types: ['card', 'link'],
       metadata:             { organizationId, intent: replace ? 'replace' : 'onboarding' },
     });
 

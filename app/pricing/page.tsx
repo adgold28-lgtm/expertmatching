@@ -43,7 +43,7 @@ const FAQS = [
   },
   {
     q: 'Are expert calls included in the seat price?',
-    a: `No. Seats cover the platform — sourcing, outreach, scheduling and billing. Calls are billed by the minute at the rates above, with a ${MIN_BILLABLE_MINUTES}-minute minimum per call. The rate you see includes the ExpertMatch fee.`,
+    a: `No. Seats cover the platform — sourcing, outreach, scheduling and billing. Calls are billed by the minute at the rates above, with a ${MIN_BILLABLE_MINUTES}-minute minimum per call. The rate you see is all-in.`,
   },
   {
     q: 'How do experts get paid?',
@@ -142,7 +142,7 @@ export default function PricingPage() {
             Per-Call Rates
           </p>
           <p className="text-center text-muted text-sm mb-8" style={{ fontWeight: 300 }}>
-            Calls are billed by the minute at these rates, on top of your seats, with a {MIN_BILLABLE_MINUTES}-minute minimum. Rates are opening positions and include the ExpertMatch fee.
+            Calls are billed by the minute at these rates, on top of your seats, with a {MIN_BILLABLE_MINUTES}-minute minimum. Rates are all-in opening positions.
           </p>
           <div className="border border-frame overflow-hidden">
             <table className="w-full text-sm border-collapse">

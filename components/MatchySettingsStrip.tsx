@@ -341,7 +341,7 @@ export default function MatchySettingsStrip({ projectId, project, onUpdate }: Pr
         </div>
         {bandError
           ? <p className="text-[11px] text-red-600">{bandError}</p>
-          : <p className="text-[10px] text-muted/70">{RATE_RULE} Includes the ExpertMatch fee.</p>}
+          : <p className="text-[10px] text-muted/70">{RATE_RULE}</p>}
       </div>
     </div>
   );

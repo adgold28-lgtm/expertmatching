@@ -11,32 +11,51 @@
 // REPLACE: the firm champion (org_admin) only, reusing the onboarding routes rather than a
 // second copy of the Stripe logic:
 //   POST /api/onboarding/billing { replace: true } → { clientSecret, publishableKey }
-//   stripe.confirmCardSetup(clientSecret, card)
+//   stripe.confirmSetup({ elements, redirect: 'if_required' })
 //   POST /api/onboarding/billing/confirm { setupIntentId }
 //     → promotes the new payment method to the org customer's default
 // The server half of card handling lives in exactly one place; what is here is
 // only the browser half — mounting Elements — which cannot live on the server.
 //
 // Stripe is driven through @stripe/stripe-js only (@stripe/react-stripe-js is
-// not a dependency of this project), so Elements is mounted imperatively. The
-// mount target is rendered unconditionally while the form is open and covered
-// by its own label, because a ref inside a conditional branch is null at the
-// moment the async init finishes — which would leave the card field invisible
-// forever.
+// not a dependency of this project), so Elements is mounted imperatively. This
+// is the PAYMENT ELEMENT, not the legacy Card Element, so Stripe Link is
+// offered here exactly as it is in onboarding. redirect: 'if_required' keeps
+// the replace form in-page — card and Link never redirect — and the return_url
+// only matters for a method that insists on one.
+//
+// The mount target is rendered unconditionally while the form is open and
+// covered by its own label, because a ref inside a conditional branch is null
+// at the moment the async init finishes — which would leave the payment field
+// invisible forever.
 //
 // NEVER rendered: the Stripe customer id or payment method id. They never
 // reach this component.
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import type { Stripe, StripeCardElement } from '@stripe/stripe-js';
+import type {
+  Stripe, StripeElements, StripePaymentElement, Appearance,
+} from '@stripe/stripe-js';
 import SettingsPanel, { PanelSkeleton, PanelError } from './SettingsPanel';
 
 const NAVY  = '#0B1F3B';
 const MUTED = '#5A6B7A';
 const FAINT = '#8A9BAD';
 
-const FIELD_BOX =
-  'w-full border border-frame bg-cream px-3 py-2.5 transition-colors';
+/** Payment Element styling — the house palette, not Stripe's default blue. */
+const STRIPE_APPEARANCE: Appearance = {
+  theme: 'stripe',
+  variables: {
+    colorPrimary:         NAVY,
+    colorText:            NAVY,
+    colorTextPlaceholder: FAINT,
+    colorDanger:          '#DC2626',
+    fontFamily:           'inherit',
+    fontSizeBase:         '14px',
+    borderRadius:         '0px',
+    spacingUnit:          '4px',
+  },
+};
 
 interface CardSummary {
   brand:    string;
@@ -84,12 +103,12 @@ export default function PaymentPanel() {
   const [error,      setError]      = useState<string | null>(null);
   const [saved,      setSaved]      = useState(false);
   // Set when Stripe confirmed the card but our confirm call did not land — the
-  // card IS saved, so a retry must not re-run confirmCardSetup.
+  // card IS saved, so a retry must not re-run confirmSetup.
   const [pendingConfirmId, setPendingConfirmId] = useState<string | null>(null);
 
   const cardMountRef  = useRef<HTMLDivElement>(null);
   const stripeRef     = useRef<Stripe | null>(null);
-  const cardElRef     = useRef<StripeCardElement | null>(null);
+  const elementsRef   = useRef<StripeElements | null>(null);
   const clientSecretRef = useRef<string | null>(null);
 
   // ── Read the current card ──────────────────────────────────────────────────
@@ -126,7 +145,7 @@ export default function PaymentPanel() {
     if (!replacing) return;
 
     let active = true;
-    let cardEl: StripeCardElement | null = null;
+    let paymentEl: StripePaymentElement | null = null;
 
     async function init(): Promise<void> {
       setIniting(true);
@@ -170,19 +189,18 @@ export default function PaymentPanel() {
         }
 
         stripeRef.current = stripe;
-        cardEl = stripe.elements().create('card', {
-          style: {
-            base: {
-              color:      NAVY,
-              fontFamily: 'inherit',
-              fontSize:   '14px',
-              '::placeholder': { color: FAINT },
-            },
-            invalid: { color: '#DC2626' },
-          },
+        // clientSecret on the Elements group is what makes this the Payment
+        // Element flow: Stripe reads the SetupIntent and renders every method
+        // it allows (card + Link) instead of a bare card field.
+        const elements = stripe.elements({
+          clientSecret: body.clientSecret,
+          appearance:   STRIPE_APPEARANCE,
         });
-        cardEl.mount(cardMountRef.current);
-        cardElRef.current = cardEl;
+        paymentEl = elements.create('payment', {
+          layout: { type: 'tabs', defaultCollapsed: false },
+        });
+        paymentEl.mount(cardMountRef.current);
+        elementsRef.current = elements;
       } catch {
         if (active) setError('We could not reach ExpertMatch. Check your connection and try again.');
       } finally {
@@ -194,9 +212,9 @@ export default function PaymentPanel() {
 
     return () => {
       active = false;
-      cardEl?.unmount();
-      cardEl?.destroy();
-      cardElRef.current = null;
+      paymentEl?.unmount();
+      paymentEl?.destroy();
+      elementsRef.current = null;
     };
   }, [replacing]);
 
@@ -227,15 +245,21 @@ export default function PaymentPanel() {
         return;
       }
 
-      const stripe = stripeRef.current;
-      const card   = cardElRef.current;
-      const secret = clientSecretRef.current;
-      if (!stripe || !card || !secret) {
+      const stripe   = stripeRef.current;
+      const elements = elementsRef.current;
+      const secret   = clientSecretRef.current;
+      if (!stripe || !elements || !secret) {
         setError('The payment form is not ready yet. Give it a moment and try again.');
         return;
       }
 
-      const result = await stripe.confirmCardSetup(secret, { payment_method: { card } });
+      // redirect: 'if_required' keeps the replace form in-page; return_url is
+      // only used by a method that insists on redirecting, and lands back here.
+      const result = await stripe.confirmSetup({
+        elements,
+        confirmParams: { return_url: `${window.location.origin}/settings` },
+        redirect:      'if_required',
+      });
 
       if (result.error) {
         setError(result.error.message ?? 'That card could not be saved. Check the details and try again.');
@@ -316,10 +340,12 @@ export default function PaymentPanel() {
           {/* ── Current card ────────────────────────────────────────────── */}
           {data.hasCard && data.card ? (
             <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1 text-sm">
-              <span className="text-ink">Card on file</span>
+              <span className="text-ink">
+                {data.card.last4 ? 'Card on file' : 'Payment method on file'}
+              </span>
               <span aria-hidden="true" style={{ color: FAINT }}>·</span>
               <span className="text-ink font-medium">
-                {data.card.brand} ····{data.card.last4}
+                {data.card.brand}{data.card.last4 ? ` ····${data.card.last4}` : ''}
               </span>
               {data.addedBy && (
                 <>
@@ -378,10 +404,12 @@ export default function PaymentPanel() {
                 className="block text-[10px] uppercase tracking-widest text-muted mb-1.5"
                 style={{ letterSpacing: '0.14em' }}
               >
-                New card
+                New payment method
               </label>
-              {/* Mounted unconditionally while open — see the file header. */}
-              <div id="settings-card" ref={cardMountRef} className={FIELD_BOX} />
+              {/* Mounted unconditionally while open — see the file header. The
+                  Payment Element draws its own bordered fields, so this wrapper
+                  only reserves space while it loads. */}
+              <div id="settings-card" ref={cardMountRef} style={{ minHeight: '5.5rem' }} />
               {initing && (
                 <p className="mt-1.5 text-[11px]" style={{ color: FAINT }}>
                   Loading the secure card field…

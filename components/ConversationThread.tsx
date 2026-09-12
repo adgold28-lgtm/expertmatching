@@ -1113,10 +1113,10 @@ export default function ConversationThread({
       {typeof pe.clientRate === 'number' && pe.clientRate > 0 && !isTerminal && (
         <div className="px-4 py-2 border-b border-frame bg-cream flex items-center gap-3 flex-wrap text-[11px] text-muted">
           {isRateLocked(pe) ? (
-            <span>Agreed <span className="text-ink font-medium">{formatRate(pe.clientRate)}/hr</span> · includes ExpertMatch fee</span>
+            <span>Agreed <span className="text-ink font-medium">{formatRate(pe.clientRate)}/hr</span> all-in</span>
           ) : !rateEditing ? (
             <>
-              <span>Your rate for {firstName} <span className="text-ink font-medium">{formatRate(pe.clientRate)}/hr</span> · includes ExpertMatch fee</span>
+              <span>Your rate for {firstName} <span className="text-ink font-medium">{formatRate(pe.clientRate)}/hr</span> all-in</span>
               {canSend && (
                 <button
                   type="button"
