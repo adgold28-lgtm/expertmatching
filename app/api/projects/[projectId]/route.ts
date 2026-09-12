@@ -186,9 +186,17 @@ export async function GET(
     const project = await getProjectForUser(params.projectId, email, role);
     if (!project) return Response.json({ error: 'not_found' }, { status: 404 });
 
+    // `?view=client` lets PLATFORM STAFF see the project exactly as a client
+    // receives it — anonymized experts, stripped contact paths and rates. It
+    // only ever LOWERS the viewer: a non-admin's role is unchanged, and access
+    // above was already decided from the real role. Read-only preview; the
+    // page sends it on its GETs and nothing else.
+    const viewRole: 'admin' | 'user' =
+      role === 'admin' && request.nextUrl.searchParams.get('view') === 'client' ? 'user' : role;
+
     // A non-admin looking at an expert who is still anonymized needs a
     // descriptor. If any such expert has none stored, enrich them for next time.
-    if (role !== 'admin') {
+    if (viewRole !== 'admin') {
       const needsBackfill = project.experts.some(pe =>
         !isIdentityRevealed(pe) && needsAnonymization(pe.expert),
       );
@@ -201,7 +209,7 @@ export async function GET(
       void trackProductEvent({ type: 'project_opened', actorEmail: email, projectId: params.projectId });
     }
 
-    return Response.json({ project: redactProjectForViewer(project, { role }) });
+    return Response.json({ project: redactProjectForViewer(project, { role: viewRole }) });
   } catch (err) {
     console.error('[api/projects/[id]] GET error:', err instanceof Error ? err.message : String(err));
     return Response.json({ error: 'failed_to_get_project' }, { status: 500 });

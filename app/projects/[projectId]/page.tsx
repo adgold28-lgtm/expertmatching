@@ -1234,6 +1234,11 @@ function ProjectPageInner() {
 
   // Derive initial step from ?tab= param, default to 'brief'
   const tabParam     = searchParams.get('tab') ?? '';
+  // Staff-only preview: `?view=client` asks the server to redact the project
+  // exactly as a client receives it (anonymized experts, no contact paths) and
+  // hides the admin-only controls. The server ignores it for non-admins.
+  const clientView   = searchParams.get('view') === 'client';
+  const projectQuery = clientView ? '?view=client' : '';
   const resolvedTab  = LEGACY_TABS[tabParam] ?? tabParam;
   const initialStep: WorkflowStep = VALID_STEPS.has(resolvedTab) ? (resolvedTab as WorkflowStep) : 'brief';
 
@@ -1287,7 +1292,7 @@ function ProjectPageInner() {
   useEffect(() => {
     // X-Em-Visit marks the page's first load as ONE visit for usage records;
     // the sourcing poll below never sends it.
-    fetch(`/api/projects/${projectId}`, { headers: { 'X-Em-Visit': '1' } })
+    fetch(`/api/projects/${projectId}${projectQuery}`, { headers: { 'X-Em-Visit': '1' } })
       .then(r => r.json())
       .then((d: { project?: Project; error?: string }) => {
         if (d.error) { setError(d.error); return; }
@@ -1304,7 +1309,7 @@ function ProjectPageInner() {
         if (d.role)  setCurrentUserRole(d.role);
       })
       .catch(() => {});
-  }, [projectId]);
+  }, [projectId, projectQuery]);
 
   // Sync active step to URL query param (shallow replace — no scroll)
   function navigateTo(step: WorkflowStep) {
@@ -1334,13 +1339,29 @@ function ProjectPageInner() {
   // status, and error in sync in one shot.
   const refreshProject = useCallback(async () => {
     try {
-      const res = await fetch(`/api/projects/${projectId}`);
+      const res = await fetch(`/api/projects/${projectId}${projectQuery}`);
       const d   = await res.json() as { project?: Project };
       if (d.project) setProject(d.project);
     } catch {
       // Transient — the next poll retries.
     }
-  }, [projectId]);
+  }, [projectId, projectQuery]);
+
+  // Mutation responses come back shaped for the REAL viewer (an admin sees
+  // everything), so in client view they are replaced by a redacted re-read
+  // rather than shown as-is.
+  const applyProjectUpdate = useCallback((updated: Project) => {
+    setProject(updated);
+    if (clientView) void refreshProject();
+  }, [clientView, refreshProject]);
+
+  function toggleClientView() {
+    const url = new URL(window.location.href);
+    if (clientView) url.searchParams.delete('view');
+    else url.searchParams.set('view', 'client');
+    setLoading(true);
+    router.replace(url.pathname + url.search, { scroll: false });
+  }
 
   const startSourcing = useCallback(async (
     overrides: { businessProblem?: string; expertType?: string },
@@ -1403,7 +1424,8 @@ function ProjectPageInner() {
     );
   }
 
-  const isAdmin           = currentUserRole === 'admin';
+  const isStaff           = currentUserRole === 'admin';
+  const isAdmin           = isStaff && !clientView;
   const isOwner           = project.ownerEmail === currentUserEmail;
   // Only the owner (or staff) may start outreach or write to an expert
   // (docs/MATCHY_SPEC.md, founder answer 5). Collaborators read.
@@ -1471,7 +1493,22 @@ function ProjectPageInner() {
               Walkthrough
             </button>
           )}
-          {(currentUserRole === 'admin' || project.ownerEmail === currentUserEmail) && (
+          {isStaff && (
+            <button
+              type="button"
+              onClick={toggleClientView}
+              title={clientView ? 'Showing this project as a client sees it' : 'Preview this project as a client sees it'}
+              className={`shrink-0 text-[10px] uppercase tracking-widest border px-2.5 py-1.5 transition-colors ${
+                clientView
+                  ? 'text-navy bg-gold border-gold hover:bg-gold/90'
+                  : 'text-gold/70 hover:text-gold border-gold/30 hover:border-gold'
+              }`}
+              style={{ letterSpacing: '0.14em' }}
+            >
+              {clientView ? 'Client view · on' : 'Client view'}
+            </button>
+          )}
+          {(isAdmin || project.ownerEmail === currentUserEmail) && (
             <button
               onClick={() => setShowShare(true)}
               className="shrink-0 text-[10px] uppercase tracking-widest text-gold/70 hover:text-gold border border-gold/30 hover:border-gold px-3 py-1.5 transition-colors"
@@ -1705,7 +1742,7 @@ function ProjectPageInner() {
               isAdmin={isAdmin}
               selectedExpertId={selectedThread}
               onExpertUpdate={handleExpertUpdate}
-              onProjectUpdate={p => setProject(p)}
+              onProjectUpdate={applyProjectUpdate}
               onGoToMatches={() => navigateTo('matches')}
             />
           </div>
@@ -1734,7 +1771,7 @@ function ProjectPageInner() {
         <ShareModal
           projectId={projectId}
           collaborators={project.collaborators ?? []}
-          onUpdate={(updated) => setProject(updated)}
+          onUpdate={applyProjectUpdate}
           onClose={() => setShowShare(false)}
         />
       )}
