@@ -423,6 +423,16 @@ console.log('\ndescriptorIsAnonymous — what a descriptor may and may not say')
 
 const anon = (text: string) => descriptorIsAnonymous(text, SAMPLE_EXPERT);
 
+// Tightened 2026-09-12: a named award, ranking or publication, or a figure more
+// precise than a one-leading-digit band, is a fingerprint and is refused.
+check('a named ranking is refused',            !anon('VP Marketing at a beverage brand — Ad Age 40 Under 40'));
+check('a named publication is refused',        !anon('Profiled in Forbes as a category-defining CMO'));
+check('"won a significant industry award" is fine', anon('Owns a regional clinic group; won a significant industry award'));
+check('an exact count is refused',             !anon('Managed real estate for 4000+ restaurants'));
+check('two significant digits are refused',    !anon('Led 200+ engineers with $15M tooling budgets'));
+check('one-digit bands are fine',              anon('Scaled to dozens of locations, $100M+ revenue, 10+ years in role'));
+check('Fortune 500 and years are not figures', anon('Fortune 500 manufacturer, in role since 2019'));
+
 check('a clean descriptor passes',
       anon('Former President & CEO, regional veterinary clinic group — 40+ locations, ~$200M revenue'));
 check('the deterministic fallback passes its own check',
@@ -481,14 +491,14 @@ const clean = redactExpertForViewer({
   expert: {
     ...SAMPLE_EXPERT,
     anonymizedDescriptor:    CLEAN_DESCRIPTOR,
-    anonymizedJustification: 'Scaled a regional clinic group from 6 to 41 sites.',
+    anonymizedJustification: 'Scaled a regional clinic group from a handful of sites to 40+.',
   },
 }, { role: 'user' });
 
 check('a clean stored descriptor is rendered verbatim',
       clean.expert.anonymizedDescriptor === CLEAN_DESCRIPTOR);
 check('a clean justification survives',
-      clean.expert.anonymizedJustification === 'Scaled a regional clinic group from 6 to 41 sites.');
+      clean.expert.anonymizedJustification === 'Scaled a regional clinic group from a handful of sites to 40+.');
 
 check('an admin still sees the raw descriptor, leak and all',
       redactExpertForViewer({

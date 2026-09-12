@@ -121,10 +121,50 @@ function containsWord(text: string, term: string): boolean {
  *
  * Pure. Unit-checked by scripts/check-redaction.ts.
  */
+/**
+ * Named awards, rankings and publications identify a person almost as surely
+ * as their employer does: there is one "Ad Age 40 Under 40" CMO of a beverage
+ * brand. The prompt asks for "won a significant industry award" instead; this
+ * is the check that it obeyed.
+ */
+const NAMED_RECOGNITION = [
+  /\b\d+\s+under\s+\d+\b/i,            // "40 Under 40", "30 under 30"
+  /\btop\s+\d+\b/i,                       // "Top 100 CMOs"
+  /\binc\.?\s*5000\b/i,
+  /\bfortune\s+(?!500\b|100\b|1000\b)\d+\b/i, // "Fortune 40 Under 40" — scale words stay allowed
+  /\b(forbes|ad\s*age|adweek|fast\s+company|crain'?s|bloomberg|wsj|wall\s+street\s+journal|new\s+york\s+times|techcrunch|business\s+insider|ernst\s*&\s*young|ey\s+entrepreneur|pulitzer|emmy|grammy|clio|cannes\s+lions|effie)\b/i,
+];
+
+/**
+ * Exact figures are fingerprints too ("4000+ restaurants" names one QSR chain).
+ * The rules allow one-leading-digit bands: "$100M+", "10+ years", "40+ clinics".
+ * Refused: a thousands separator, two or more non-zero digits ("$15M", "250
+ * SKUs"), or a plain count of 100 or more with no $ or M/B unit ("4000+
+ * restaurants", "200 engineers"). Years and "Fortune 500"-style scale words are
+ * exempt.
+ */
+const FIGURE_TOKEN = /(\$\s*)?(\d[\d,]*)(?:\.\d+)?\s*(k|m|mm|b|bn|million|billion)?\b/gi;
+
+function hasPreciseFigure(value: string): boolean {
+  const stripped = value
+    .replace(/\bfortune\s+(500|100|1000)\b/gi, '')   // scale vocabulary, not a figure
+    .replace(/\b(19|20)\d{2}\b/g, '');                // years
+  for (const m of Array.from(stripped.matchAll(FIGURE_TOKEN))) {
+    const [, dollar, digits, unit] = m;
+    if (digits.includes(',')) return true;
+    const nonZero = digits.replace(/0/g, '').length;
+    if (nonZero >= 2) return true;
+    if (!dollar && !unit && Number(digits) >= 100) return true;
+  }
+  return false;
+}
+
 export function descriptorIsAnonymous(text: string, expert: IdentitySource): boolean {
   const value = (text ?? '').trim();
   if (!value) return true;                                  // nothing to give away
   if (maskContactDetails(value) !== value) return false;     // email, link or phone
+  if (NAMED_RECOGNITION.some(re => re.test(value))) return false;
+  if (hasPreciseFigure(value)) return false;
 
   const nameParts = (expert.name ?? '').trim().split(/\s+/).filter(Boolean);
   if (nameParts.length >= 2) {
@@ -163,8 +203,10 @@ export interface AnonymizedFields {
 export const ANONYMIZATION_RULES = `ANONYMIZATION RULES (both fields):
 - NEVER include the person's name, their employer's name, a product name, a fund name, or any other detail that identifies one specific company or person.
 - Generalize organizations by type and scale instead: "regional veterinary clinic group", "national specialty retailer", "mid-market PE fund", "Fortune 500 industrial manufacturer".
-- QUANTIFY LEGITIMACY whenever the evidence supports it: AUM, revenue, headcount, number of sites/clinics/stores, deals closed, years in role, patents, publications. Use approximate forms — "40+ clinics", "~$200M revenue", "$1B+ AUM", "12 years in role", "30+ peer-reviewed publications".
-- HARD RULE: every number you write must appear in, or be directly derivable from, the evidence provided. Never invent, estimate, extrapolate, or round up a figure that is not there. If no figures exist, say nothing numeric and use honest scale words instead: boutique / regional / national / multi-site / enterprise / Fortune 500.
+- NEVER name an award, ranking, list, publication, conference, school or investor. Say "won a significant industry award", "named to a national industry ranking", "published in a leading trade journal". Never write the awarding body or the list's title (no "40 Under 40", no "Top 100", no magazine or newspaper names).
+- Lead with a strong ownership verb that shows what the person is responsible for: owns, runs, leads, built, scaled, oversees. "Owns and runs a multi-site veterinary group" beats "involved in veterinary operations".
+- CONVEY SCALE IN BANDS, not exact figures. A precise number is a fingerprint. Use: "hundreds of" / "thousands of" locations or staff, "$10M+", "$100M+", "$1B+" revenue or AUM, "10+ years" in role, "dozens of" deals or publications. Never write a figure more precise than one leading digit (no "4,000+ restaurants", no "$15M tooling budget" — write "thousands of restaurants", "eight-figure budgets").
+- HARD RULE: every scale band you write must be supported by the evidence provided. Never invent, estimate or extrapolate. If no figures exist, use honest scale words instead: boutique / regional / national / multi-site / enterprise / Fortune 500.
 - No hedging ("could", "may", "possibly"). State what the evidence shows.`;
 
 /**
@@ -197,7 +239,7 @@ ${ANONYMIZATION_RULES}
 
 anonymizedDescriptor (max ${MAX_DESCRIPTOR_LEN} characters):
 Role level + generalized organization type + scale/scope.
-Example: "Former President & CEO, regional veterinary clinic group — scaled to 40+ locations, ~$200M revenue"
+Example: "Owns and ran a regional veterinary clinic group as President & CEO — scaled it to dozens of locations and $100M+ revenue"
 
 anonymizedJustification (max ${MAX_JUSTIFICATION_LEN} characters):
 The relevance rationale above, rewritten with every identifying name generalized. One sentence.
@@ -269,7 +311,11 @@ export async function generateAnonymizedFields(expert: Expert): Promise<Anonymiz
 
 /** True when an expert stored before this feature still needs enrichment. */
 export function needsAnonymization(expert: Expert): boolean {
-  return !expert.anonymizedDescriptor?.trim();
+  const stored = expert.anonymizedDescriptor?.trim() ?? '';
+  // No descriptor, or one written under looser rules that the redactor now
+  // refuses at render time — either way the client is seeing the deterministic
+  // fallback and a fresh generation would serve them better.
+  return !stored || !descriptorIsAnonymous(stored, expert);
 }
 
 export interface BackfillResult {

@@ -1409,7 +1409,7 @@ Return ONLY valid JSON. Critical formatting rules:
       "relevance_score": 85,
       "tier": "core",
       "valueChainLabel": "Manufacturing / Production",
-      "anonymizedDescriptor": "Former President & CEO, regional veterinary clinic group — scaled to 40+ locations, ~$200M revenue",
+      "anonymizedDescriptor": "Owns and ran a regional veterinary clinic group as President & CEO — scaled it to dozens of locations and $100M+ revenue",
       "anonymizedJustification": "Ran multi-site consolidation across a regional clinic group through two ownership transitions.",
       "source_url": "https://...",
       "source_label": "LinkedIn",
@@ -1445,7 +1445,7 @@ evidenceItems rules:
 
 Clients see an anonymized version of each expert until a call is scheduled — that is how this platform stays in the middle of the relationship. Write both of these fields for EVERY expert, from the same evidence you used for the justification.
 
-- anonymizedDescriptor (max ${MAX_DESCRIPTOR_LEN} characters): role level + generalized organization type + scale/scope. Example: "Former President & CEO, regional veterinary clinic group — scaled to 40+ locations, ~$200M revenue"
+- anonymizedDescriptor (max ${MAX_DESCRIPTOR_LEN} characters): strong ownership verb + role level + generalized organization type + scale in bands. Example: "Owns and ran a regional veterinary clinic group as President & CEO — scaled it to dozens of locations and $100M+ revenue"
 - anonymizedJustification (max ${MAX_JUSTIFICATION_LEN} characters): the relevance rationale above, one sentence, with every identifying name generalized.
 
 ${ANONYMIZATION_RULES}
