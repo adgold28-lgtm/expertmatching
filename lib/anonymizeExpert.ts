@@ -136,27 +136,13 @@ const NAMED_RECOGNITION = [
 ];
 
 /**
- * Exact figures are fingerprints too ("4000+ restaurants" names one QSR chain).
- * The rules allow one-leading-digit bands: "$100M+", "10+ years", "40+ clinics".
- * Refused: a thousands separator, two or more non-zero digits ("$15M", "250
- * SKUs"), or a plain count of 100 or more with no $ or M/B unit ("4000+
- * restaurants", "200 engineers"). Years and "Fortune 500"-style scale words are
- * exempt.
+ * Figures are fingerprints too ("4000+ restaurants" names one QSR chain), so
+ * the rules allow none at all: scale is conveyed in words. Any numeral in the
+ * text is refused. Only "Fortune 500"-style scale vocabulary is exempt.
  */
-const FIGURE_TOKEN = /(\$\s*)?(\d[\d,]*)(?:\.\d+)?\s*(k|m|mm|b|bn|million|billion)?\b/gi;
-
-function hasPreciseFigure(value: string): boolean {
-  const stripped = value
-    .replace(/\bfortune\s+(500|100|1000)\b/gi, '')   // scale vocabulary, not a figure
-    .replace(/\b(19|20)\d{2}\b/g, '');                // years
-  for (const m of Array.from(stripped.matchAll(FIGURE_TOKEN))) {
-    const [, dollar, digits, unit] = m;
-    if (digits.includes(',')) return true;
-    const nonZero = digits.replace(/0/g, '').length;
-    if (nonZero >= 2) return true;
-    if (!dollar && !unit && Number(digits) >= 100) return true;
-  }
-  return false;
+function hasFigure(value: string): boolean {
+  const stripped = value.replace(/\bfortune\s+(500|100|1000)\b/gi, '');
+  return /\d/.test(stripped);
 }
 
 export function descriptorIsAnonymous(text: string, expert: IdentitySource): boolean {
@@ -164,7 +150,7 @@ export function descriptorIsAnonymous(text: string, expert: IdentitySource): boo
   if (!value) return true;                                  // nothing to give away
   if (maskContactDetails(value) !== value) return false;     // email, link or phone
   if (NAMED_RECOGNITION.some(re => re.test(value))) return false;
-  if (hasPreciseFigure(value)) return false;
+  if (hasFigure(value)) return false;
 
   const nameParts = (expert.name ?? '').trim().split(/\s+/).filter(Boolean);
   if (nameParts.length >= 2) {
@@ -205,8 +191,8 @@ export const ANONYMIZATION_RULES = `ANONYMIZATION RULES (both fields):
 - Generalize organizations by type and scale instead: "regional veterinary clinic group", "national specialty retailer", "mid-market PE fund", "Fortune 500 industrial manufacturer".
 - NEVER name an award, ranking, list, publication, conference, school or investor. Say "won a significant industry award", "named to a national industry ranking", "published in a leading trade journal". Never write the awarding body or the list's title (no "40 Under 40", no "Top 100", no magazine or newspaper names).
 - Lead with a strong ownership verb that shows what the person is responsible for: owns, runs, leads, built, scaled, oversees. "Owns and runs a multi-site veterinary group" beats "involved in veterinary operations".
-- CONVEY SCALE IN BANDS, not exact figures. A precise number is a fingerprint. Use: "hundreds of" / "thousands of" locations or staff, "$10M+", "$100M+", "$1B+" revenue or AUM, "10+ years" in role, "dozens of" deals or publications. Never write a figure more precise than one leading digit (no "4,000+ restaurants", no "$15M tooling budget" — write "thousands of restaurants", "eight-figure budgets").
-- HARD RULE: every scale band you write must be supported by the evidence provided. Never invent, estimate or extrapolate. If no figures exist, use honest scale words instead: boutique / regional / national / multi-site / enterprise / Fortune 500.
+- NO NUMERALS. Never write a figure of any kind — no revenue, AUM, headcount, site counts, deal counts, years, percentages or budgets as numbers. A figure is a fingerprint. Convey scale with words only: "dozens of locations", "hundreds of engineers", "thousands of restaurants", "a multi-million-dollar budget", "a nine-figure business", "a billion-dollar fund", "more than a decade in role", "a Fortune 500 manufacturer".
+- HARD RULE: every scale word you write must be supported by the evidence provided. Never invent, estimate or extrapolate. If no figures exist, use honest scale words instead: boutique / regional / national / multi-site / enterprise / Fortune 500.
 - No hedging ("could", "may", "possibly"). State what the evidence shows.`;
 
 /**
@@ -239,7 +225,7 @@ ${ANONYMIZATION_RULES}
 
 anonymizedDescriptor (max ${MAX_DESCRIPTOR_LEN} characters):
 Role level + generalized organization type + scale/scope.
-Example: "Owns and ran a regional veterinary clinic group as President & CEO — scaled it to dozens of locations and $100M+ revenue"
+Example: "Owns and ran a regional veterinary clinic group as President & CEO — scaled it to dozens of locations and a nine-figure revenue"
 
 anonymizedJustification (max ${MAX_JUSTIFICATION_LEN} characters):
 The relevance rationale above, rewritten with every identifying name generalized. One sentence.

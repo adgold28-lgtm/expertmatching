@@ -423,18 +423,19 @@ console.log('\ndescriptorIsAnonymous — what a descriptor may and may not say')
 
 const anon = (text: string) => descriptorIsAnonymous(text, SAMPLE_EXPERT);
 
-// Tightened 2026-09-12: a named award, ranking or publication, or a figure more
-// precise than a one-leading-digit band, is a fingerprint and is refused.
+// Tightened 2026-09-12: a named award, ranking or publication, or any numeral,
+// is a fingerprint and is refused. Scale is conveyed in words.
 check('a named ranking is refused',            !anon('VP Marketing at a beverage brand — Ad Age 40 Under 40'));
 check('a named publication is refused',        !anon('Profiled in Forbes as a category-defining CMO'));
 check('"won a significant industry award" is fine', anon('Owns a regional clinic group; won a significant industry award'));
 check('an exact count is refused',             !anon('Managed real estate for 4000+ restaurants'));
-check('two significant digits are refused',    !anon('Led 200+ engineers with $15M tooling budgets'));
-check('one-digit bands are fine',              anon('Scaled to dozens of locations, $100M+ revenue, 10+ years in role'));
-check('Fortune 500 and years are not figures', anon('Fortune 500 manufacturer, in role since 2019'));
+check('dollar figures are refused',            !anon('Led engineers with $15M tooling budgets'));
+check('rounded bands are refused too',         !anon('Scaled to $100M+ revenue over 10+ years'));
+check('scale words are fine',                  anon('Scaled to dozens of locations and a nine-figure revenue over more than a decade'));
+check('Fortune 500 is vocabulary, not a figure', anon('Fortune 500 manufacturer, more than a decade in role'));
 
 check('a clean descriptor passes',
-      anon('Former President & CEO, regional veterinary clinic group — 40+ locations, ~$200M revenue'));
+      anon('Former President & CEO, regional veterinary clinic group — dozens of locations, nine-figure revenue'));
 check('the deterministic fallback passes its own check',
       anon(fallbackDescriptor(SAMPLE_EXPERT)));
 check('a generic org form passes',
@@ -485,20 +486,20 @@ check('a leaky justification is dropped',   leaky.expert.anonymizedJustification
 check('and the visible justification is empty rather than identifying',
       leaky.expert.justification === '');
 
-const CLEAN_DESCRIPTOR = 'Former President & CEO, regional veterinary clinic group — 40+ locations';
+const CLEAN_DESCRIPTOR = 'Former President & CEO, regional veterinary clinic group — dozens of locations';
 const clean = redactExpertForViewer({
   ...projectExpertAt('contacted'),
   expert: {
     ...SAMPLE_EXPERT,
     anonymizedDescriptor:    CLEAN_DESCRIPTOR,
-    anonymizedJustification: 'Scaled a regional clinic group from a handful of sites to 40+.',
+    anonymizedJustification: 'Scaled a regional clinic group from a handful of sites to dozens.',
   },
 }, { role: 'user' });
 
 check('a clean stored descriptor is rendered verbatim',
       clean.expert.anonymizedDescriptor === CLEAN_DESCRIPTOR);
 check('a clean justification survives',
-      clean.expert.anonymizedJustification === 'Scaled a regional clinic group from a handful of sites to 40+.');
+      clean.expert.anonymizedJustification === 'Scaled a regional clinic group from a handful of sites to dozens.');
 
 check('an admin still sees the raw descriptor, leak and all',
       redactExpertForViewer({
