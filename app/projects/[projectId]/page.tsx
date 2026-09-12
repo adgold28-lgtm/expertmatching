@@ -1292,13 +1292,21 @@ function ProjectPageInner() {
   useEffect(() => {
     // X-Em-Visit marks the page's first load as ONE visit for usage records;
     // the sourcing poll below never sends it.
-    fetch(`/api/projects/${projectId}${projectQuery}`, { headers: { 'X-Em-Visit': '1' } })
-      .then(r => r.json())
-      .then((d: { project?: Project; error?: string }) => {
-        if (d.error) { setError(d.error); return; }
-        setProject(d.project ?? null);
-        if (d.project) setBriefDraft(draftFromProject(d.project));
-      })
+    // A 503 is the middleware saying "could not verify the session right now"
+    // (auth_unavailable) — transient, so one retry before giving up.
+    const load = (attempt: number): Promise<void> =>
+      fetch(`/api/projects/${projectId}${projectQuery}`, { headers: { 'X-Em-Visit': '1' } })
+        .then(async r => {
+          if (r.status === 503 && attempt === 0) {
+            await new Promise(res => setTimeout(res, 1500));
+            return load(1);
+          }
+          const d = await r.json() as { project?: Project; error?: string };
+          if (d.error) { setError(d.error === 'auth_unavailable' ? 'Failed to load project.' : d.error); return; }
+          setProject(d.project ?? null);
+          if (d.project) setBriefDraft(draftFromProject(d.project));
+        });
+    load(0)
       .catch(() => setError('Failed to load project.'))
       .finally(() => setLoading(false));
 
