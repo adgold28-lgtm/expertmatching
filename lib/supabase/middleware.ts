@@ -15,6 +15,34 @@ export interface UpdateSessionResult {
   response: NextResponse;
   /** The authenticated Supabase user, or null if no valid session exists. */
   user: User | null;
+  /**
+   * True when the request CARRIED a session cookie but Supabase could not be
+   * asked whether it is valid (network failure, timeout, 5xx). This is not
+   * "signed out" — it is "unknown" — and middleware must not redirect on it.
+   *
+   * 2026-09-12: a client mid-sourcing was bounced to /login and then to /app
+   * because one getUser() call failed transiently. The next request verified
+   * fine, so /login sent them home and the project they were on was gone.
+   */
+  authUnavailable: boolean;
+}
+
+/** Any Supabase auth cookie on the request means a session may exist. */
+function hasSessionCookie(request: NextRequest): boolean {
+  return request.cookies.getAll().some(c => c.name.startsWith('sb-'));
+}
+
+/**
+ * True for failures that say nothing about the session itself: the auth
+ * server could not be reached or answered with a server error. An expired or
+ * invalid token comes back as a 4xx AuthApiError and stays "signed out".
+ */
+function isTransientAuthError(err: unknown): boolean {
+  if (!err || typeof err !== 'object') return true;           // thrown non-Error: unknown, not a verdict
+  const e = err as { name?: string; status?: number };
+  if (e.name === 'AuthRetryableFetchError') return true;
+  const status = typeof e.status === 'number' ? e.status : 0;
+  return status === 0 || status >= 500;
 }
 
 /**
@@ -33,8 +61,9 @@ export async function updateSession(request: NextRequest): Promise<UpdateSession
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
   const key = process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY;
   const empty: UpdateSessionResult = {
-    response: NextResponse.next({ request }),
-    user:     null,
+    response:        NextResponse.next({ request }),
+    user:            null,
+    authUnavailable: false,
   };
 
   if (!url || !key) return empty;
@@ -62,10 +91,15 @@ export async function updateSession(request: NextRequest): Promise<UpdateSession
       },
     });
 
-    const { data } = await supabase.auth.getUser();
-    return { response, user: data.user?.email ? data.user : null };
-  } catch {
-    // Supabase unreachable / misconfigured — treat as signed out.
-    return empty;
+    const { data, error } = await supabase.auth.getUser();
+    if (data.user?.email) return { response, user: data.user, authUnavailable: false };
+    // No user. Signed out for real (no cookie, or a 4xx verdict on the token),
+    // or unknown (cookie present, verification itself failed)?
+    const unavailable = hasSessionCookie(request) && !!error && isTransientAuthError(error);
+    return { response, user: null, authUnavailable: unavailable };
+  } catch (err) {
+    // Supabase unreachable / misconfigured. With a session cookie on the
+    // request that is "unknown", not "signed out".
+    return { ...empty, authUnavailable: hasSessionCookie(request) && isTransientAuthError(err) };
   }
 }

@@ -86,10 +86,24 @@ export async function middleware(request: NextRequest): Promise<NextResponse> {
 
   // Refresh the Supabase session cookie and read the verified user.
   // Authorization metadata rides in app_metadata (service-role-written only).
-  const { response, user } = await updateSession(request);
+  const { response, user, authUnavailable } = await updateSession(request);
 
   // In development, auth is optional — let everything through.
   if (!isAuthEnabled()) return response;
+
+  // The session could not be VERIFIED — not the same as absent. Redirecting
+  // here kicks a signed-in user to /login, which (verifying fine a moment
+  // later) sends them to /app and off whatever page they were on. Pass the
+  // request through instead: pages fetch their data through API routes, and
+  // every API route runs its own guard, so nothing is served on trust. An
+  // API request gets a 503 the client treats as transient, not a 401 it
+  // would treat as "logged out".
+  if (!user && authUnavailable) {
+    if (pathname.startsWith('/api/')) {
+      return NextResponse.json({ error: 'auth_unavailable' }, { status: 503 });
+    }
+    return response;
+  }
 
   if (user) {
     const meta = user.app_metadata as {
@@ -131,8 +145,12 @@ export async function middleware(request: NextRequest): Promise<NextResponse> {
     }
 
     // Fully authenticated — bounce off marketing/login, pass through elsewhere.
+    // /login carries `next` when a guard sent the user there; a signed-in user
+    // landing on it goes back to that page, not to /app. Relative paths only.
     if (APP_REDIRECT_PATHS.has(pathname)) {
-      return NextResponse.redirect(new URL('/app', request.url));
+      const rawNext = request.nextUrl.searchParams.get('next') ?? '';
+      const next = rawNext.startsWith('/') && !rawNext.startsWith('//') ? rawNext : '/app';
+      return NextResponse.redirect(new URL(next, request.url));
     }
     return response;
   }
