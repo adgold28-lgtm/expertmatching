@@ -42,6 +42,7 @@ export type ProductEventType =
   | 'sourcing_started'
   | 'sourcing_completed'          // payload.count, payload.durationMs
   | 'sourcing_failed'
+  | 'sourcing_enqueue_failed'     // payload.reason — the run never reached QStash
   // candidates
   | 'candidate_bookmarked'
   | 'candidate_unbookmarked'

@@ -129,8 +129,16 @@ export async function POST(
     }
   } catch (err) {
     // Enqueue failed — never leave the project stuck on 'running'.
-    console.error('[source-experts] enqueue failed', {
-      reason: err instanceof Error ? err.message.slice(0, 120) : 'unknown',
+    const reason = err instanceof Error ? err.message.slice(0, 120) : 'unknown';
+    console.error('[source-experts] enqueue failed', { reason });
+    // Vercel runtime logs are short-lived; the event row is what a later
+    // investigation can actually find (2026-09-12: "sourcing is crashing"
+    // with nothing to go on). The reason is a QStash status line, no brief.
+    void trackProductEvent({
+      type:       'sourcing_enqueue_failed',
+      actorEmail: email,
+      projectId:  params.projectId,
+      payload:    { reason },
     });
     // Roll back only OUR claim. Between the claim and this catch the run could
     // in principle have been superseded; clearing unconditionally would then
