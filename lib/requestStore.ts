@@ -1,0 +1,1134 @@
+// Structured request + screening storage (docs/SCREENING_FLOW_PLAN.md).
+// Production: Supabase Postgres — `requests`, `objectives`, `outreach_tokens`,
+// `screening_responses`, `call_outcomes`
+// (supabase/migrations/20260914000000_screening_requests.sql).
+// Development fallback: in-memory Maps with a clear warning (process-local).
+//
+// ACCESS CONTROL IS OWNER-OR-PLATFORM-ADMIN, and it lives here — in the email
+// check in `getRequestForUser` / `listRequestsForUser` and nowhere else. There
+// are NO collaborators on a request: a request is not a project, it is one
+// person's brief, and the plan settles that deliberately. Anyone else gets
+// null, which every route turns into a 404 rather than a 403 — a stranger must
+// not learn that a request id exists.
+//
+// AND ONLY BY THEM. All five tables have RLS enabled with ZERO policies, and
+// this module holds the service-role client, which bypasses RLS regardless. The
+// database is not a second opinion on who may read a request; this file is the
+// only opinion there is.
+//
+// THE OTHER BOUNDARY THIS MODULE DOES NOT ENFORCE: redaction. `expert_email`,
+// `expert_snapshot.name` and `rate_ask` come back in FULL from every function
+// below, because staff routes need them. A client must never see any of the
+// three — the route builds its respondent view field by field for the caller's
+// role, and coverage plus the expert's own words are all a non-admin gets.
+//
+// NEVER LOG: the topic statement, an objective, a stem, a proof prompt, an
+// expert's name, an expert's email address, a proof sentence, a raw token or a
+// token hash. The one warning in this file carries a PostgREST error code and
+// nothing else.
+
+import { randomUUID } from 'crypto';
+import type { SupabaseClient } from '@supabase/supabase-js';
+import type {
+  CallOutcome,
+  CallOutcomeValue,
+  ExpertBackgroundLine,
+  ExpertSnapshot,
+  ScreeningCandidate,
+  ScreeningItemSource,
+  ScreeningObjective,
+  ScreeningRequest,
+  ScreeningRequestSummary,
+  ScreeningResponse,
+  ScreeningAnswer,
+  ScreeningAvailability,
+  ScreeningTargeting,
+} from '../types';
+import { getServiceRoleClient } from './supabase/admin';
+import type {
+  CallOutcomeRow,
+  Database,
+  ObjectiveRow,
+  OutreachTokenRow,
+  RequestRow,
+  ScreeningResponseRow,
+} from './supabase/database.types';
+import type { IntakeData } from './screeningValidation';
+
+// ─── Input types ──────────────────────────────────────────────────────────────
+
+/**
+ * One objective's generated (or edited) text. `source` says where the live text
+ * came from; the two `model*` fields are written only when the MODEL produced
+ * them, so a later client edit does not erase what the model wrote.
+ *
+ * An omitted optional key is LEFT AS STORED — this is a merge patch on three
+ * columns, not a replace.
+ */
+export interface ObjectiveItemUpdate {
+  id:                 string;
+  stem:               string;
+  proofPrompt:        string;
+  source:             ScreeningItemSource;
+  modelStem?:         string | null;
+  modelProofPrompt?:  string | null;
+  clientEdited?:      boolean;
+}
+
+export interface AddCandidateInput {
+  /** lib/screeningValidation.normalizeExpertId — the cross-request key. */
+  expertId:       string;
+  /** Lowercased, staff-only. Null when the link is handed over out of band. */
+  expertEmail:    string | null;
+  snapshot:       ExpertSnapshot;
+  /** sha256 of the raw token. The raw token is never passed to this module. */
+  tokenHash:      string;
+  /** ISO — the request deadline, stamped at mint. */
+  expiresAt:      string;
+  /** Resolved to a profile id; null when it cannot be. */
+  createdByEmail: string | null;
+}
+
+export interface SubmitScreeningInput {
+  answers: Array<{ objectiveId: string; answer: ScreeningAnswer; proofText: string | null }>;
+  rateAccepted: boolean;
+  /** EXPERT-side dollars per hour, or null when the offer was accepted. */
+  rateAsk:      number | null;
+  availability: ScreeningAvailability;
+}
+
+/**
+ * 'already_submitted' covers every reason a live-looking link refused the
+ * write — used once already, or revoked. The public surface shows the same
+ * honest page for all of them, so the store does not distinguish them either.
+ */
+export type SubmitScreeningResult = 'ok' | 'already_submitted' | 'not_found';
+
+// ─── Utilities ────────────────────────────────────────────────────────────────
+
+/**
+ * Every id in this module is a Postgres uuid. Checked BEFORE the query, not
+ * after: PostgREST answers a malformed uuid with a 400 rather than an empty
+ * result, which would turn a bad URL into a 500 instead of the 404 it is.
+ */
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+function isUuid(value: string): boolean {
+  return UUID_RE.test(value);
+}
+
+function asRecord(value: unknown): Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
+}
+
+function asString(value: unknown): string {
+  return typeof value === 'string' ? value : '';
+}
+
+function asStringList(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((v): v is string => typeof v === 'string') : [];
+}
+
+/** The column is a plain integer; the type is the three lengths the product offers. */
+function toCallLength(value: number): 30 | 45 | 60 {
+  if (value === 30) return 30;
+  if (value === 45) return 45;
+  return 60;
+}
+
+// ─── Row → type mappers (field by field, never by spreading a row) ────────────
+
+/**
+ * `requests.targeting` is jsonb, so nothing about its shape is guaranteed at
+ * read time — it may have been written by an older build. Rebuilt key by key,
+ * dropping anything empty, so a caller never has to defend against `undefined`
+ * inside a field that claims to be a string.
+ */
+function toTargeting(value: unknown): ScreeningTargeting {
+  const raw        = asRecord(value);
+  const exclusions = asRecord(raw.exclusions);
+
+  const targetCompanies   = asStringList(raw.targetCompanies);
+  const excludedCompanies = asStringList(exclusions.companies);
+  const excludedExperts   = asStringList(exclusions.experts);
+  const seniority         = asString(raw.seniority);
+  const fn                = asString(raw.function);
+  const tenureWindow      = asString(raw.tenureWindow);
+  const geography         = asString(raw.geography);
+
+  const out: ScreeningTargeting = {};
+  if (targetCompanies.length > 0) out.targetCompanies = targetCompanies;
+  if (seniority)                  out.seniority       = seniority;
+  if (fn)                         out.function        = fn;
+  if (tenureWindow)               out.tenureWindow    = tenureWindow;
+  if (geography)                  out.geography       = geography;
+  if (excludedCompanies.length > 0 || excludedExperts.length > 0) {
+    out.exclusions = {};
+    if (excludedCompanies.length > 0) out.exclusions.companies = excludedCompanies;
+    if (excludedExperts.length   > 0) out.exclusions.experts   = excludedExperts;
+  }
+  return out;
+}
+
+/** `outreach_tokens.expert_snapshot` is jsonb — same treatment as targeting. */
+function toSnapshot(value: unknown): ExpertSnapshot {
+  const raw   = asRecord(value);
+  const lines = Array.isArray(raw.background) ? raw.background : [];
+  const background: ExpertBackgroundLine[] = [];
+  for (const entry of lines) {
+    const line    = asRecord(entry);
+    const company = asString(line.company);
+    if (!company) continue;
+    background.push({ company, role: asString(line.role), dates: asString(line.dates) });
+  }
+  return { name: asString(raw.name), headline: asString(raw.headline), background };
+}
+
+function rowToObjective(row: ObjectiveRow): ScreeningObjective {
+  return {
+    id:            row.id,
+    requestId:     row.request_id,
+    position:      row.position,
+    objectiveText: row.objective_text,
+    stem:          row.stem,
+    proofPrompt:   row.proof_prompt,
+    clientEdited:  row.client_edited,
+    source:        row.source,
+  };
+}
+
+function rowToRequest(
+  row: RequestRow,
+  objectives: ScreeningObjective[],
+  ownerEmail: string,
+): ScreeningRequest {
+  return {
+    id:             row.id,
+    organizationId: row.organization_id,
+    ownerId:        row.owner_id,
+    ownerEmail,
+    status:         row.status,
+    topicStatement: row.topic_statement,
+    targeting:      toTargeting(row.targeting),
+    callCount:      row.call_count,
+    deadline:       row.deadline,
+    clientRate:     row.client_rate,
+    callLengthMin:  toCallLength(row.call_length_min),
+    approvedAt:     row.approved_at,
+    createdAt:      row.created_at,
+    updatedAt:      row.updated_at,
+    objectives,
+  };
+}
+
+function rowToResponse(row: ScreeningResponseRow): ScreeningResponse {
+  return { objectiveId: row.objective_id, answer: row.answer, proofText: row.proof_text };
+}
+
+function rowToOutcome(row: CallOutcomeRow): CallOutcome {
+  return { objectiveId: row.objective_id, outcome: row.outcome };
+}
+
+function rowToCandidate(
+  row: OutreachTokenRow,
+  responses: ScreeningResponse[],
+  outcomes: CallOutcome[],
+): ScreeningCandidate {
+  return {
+    id:              row.id,
+    requestId:       row.request_id,
+    expertId:        row.expert_id,
+    expertEmail:     row.expert_email,
+    snapshot:        toSnapshot(row.expert_snapshot),
+    expiresAt:       row.expires_at,
+    submittedAt:     row.submitted_at,
+    revokedAt:       row.revoked_at,
+    callRequestedAt: row.call_requested_at,
+    rateAccepted:    row.rate_accepted,
+    rateAsk:         row.rate_ask,
+    availability:    row.availability,
+    createdAt:       row.created_at,
+    responses,
+    outcomes,
+  };
+}
+
+/** Newest first — the order every list surface shows. */
+function byCreatedAtDesc(a: { createdAt: string }, b: { createdAt: string }): number {
+  return a.createdAt < b.createdAt ? 1 : a.createdAt > b.createdAt ? -1 : 0;
+}
+
+function summarize(
+  request: ScreeningRequest,
+  respondentCount: number,
+  submittedCount: number,
+): ScreeningRequestSummary {
+  return {
+    id:             request.id,
+    status:         request.status,
+    topicStatement: request.topicStatement,
+    objectiveCount: request.objectives.length,
+    respondentCount,
+    submittedCount,
+    deadline:       request.deadline,
+    createdAt:      request.createdAt,
+    updatedAt:      request.updatedAt,
+  };
+}
+
+function canAccess(request: { ownerEmail: string }, email: string, role: 'admin' | 'user'): boolean {
+  if (role === 'admin') return true;
+  return !!email && request.ownerEmail === email;
+}
+
+// ─── Store interface ──────────────────────────────────────────────────────────
+
+interface RequestStore {
+  createRequest(input: IntakeData, ownerEmail: string): Promise<ScreeningRequest>;
+  getRequest(id: string): Promise<ScreeningRequest | null>;
+  getRequestForUser(id: string, email: string, role: 'admin' | 'user'): Promise<ScreeningRequest | null>;
+  listRequestsForUser(email: string, role: 'admin' | 'user'): Promise<ScreeningRequestSummary[]>;
+  updateObjectiveItems(requestId: string, items: ObjectiveItemUpdate[]): Promise<ScreeningRequest>;
+  approveRequest(requestId: string): Promise<ScreeningRequest>;
+  addCandidate(requestId: string, input: AddCandidateInput): Promise<ScreeningCandidate>;
+  listCandidates(requestId: string): Promise<ScreeningCandidate[]>;
+  getCandidateByTokenHash(
+    tokenHash: string,
+  ): Promise<{ candidate: ScreeningCandidate; request: ScreeningRequest } | null>;
+
+  /**
+   * The ONE conditional transition in this store. A screening link is single
+   * use, and "single use" cannot be a read-then-write: two taps on a phone with
+   * a flaky connection are two requests, and the loser must write nothing. The
+   * write is therefore conditional on `submitted_at is null`, and what came
+   * back decides the answer.
+   */
+  submitScreening(tokenId: string, input: SubmitScreeningInput): Promise<SubmitScreeningResult>;
+
+  requestCall(requestId: string, tokenId: string): Promise<ScreeningCandidate | null>;
+  revokeCandidate(requestId: string, tokenId: string): Promise<ScreeningCandidate | null>;
+  recordOutcomes(
+    requestId: string,
+    tokenId: string,
+    outcomes: CallOutcome[],
+    markedByEmail: string | null,
+  ): Promise<ScreeningCandidate | null>;
+}
+
+// ─── In-memory (dev only) ─────────────────────────────────────────────────────
+//
+// Same contract as the Supabase store, none of its guarantees: process-local,
+// lost on restart, and single-threaded, so the conditional submit below is
+// atomic for free where Postgres needs the `is null` filter to make it so.
+//
+// Owner resolution is the one honest difference. There are no `profiles` or
+// `organization_members` rows here, so any email is a valid owner (exactly like
+// InMemoryProjectStore) and every request lands in the fixed organization
+// 'dev-org'. In production both lookups are real and either can refuse.
+
+const DEV_ORGANIZATION_ID = 'dev-org';
+
+interface StoredCandidate {
+  candidate: ScreeningCandidate;
+  tokenHash: string;
+}
+
+class InMemoryRequestStore implements RequestStore {
+  private requests  = new Map<string, ScreeningRequest>();
+  private ownerIds  = new Map<string, string>();       // email -> stable fake profile id
+  private tokens    = new Map<string, StoredCandidate>(); // tokenId -> candidate
+  private byHash    = new Map<string, string>();       // tokenHash -> tokenId
+
+  private ownerIdFor(email: string): string {
+    const existing = this.ownerIds.get(email);
+    if (existing) return existing;
+    const id = randomUUID();
+    this.ownerIds.set(email, id);
+    return id;
+  }
+
+  async createRequest(input: IntakeData, ownerEmail: string): Promise<ScreeningRequest> {
+    const now = new Date().toISOString();
+    const id  = randomUUID();
+    const request: ScreeningRequest = {
+      id,
+      organizationId: DEV_ORGANIZATION_ID,
+      ownerId:        this.ownerIdFor(ownerEmail),
+      ownerEmail,
+      status:         'draft',
+      topicStatement: input.topicStatement,
+      targeting:      input.targeting,
+      callCount:      input.callCount,
+      deadline:       input.deadline,
+      clientRate:     input.clientRate,
+      callLengthMin:  input.callLengthMin,
+      approvedAt:     null,
+      createdAt:      now,
+      updatedAt:      now,
+      objectives:     input.learningObjectives.map((text, position) => ({
+        id:            randomUUID(),
+        requestId:     id,
+        position,
+        objectiveText: text,
+        stem:          null,
+        proofPrompt:   null,
+        clientEdited:  false,
+        source:        null,
+      })),
+    };
+    this.requests.set(id, request);
+    return request;
+  }
+
+  async getRequest(id: string): Promise<ScreeningRequest | null> {
+    return this.requests.get(id) ?? null;
+  }
+
+  async getRequestForUser(id: string, email: string, role: 'admin' | 'user'): Promise<ScreeningRequest | null> {
+    const request = this.requests.get(id) ?? null;
+    if (!request) return null;
+    return canAccess(request, email, role) ? request : null;
+  }
+
+  async listRequestsForUser(email: string, role: 'admin' | 'user'): Promise<ScreeningRequestSummary[]> {
+    return Array.from(this.requests.values())
+      .filter(r => canAccess(r, email, role))
+      .sort(byCreatedAtDesc)
+      .map(r => {
+        const candidates = this.candidatesFor(r.id);
+        return summarize(r, candidates.length, candidates.filter(c => c.submittedAt !== null).length);
+      });
+  }
+
+  private candidatesFor(requestId: string): ScreeningCandidate[] {
+    return Array.from(this.tokens.values())
+      .map(t => t.candidate)
+      .filter(c => c.requestId === requestId)
+      .sort((a, b) => -byCreatedAtDesc(a, b));
+  }
+
+  private touch(request: ScreeningRequest, patch: Partial<ScreeningRequest>): ScreeningRequest {
+    const updated: ScreeningRequest = { ...request, ...patch, updatedAt: new Date().toISOString() };
+    this.requests.set(updated.id, updated);
+    return updated;
+  }
+
+  async updateObjectiveItems(requestId: string, items: ObjectiveItemUpdate[]): Promise<ScreeningRequest> {
+    const request = this.requests.get(requestId);
+    if (!request) throw new Error(`Request not found: ${requestId}`);
+    const patches = new Map(items.map(item => [item.id, item]));
+    const objectives = request.objectives.map(objective => {
+      const patch = patches.get(objective.id);
+      if (!patch) return objective;
+      return {
+        ...objective,
+        stem:         patch.stem,
+        proofPrompt:  patch.proofPrompt,
+        source:       patch.source,
+        clientEdited: patch.clientEdited ?? objective.clientEdited,
+      };
+    });
+    return this.touch(request, { objectives });
+  }
+
+  async approveRequest(requestId: string): Promise<ScreeningRequest> {
+    const request = this.requests.get(requestId);
+    if (!request) throw new Error(`Request not found: ${requestId}`);
+    return this.touch(request, { status: 'approved', approvedAt: new Date().toISOString() });
+  }
+
+  async addCandidate(requestId: string, input: AddCandidateInput): Promise<ScreeningCandidate> {
+    const request = this.requests.get(requestId);
+    if (!request) throw new Error(`Request not found: ${requestId}`);
+    const candidate: ScreeningCandidate = {
+      id:              randomUUID(),
+      requestId,
+      expertId:        input.expertId,
+      expertEmail:     input.expertEmail,
+      snapshot:        input.snapshot,
+      expiresAt:       input.expiresAt,
+      submittedAt:     null,
+      revokedAt:       null,
+      callRequestedAt: null,
+      rateAccepted:    null,
+      rateAsk:         null,
+      availability:    null,
+      createdAt:       new Date().toISOString(),
+      responses:       [],
+      outcomes:        [],
+    };
+    this.tokens.set(candidate.id, { candidate, tokenHash: input.tokenHash });
+    this.byHash.set(input.tokenHash, candidate.id);
+    return candidate;
+  }
+
+  async listCandidates(requestId: string): Promise<ScreeningCandidate[]> {
+    return this.candidatesFor(requestId);
+  }
+
+  async getCandidateByTokenHash(
+    tokenHash: string,
+  ): Promise<{ candidate: ScreeningCandidate; request: ScreeningRequest } | null> {
+    const tokenId = this.byHash.get(tokenHash);
+    if (!tokenId) return null;
+    const stored = this.tokens.get(tokenId);
+    if (!stored) return null;
+    const request = this.requests.get(stored.candidate.requestId);
+    if (!request) return null;
+    return { candidate: stored.candidate, request };
+  }
+
+  private replace(candidate: ScreeningCandidate): ScreeningCandidate {
+    const stored = this.tokens.get(candidate.id);
+    if (!stored) throw new Error(`Screening link not found: ${candidate.id}`);
+    this.tokens.set(candidate.id, { ...stored, candidate });
+    return candidate;
+  }
+
+  async submitScreening(tokenId: string, input: SubmitScreeningInput): Promise<SubmitScreeningResult> {
+    const stored = this.tokens.get(tokenId);
+    if (!stored) return 'not_found';
+    const { candidate } = stored;
+    // One process, one thread: the check and the write below cannot be
+    // interleaved the way they can against Postgres, which is why the Supabase
+    // store needs a conditional update to say the same thing.
+    if (candidate.submittedAt !== null || candidate.revokedAt !== null) return 'already_submitted';
+    this.replace({
+      ...candidate,
+      submittedAt:  new Date().toISOString(),
+      rateAccepted: input.rateAccepted,
+      rateAsk:      input.rateAsk,
+      availability: input.availability,
+      responses:    input.answers.map(a => ({
+        objectiveId: a.objectiveId,
+        answer:      a.answer,
+        proofText:   a.proofText,
+      })),
+    });
+    return 'ok';
+  }
+
+  async requestCall(requestId: string, tokenId: string): Promise<ScreeningCandidate | null> {
+    const stored = this.tokens.get(tokenId);
+    if (!stored || stored.candidate.requestId !== requestId) return null;
+    if (stored.candidate.callRequestedAt !== null) return stored.candidate;
+    return this.replace({ ...stored.candidate, callRequestedAt: new Date().toISOString() });
+  }
+
+  async revokeCandidate(requestId: string, tokenId: string): Promise<ScreeningCandidate | null> {
+    const stored = this.tokens.get(tokenId);
+    if (!stored || stored.candidate.requestId !== requestId) return null;
+    if (stored.candidate.revokedAt !== null) return stored.candidate;
+    return this.replace({ ...stored.candidate, revokedAt: new Date().toISOString() });
+  }
+
+  async recordOutcomes(
+    requestId: string,
+    tokenId: string,
+    outcomes: CallOutcome[],
+    _markedByEmail: string | null,
+  ): Promise<ScreeningCandidate | null> {
+    const stored = this.tokens.get(tokenId);
+    if (!stored || stored.candidate.requestId !== requestId) return null;
+    const merged = new Map<string, CallOutcomeValue>(
+      stored.candidate.outcomes.map(o => [o.objectiveId, o.outcome]));
+    for (const outcome of outcomes) merged.set(outcome.objectiveId, outcome.outcome);
+    return this.replace({
+      ...stored.candidate,
+      outcomes: Array.from(merged, ([objectiveId, outcome]) => ({ objectiveId, outcome })),
+    });
+  }
+}
+
+// ─── Supabase Postgres (production) ──────────────────────────────────────────
+//
+// HOW A ScreeningRequest MAPS ONTO ROWS. Five tables, no jsonb catch-all:
+//
+//   requests            → every scalar on ScreeningRequest. `owner_id` is
+//                         resolved to `ownerEmail` through profiles on the way
+//                         out, the way projectStore does it, because the type
+//                         talks in emails and the schema stores ids.
+//   objectives          → ScreeningRequest.objectives, ordered by `position`.
+//   outreach_tokens     → one ScreeningCandidate each.
+//   screening_responses → ScreeningCandidate.responses, attached by token_id.
+//   call_outcomes       → ScreeningCandidate.outcomes, attached by token_id.
+//
+// So `objectives`, `responses` and `outcomes` are ASSEMBLED, never stored on
+// their parent: every read that needs them pays for a second query, and the
+// list views avoid that by counting instead (see listRequestsForUser).
+//
+// NO TRANSACTIONS. PostgREST exposes no way to wrap two statements in one, so
+// anywhere this module writes twice it either orders the writes so a crash
+// between them leaves a recoverable state, or undoes the first by hand. Both
+// cases are commented where they happen.
+//
+// RLS DOES NOT APPLY HERE: every query runs on the service-role client.
+
+class SupabaseRequestStore implements RequestStore {
+  constructor(private readonly db: SupabaseClient<Database>) {}
+
+  // ── lookup helpers ─────────────────────────────────────────────────────────
+
+  private async profileIdByEmail(email: string): Promise<string | null> {
+    const { data } = await this.db
+      .from('profiles')
+      .select('id')
+      .eq('email', email.toLowerCase().trim())
+      .maybeSingle();
+    return data?.id ?? null;
+  }
+
+  private async emailsByProfileIds(ids: string[]): Promise<Map<string, string>> {
+    if (ids.length === 0) return new Map();
+    const { data } = await this.db.from('profiles').select('id, email').in('id', ids);
+    return new Map((data ?? []).map(p => [p.id, p.email]));
+  }
+
+  private async objectivesFor(requestId: string): Promise<ScreeningObjective[]> {
+    const { data } = await this.db
+      .from('objectives')
+      .select('*')
+      .eq('request_id', requestId)
+      .order('position', { ascending: true });
+    return (data ?? []).map(rowToObjective);
+  }
+
+  /** One request row plus its objectives and its owner's email. Two round trips. */
+  private async assemble(row: RequestRow): Promise<ScreeningRequest> {
+    const [objectives, emailById] = await Promise.all([
+      this.objectivesFor(row.id),
+      this.emailsByProfileIds([row.owner_id]),
+    ]);
+    return rowToRequest(row, objectives, emailById.get(row.owner_id) ?? '');
+  }
+
+  private async getRow(id: string): Promise<RequestRow | null> {
+    const { data } = await this.db.from('requests').select('*').eq('id', id).maybeSingle();
+    return data ?? null;
+  }
+
+  private async tokenRow(requestId: string, tokenId: string): Promise<OutreachTokenRow | null> {
+    const { data } = await this.db
+      .from('outreach_tokens')
+      .select('*')
+      .eq('id', tokenId)
+      .eq('request_id', requestId)
+      .maybeSingle();
+    return data ?? null;
+  }
+
+  /** Responses and outcomes for ONE link. Used after every single-link write. */
+  private async attachmentsFor(tokenId: string): Promise<{ responses: ScreeningResponse[]; outcomes: CallOutcome[] }> {
+    const [{ data: responses }, { data: outcomes }] = await Promise.all([
+      this.db.from('screening_responses').select('*').eq('token_id', tokenId),
+      this.db.from('call_outcomes').select('*').eq('token_id', tokenId),
+    ]);
+    return {
+      responses: (responses ?? []).map(rowToResponse),
+      outcomes:  (outcomes  ?? []).map(rowToOutcome),
+    };
+  }
+
+  private async candidateById(requestId: string, tokenId: string): Promise<ScreeningCandidate | null> {
+    const row = await this.tokenRow(requestId, tokenId);
+    if (!row) return null;
+    const { responses, outcomes } = await this.attachmentsFor(tokenId);
+    return rowToCandidate(row, responses, outcomes);
+  }
+
+  // ── RequestStore implementation ────────────────────────────────────────────
+
+  async createRequest(input: IntakeData, ownerEmail: string): Promise<ScreeningRequest> {
+    const ownerId = await this.profileIdByEmail(ownerEmail);
+    if (!ownerId) throw new Error('Request owner has no account');
+
+    const { data: membership } = await this.db
+      .from('organization_members')
+      .select('organization_id')
+      .eq('profile_id', ownerId)
+      .limit(1)
+      .maybeSingle();
+    if (!membership) throw new Error('Request owner has no organization');
+
+    const { data: row, error } = await this.db
+      .from('requests')
+      .insert({
+        organization_id: membership.organization_id,
+        owner_id:        ownerId,
+        topic_statement: input.topicStatement,
+        targeting:       input.targeting as Database['public']['Tables']['requests']['Insert']['targeting'],
+        call_count:      input.callCount,
+        deadline:        input.deadline,
+        client_rate:     input.clientRate,
+        call_length_min: input.callLengthMin,
+      })
+      .select()
+      .single();
+    if (error || !row) throw new Error('Failed to create request');
+
+    // Written second, and never left half-done in a way that matters: a request
+    // with no objectives reads as an empty draft the client can delete, whereas
+    // objectives with no request could not be written at all (the FK refuses).
+    const { error: objErr } = await this.db.from('objectives').insert(
+      input.learningObjectives.map((text, position) => ({
+        request_id:     row.id,
+        position,
+        objective_text: text,
+        stem:           null,
+        proof_prompt:   null,
+        source:         null,
+      })),
+    );
+    if (objErr) throw new Error('Failed to add objectives to new request');
+
+    return this.assemble(row);
+  }
+
+  async getRequest(id: string): Promise<ScreeningRequest | null> {
+    if (!isUuid(id)) return null;
+    const row = await this.getRow(id);
+    return row ? this.assemble(row) : null;
+  }
+
+  async getRequestForUser(id: string, email: string, role: 'admin' | 'user'): Promise<ScreeningRequest | null> {
+    const request = await this.getRequest(id);
+    if (!request) return null;
+    return canAccess(request, email, role) ? request : null;
+  }
+
+  async listRequestsForUser(email: string, role: 'admin' | 'user'): Promise<ScreeningRequestSummary[]> {
+    let query = this.db.from('requests').select('*').order('created_at', { ascending: false });
+
+    if (role !== 'admin') {
+      const ownerId = await this.profileIdByEmail(email);
+      if (!ownerId) return [];
+      query = query.eq('owner_id', ownerId);
+    }
+
+    const { data: rows } = await query;
+    if (!rows || rows.length === 0) return [];
+    const ids = rows.map(r => r.id);
+
+    // ONE QUERY PER TABLE for the whole page, not per row: the counts are
+    // tallied in memory. Both token counts come from the same read, because
+    // `submitted_at` is on the row we already have.
+    const [{ data: objectives }, { data: tokens }] = await Promise.all([
+      this.db.from('objectives').select('request_id').in('request_id', ids),
+      this.db.from('outreach_tokens').select('request_id, submitted_at').in('request_id', ids),
+    ]);
+
+    const objectiveCount = new Map<string, number>();
+    for (const row of objectives ?? []) {
+      objectiveCount.set(row.request_id, (objectiveCount.get(row.request_id) ?? 0) + 1);
+    }
+    const respondentCount = new Map<string, number>();
+    const submittedCount  = new Map<string, number>();
+    for (const row of tokens ?? []) {
+      respondentCount.set(row.request_id, (respondentCount.get(row.request_id) ?? 0) + 1);
+      if (row.submitted_at !== null) {
+        submittedCount.set(row.request_id, (submittedCount.get(row.request_id) ?? 0) + 1);
+      }
+    }
+
+    return rows.map(row => ({
+      id:              row.id,
+      status:          row.status,
+      topicStatement:  row.topic_statement,
+      objectiveCount:  objectiveCount.get(row.id)  ?? 0,
+      respondentCount: respondentCount.get(row.id) ?? 0,
+      submittedCount:  submittedCount.get(row.id)  ?? 0,
+      deadline:        row.deadline,
+      createdAt:       row.created_at,
+      updatedAt:       row.updated_at,
+    }));
+  }
+
+  async updateObjectiveItems(requestId: string, items: ObjectiveItemUpdate[]): Promise<ScreeningRequest> {
+    const request = await this.getRequest(requestId);
+    if (!request) throw new Error(`Request not found: ${requestId}`);
+
+    // At most six rows with six different values, and PostgREST has no
+    // multi-row UPDATE that varies per row. Issued together because the rows
+    // are independent; every one is scoped to `request_id` as well as `id`, so
+    // an id belonging to another request updates nothing rather than another
+    // client's objective.
+    const writes = items.filter(item => isUuid(item.id)).map(item => {
+      const patch: Database['public']['Tables']['objectives']['Update'] = {
+        stem:         item.stem,
+        proof_prompt: item.proofPrompt,
+        source:       item.source,
+      };
+      if (item.modelStem        !== undefined) patch.model_stem         = item.modelStem;
+      if (item.modelProofPrompt !== undefined) patch.model_proof_prompt = item.modelProofPrompt;
+      if (item.clientEdited     !== undefined) patch.client_edited      = item.clientEdited;
+      return this.db.from('objectives').update(patch).eq('id', item.id).eq('request_id', requestId);
+    });
+
+    const results = await Promise.all(writes);
+    if (results.some(r => r.error)) throw new Error('Failed to update screening items');
+
+    return (await this.getRequest(requestId)) ?? request;
+  }
+
+  async approveRequest(requestId: string): Promise<ScreeningRequest> {
+    // Unconditional on purpose: the route refuses a non-draft request with a
+    // 409 before it gets here, so a second approve is not reachable through the
+    // API and a conditional write would only hide a routing bug.
+    const { error } = await this.db
+      .from('requests')
+      .update({ status: 'approved', approved_at: new Date().toISOString() })
+      .eq('id', requestId);
+    if (error) throw new Error('Failed to approve request');
+
+    const request = await this.getRequest(requestId);
+    if (!request) throw new Error(`Request not found: ${requestId}`);
+    return request;
+  }
+
+  async addCandidate(requestId: string, input: AddCandidateInput): Promise<ScreeningCandidate> {
+    const createdBy = input.createdByEmail ? await this.profileIdByEmail(input.createdByEmail) : null;
+
+    const { data: row, error } = await this.db
+      .from('outreach_tokens')
+      .insert({
+        request_id:      requestId,
+        expert_id:       input.expertId,
+        expert_email:    input.expertEmail,
+        expert_snapshot: input.snapshot as unknown as Database['public']['Tables']['outreach_tokens']['Insert']['expert_snapshot'],
+        token_hash:      input.tokenHash,
+        expires_at:      input.expiresAt,
+        created_by:      createdBy,
+      })
+      .select()
+      .single();
+    if (error || !row) throw new Error('Failed to add candidate');
+
+    return rowToCandidate(row, [], []);
+  }
+
+  async listCandidates(requestId: string): Promise<ScreeningCandidate[]> {
+    if (!isUuid(requestId)) return [];
+
+    // Three queries for the whole table, never one per candidate: the
+    // responses and outcomes are fetched by `request_id` (the denormalised
+    // column exists for exactly this) and grouped by token in memory.
+    const [{ data: rows }, { data: responses }, { data: outcomes }] = await Promise.all([
+      this.db.from('outreach_tokens').select('*').eq('request_id', requestId)
+        .order('created_at', { ascending: true }),
+      this.db.from('screening_responses').select('*').eq('request_id', requestId),
+      this.db.from('call_outcomes').select('*').eq('request_id', requestId),
+    ]);
+    if (!rows || rows.length === 0) return [];
+
+    const responsesByToken = new Map<string, ScreeningResponse[]>();
+    for (const row of responses ?? []) {
+      const list = responsesByToken.get(row.token_id) ?? [];
+      list.push(rowToResponse(row));
+      responsesByToken.set(row.token_id, list);
+    }
+    const outcomesByToken = new Map<string, CallOutcome[]>();
+    for (const row of outcomes ?? []) {
+      const list = outcomesByToken.get(row.token_id) ?? [];
+      list.push(rowToOutcome(row));
+      outcomesByToken.set(row.token_id, list);
+    }
+
+    return rows.map(row => rowToCandidate(
+      row,
+      responsesByToken.get(row.id) ?? [],
+      outcomesByToken.get(row.id)  ?? [],
+    ));
+  }
+
+  async getCandidateByTokenHash(
+    tokenHash: string,
+  ): Promise<{ candidate: ScreeningCandidate; request: ScreeningRequest } | null> {
+    if (!tokenHash) return null;
+    const { data: row } = await this.db
+      .from('outreach_tokens')
+      .select('*')
+      .eq('token_hash', tokenHash)
+      .maybeSingle();
+    if (!row) return null;
+
+    const [request, attachments] = await Promise.all([
+      this.getRequest(row.request_id),
+      this.attachmentsFor(row.id),
+    ]);
+    if (!request) return null;
+
+    return {
+      candidate: rowToCandidate(row, attachments.responses, attachments.outcomes),
+      request,
+    };
+  }
+
+  async submitScreening(tokenId: string, input: SubmitScreeningInput): Promise<SubmitScreeningResult> {
+    if (!isUuid(tokenId)) return 'not_found';
+
+    // THE SINGLE-USE GATE. The filters are the precondition: only a link that
+    // is neither used nor revoked is updated, and `.select()` tells us whether
+    // that was this call. A read-then-write here would let two taps both pass
+    // the read.
+    const { data: claimed, error } = await this.db
+      .from('outreach_tokens')
+      .update({
+        submitted_at:  new Date().toISOString(),
+        rate_accepted: input.rateAccepted,
+        rate_ask:      input.rateAsk,
+        availability:  input.availability,
+      })
+      .eq('id', tokenId)
+      .is('submitted_at', null)
+      .is('revoked_at', null)
+      .select('id');
+    if (error) throw new Error('Failed to record screening submission');
+
+    if (!claimed || claimed.length === 0) {
+      // Nothing matched. Either the link does not exist, or it is already used
+      // or revoked — and the caller shows the same page for the last two.
+      const { data: existing } = await this.db
+        .from('outreach_tokens').select('id').eq('id', tokenId).maybeSingle();
+      return existing ? 'already_submitted' : 'not_found';
+    }
+
+    // The token row is needed for the denormalised columns on every response.
+    // Read after the claim, not before: the claim is what proves this call owns
+    // the submission.
+    const { data: token } = await this.db
+      .from('outreach_tokens').select('request_id, expert_id').eq('id', tokenId).maybeSingle();
+
+    const { error: responsesError } = token
+      ? await this.db.from('screening_responses').insert(
+          input.answers.map(answer => ({
+            token_id:     tokenId,
+            objective_id: answer.objectiveId,
+            request_id:   token.request_id,
+            expert_id:    token.expert_id,
+            answer:       answer.answer,
+            proof_text:   answer.proofText,
+          })),
+        )
+      : { error: { code: 'token_vanished' } };
+
+    if (responsesError) {
+      // NO TRANSACTIONS OVER PostgREST. The claim above already landed, so the
+      // answers cannot simply be retried by the expert — the link would read as
+      // used. Undo the claim by hand instead and let them send again; a link
+      // that says "already submitted" over answers nobody stored is the one
+      // outcome worth writing code to avoid. The code is the only thing logged:
+      // a PostgREST message can quote a column value, and every value on this
+      // path is confidential.
+      await this.db
+        .from('outreach_tokens')
+        .update({ submitted_at: null, rate_accepted: null, rate_ask: null, availability: null })
+        .eq('id', tokenId);
+      console.warn('[requestStore] screening answers failed to store; screening link rolled back for retry',
+        JSON.stringify({ code: responsesError.code ?? 'unknown' }));
+      throw new Error('Failed to record screening answers');
+    }
+
+    return 'ok';
+  }
+
+  async requestCall(requestId: string, tokenId: string): Promise<ScreeningCandidate | null> {
+    if (!isUuid(requestId) || !isUuid(tokenId)) return null;
+
+    // Idempotent: `is('call_requested_at', null)` means a second press writes
+    // nothing and keeps the first timestamp. The candidate is then read back
+    // either way, so the caller cannot tell the two apart — which is the point.
+    const { error } = await this.db
+      .from('outreach_tokens')
+      .update({ call_requested_at: new Date().toISOString() })
+      .eq('id', tokenId)
+      .eq('request_id', requestId)
+      .is('call_requested_at', null);
+    if (error) throw new Error('Failed to request call');
+
+    return this.candidateById(requestId, tokenId);
+  }
+
+  async revokeCandidate(requestId: string, tokenId: string): Promise<ScreeningCandidate | null> {
+    if (!isUuid(requestId) || !isUuid(tokenId)) return null;
+
+    const { error } = await this.db
+      .from('outreach_tokens')
+      .update({ revoked_at: new Date().toISOString() })
+      .eq('id', tokenId)
+      .eq('request_id', requestId)
+      .is('revoked_at', null);
+    if (error) throw new Error('Failed to revoke screening link');
+
+    return this.candidateById(requestId, tokenId);
+  }
+
+  async recordOutcomes(
+    requestId: string,
+    tokenId: string,
+    outcomes: CallOutcome[],
+    markedByEmail: string | null,
+  ): Promise<ScreeningCandidate | null> {
+    if (!isUuid(requestId) || !isUuid(tokenId)) return null;
+
+    const row = await this.tokenRow(requestId, tokenId);
+    if (!row) return null;
+    if (outcomes.length === 0) return this.candidateById(requestId, tokenId);
+
+    const markedBy = markedByEmail ? await this.profileIdByEmail(markedByEmail) : null;
+
+    // Upsert on the unique (token_id, objective_id): re-marking an objective
+    // moves the verdict rather than adding a second row, so reliability counts
+    // stay honest when a client changes their mind.
+    const { error } = await this.db
+      .from('call_outcomes')
+      .upsert(
+        outcomes.map(outcome => ({
+          request_id:   requestId,
+          token_id:     tokenId,
+          objective_id: outcome.objectiveId,
+          expert_id:    row.expert_id,
+          outcome:      outcome.outcome,
+          marked_by:    markedBy,
+        })),
+        { onConflict: 'token_id,objective_id' },
+      );
+    if (error) throw new Error('Failed to record call outcomes');
+
+    return this.candidateById(requestId, tokenId);
+  }
+}
+
+// ─── Factory ─────────────────────────────────────────────────────────────────
+
+let _store: RequestStore | null = null;
+
+function getRequestStore(): RequestStore {
+  if (_store) return _store;
+  const db = getServiceRoleClient();
+  if (db) {
+    _store = new SupabaseRequestStore(db);
+    return _store;
+  }
+  if (process.env.NODE_ENV === 'production') {
+    throw new Error('[requestStore] FATAL: production requires NEXT_PUBLIC_SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY');
+  }
+  // Constructed once (the singleton above), so this warns once per process.
+  console.warn('[requestStore] Using in-memory store — dev mode only, NOT production-safe.');
+  _store = new InMemoryRequestStore();
+  return _store;
+}
+
+// ─── Public API ───────────────────────────────────────────────────────────────
+//
+// TWO FAMILIES, AND THE DIFFERENCE MATTERS. `getRequestForUser` and
+// `listRequestsForUser` take the caller's identity and enforce owner-or-admin;
+// `getRequest`, `getCandidateByTokenHash` and every mutator below take an id
+// and enforce NOTHING. Because this module holds the service-role client, RLS
+// will not catch the difference either. A mutator is safe only because its API
+// route has already run getRequestForUser (404 when it returns null) and, on
+// the admin-only routes, adminGuard. The token-scoped reads are deliberately
+// unscoped: /api/s/[token] has no session at all, and a verified signature plus
+// a matching stored hash is the whole of its authorization.
+//
+// None of these redact. `expertEmail`, `snapshot.name` and `rateAsk` come back
+// in full on every candidate, and the route is responsible for dropping all
+// three before a non-admin sees a respondent.
+
+export function createRequest(input: IntakeData, ownerEmail: string): Promise<ScreeningRequest> {
+  return getRequestStore().createRequest(input, ownerEmail);
+}
+
+// Internal use only — no access control. For the public token route and jobs.
+export function getRequest(id: string): Promise<ScreeningRequest | null> {
+  if (!isUuid(id)) return Promise.resolve(null);
+  return getRequestStore().getRequest(id);
+}
+
+// Access-controlled lookup — null when the caller is neither owner nor admin.
+export function getRequestForUser(
+  id: string,
+  email: string,
+  role: 'admin' | 'user',
+): Promise<ScreeningRequest | null> {
+  if (!isUuid(id)) return Promise.resolve(null);
+  return getRequestStore().getRequestForUser(id, email, role);
+}
+
+// Access-controlled list — an admin sees every request, a user sees their own.
+export function listRequestsForUser(
+  email: string,
+  role: 'admin' | 'user',
+): Promise<ScreeningRequestSummary[]> {
+  return getRequestStore().listRequestsForUser(email, role);
+}
+
+/**
+ * Writes the generated or edited stem and proof prompt onto objectives that
+ * BELONG TO `requestId`; an id from anywhere else silently updates nothing.
+ * Omitted optional keys are left as stored.
+ */
+export function updateObjectiveItems(
+  requestId: string,
+  items: ObjectiveItemUpdate[],
+): Promise<ScreeningRequest> {
+  return getRequestStore().updateObjectiveItems(requestId, items);
+}
+
+/** Freezes the screening set and opens the request for links. Route checks draft. */
+export function approveRequest(requestId: string): Promise<ScreeningRequest> {
+  return getRequestStore().approveRequest(requestId);
+}
+
+/** Mints nothing — the caller signs the token and passes only its hash. */
+export function addCandidate(requestId: string, input: AddCandidateInput): Promise<ScreeningCandidate> {
+  return getRequestStore().addCandidate(requestId, input);
+}
+
+/** Every candidate on a request, oldest first, with responses and outcomes attached. */
+export function listCandidates(requestId: string): Promise<ScreeningCandidate[]> {
+  return getRequestStore().listCandidates(requestId);
+}
+
+// Internal use only — no access control. The public screening page's only read:
+// the caller has verified the token signature and hashed it, and the hash
+// matching a row is what stands in for a session.
+export function getCandidateByTokenHash(
+  tokenHash: string,
+): Promise<{ candidate: ScreeningCandidate; request: ScreeningRequest } | null> {
+  return getRequestStore().getCandidateByTokenHash(tokenHash);
+}
+
+/**
+ * Records the expert's screening form — ONCE. The write is conditional on the
+ * link being unused and unrevoked, so a double submit returns
+ * 'already_submitted' and stores nothing. Throws when the answers could not be
+ * stored, having first undone the claim so the expert can send again.
+ */
+export function submitScreening(
+  tokenId: string,
+  input: SubmitScreeningInput,
+): Promise<SubmitScreeningResult> {
+  return getRequestStore().submitScreening(tokenId, input);
+}
+
+/** Idempotent: the first press stamps the time, later ones return it unchanged. */
+export function requestCall(requestId: string, tokenId: string): Promise<ScreeningCandidate | null> {
+  return getRequestStore().requestCall(requestId, tokenId);
+}
+
+/** Kills a screening link. Idempotent, and never un-revokes. */
+export function revokeCandidate(requestId: string, tokenId: string): Promise<ScreeningCandidate | null> {
+  return getRequestStore().revokeCandidate(requestId, tokenId);
+}
+
+/** Stage 5: upserts one verdict per objective on (token_id, objective_id). */
+export function recordOutcomes(
+  requestId: string,
+  tokenId: string,
+  outcomes: CallOutcome[],
+  markedByEmail: string | null,
+): Promise<ScreeningCandidate | null> {
+  return getRequestStore().recordOutcomes(requestId, tokenId, outcomes, markedByEmail);
+}

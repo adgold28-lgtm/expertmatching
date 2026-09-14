@@ -2,20 +2,22 @@
 // constant-time compare, behind every signed token this product mints
 // (audit M-11, M-49).
 //
-// Five callers, two wire formats, one secret (AVAILABILITY_TOKEN_SECRET):
+// Six callers, two wire formats, one secret (AVAILABILITY_TOKEN_SECRET):
 //
 //   purpose             wire format                                   caller
 //   ──────────────────  ────────────────────────────────────────────  ─────────────────────────────
 //   'optout'            b64url(payload) "." b64url(hmac)              lib/optOutToken.ts
 //   'outreach'          b64url(payload) "." b64url(hmac)              lib/outreachToken.ts
 //   'availability'      b64url(payload) "." b64url(hmac)              lib/availabilityToken.ts
+//   'screening'         b64url(payload) "." b64url(hmac)              lib/screeningToken.ts
 //   'onboarding-oauth'  b64url(payload "." hex(hmac))                 lib/onboardingOauthState.ts
 //   'expert-oauth'      b64url(payload "." hex(hmac))                 app/api/availability/[token]/google-auth
 //                                                                     app/api/availability/oauth/google/callback
 //
 // THE FORMATS ARE FROZEN. Opt-out links live in email footers for a year,
-// outreach reply tokens for 90 days, availability picker links for 7 days, and
-// an OAuth state can be mid-consent in someone's browser. Anything that changes
+// outreach reply tokens for 90 days, availability picker links for 7 days,
+// screening links until their request's deadline (up to 90 days), and an OAuth
+// state can be mid-consent in someone's browser. Anything that changes
 // the bytes invalidates tokens already in the wild. scripts/test-hmac-tokens.ts
 // holds fixtures minted by the pre-consolidation code and asserts they still
 // verify; if you change anything here, that script must stay green.
@@ -35,6 +37,7 @@ export type TokenPurpose =
   | 'optout'
   | 'outreach'
   | 'availability'
+  | 'screening'
   | 'onboarding-oauth'
   | 'expert-oauth';
 
@@ -51,7 +54,7 @@ interface Profile {
    */
   style:  'detached' | 'wrapped';
   digest: 'base64url' | 'hex';
-  /** The three token modules refuse a short secret; the two state builders never did. */
+  /** The four token modules refuse a short secret; the two state builders never did. */
   minSecretLength: number;
 }
 
@@ -59,6 +62,7 @@ const PROFILES: Record<TokenPurpose, Profile> = {
   'optout':           { style: 'detached', digest: 'base64url', minSecretLength: 32 },
   'outreach':         { style: 'detached', digest: 'base64url', minSecretLength: 32 },
   'availability':     { style: 'detached', digest: 'base64url', minSecretLength: 32 },
+  'screening':        { style: 'detached', digest: 'base64url', minSecretLength: 32 },
   'onboarding-oauth': { style: 'wrapped',  digest: 'hex',       minSecretLength: 1  },
   'expert-oauth':     { style: 'wrapped',  digest: 'hex',       minSecretLength: 1  },
 };

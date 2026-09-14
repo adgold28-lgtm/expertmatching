@@ -3,7 +3,7 @@ import { getUpstashClient, type UpstashRedis } from './upstashRedis';
 
 // Rate limiter abstraction, originally written for /api/enrich-contact.
 //
-// THREE THINGS LIVE HERE, and only three:
+// FOUR THINGS LIVE HERE, and only four:
 //   createRateLimiterStore — the shared store for five public, token-gated
 //     routes: /api/schedule/[token], /api/availability/[token]/google-auth,
 //     /api/expert-onboarding/[token], /api/inbound-email and
@@ -12,6 +12,8 @@ import { getUpstashClient, type UpstashRedis } from './upstashRedis';
 //     once per provider attempt in lib/contactDiscovery.ts (H-13) so a Snov +
 //     Hunter waterfall consumes two credits from the budget, not one.
 //   checkDraftLimits — the two windows on Matchy's composer draft (Matchy 2.0).
+//   checkScreeningGenerateLimit — the window on turning a request's learning
+//     objectives into screening questions (one model call per press).
 //
 // Removed 2026-09-09 (W4-1): checkRequestThrottle, checkCreditLimits and
 // incrementProviderDailyCount. They served /api/enrich-contact, which no longer
@@ -121,5 +123,29 @@ export async function checkDraftLimits(
     rlKey('rl:draft:project:24h', projectId), TWENTY_FOUR_H);
   if (c2 > DRAFT_LIMIT_PER_PROJECT_DAY) return { allowed: false, retryAfterMs: t2 };
 
+  return { allowed: true };
+}
+
+// ─── Screening set generation: "turn my objectives into questions" ─────────
+// One model call per press (lib/screeningItems.ts), on a button the draft page
+// puts in front of the client twice — once on mount and once as "Regenerate".
+// Ten an hour is far more than an honest editing session needs and cheap enough
+// that a stuck retry loop cannot run up a bill. Per USER, not per request: a
+// client with five drafts open is still one person spending our model budget.
+// The key is HMAC'd, so no email address sits in Redis. The caller wraps this
+// in try/catch and FAILS OPEN — a store outage must not take generation down,
+// and the draft page has a deterministic fallback either way.
+
+const ONE_HOUR_MS = 60 * 60 * 1000;
+
+export const SCREENING_GENERATE_LIMIT_PER_USER_HOUR = 10;
+
+export async function checkScreeningGenerateLimit(
+  store: RateLimiterStore,
+  userEmail: string,
+): Promise<{ allowed: boolean; retryAfterMs?: number }> {
+  const { count, ttlMs } = await store.increment(
+    rlKey('rl:screening:generate:user:1h', userEmail.trim().toLowerCase()), ONE_HOUR_MS);
+  if (count > SCREENING_GENERATE_LIMIT_PER_USER_HOUR) return { allowed: false, retryAfterMs: ttlMs };
   return { allowed: true };
 }

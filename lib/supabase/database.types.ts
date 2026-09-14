@@ -10,6 +10,8 @@
 //   supabase/migrations/20260907300000_matchy_phase2_events.sql
 //   supabase/migrations/20260908000000_identity_boundary_trial_events.sql
 //   supabase/migrations/20260909000000_cron_scan_indexes.sql (indexes only)
+//   supabase/migrations/20260910000000_call_cancelled_event.sql
+//   supabase/migrations/20260914000000_screening_requests.sql
 //
 // EVERY table belongs here, including the service-role-only ones. This file is
 // the only compile-time check on column names in a codebase that otherwise
@@ -25,10 +27,18 @@
 //   project-scoped -> projects, project_members, project_experts
 //   service-role   -> access_requests, user_calendar_connections,
 //                     outreach_suppressions, engagement_events,
-//                     organization_billing, system_events, product_events
+//                     organization_billing, system_events, product_events,
+//                     requests, objectives, outreach_tokens,
+//                     screening_responses, call_outcomes
 //   project-read   -> conversation_messages (members read; writes service-role)
 // Project data is reachable only via project ownership or an explicit
 // project_members row — never org-wide.
+//
+// The five screening-flow tables (20260914000000) are service-role only with
+// ZERO policies: access is owner-or-platform-admin, decided in
+// lib/requestStore.ts, and the expert's name, address and expert-side ask are
+// dropped by the route before a client sees a respondent. RLS grants nobody
+// anything on them, so nothing here is reachable from a browser session.
 
 export type Json =
   | string
@@ -626,6 +636,257 @@ export interface Database {
         };
         Relationships: [];
       };
+
+      // ── Structured Request & Screening Flow ──────────────────────────────
+      // supabase/migrations/20260914000000_screening_requests.sql. All five
+      // tables: RLS enabled, ZERO policies — service-role only. Read and
+      // written through lib/requestStore.ts; access is owner-or-admin, decided
+      // in application code, because RLS grants nobody anything here.
+
+      // A brief with 3-6 learning objectives. `deadline` has NO database
+      // default: the app sets it (now + 14 days) so a row can never carry an
+      // expiry nobody chose, which is why it is required on Insert.
+      // `client_rate` is CLIENT-side dollars per hour on the $50 grid.
+      requests: {
+        Row: {
+          id: string;
+          organization_id: string;
+          owner_id: string;
+          status: 'draft' | 'approved' | 'closed';
+          topic_statement: string;
+          /** ScreeningTargeting (types.ts) — staff-facing, never shown to an expert. */
+          targeting: Json;
+          call_count: number;
+          deadline: string;
+          client_rate: number;
+          call_length_min: number;
+          approved_at: string | null;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: {
+          id?: string;
+          organization_id: string;
+          owner_id: string;
+          status?: 'draft' | 'approved' | 'closed';
+          topic_statement: string;
+          targeting?: Json;
+          call_count?: number;
+          deadline: string;
+          client_rate?: number;
+          call_length_min?: number;
+          approved_at?: string | null;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: {
+          id?: string;
+          organization_id?: string;
+          owner_id?: string;
+          status?: 'draft' | 'approved' | 'closed';
+          topic_statement?: string;
+          targeting?: Json;
+          call_count?: number;
+          deadline?: string;
+          client_rate?: number;
+          call_length_min?: number;
+          approved_at?: string | null;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Relationships: [];
+      };
+
+      // One learning objective in the client's words, plus the generated
+      // first-person stem and proof prompt. model_stem / model_proof_prompt
+      // keep what the model wrote after a client edit.
+      objectives: {
+        Row: {
+          id: string;
+          request_id: string;
+          /** 0-based, unique within the request. */
+          position: number;
+          objective_text: string;
+          stem: string | null;
+          proof_prompt: string | null;
+          model_stem: string | null;
+          model_proof_prompt: string | null;
+          client_edited: boolean;
+          source: 'model' | 'fallback' | 'client' | null;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: {
+          id?: string;
+          request_id: string;
+          position: number;
+          objective_text: string;
+          stem?: string | null;
+          proof_prompt?: string | null;
+          model_stem?: string | null;
+          model_proof_prompt?: string | null;
+          client_edited?: boolean;
+          source?: 'model' | 'fallback' | 'client' | null;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: {
+          id?: string;
+          request_id?: string;
+          position?: number;
+          objective_text?: string;
+          stem?: string | null;
+          proof_prompt?: string | null;
+          model_stem?: string | null;
+          model_proof_prompt?: string | null;
+          client_edited?: boolean;
+          source?: 'model' | 'fallback' | 'client' | null;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Relationships: [];
+      };
+
+      // One screening link = one candidate on one request. NOT the Matchy
+      // reply token (lib/outreachToken.ts) — this is lib/screeningToken.ts.
+      // The raw token is never stored; `token_hash` is sha256(raw) and unique.
+      // `expert_email` and `rate_ask` are STAFF-ONLY and must be dropped by the
+      // route before a respondent reaches a client.
+      outreach_tokens: {
+        Row: {
+          id: string;
+          request_id: string;
+          /** 'em:<24 hex>' or 'anon:<12 hex>' — the cross-request expert key. */
+          expert_id: string;
+          expert_email: string | null;
+          /** ExpertSnapshot (types.ts): { name, headline, background[] }. */
+          expert_snapshot: Json;
+          token_hash: string;
+          expires_at: string;
+          /** Single use: the submit is conditional on this being null. */
+          submitted_at: string | null;
+          revoked_at: string | null;
+          call_requested_at: string | null;
+          rate_accepted: boolean | null;
+          /** EXPERT-side dollars per hour. Staff-only raw. */
+          rate_ask: number | null;
+          availability: 'this_week' | 'next_week' | 'later' | null;
+          created_by: string | null;
+          created_at: string;
+        };
+        Insert: {
+          id?: string;
+          request_id: string;
+          expert_id: string;
+          expert_email?: string | null;
+          expert_snapshot?: Json;
+          token_hash: string;
+          expires_at: string;
+          submitted_at?: string | null;
+          revoked_at?: string | null;
+          call_requested_at?: string | null;
+          rate_accepted?: boolean | null;
+          rate_ask?: number | null;
+          availability?: 'this_week' | 'next_week' | 'later' | null;
+          created_by?: string | null;
+          created_at?: string;
+        };
+        Update: {
+          id?: string;
+          request_id?: string;
+          expert_id?: string;
+          expert_email?: string | null;
+          expert_snapshot?: Json;
+          token_hash?: string;
+          expires_at?: string;
+          submitted_at?: string | null;
+          revoked_at?: string | null;
+          call_requested_at?: string | null;
+          rate_accepted?: boolean | null;
+          rate_ask?: number | null;
+          availability?: 'this_week' | 'next_week' | 'later' | null;
+          created_by?: string | null;
+          created_at?: string;
+        };
+        Relationships: [];
+      };
+
+      // One expert answer to one objective. request_id and expert_id are
+      // denormalised from the token row so the stage-5 queries index off this
+      // table alone. proof_text is the expert's own sentence, shown to the
+      // client unsummarised.
+      screening_responses: {
+        Row: {
+          id: string;
+          token_id: string;
+          objective_id: string;
+          request_id: string;
+          expert_id: string;
+          answer: 'yes' | 'no' | 'unsure';
+          proof_text: string | null;
+          created_at: string;
+        };
+        Insert: {
+          id?: string;
+          token_id: string;
+          objective_id: string;
+          request_id: string;
+          expert_id: string;
+          answer: 'yes' | 'no' | 'unsure';
+          proof_text?: string | null;
+          created_at?: string;
+        };
+        Update: {
+          id?: string;
+          token_id?: string;
+          objective_id?: string;
+          request_id?: string;
+          expert_id?: string;
+          answer?: 'yes' | 'no' | 'unsure';
+          proof_text?: string | null;
+          created_at?: string;
+        };
+        Relationships: [];
+      };
+
+      // Stage 5: what the call actually delivered, one verdict per objective.
+      // Upserted on (token_id, objective_id) — re-marking is not a new row.
+      call_outcomes: {
+        Row: {
+          id: string;
+          request_id: string;
+          token_id: string;
+          objective_id: string;
+          expert_id: string;
+          outcome: 'answered' | 'partial' | 'unanswered';
+          marked_by: string | null;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: {
+          id?: string;
+          request_id: string;
+          token_id: string;
+          objective_id: string;
+          expert_id: string;
+          outcome: 'answered' | 'partial' | 'unanswered';
+          marked_by?: string | null;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: {
+          id?: string;
+          request_id?: string;
+          token_id?: string;
+          objective_id?: string;
+          expert_id?: string;
+          outcome?: 'answered' | 'partial' | 'unanswered';
+          marked_by?: string | null;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Relationships: [];
+      };
     };
     Views: Record<string, never>;
     Functions: {
@@ -666,3 +927,10 @@ export type EngagementEventRow = Database['public']['Tables']['engagement_events
 export type ProductEventRow = Database['public']['Tables']['product_events']['Row'];
 export type SystemEventRow = Database['public']['Tables']['system_events']['Row'];
 export type SystemEventInsert = Database['public']['Tables']['system_events']['Insert'];
+
+// Screening flow (20260914000000_screening_requests.sql).
+export type RequestRow = Database['public']['Tables']['requests']['Row'];
+export type ObjectiveRow = Database['public']['Tables']['objectives']['Row'];
+export type OutreachTokenRow = Database['public']['Tables']['outreach_tokens']['Row'];
+export type ScreeningResponseRow = Database['public']['Tables']['screening_responses']['Row'];
+export type CallOutcomeRow = Database['public']['Tables']['call_outcomes']['Row'];

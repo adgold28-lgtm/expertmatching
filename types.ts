@@ -644,3 +644,180 @@ export interface ContactEnrichment {
   lookup_status: 'found' | 'not_found';
   provider: ContactProviderName;
 }
+
+// ─── Screening flow ──────────────────────────────────────────────────────────
+//
+// The Structured Request & Screening Flow (docs/SCREENING_FLOW_PLAN.md):
+// a client writes a topic plus 3-6 learning objectives (a REQUEST); each
+// objective becomes a first-person yes/no question and a one-sentence proof
+// prompt (an OBJECTIVE); platform staff mint a single-use screening link per
+// candidate (a ScreeningCandidate, backed by an `outreach_tokens` row); the
+// expert answers every objective (ScreeningResponse); the client sees coverage
+// and the expert's own words, and after the call marks what was delivered
+// (CallOutcome).
+//
+// Row-backed, five tables, ONE INTERFACE PER TABLE with no jsonb catch-all:
+// requests / objectives / outreach_tokens / screening_responses / call_outcomes
+// (supabase/migrations/20260914000000_screening_requests.sql). Unlike the
+// project family above, nothing here rides in a blob — every field is a real
+// column, so adding one is a migration.
+//
+// TIMESTAMPS ARE ISO STRINGS here, not the unix ms the rest of this file uses.
+// These types are new and never went through a ms-based store: the columns are
+// timestamptz, PostgREST hands them back as ISO 8601, and the surfaces that
+// show them (a deadline date input, a "submitted 2 days ago" line) want the
+// string. Converting on the way out and back would only create a second
+// representation to keep honest. Do not mix the two — a value typed as a
+// string here is always ISO.
+//
+// WHAT IS DELIBERATELY NOT HERE: the expert's name and email address, and the
+// expert-side rate ask, never reach a client. They live on ScreeningCandidate
+// because the store returns raw rows, and the route layer is what drops them
+// for a non-admin viewer (the RespondentView wire shape in the plan).
+
+export type ScreeningRequestStatus = 'draft' | 'approved' | 'closed';
+
+/**
+ * Optional sourcing hints on a request — staff-facing, never shown to an
+ * expert. Every field is optional: a request is finishable with a topic and
+ * three objectives and nothing else.
+ */
+export interface ScreeningTargeting {
+  targetCompanies?: string[];
+  seniority?:       string;
+  function?:        string;
+  tenureWindow?:    string;
+  geography?:       string;
+  exclusions?: {
+    companies?: string[];
+    /** Expert ids (ScreeningCandidate.expertId) the client has already used. */
+    experts?:   string[];
+  };
+}
+
+/** Where an objective's live stem and proof prompt came from. */
+export type ScreeningItemSource = 'model' | 'fallback' | 'client';
+
+export interface ScreeningObjective {
+  id:           string;
+  requestId:    string;
+  /** 0-based display order, unique within the request. */
+  position:     number;
+  /** The client's learning objective, verbatim. Never rewritten. */
+  objectiveText: string;
+  /** First-person yes/no question. Null until generated. */
+  stem:         string | null;
+  /** Asks for role and timeframe only. Null until generated. */
+  proofPrompt:  string | null;
+  clientEdited: boolean;
+  source:       ScreeningItemSource | null;
+}
+
+export interface ScreeningRequest {
+  id:              string;
+  organizationId:  string;
+  ownerId:         string;
+  /** Resolved from owner_id through profiles; '' when the profile is gone. */
+  ownerEmail:      string;
+  status:          ScreeningRequestStatus;
+  topicStatement:  string;
+  targeting:       ScreeningTargeting;
+  callCount:       number;
+  /** ISO. The expiry stamped onto every screening link minted for this request. */
+  deadline:        string;
+  /** CLIENT-side whole dollars per hour, on the $50 grid (lib/pricing.ts). */
+  clientRate:      number;
+  callLengthMin:   30 | 45 | 60;
+  /** ISO, or null while the screening set is still a draft. */
+  approvedAt:      string | null;
+  createdAt:       string;
+  updatedAt:       string;
+  objectives:      ScreeningObjective[];
+}
+
+/** The list-view shape: counts instead of the objective and candidate rows. */
+export interface ScreeningRequestSummary {
+  id:             string;
+  status:         ScreeningRequestStatus;
+  topicStatement: string;
+  objectiveCount: number;
+  /** Screening links minted, revoked ones included. */
+  respondentCount: number;
+  submittedCount: number;
+  deadline:       string;
+  createdAt:      string;
+  updatedAt:      string;
+}
+
+export type ScreeningAnswer = 'yes' | 'no' | 'unsure';
+
+export type ScreeningAvailability = 'this_week' | 'next_week' | 'later';
+
+/** One line of an expert's background. `role` and `dates` may be ''. */
+export interface ExpertBackgroundLine {
+  company: string;
+  role:    string;
+  dates:   string;
+}
+
+/**
+ * What staff recorded about a candidate at mint time. `name` is ADMIN-ONLY;
+ * a client sees `headline` and `background` under "Candidate N".
+ */
+export interface ExpertSnapshot {
+  name:       string;
+  headline:   string;
+  background: ExpertBackgroundLine[];
+}
+
+export interface ScreeningResponse {
+  objectiveId: string;
+  answer:      ScreeningAnswer;
+  /** The expert's own sentence behind a yes, shown unsummarised. */
+  proofText:   string | null;
+}
+
+export type CallOutcomeValue = 'answered' | 'partial' | 'unanswered';
+
+export interface CallOutcome {
+  objectiveId: string;
+  outcome:     CallOutcomeValue;
+}
+
+/**
+ * One screening link and everything that came back on it — an `outreach_tokens`
+ * row with its responses and outcomes attached.
+ *
+ * `expertEmail` and `rateAsk` are STAFF-ONLY. The store returns them in full;
+ * the route drops them for a non-admin viewer.
+ */
+export interface ScreeningCandidate {
+  id:              string;
+  requestId:       string;
+  /** 'em:<24 hex>' or 'anon:<12 hex>' — stable across requests for one address. */
+  expertId:        string;
+  expertEmail:     string | null;
+  snapshot:        ExpertSnapshot;
+  expiresAt:       string;
+  /** ISO of the single submission, or null while the link is unused. */
+  submittedAt:     string | null;
+  revokedAt:       string | null;
+  callRequestedAt: string | null;
+  rateAccepted:    boolean | null;
+  /** EXPERT-side whole dollars per hour when the rate was not accepted. */
+  rateAsk:         number | null;
+  availability:    ScreeningAvailability | null;
+  createdAt:       string;
+  responses:       ScreeningResponse[];
+  outcomes:        CallOutcome[];
+}
+
+/**
+ * Computed, never stored (lib/screeningCoverage.ts): how many of the client's
+ * objectives this expert said yes to. `ratio` is 0 when `total` is 0.
+ */
+export interface Coverage {
+  yes:   number;
+  total: number;
+  ratio: number;
+}
