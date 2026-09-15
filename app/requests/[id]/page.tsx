@@ -7,13 +7,19 @@
 //               questions an expert will be asked, edits any of them inline and
 //               approves the set. Nothing is sent until they do.
 //   otherwise → the approved view: the frozen screening set, collapsed because
-//               it is settled and the client is here for the replies, and the
-//               respondents panel.
+//               it is settled and the client is here for the replies, and
+//               components/requests/RespondentsTable — coverage badges,
+//               background lines, rate, availability, the expand-row breakdown
+//               in the expert's own words, and "Request call".
 //
-// The respondents panel is deliberately thin. Step 5 replaces
-// components/requests/RespondentsSummary with the full table — coverage badges,
-// background lines, rate, availability, expand-row breakdown, "Request call" —
-// and that swap is this one import.
+// components/requests/InvitePanel sits below the table for platform staff only.
+// A client cannot mint a screening link by construction: minting one needs the
+// expert's name and address, and a client is never allowed to hold either. The
+// `isAdmin` test here is a rendering decision — POST /api/requests/[id]/tokens
+// runs adminGuard on its own.
+//
+// The approved state asks the shell for its wide column: the table needs the
+// room on a laptop, and it stacks into cards on a phone either way.
 //
 // A client component because everything on it is a fetch, an edit or a press.
 // The route it reads is the only opinion on who may see this request: an
@@ -26,7 +32,8 @@ import { useCallback, useEffect, useState } from 'react';
 import Link from 'next/link';
 import RequestsShell, { ShellSkeleton, ShellError } from '../../../components/requests/RequestsShell';
 import ScreeningSetEditor from '../../../components/requests/ScreeningSetEditor';
-import RespondentsSummary from '../../../components/requests/RespondentsSummary';
+import RespondentsTable from '../../../components/requests/RespondentsTable';
+import InvitePanel from '../../../components/requests/InvitePanel';
 import type { ScreeningRequestView } from '../../../lib/screeningView';
 
 type LoadState = 'loading' | 'ready' | 'missing' | 'error';
@@ -187,6 +194,7 @@ export default function RequestDetailPage({ params }: { params: { id: string } }
       title={request.topicStatement}
       description={describe(request)}
       aside={<StatusPill status={request.status} />}
+      wide={request.status !== 'draft'}
     >
       {request.status === 'draft' ? (
         <ScreeningSetEditor request={request} onChange={setRequest} />
@@ -204,9 +212,11 @@ export default function RequestDetailPage({ params }: { params: { id: string } }
               </p>
             </header>
             <div className="px-5 sm:px-6 py-5">
-              <RespondentsSummary respondents={request.respondents} />
+              <RespondentsTable request={request} onChange={setRequest} />
             </div>
           </section>
+
+          {request.isAdmin && <InvitePanel request={request} onChange={setRequest} />}
         </div>
       )}
     </RequestsShell>

@@ -2,11 +2,12 @@
 // Flow accepts from a browser, and the exact reason it refuses the rest
 // (docs/SCREENING_FLOW_PLAN.md).
 //
-// Four boundaries, four validators:
+// Five boundaries, five validators:
 //   validateIntakeInput         POST /api/requests            — the client's brief
 //   validateObjectiveEdits      PATCH /api/requests/[id]      — inline stem edits
 //   validateScreeningSubmission POST /api/s/[token]           — the EXPERT, no login
 //   validateCandidateInput      POST /api/requests/[id]/tokens — staff adding a candidate
+//   validateOutcomesInput       POST …/tokens/[id]/outcomes    — what the call covered
 //
 // The third of those is the one that matters most: it is reached with no
 // session at all, by anyone holding a signed link, so it is the only thing
@@ -44,6 +45,8 @@
 
 import { createHash, randomBytes } from 'crypto';
 import type {
+  CallOutcome,
+  CallOutcomeValue,
   ExpertBackgroundLine,
   ScreeningAnswer,
   ScreeningAvailability,
@@ -96,6 +99,7 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 
 const ANSWERS: readonly ScreeningAnswer[] = ['yes', 'no', 'unsure'];
 const AVAILABILITIES: readonly ScreeningAvailability[] = ['this_week', 'next_week', 'later'];
+const OUTCOMES: readonly CallOutcomeValue[] = ['answered', 'partial', 'unanswered'];
 
 // Deliberately simple: one @, a dotted domain, no whitespace. See the header.
 const EMAIL_RE = /^[^\s@]{1,64}@[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*\.[a-z]{2,}$/i;
@@ -689,6 +693,94 @@ export function validateCandidateInput(body: Record<string, unknown>): Validated
 
   if (errors.length > 0) return { errors };
   return { data: { name, headline, background, email, send } };
+}
+
+// ─── Call outcomes (stage 5) ──────────────────────────────────────────────────
+
+export interface OutcomesInput {
+  outcomes: CallOutcome[];
+}
+
+/**
+ * What the call actually covered, marked by the client afterwards
+ * (POST /api/requests/[id]/tokens/[tokenId]/outcomes).
+ *
+ * PARTIAL BY DESIGN, unlike the expert's submission. A client marks the
+ * objectives they got to and saves; they come back and mark the rest, or change
+ * their mind about one. So a subset is accepted and the store upserts on
+ * (token_id, objective_id) — but an EMPTY list is refused, because "save
+ * nothing" is a press that did nothing and the person deserves to be told.
+ *
+ * The three other rules are the submission validator's rules for the same
+ * reasons: an unknown objective id would write a verdict against another
+ * request, a duplicate would make the last one in the array silently win, and
+ * more entries than the request has objectives is not a list this product can
+ * have produced.
+ *
+ * Outcomes come back in `objectiveIds` order, not body order, so the rows are
+ * written in the order the screening set reads.
+ */
+export function validateOutcomesInput(
+  body: Record<string, unknown>,
+  objectiveIds: string[],
+): Validated<CallOutcome[]> {
+  const errors: ValidationError[] = [];
+
+  const raw = Array.isArray(body.outcomes) ? body.outcomes : null;
+  if (raw === null) {
+    return {
+      errors: [err('outcomes', 'outcomes_required',
+        'Mark at least one objective before saving.')],
+    };
+  }
+  if (raw.length === 0) {
+    return {
+      errors: [err('outcomes', 'outcomes_required',
+        'Mark at least one objective before saving.')],
+    };
+  }
+  if (raw.length > objectiveIds.length) {
+    return {
+      errors: [err('outcomes', 'too_many_outcomes',
+        'That is more objectives than this request has.')],
+    };
+  }
+
+  const byObjective = new Map<string, CallOutcomeValue>();
+
+  raw.forEach((entry, index) => {
+    const row         = asRecord(entry);
+    const objectiveId = trimmed(row.objectiveId);
+    const outcomeRaw  = trimmed(row.outcome);
+    const outcome     = OUTCOMES.find(o => o === outcomeRaw);
+
+    if (!objectiveId || !objectiveIds.includes(objectiveId)) {
+      errors.push(err(`outcomes[${index}].objectiveId`, 'unknown_objective',
+        'That question is not part of this screening.'));
+      return;
+    }
+    if (byObjective.has(objectiveId)) {
+      errors.push(err(`outcomes[${index}].objectiveId`, 'duplicate_outcome',
+        'Each objective can only be marked once.'));
+      return;
+    }
+    if (outcome === undefined) {
+      errors.push(err(`outcomes[${index}].outcome`, 'invalid_outcome',
+        'Mark each objective answered, partial or unanswered.'));
+      return;
+    }
+
+    byObjective.set(objectiveId, outcome);
+  });
+
+  if (errors.length > 0) return { errors };
+
+  const data: CallOutcome[] = [];
+  for (const objectiveId of objectiveIds) {
+    const outcome = byObjective.get(objectiveId);
+    if (outcome !== undefined) data.push({ objectiveId, outcome });
+  }
+  return { data };
 }
 
 // ─── Expert identity ──────────────────────────────────────────────────────────
