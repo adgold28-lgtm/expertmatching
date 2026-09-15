@@ -241,13 +241,13 @@ const THREE = ['Pricing changes since 2023', 'Vendor switching costs', 'Who sign
 
 section('Intake — defaults');
 {
-  const result = validateIntakeInput({ topicStatement: 'Mid-market ERP renewals', learningObjectives: THREE });
+  const result = validateIntakeInput({ clientRate: 1300, topicStatement: 'Mid-market ERP renewals', learningObjectives: THREE });
   check('minimal intake accepted', 'data' in result, codes(result).join(','));
   if ('data' in result) {
     eq('topic kept',         result.data.topicStatement, 'Mid-market ERP renewals');
     eq('objectives kept',    result.data.learningObjectives.length, 3);
     eq('call count default', result.data.callCount,      1);
-    eq('rate default',       result.data.clientRate,     1300);
+    eq('rate carried',       result.data.clientRate,     1300);
     eq('length default',     result.data.callLengthMin,  60);
     eq('targeting empty',    Object.keys(result.data.targeting).length, 0);
 
@@ -256,24 +256,32 @@ section('Intake — defaults');
   }
 }
 
+section('Intake — rate is required');
+{
+  const noRate = validateIntakeInput({ topicStatement: 't', learningObjectives: THREE });
+  check('a missing rate is refused', hasCode(noRate, 'rate_required'), codes(noRate).join(','));
+  const blankRate = validateIntakeInput({ topicStatement: 't', learningObjectives: THREE, clientRate: '' });
+  check('a blank rate is refused', hasCode(blankRate, 'rate_required'), codes(blankRate).join(','));
+}
+
 section('Intake — objectives');
 {
-  const two = validateIntakeInput({ topicStatement: 't', learningObjectives: THREE.slice(0, 2) });
+  const two = validateIntakeInput({ clientRate: 1300, topicStatement: 't', learningObjectives: THREE.slice(0, 2) });
   check('two objectives refused', hasCode(two, 'too_few_objectives'), codes(two).join(','));
 
-  const seven = validateIntakeInput({
+  const seven = validateIntakeInput({ clientRate: 1300,
     topicStatement: 't',
     learningObjectives: [...THREE, 'd', 'e', 'f', 'g'],
   });
   check('seven objectives refused', hasCode(seven, 'too_many_objectives'), codes(seven).join(','));
 
-  const six = validateIntakeInput({
+  const six = validateIntakeInput({ clientRate: 1300,
     topicStatement: 't',
     learningObjectives: [...THREE, 'd', 'e', 'f'],
   });
   check('six objectives accepted', 'data' in six, codes(six).join(','));
 
-  const blanks = validateIntakeInput({
+  const blanks = validateIntakeInput({ clientRate: 1300,
     topicStatement: 't',
     learningObjectives: [THREE[0], '', '   ', THREE[1], THREE[2], '\n'],
   });
@@ -283,31 +291,31 @@ section('Intake — objectives');
     eq('objectives are trimmed', blanks.data.learningObjectives[0], THREE[0]);
   }
 
-  const tooLong = validateIntakeInput({
+  const tooLong = validateIntakeInput({ clientRate: 1300,
     topicStatement: 't',
     learningObjectives: [...THREE.slice(0, 2), 'x'.repeat(LIMITS.objectiveText + 1)],
   });
   check('over-long objective refused', hasCode(tooLong, 'objective_too_long'), codes(tooLong).join(','));
 
-  const notAList = validateIntakeInput({ topicStatement: 't', learningObjectives: 'a, b, c' });
+  const notAList = validateIntakeInput({ clientRate: 1300, topicStatement: 't', learningObjectives: 'a, b, c' });
   check('a string of objectives refused', hasCode(notAList, 'objectives_required'), codes(notAList).join(','));
 }
 
 section('Intake — topic');
 {
-  const missing = validateIntakeInput({ learningObjectives: THREE });
+  const missing = validateIntakeInput({ clientRate: 1300, learningObjectives: THREE });
   check('missing topic refused', hasCode(missing, 'topic_required'), codes(missing).join(','));
 
-  const blank = validateIntakeInput({ topicStatement: '   ', learningObjectives: THREE });
+  const blank = validateIntakeInput({ clientRate: 1300, topicStatement: '   ', learningObjectives: THREE });
   check('blank topic refused', hasCode(blank, 'topic_required'), codes(blank).join(','));
 
-  const long = validateIntakeInput({
+  const long = validateIntakeInput({ clientRate: 1300,
     topicStatement: 't'.repeat(LIMITS.topicStatement + 1),
     learningObjectives: THREE,
   });
   check('over-long topic refused', hasCode(long, 'topic_too_long'), codes(long).join(','));
 
-  const exact = validateIntakeInput({
+  const exact = validateIntakeInput({ clientRate: 1300,
     topicStatement: 't'.repeat(LIMITS.topicStatement),
     learningObjectives: THREE,
   });
@@ -318,22 +326,22 @@ section('Intake — deadline window');
 {
   const base = { topicStatement: 't', learningObjectives: THREE };
 
-  const today = validateIntakeInput({ ...base, deadline: isoDay(0) });
+  const today = validateIntakeInput({ clientRate: 1300, ...base, deadline: isoDay(0) });
   check('today refused', hasCode(today, 'deadline_too_soon'), codes(today).join(','));
 
-  const yesterday = validateIntakeInput({ ...base, deadline: isoDay(-3) });
+  const yesterday = validateIntakeInput({ clientRate: 1300, ...base, deadline: isoDay(-3) });
   check('a past date refused', hasCode(yesterday, 'deadline_too_soon'), codes(yesterday).join(','));
 
-  const tomorrow = validateIntakeInput({ ...base, deadline: isoDay(1) });
+  const tomorrow = validateIntakeInput({ clientRate: 1300, ...base, deadline: isoDay(1) });
   check('one day out accepted', 'data' in tomorrow, codes(tomorrow).join(','));
 
-  const ninety = validateIntakeInput({ ...base, deadline: isoDay(90) });
+  const ninety = validateIntakeInput({ clientRate: 1300, ...base, deadline: isoDay(90) });
   check('ninety days out accepted', 'data' in ninety, codes(ninety).join(','));
 
-  const ninetyOne = validateIntakeInput({ ...base, deadline: isoDay(91) });
+  const ninetyOne = validateIntakeInput({ clientRate: 1300, ...base, deadline: isoDay(91) });
   check('ninety-one days refused', hasCode(ninetyOne, 'deadline_too_far'), codes(ninetyOne).join(','));
 
-  const dayOnly = validateIntakeInput({ ...base, deadline: isoDay(30) });
+  const dayOnly = validateIntakeInput({ clientRate: 1300, ...base, deadline: isoDay(30) });
   check('a date-only deadline accepted', 'data' in dayOnly, codes(dayOnly).join(','));
   if ('data' in dayOnly) {
     check('a date-only deadline means the END of that day',
@@ -341,14 +349,14 @@ section('Intake — deadline window');
   }
 
   const full = new Date(Date.now() + 10 * DAY_MS).toISOString();
-  const fullIso = validateIntakeInput({ ...base, deadline: full });
+  const fullIso = validateIntakeInput({ clientRate: 1300, ...base, deadline: full });
   check('a full ISO deadline accepted', 'data' in fullIso, codes(fullIso).join(','));
   if ('data' in fullIso) eq('full ISO kept as the instant it names', fullIso.data.deadline, full);
 
-  const nonsense = validateIntakeInput({ ...base, deadline: 'next tuesday' });
+  const nonsense = validateIntakeInput({ clientRate: 1300, ...base, deadline: 'next tuesday' });
   check('unparseable deadline refused', hasCode(nonsense, 'invalid_deadline'), codes(nonsense).join(','));
 
-  const impossible = validateIntakeInput({ ...base, deadline: '2026-02-31' });
+  const impossible = validateIntakeInput({ clientRate: 1300, ...base, deadline: '2026-02-31' });
   check('a date that does not exist refused',
     hasCode(impossible, 'invalid_deadline'), codes(impossible).join(','));
 }
@@ -367,30 +375,30 @@ section('Intake — rate, call length, call count');
   check('an on-grid rate accepted', 'data' in onGrid, codes(onGrid).join(','));
   if ('data' in onGrid) eq('rate kept', onGrid.data.clientRate, 1350);
 
-  const badLength = validateIntakeInput({ ...base, callLengthMin: 90 });
+  const badLength = validateIntakeInput({ clientRate: 1300, ...base, callLengthMin: 90 });
   check('a 90-minute call refused', hasCode(badLength, 'invalid_call_length'), codes(badLength).join(','));
 
-  const shortCall = validateIntakeInput({ ...base, callLengthMin: 45 });
+  const shortCall = validateIntakeInput({ clientRate: 1300, ...base, callLengthMin: 45 });
   check('45 minutes accepted', 'data' in shortCall, codes(shortCall).join(','));
   if ('data' in shortCall) eq('call length kept', shortCall.data.callLengthMin, 45);
 
-  const tooMany = validateIntakeInput({ ...base, callCount: 51 });
+  const tooMany = validateIntakeInput({ clientRate: 1300, ...base, callCount: 51 });
   check('51 calls refused', hasCode(tooMany, 'invalid_call_count'), codes(tooMany).join(','));
 
-  const zero = validateIntakeInput({ ...base, callCount: 0 });
+  const zero = validateIntakeInput({ clientRate: 1300, ...base, callCount: 0 });
   check('zero calls refused', hasCode(zero, 'invalid_call_count'), codes(zero).join(','));
 
-  const fractional = validateIntakeInput({ ...base, callCount: 2.5 });
+  const fractional = validateIntakeInput({ clientRate: 1300, ...base, callCount: 2.5 });
   check('a fractional call count refused', hasCode(fractional, 'invalid_call_count'), codes(fractional).join(','));
 
-  const five = validateIntakeInput({ ...base, callCount: 5 });
+  const five = validateIntakeInput({ clientRate: 1300, ...base, callCount: 5 });
   check('five calls accepted', 'data' in five, codes(five).join(','));
   if ('data' in five) eq('call count kept', five.data.callCount, 5);
 }
 
 section('Intake — targeting is sanitised, not refused');
 {
-  const result = validateIntakeInput({
+  const result = validateIntakeInput({ clientRate: 1300,
     topicStatement: 't',
     learningObjectives: THREE,
     // Unknown keys are ignored rather than refused.
@@ -415,7 +423,7 @@ section('Intake — targeting is sanitised, not refused');
     eq('empty exclusion list left out', t.exclusions?.experts, undefined);
   }
 
-  const huge = validateIntakeInput({
+  const huge = validateIntakeInput({ clientRate: 1300,
     topicStatement: 't',
     learningObjectives: THREE,
     targeting: {

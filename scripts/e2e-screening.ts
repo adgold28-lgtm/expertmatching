@@ -100,7 +100,11 @@ async function main(): Promise<void> {
   eq('GET /requests/new renders', newPage.status, 200);
 
   // ── 1. Intake ────────────────────────────────────────────────────────────
-  const tooFew = await req('POST', '/api/requests', { topicStatement: TOPIC, learningObjectives: ['one', 'two'] });
+  const noRate = await req('POST', '/api/requests', { topicStatement: TOPIC, learningObjectives: OBJECTIVES });
+  eq('POST /api/requests refuses a missing rate', noRate.status, 400);
+  check('…and names the rate field', arr(noRate.json?.errors).map(obj).some(e => e.field === 'clientRate' && e.error === 'rate_required'), JSON.stringify(noRate.json));
+
+  const tooFew = await req('POST', '/api/requests', { topicStatement: TOPIC, learningObjectives: ['one', 'two'], clientRate: 1300 });
   eq('POST /api/requests refuses two objectives', tooFew.status, 400);
   check('…and names the field', str(tooFew.json?.field).startsWith('learningObjectives'), JSON.stringify(tooFew.json));
 
@@ -109,6 +113,7 @@ async function main(): Promise<void> {
     learningObjectives: [...OBJECTIVES, '   '],
     targeting: { targetCompanies: ['Sysco', 'sysco', 'US Foods'], geography: 'US' },
     callCount: 2,
+    clientRate: 1300,
   });
   eq('POST /api/requests creates', created.status, 201);
   const request = obj(created.json?.request);
@@ -117,7 +122,7 @@ async function main(): Promise<void> {
   eq('request starts as draft', request.status, 'draft');
   eq('blank objective rows are dropped', arr(request.objectives).length, 4);
   eq('call count kept', request.callCount, 2);
-  eq('default client rate', request.clientRate, 1300);
+  eq('client rate carried through', request.clientRate, 1300);
   eq('default call length', request.callLengthMin, 60);
   eq('targeting de-duplicated', arr(obj(request.targeting).targetCompanies).length, 2);
   check('objectives start without stems', arr(request.objectives).every(o => obj(o).stem === null));

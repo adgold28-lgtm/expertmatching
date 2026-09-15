@@ -673,7 +673,7 @@ export interface Database {
           targeting?: Json;
           call_count?: number;
           deadline: string;
-          client_rate?: number;
+          client_rate: number;
           call_length_min?: number;
           approved_at?: string | null;
           created_at?: string;

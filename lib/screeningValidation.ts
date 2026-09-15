@@ -89,9 +89,8 @@ export const LIMITS = {
 export const CALL_LENGTHS = [30, 45, 60] as const;
 export type CallLengthMin = (typeof CALL_LENGTHS)[number];
 
-/** Defaults applied when the client leaves an optional intake field alone. */
+/** Defaults applied when the client leaves an optional intake field alone. The rate has none. */
 export const DEFAULT_CALL_COUNT      = 1;
-export const DEFAULT_CLIENT_RATE     = 1300;
 export const DEFAULT_CALL_LENGTH_MIN: CallLengthMin = 60;
 export const DEFAULT_DEADLINE_DAYS   = 14;
 
@@ -345,9 +344,15 @@ export function validateIntakeInput(body: Record<string, unknown>): Validated<In
     }
   }
 
-  // ── Client rate ──────────────────────────────────────────────────────────
-  let clientRate = DEFAULT_CLIENT_RATE;
-  if (!absent(body.clientRate)) {
+  // ── Client rate — REQUIRED, no default ───────────────────────────────────
+  // An expert must never see a rate no human approved (founder, 2026-09-15):
+  // the screening header shows expertRateFor(clientRate), so a defaulted
+  // number here would be quoted to an expert as if the client had chosen it.
+  let clientRate = 0;
+  if (absent(body.clientRate)) {
+    errors.push(err('clientRate', 'rate_required',
+      'Set the hourly rate you will pay, in $50 steps from $100. The expert is shown their side of it.'));
+  } else {
     const parsed = asInteger(body.clientRate);
     if (parsed === null || !isValidClientRateUsd(parsed)) {
       errors.push(err('clientRate', 'invalid_client_rate',

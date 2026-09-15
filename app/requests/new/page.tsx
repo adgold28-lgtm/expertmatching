@@ -3,8 +3,9 @@
 // /requests/new — the intake for a structured request
 // (docs/SCREENING_FLOW_PLAN.md, step 2 of the build order).
 //
-// THE WHOLE DESIGN IS THE NINETY-SECOND RULE. Two fields are required — a
-// one-line topic and three to six learning objectives — and everything else
+// THE WHOLE DESIGN IS THE NINETY-SECOND RULE. Three fields are required — a
+// one-line topic, three to six learning objectives and the hourly rate (no
+// default: an expert must never see a rate no human approved) — and everything else
 // either has a default or lives behind a collapsed <details> that a client can
 // finish the request without ever opening. The topic autofocuses, Enter walks
 // down the objective rows and opens the next one, and the submit button is the
@@ -51,7 +52,6 @@ const DEADLINE_MIN_DAYS     = 1;
 const DEADLINE_MAX_DAYS     = 90;
 const DEADLINE_DEFAULT_DAYS = 14;
 const DEFAULT_CALL_COUNT    = 1;
-const DEFAULT_CLIENT_RATE   = 1300;
 const RATE_MIN              = 100;
 const RATE_STEP             = 50;
 const CALL_LENGTHS          = [30, 45, 60] as const;
@@ -126,7 +126,7 @@ const MAPPED_FIELDS = new Set([
 ]);
 
 /** Of those, the ones inside the collapsed panel — an error there has to open it. */
-const DETAILS_FIELDS = new Set(['deadline', 'clientRate', 'callCount', 'callLengthMin']);
+const DETAILS_FIELDS = new Set(['deadline', 'callCount', 'callLengthMin']);
 
 // Sentences for the failures that are not about a field. A raw code is never
 // shown; anything not listed falls back to the last line.
@@ -159,7 +159,9 @@ export default function NewRequestPage() {
   // Number fields are held as strings so a cleared box stays cleared; an empty
   // one is simply left out of the body and the server applies its default.
   const [callCount,     setCallCount]     = useState(String(DEFAULT_CALL_COUNT));
-  const [clientRate,    setClientRate]    = useState(String(DEFAULT_CLIENT_RATE));
+  // No default on purpose: an expert is shown their side of this number, so a
+  // human has to have typed it (founder, 2026-09-15).
+  const [clientRate,    setClientRate]    = useState('');
   const [callLengthMin, setCallLengthMin] = useState<number>(DEFAULT_CALL_LENGTH);
   const [deadline,      setDeadline]      = useState('');
   const [dateBounds,    setDateBounds]    = useState<{ min: string; max: string } | null>(null);
@@ -313,6 +315,12 @@ export default function NewRequestPage() {
     if (learningObjectives.length < OBJECTIVES_MIN) {
       preErrors.learningObjectives =
         `Fill in at least ${OBJECTIVES_MIN} learning objectives — that is what the expert is screened against.`;
+    }
+    const rateValue = Number(clientRate);
+    if (!clientRate.trim()) {
+      preErrors.clientRate = 'Set the hourly rate you will pay. The expert is shown their side of it.';
+    } else if (!Number.isInteger(rateValue) || rateValue < RATE_MIN || rateValue % RATE_STEP !== 0) {
+      preErrors.clientRate = `Set the rate in $${RATE_STEP} steps, starting at $${RATE_MIN}.`;
     }
 
     if (Object.keys(preErrors).length > 0) {
@@ -508,6 +516,31 @@ export default function NewRequestPage() {
           </fieldset>
         </section>
 
+        {/* ── Rate: required, no default. The expert is shown their side of it. ── */}
+        <section className="border border-frame bg-white px-5 sm:px-6 py-5">
+          <label htmlFor="clientRate" className={LABEL_CLASS} style={LABEL_STYLE}>
+            Rate per hour <span className="text-red-400">*</span>
+          </label>
+          <input
+            id="clientRate"
+            type="number"
+            inputMode="numeric"
+            value={clientRate}
+            min={RATE_MIN}
+            step={RATE_STEP}
+            placeholder="e.g. 1300"
+            onChange={event => { setClientRate(event.target.value); clearError('clientRate'); }}
+            aria-invalid={Boolean(fieldErrors.clientRate)}
+            aria-describedby={`clientRate-helper${fieldErrors.clientRate ? ' clientRate-error' : ''}`}
+            className={inputClass(Boolean(fieldErrors.clientRate))}
+            style={INPUT_STYLE}
+          />
+          <FieldHelper id="clientRate-helper">
+            What you pay per hour, in $50 steps, billed per minute after a 15-minute minimum. The expert is shown their side of it.
+          </FieldHelper>
+          <FieldError id="clientRate-error" message={fieldErrors.clientRate} />
+        </section>
+
         {/* ── Optional targeting ── */}
         <details
           open={detailsOpen}
@@ -652,27 +685,6 @@ export default function NewRequestPage() {
                 />
                 <FieldHelper id="deadline-helper">Used only to expire the screening links.</FieldHelper>
                 <FieldError id="deadline-error" message={fieldErrors.deadline} />
-              </div>
-
-              <div>
-                <label htmlFor="clientRate" className={LABEL_CLASS} style={LABEL_STYLE}>Rate per hour</label>
-                <input
-                  id="clientRate"
-                  type="number"
-                  inputMode="numeric"
-                  value={clientRate}
-                  min={RATE_MIN}
-                  step={RATE_STEP}
-                  onChange={event => { setClientRate(event.target.value); clearError('clientRate'); }}
-                  aria-invalid={Boolean(fieldErrors.clientRate)}
-                  aria-describedby={`clientRate-helper${fieldErrors.clientRate ? ' clientRate-error' : ''}`}
-                  className={inputClass(Boolean(fieldErrors.clientRate))}
-                  style={INPUT_STYLE}
-                />
-                <FieldHelper id="clientRate-helper">
-                  What you pay per hour, billed per minute after a 15-minute minimum.
-                </FieldHelper>
-                <FieldError id="clientRate-error" message={fieldErrors.clientRate} />
               </div>
 
               <div>

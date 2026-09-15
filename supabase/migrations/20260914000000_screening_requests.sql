@@ -145,7 +145,9 @@ create table if not exists public.expert_requests (
   -- CLIENT-side whole dollars per hour, on the $50 grid (lib/pricing.
   -- isValidClientRateUsd). The expert is shown expertRateFor(client_rate) and
   -- the two numbers never share a message (docs/MATCHY_SPEC.md).
-  client_rate      integer not null default 1300
+  -- NO DEFAULT on purpose (founder, 2026-09-15): an expert must never see a
+  -- rate no human approved, so a row cannot exist without a client-set rate.
+  client_rate      integer not null
                      check (client_rate >= 100 and client_rate % 50 = 0),
   call_length_min  integer not null default 60
                      check (call_length_min in (30,45,60)),
