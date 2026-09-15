@@ -855,6 +855,9 @@ async function storeWalkthrough(): Promise<void> {
   const tokenId   = randomUUID();
   const minted    = generateScreeningToken(tokenId, created.id, Date.parse(approved.deadline));
   const candidate = await addCandidate(created.id, {
+    // The caller pre-generates the row id and signs it — the token above
+    // carries `tokenId`, so the row it addresses has to BE that id.
+    id:             tokenId,
     expertId:       normalizeExpertId('dana@acme.com'),
     expertEmail:    'dana@acme.com',
     snapshot:       {
@@ -959,6 +962,7 @@ async function storeWalkthrough(): Promise<void> {
   const second = randomUUID();
   const secondMint = generateScreeningToken(second, created.id, Date.parse(approved.deadline));
   const pending = await addCandidate(created.id, {
+    id:             second,
     expertId:       normalizeExpertId(null),
     expertEmail:    null,
     snapshot:       { name: 'Unknown', headline: '', background: [] },
