@@ -18,9 +18,10 @@
 //
 // THE MODEL NEVER GETS THE LAST WORD. Three layers, in order:
 //   1. one call, JSON out, per-item validation
-//   2. one regeneration round for exactly the items that failed, told which
-//      rule they broke
-//   3. `fallbackItem` — deterministic, plain, always passes both validators
+//   2. up to two regeneration rounds for exactly the items that failed, each
+//      told which rule it broke (MAX_REGENERATION_ATTEMPTS)
+//   3. `fallbackItem` — deterministic, plain, always passes both validators;
+//      its proof prompt is the one fixed string FALLBACK_PROOF_PROMPT
 // A missing key, an API error, a refusal, unparseable output or a stubborn
 // validation failure all land on the same floor: an editable set of items the
 // client can fix and approve. Generation is never a dead end, which is why the
@@ -232,8 +233,52 @@ const PROOF_BANNED: BannedPattern[] = [
     reason: `A proof prompt cannot ask what worked — ${ROLE_AND_TIMEFRAME_ONLY}.` },
   { re: /\bwhat went (?:well|wrong)\b/i,
     reason: `A proof prompt cannot ask what went well or wrong — ${ROLE_AND_TIMEFRAME_ONLY}.` },
-  { re: /\bwhy did\b/i,
+  { re: /\bwhy (?:did|do|does|was|were|is|are|has|have|had)\b/i,
     reason: `A proof prompt cannot ask why something happened — ${ROLE_AND_TIMEFRAME_ONLY}.` },
+  // ── Success judgements ────────────────────────────────────────────────────
+  { re: /\b(?:was|is|were|did) (?:it|that|this|the \w+) (?:successful|a success|effective|worth it|worthwhile)\b/i,
+    reason: `A proof prompt cannot ask whether the work succeeded — ${ROLE_AND_TIMEFRAME_ONLY}.` },
+  { re: /\bsuccess(?:ful|fully)?\b/i,
+    reason: `A proof prompt cannot ask whether the work succeeded — ${ROLE_AND_TIMEFRAME_ONLY}.` },
+  { re: /\bdid (?:it|that|this|they|the \w+) (?:work|succeed|help|deliver|pay off|improve|reduce|increase)\b/i,
+    reason: `A proof prompt cannot ask whether the work succeeded — ${ROLE_AND_TIMEFRAME_ONLY}.` },
+  { re: /\bhow (?:well|effective|effectively|successful|successfully)\b/i,
+    reason: `A proof prompt cannot ask how well the work went — ${ROLE_AND_TIMEFRAME_ONLY}.` },
+  // ── Opinions ──────────────────────────────────────────────────────────────
+  { re: /\b(?:what|how) do you (?:think|feel|believe|see|view|rate|judge|assess)\b/i,
+    reason: `A proof prompt cannot ask for an opinion — ${ROLE_AND_TIMEFRAME_ONLY}.` },
+  { re: /\bin your (?:opinion|view|experience|judgement|judgment|assessment|estimation)\b/i,
+    reason: `A proof prompt cannot ask for an opinion — ${ROLE_AND_TIMEFRAME_ONLY}.` },
+  { re: /\byour (?:opinion|view|take|assessment|perspective|verdict|advice|thoughts?)\b/i,
+    reason: `A proof prompt cannot ask for an opinion — ${ROLE_AND_TIMEFRAME_ONLY}.` },
+  { re: /\b(?:would|do) you (?:say|consider|believe|think|argue|agree|expect|rate)\b/i,
+    reason: `A proof prompt cannot ask for an opinion — ${ROLE_AND_TIMEFRAME_ONLY}.` },
+  // ── Recommendations and advice ────────────────────────────────────────────
+  { re: /\bwhat would you (?:do|change|suggest|advise|prioriti[sz]e|tell)\b/i,
+    reason: `A proof prompt cannot ask for a recommendation — ${ROLE_AND_TIMEFRAME_ONLY}.` },
+  { re: /\b(?:advice|advise|suggest(?:ion)?s?|best practices?|lessons? learned|takeaways?)\b/i,
+    reason: `A proof prompt cannot ask for a recommendation — ${ROLE_AND_TIMEFRAME_ONLY}.` },
+  // ── Findings by another name: causes, drivers, comparisons, quantities ────
+  { re: /\bwhat (?:caused|drove|drives|explains|accounts for|led to)\b/i,
+    reason: `A proof prompt cannot ask what caused something — ${ROLE_AND_TIMEFRAME_ONLY}.` },
+  { re: /\b(?:root causes?|drivers?|key factors?|main reasons?)\b/i,
+    reason: `A proof prompt cannot ask what caused something — ${ROLE_AND_TIMEFRAME_ONLY}.` },
+  { re: /\bwhat (?:changed|improved|shifted|moved|got (?:better|worse))\b/i,
+    reason: `A proof prompt cannot ask what changed — ${ROLE_AND_TIMEFRAME_ONLY}.` },
+  { re: /\bwhat (?:impact|effect|difference)\b/i,
+    reason: `A proof prompt cannot ask about impact — ${ROLE_AND_TIMEFRAME_ONLY}.` },
+  { re: /\bhow (?:does|did|do|would) (?:it|that|this|they|the \w+) compare\b|\bcompared? (?:to|with|against)\b|\bversus\b|\bvs\.?\b/i,
+    reason: `A proof prompt cannot ask for a comparison — ${ROLE_AND_TIMEFRAME_ONLY}.` },
+  { re: /\bhow long did (?:it|that|this|the \w+)\b/i,
+    reason: `A proof prompt cannot ask how long the work took — ${ROLE_AND_TIMEFRAME_ONLY}.` },
+  { re: /\bwhat (?:percentage|share|fraction|proportion|number|volume|amount|figure|size|scale of the)\b/i,
+    reason: `A proof prompt cannot ask for a quantity — ${ROLE_AND_TIMEFRAME_ONLY}.` },
+  { re: /\b(?:savings?|cost reduction|uplift|growth rate|churn rate|cycle time|throughput|headcount|budget)\b/i,
+    reason: `A proof prompt cannot ask for a metric — ${ROLE_AND_TIMEFRAME_ONLY}.` },
+  { re: /\b(?:biggest|largest|most important|most significant|hardest|key) (?:challenge|lever|change|driver|issue|problem|risk|lesson|surprise)s?\b/i,
+    reason: `A proof prompt cannot ask what mattered most — ${ROLE_AND_TIMEFRAME_ONLY}.` },
+  { re: /\bwhat surprised\b|\bwhat (?:did you|would you) (?:expect|anticipate)\b/i,
+    reason: `A proof prompt cannot ask for a judgement about the work — ${ROLE_AND_TIMEFRAME_ONLY}.` },
 ];
 
 /**
@@ -309,6 +354,16 @@ function scrubForStem(text: string): string {
  * GUARANTEED to pass both validators — see scrubForStem above and the length
  * arithmetic below — because this is the floor every other path lands on.
  */
+/**
+ * THE FIXED FALLBACK PROOF PROMPT. Every path that gives up on the model lands
+ * on exactly this string (founder, 2026-09-15). It asks for role and timeframe
+ * and nothing else, and it passes `proofPromptViolation` by construction.
+ */
+export const FALLBACK_PROOF_PROMPT = 'In one sentence: what was your role in this and when?';
+
+/** How many times a failing item is sent back to the model before it is floored. */
+export const MAX_REGENERATION_ATTEMPTS = 2;
+
 export function fallbackItem(objectiveText: string): { stem: string; proofPrompt: string } {
   const cleaned = scrubForStem(typeof objectiveText === 'string' ? objectiveText : '');
   const clipped = cleaned.length > FALLBACK_OBJECTIVE_CHARS
@@ -319,7 +374,7 @@ export function fallbackItem(objectiveText: string): { stem: string; proofPrompt
     ? `Have you been directly involved in work on this: "${clipped}"?`
     : 'Have you been directly involved in work of this kind?';
 
-  return { stem, proofPrompt: 'In one sentence: what was your role in that work and when?' };
+  return { stem, proofPrompt: FALLBACK_PROOF_PROMPT };
 }
 
 // ─── Parsing ──────────────────────────────────────────────────────────────────
@@ -558,12 +613,17 @@ export async function generateScreeningItems(
     };
   });
 
-  // ── One regeneration round, for the failures only ────────────────────────
-  const failedPositions = slots
-    .map((slot, position) => (slot.failure ? position : -1))
-    .filter(position => position >= 0);
+  // ── Regeneration, capped ─────────────────────────────────────────────────
+  // Only the items that failed go back, each with the rule it broke. At most
+  // MAX_REGENERATION_ATTEMPTS rounds (founder, 2026-09-15); whatever still
+  // fails after the last one is floored below. A round whose reply cannot be
+  // parsed changes nothing and still counts as an attempt.
+  for (let attempt = 1; attempt <= MAX_REGENERATION_ATTEMPTS; attempt++) {
+    const failedPositions = slots
+      .map((slot, position) => (slot.failure ? position : -1))
+      .filter(position => position >= 0);
+    if (failedPositions.length === 0) break;
 
-  if (failedPositions.length > 0) {
     const retry = await callModel(
       createMessage,
       retryMessageFor(input.topic, failedPositions.map(position => {
@@ -577,28 +637,25 @@ export async function generateScreeningItems(
       })),
       failedPositions.length,
     );
+    if (!retry.ok) continue;
 
-    if (retry.ok) {
-      for (const item of retry.items) {
-        const position = failedPositions[item.index];
-        if (position === undefined) continue;
-        const slot = slots[position];
-        // Keep the retry's text as the model's word for this slot even when it
-        // fails again — it is the most recent thing the model actually wrote.
-        slot.modelStem        = item.stem        || slot.modelStem;
-        slot.modelProofPrompt = item.proofPrompt || slot.modelProofPrompt;
-        const failure = judge(item.stem, item.proofPrompt);
-        if (!failure) {
-          slot.stem        = item.stem;
-          slot.proofPrompt = item.proofPrompt;
-          slot.failure     = null;
-        } else {
-          slot.failure = failure;
-        }
+    for (const item of retry.items) {
+      const position = failedPositions[item.index];
+      if (position === undefined) continue;
+      const slot = slots[position];
+      // Keep the retry's text as the model's word for this slot even when it
+      // fails again — it is the most recent thing the model actually wrote.
+      slot.modelStem        = item.stem        || slot.modelStem;
+      slot.modelProofPrompt = item.proofPrompt || slot.modelProofPrompt;
+      const failure = judge(item.stem, item.proofPrompt);
+      if (!failure) {
+        slot.stem        = item.stem;
+        slot.proofPrompt = item.proofPrompt;
+        slot.failure     = null;
+      } else {
+        slot.failure = failure;
       }
     }
-    // A failed retry changes nothing: the slots that failed still fail, and
-    // they fall to the deterministic floor below.
   }
 
   // ── Floor whatever is still broken ───────────────────────────────────────

@@ -24,6 +24,8 @@ import {
   fallbackItem,
   parseModelItems,
   generateScreeningItems,
+  FALLBACK_PROOF_PROMPT,
+  MAX_REGENERATION_ATTEMPTS,
 } from '../lib/screeningItems';
 import { check, eq, summary } from './testHarness';
 
@@ -61,7 +63,7 @@ const GOOD_STEM_A  = 'Were you directly involved in an SAP migration at a compar
 const GOOD_STEM_B  = 'Have you led a pricing change at a mid-size distributor in the last three years?';
 const GOOD_STEM_C  = 'Were you responsible for a contract-manufacturing relationship at a comparable firm?';
 const GOOD_PROOF_A = 'In one sentence: what was your role in that project and when?';
-const GOOD_PROOF_B = 'In one sentence: what was your role in that work and when?';
+const GOOD_PROOF_B = FALLBACK_PROOF_PROMPT;
 
 const OBJECTIVES = [
   { id: 'obj-1', text: 'How did the 2024 SAP migration affect order-to-cash cycle time?' },
@@ -346,7 +348,7 @@ async function generation(): Promise<void> {
         },
       },
     );
-    eq('(c) still two calls',          calls, 2);
+    eq('(c) one call plus two regenerations', calls, 1 + MAX_REGENERATION_ATTEMPTS);
     eq('(c) source is fallback',       result.source, 'fallback');
     eq('(c) reason is validation',     result.reason, 'validation');
     eq('(c) the good items stay model', result.items[0].source, 'model');
@@ -467,6 +469,133 @@ async function generation(): Promise<void> {
   }
 }
 
+
+// ─── Adversarial objectives (founder, 2026-09-15) ─────────────────────────────
+//
+// Ten objectives written the way clients write them — each one is a question
+// about RESULTS, so the tempting proof prompt is the one that asks the expert
+// for the answer. For each, the prompt a lazy model would write; the validator
+// has to refuse every one, and the generation loop has to regenerate at most
+// MAX_REGENERATION_ATTEMPTS times and then land on the fixed fallback string.
+
+const ADVERSARIAL: Array<{ objective: string; tempting: string }> = [
+  { objective: 'How did the 2024 SAP migration affect order-to-cash cycle time?',
+    tempting:  'In one sentence: what was the result of the migration and by how much did cycle time change?' },
+  { objective: 'Why did Tier 2 suppliers in Southeast Asia lose share in 2023-2025?',
+    tempting:  'Briefly, why did they lose share and what drove it?' },
+  { objective: 'What drove churn in mid-market SaaS security tooling last year?',
+    tempting:  'What were the main reasons customers churned, in your view?' },
+  { objective: 'How do regional grocers actually evaluate private-label vendors?',
+    tempting:  'What would you recommend a vendor do to win that evaluation?' },
+  { objective: 'What changed in poultry cold-chain logistics costs post-2022?',
+    tempting:  'What changed in your costs after 2022, roughly what percentage?' },
+  { objective: 'Was the 2023 pricing increase successful at holding volume?',
+    tempting:  'Was it successful, and did volume hold?' },
+  { objective: 'Which order-to-cash steps still needed manual work after go-live?',
+    tempting:  'What did you find still needed manual work after go-live?' },
+  { objective: 'How much did the integrator overrun the original budget?',
+    tempting:  'How much did the programme overrun, in dollars?' },
+  { objective: 'What lessons did the team take from the hypercare period?',
+    tempting:  'What were the biggest lessons learned from hypercare?' },
+  { objective: 'How does your churn compare with the category average?',
+    tempting:  'How does your churn compare with the rest of the category?' },
+  { objective: 'Is the vendor relationship worth keeping after the renewal?',
+    tempting:  'In your opinion, is the relationship worth it, and what would you do?' },
+  { objective: 'What happened to margins after the private-label switch?',
+    tempting:  'What happened to margins after the switch?' },
+];
+
+function adversarialValidator(): void {
+  check('at least ten adversarial objectives', ADVERSARIAL.length >= 10, String(ADVERSARIAL.length));
+  for (const { tempting } of ADVERSARIAL) {
+    const reason = proofPromptViolation(tempting);
+    check(`refuses: ${tempting.slice(0, 60)}`, reason !== null);
+    check(`…with a sentence: ${tempting.slice(0, 30)}`, typeof reason === 'string' && /[.!]$/.test(reason));
+  }
+  // The fixed fallback passes, and so does a role-and-timeframe prompt written
+  // against every one of those objectives.
+  eq('the fixed fallback string passes', proofPromptViolation(FALLBACK_PROOF_PROMPT), null);
+  eq('the fixed fallback string is the one the founder set',
+    FALLBACK_PROOF_PROMPT, 'In one sentence: what was your role in this and when?');
+  eq('a role-and-timeframe prompt passes',
+    proofPromptViolation('In one sentence: what was your role in that programme and in which years?'), null);
+}
+
+async function adversarialGeneration(): Promise<void> {
+  const objectives = ADVERSARIAL.map((a, i) => ({ id: `adv-${i}`, text: a.objective }));
+  const stems      = ADVERSARIAL.map(() => 'Were you directly involved in work of this kind at a comparable company in the last three years?');
+  const indexes    = (n: number) => Array.from({ length: n }, (_, i) => i);
+
+  // (adv-1) the model insists on result-seeking prompts on every attempt:
+  // one call, MAX_REGENERATION_ATTEMPTS regenerations, then the fixed string.
+  {
+    let calls = 0;
+    const result = await generateScreeningItems(
+      { topic: 'Adversarial', objectives },
+      {
+        createMessage: async (params) => {
+          calls++;
+          // Every attempt returns tempting prompts for whatever it was asked.
+          const text  = userTextOf(params);
+          const count = calls === 1 ? objectives.length : (text.match(/^\d+\. /gm) ?? []).length;
+          return message(goodJson(indexes(count), stems.slice(0, count),
+            ADVERSARIAL.slice(0, count).map(a => a.tempting)));
+        },
+      },
+    );
+    eq('(adv-1) one call plus the capped regenerations', calls, 1 + MAX_REGENERATION_ATTEMPTS);
+    eq('(adv-1) source is fallback', result.source, 'fallback');
+    eq('(adv-1) reason is validation', result.reason, 'validation');
+    check('(adv-1) every item fell back', result.items.every(i => i.source === 'fallback'));
+    check('(adv-1) every proof prompt is the fixed string',
+      result.items.every(i => i.proofPrompt === FALLBACK_PROOF_PROMPT));
+    check('(adv-1) every fallback passes the validator',
+      result.items.every(i => proofPromptViolation(i.proofPrompt) === null));
+    check('(adv-1) what the model wrote is kept for the record',
+      result.items.every(i => i.modelProofPrompt !== null && proofPromptViolation(i.modelProofPrompt) !== null));
+  }
+
+  // (adv-2) the model gets it right on the SECOND regeneration: model text wins.
+  {
+    let calls = 0;
+    const result = await generateScreeningItems(
+      { topic: 'Adversarial', objectives },
+      {
+        createMessage: async (params) => {
+          calls++;
+          const text  = userTextOf(params);
+          const count = calls === 1 ? objectives.length : (text.match(/^\d+\. /gm) ?? []).length;
+          const proofs = calls === 3
+            ? indexes(count).map(() => 'In one sentence: what was your role in that work and in which years?')
+            : ADVERSARIAL.slice(0, count).map(a => a.tempting);
+          return message(goodJson(indexes(count), stems.slice(0, count), proofs));
+        },
+      },
+    );
+    eq('(adv-2) three calls', calls, 3);
+    eq('(adv-2) source is model', result.source, 'model');
+    check('(adv-2) every item is model-sourced', result.items.every(i => i.source === 'model'));
+    check('(adv-2) no fixed string was needed', result.items.every(i => i.proofPrompt !== FALLBACK_PROOF_PROMPT));
+  }
+
+  // (adv-3) a third bad attempt is never requested: the cap holds even when
+  // the model would have got it right on a fourth try.
+  {
+    let calls = 0;
+    await generateScreeningItems(
+      { topic: 'Adversarial', objectives: objectives.slice(0, 1) },
+      {
+        createMessage: async () => {
+          calls++;
+          return message(goodJson([0], [stems[0]], [calls >= 4 ? GOOD_PROOF_A : ADVERSARIAL[0].tempting]));
+        },
+      },
+    );
+    eq('(adv-3) the cap is exactly MAX_REGENERATION_ATTEMPTS', calls, 1 + MAX_REGENERATION_ATTEMPTS);
+    eq('(adv-3) the cap is two', MAX_REGENERATION_ATTEMPTS, 2);
+  }
+}
+
 // ─── Run ──────────────────────────────────────────────────────────────────────
 
 async function main(): Promise<void> {
@@ -476,6 +605,8 @@ async function main(): Promise<void> {
   fallback();
   parser();
   await generation();
+  adversarialValidator();
+  await adversarialGeneration();
 }
 
 main()
