@@ -18,7 +18,7 @@
 // rate, not the targeting, not the request id, not the organization id, not the
 // other candidates, not their own row id. lib/screeningPublic.buildScreeningPayload
 // builds that list field by field and scripts/test-screening-form.ts asserts
-// the whole key set, so a new column on `requests` cannot arrive here by
+// the whole key set, so a new column on `expert_requests` cannot arrive here by
 // accident.
 //
 // ACCESS is the signed screening token and nothing else: HMAC signature,

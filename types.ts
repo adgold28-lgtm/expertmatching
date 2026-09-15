@@ -651,13 +651,13 @@ export interface ContactEnrichment {
 // a client writes a topic plus 3-6 learning objectives (a REQUEST); each
 // objective becomes a first-person yes/no question and a one-sentence proof
 // prompt (an OBJECTIVE); platform staff mint a single-use screening link per
-// candidate (a ScreeningCandidate, backed by an `outreach_tokens` row); the
+// candidate (a ScreeningCandidate, backed by an `screening_tokens` row); the
 // expert answers every objective (ScreeningResponse); the client sees coverage
 // and the expert's own words, and after the call marks what was delivered
 // (CallOutcome).
 //
 // Row-backed, five tables, ONE INTERFACE PER TABLE with no jsonb catch-all:
-// requests / objectives / outreach_tokens / screening_responses / call_outcomes
+// requests / objectives / screening_tokens / screening_responses / call_outcomes
 // (supabase/migrations/20260914000000_screening_requests.sql). Unlike the
 // project family above, nothing here rides in a blob — every field is a real
 // column, so adding one is a migration.
@@ -785,7 +785,7 @@ export interface CallOutcome {
 }
 
 /**
- * One screening link and everything that came back on it — an `outreach_tokens`
+ * One screening link and everything that came back on it — an `screening_tokens`
  * row with its responses and outcomes attached.
  *
  * `expertEmail` and `rateAsk` are STAFF-ONLY. The store returns them in full;

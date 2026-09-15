@@ -18,7 +18,7 @@ Expert networks profit when a call under-delivers, because the client books anot
 
 ## Decisions taken (change if you disagree)
 
-- **Table names are the ones in the brief**: `requests`, `objectives`, `outreach_tokens`, `screening_responses`, `call_outcomes`. Two of them collide with existing vocabulary: `access_requests` / `/admin/requests` already mean "requests for access", and `lib/outreachToken.ts` already means the Matchy reply token. Renaming is a one-line change *before* the migration is pasted; after that it is a real migration. The HMAC purpose is `screening` and the module is `lib/screeningToken.ts` so the code never confuses the two tokens.
+- **Table names**: `expert_requests`, `objectives`, `screening_tokens`, `screening_responses`, `call_outcomes`. The brief said `requests` and `outreach_tokens`; both were renamed on 2026-09-15 (founder) because `access_requests` / `/admin/requests` already mean "requests for access" and `lib/outreachToken.ts` already means the Matchy reply token. The HMAC purpose is `screening` and the module is `lib/screeningToken.ts`. The API paths (`/api/requests/…`) and the `ScreeningRequest` type are unchanged.
 - **Who mints screening links: platform staff only.** A client cannot hold an expert's email address (the anonymity boundary), so a client-side "copy this link" is unusable by construction. Staff add a candidate (name, headline, background lines, optional email) and the platform either shows the link or emails it (Resend, suppression-checked, DISABLE_EMAILS honoured). The client sees respondents and acts on them.
 - **The client never sees an expert's name or email**, only "Candidate N" plus background lines (companies, roles, dates) and the expert's own words. This keeps the existing product promise; the brief asks for companies and roles, which are shown. Admins see the name.
 - **Rate and call length live on the request** (optional targeting fields; defaults $1,300/hr client-side = the senior tier, 60 min) because the screening header must show a rate and a length. The expert is shown the expert-side number and asked "does this work?" (one tap) or for their own number; the review row shows the client-side conversion.
@@ -33,7 +33,7 @@ Expert networks profit when a call under-delivers, because the client books anot
 All ids uuid. `expert_id` is text (no expert table exists and none is in scope): `em:<sha256(email) first 24 hex>` when the candidate has an email, else `anon:<random 12 hex>`. That key is what stage 5 joins on across requests.
 
 ```
-requests
+expert_requests
   id               uuid pk default gen_random_uuid()
   organization_id  uuid not null → organizations(id) on delete cascade
   owner_id         uuid not null → profiles(id) on delete restrict
@@ -51,7 +51,7 @@ requests
 
 objectives
   id                 uuid pk
-  request_id         uuid not null → requests(id) on delete cascade
+  request_id         uuid not null → expert_requests(id) on delete cascade
   position           integer not null            -- 0-based, unique (request_id, position)
   objective_text     text not null               -- the client's learning objective, verbatim
   stem               text                        -- first-person yes/no question; null until generated
@@ -62,9 +62,9 @@ objectives
   source             text check in ('model','fallback','client') null
   created_at / updated_at
 
-outreach_tokens                                   -- one row = one screening link = one candidate on one request
+screening_tokens                                   -- one row = one screening link = one candidate on one request
   id                uuid pk
-  request_id        uuid not null → requests(id) on delete cascade
+  request_id        uuid not null → expert_requests(id) on delete cascade
   expert_id         text not null                 -- see above; cross-request key
   expert_email      text                          -- lowercased; staff-only; null when unknown
   expert_snapshot   jsonb not null default '{}'   -- { name, headline, background: [{company, role, dates}] }
@@ -82,9 +82,9 @@ outreach_tokens                                   -- one row = one screening lin
 
 screening_responses
   id           uuid pk
-  token_id     uuid not null → outreach_tokens(id) on delete cascade
+  token_id     uuid not null → screening_tokens(id) on delete cascade
   objective_id uuid not null → objectives(id) on delete cascade
-  request_id   uuid not null → requests(id) on delete cascade     -- denormalised for indexing
+  request_id   uuid not null → expert_requests(id) on delete cascade     -- denormalised for indexing
   expert_id    text not null                                        -- denormalised for cross-request queries
   answer       text not null check in ('yes','no','unsure')
   proof_text   text check (length ≤ 400)                            -- required by the app when answer = 'yes'
@@ -93,8 +93,8 @@ screening_responses
 
 call_outcomes                                     -- stage 5
   id           uuid pk
-  request_id   uuid not null → requests(id) on delete cascade
-  token_id     uuid not null → outreach_tokens(id) on delete cascade
+  request_id   uuid not null → expert_requests(id) on delete cascade
+  token_id     uuid not null → screening_tokens(id) on delete cascade
   objective_id uuid not null → objectives(id) on delete cascade
   expert_id    text not null
   outcome      text not null check in ('answered','partial','unanswered')
@@ -105,7 +105,7 @@ call_outcomes                                     -- stage 5
 
 RLS: enabled on all five, **no policies** (service-role only). Comments on every table. Idempotent (`create table if not exists`, `do $$ … if not exists (pg_constraint)`, `drop policy if exists` not needed). Stage-5 queries documented in the migration header:
 
-- gap re-match: `select distinct t.* from screening_responses r join outreach_tokens t on t.id = r.token_id where r.request_id = $1 and r.answer = 'yes' and r.objective_id in (select objective_id from call_outcomes where token_id = $2 and outcome = 'unanswered')`
+- gap re-match: `select distinct t.* from screening_responses r join screening_tokens t on t.id = r.token_id where r.request_id = $1 and r.answer = 'yes' and r.objective_id in (select objective_id from call_outcomes where token_id = $2 and outcome = 'unanswered')`
 - reliability per expert: claimed = count(answer='yes') from screening_responses by expert_id; delivered = count(outcome='answered') from call_outcomes by expert_id, joined on (token_id, objective_id).
 
 ## Types (types.ts, "Screening flow" section)

@@ -2,7 +2,7 @@
 //
 // The client's one action on a respondent: "I want this call"
 // (docs/SCREENING_FLOW_PLAN.md, build step 5). It stamps
-// `outreach_tokens.call_requested_at` and nothing else — no scheduling, no
+// `screening_tokens.call_requested_at` and nothing else — no scheduling, no
 // charge, no email. Stage 6 (Matchy) picks the stamp up; this route is the
 // consent that lets it.
 //

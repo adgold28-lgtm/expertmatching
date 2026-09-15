@@ -1,5 +1,5 @@
 // Structured request + screening storage (docs/SCREENING_FLOW_PLAN.md).
-// Production: Supabase Postgres — `requests`, `objectives`, `outreach_tokens`,
+// Production: Supabase Postgres — `expert_requests`, `objectives`, `screening_tokens`,
 // `screening_responses`, `call_outcomes`
 // (supabase/migrations/20260914000000_screening_requests.sql).
 // Development fallback: in-memory Maps with a clear warning (process-local).
@@ -49,8 +49,8 @@ import type {
   CallOutcomeRow,
   Database,
   ObjectiveRow,
-  OutreachTokenRow,
-  RequestRow,
+  ScreeningTokenRow,
+  ExpertRequestRow,
   ScreeningResponseRow,
 } from './supabase/database.types';
 import type { IntakeData } from './screeningValidation';
@@ -182,7 +182,7 @@ function toTargeting(value: unknown): ScreeningTargeting {
   return out;
 }
 
-/** `outreach_tokens.expert_snapshot` is jsonb — same treatment as targeting. */
+/** `screening_tokens.expert_snapshot` is jsonb — same treatment as targeting. */
 function toSnapshot(value: unknown): ExpertSnapshot {
   const raw   = asRecord(value);
   const lines = Array.isArray(raw.background) ? raw.background : [];
@@ -210,7 +210,7 @@ function rowToObjective(row: ObjectiveRow): ScreeningObjective {
 }
 
 function rowToRequest(
-  row: RequestRow,
+  row: ExpertRequestRow,
   objectives: ScreeningObjective[],
   ownerEmail: string,
 ): ScreeningRequest {
@@ -242,7 +242,7 @@ function rowToOutcome(row: CallOutcomeRow): CallOutcome {
 }
 
 function rowToCandidate(
-  row: OutreachTokenRow,
+  row: ScreeningTokenRow,
   responses: ScreeningResponse[],
   outcomes: CallOutcome[],
 ): ScreeningCandidate {
@@ -561,7 +561,7 @@ class InMemoryRequestStore implements RequestStore {
 //                         out, the way projectStore does it, because the type
 //                         talks in emails and the schema stores ids.
 //   objectives          → ScreeningRequest.objectives, ordered by `position`.
-//   outreach_tokens     → one ScreeningCandidate each.
+//   screening_tokens     → one ScreeningCandidate each.
 //   screening_responses → ScreeningCandidate.responses, attached by token_id.
 //   call_outcomes       → ScreeningCandidate.outcomes, attached by token_id.
 //
@@ -606,7 +606,7 @@ class SupabaseRequestStore implements RequestStore {
   }
 
   /** One request row plus its objectives and its owner's email. Two round trips. */
-  private async assemble(row: RequestRow): Promise<ScreeningRequest> {
+  private async assemble(row: ExpertRequestRow): Promise<ScreeningRequest> {
     const [objectives, emailById] = await Promise.all([
       this.objectivesFor(row.id),
       this.emailsByProfileIds([row.owner_id]),
@@ -614,14 +614,14 @@ class SupabaseRequestStore implements RequestStore {
     return rowToRequest(row, objectives, emailById.get(row.owner_id) ?? '');
   }
 
-  private async getRow(id: string): Promise<RequestRow | null> {
-    const { data } = await this.db.from('requests').select('*').eq('id', id).maybeSingle();
+  private async getRow(id: string): Promise<ExpertRequestRow | null> {
+    const { data } = await this.db.from('expert_requests').select('*').eq('id', id).maybeSingle();
     return data ?? null;
   }
 
-  private async tokenRow(requestId: string, tokenId: string): Promise<OutreachTokenRow | null> {
+  private async tokenRow(requestId: string, tokenId: string): Promise<ScreeningTokenRow | null> {
     const { data } = await this.db
-      .from('outreach_tokens')
+      .from('screening_tokens')
       .select('*')
       .eq('id', tokenId)
       .eq('request_id', requestId)
@@ -663,12 +663,12 @@ class SupabaseRequestStore implements RequestStore {
     if (!membership) throw new Error('Request owner has no organization');
 
     const { data: row, error } = await this.db
-      .from('requests')
+      .from('expert_requests')
       .insert({
         organization_id: membership.organization_id,
         owner_id:        ownerId,
         topic_statement: input.topicStatement,
-        targeting:       input.targeting as Database['public']['Tables']['requests']['Insert']['targeting'],
+        targeting:       input.targeting as Database['public']['Tables']['expert_requests']['Insert']['targeting'],
         call_count:      input.callCount,
         deadline:        input.deadline,
         client_rate:     input.clientRate,
@@ -709,7 +709,7 @@ class SupabaseRequestStore implements RequestStore {
   }
 
   async listRequestsForUser(email: string, role: 'admin' | 'user'): Promise<ScreeningRequestSummary[]> {
-    let query = this.db.from('requests').select('*').order('created_at', { ascending: false });
+    let query = this.db.from('expert_requests').select('*').order('created_at', { ascending: false });
 
     if (role !== 'admin') {
       const ownerId = await this.profileIdByEmail(email);
@@ -726,7 +726,7 @@ class SupabaseRequestStore implements RequestStore {
     // `submitted_at` is on the row we already have.
     const [{ data: objectives }, { data: tokens }] = await Promise.all([
       this.db.from('objectives').select('request_id').in('request_id', ids),
-      this.db.from('outreach_tokens').select('request_id, submitted_at').in('request_id', ids),
+      this.db.from('screening_tokens').select('request_id, submitted_at').in('request_id', ids),
     ]);
 
     const objectiveCount = new Map<string, number>();
@@ -787,7 +787,7 @@ class SupabaseRequestStore implements RequestStore {
     // 409 before it gets here, so a second approve is not reachable through the
     // API and a conditional write would only hide a routing bug.
     const { error } = await this.db
-      .from('requests')
+      .from('expert_requests')
       .update({ status: 'approved', approved_at: new Date().toISOString() })
       .eq('id', requestId);
     if (error) throw new Error('Failed to approve request');
@@ -801,7 +801,7 @@ class SupabaseRequestStore implements RequestStore {
     const createdBy = input.createdByEmail ? await this.profileIdByEmail(input.createdByEmail) : null;
 
     const { data: row, error } = await this.db
-      .from('outreach_tokens')
+      .from('screening_tokens')
       .insert({
         // The caller's id, not a default: the token was signed against it
         // before this insert ran (see AddCandidateInput.id).
@@ -809,7 +809,7 @@ class SupabaseRequestStore implements RequestStore {
         request_id:      requestId,
         expert_id:       input.expertId,
         expert_email:    input.expertEmail,
-        expert_snapshot: input.snapshot as unknown as Database['public']['Tables']['outreach_tokens']['Insert']['expert_snapshot'],
+        expert_snapshot: input.snapshot as unknown as Database['public']['Tables']['screening_tokens']['Insert']['expert_snapshot'],
         token_hash:      input.tokenHash,
         expires_at:      input.expiresAt,
         created_by:      createdBy,
@@ -828,7 +828,7 @@ class SupabaseRequestStore implements RequestStore {
     // responses and outcomes are fetched by `request_id` (the denormalised
     // column exists for exactly this) and grouped by token in memory.
     const [{ data: rows }, { data: responses }, { data: outcomes }] = await Promise.all([
-      this.db.from('outreach_tokens').select('*').eq('request_id', requestId)
+      this.db.from('screening_tokens').select('*').eq('request_id', requestId)
         .order('created_at', { ascending: true }),
       this.db.from('screening_responses').select('*').eq('request_id', requestId),
       this.db.from('call_outcomes').select('*').eq('request_id', requestId),
@@ -860,7 +860,7 @@ class SupabaseRequestStore implements RequestStore {
   ): Promise<{ candidate: ScreeningCandidate; request: ScreeningRequest } | null> {
     if (!tokenHash) return null;
     const { data: row } = await this.db
-      .from('outreach_tokens')
+      .from('screening_tokens')
       .select('*')
       .eq('token_hash', tokenHash)
       .maybeSingle();
@@ -886,7 +886,7 @@ class SupabaseRequestStore implements RequestStore {
     // that was this call. A read-then-write here would let two taps both pass
     // the read.
     const { data: claimed, error } = await this.db
-      .from('outreach_tokens')
+      .from('screening_tokens')
       .update({
         submitted_at:  new Date().toISOString(),
         rate_accepted: input.rateAccepted,
@@ -903,7 +903,7 @@ class SupabaseRequestStore implements RequestStore {
       // Nothing matched. Either the link does not exist, or it is already used
       // or revoked — and the caller shows the same page for the last two.
       const { data: existing } = await this.db
-        .from('outreach_tokens').select('id').eq('id', tokenId).maybeSingle();
+        .from('screening_tokens').select('id').eq('id', tokenId).maybeSingle();
       return existing ? 'already_submitted' : 'not_found';
     }
 
@@ -911,7 +911,7 @@ class SupabaseRequestStore implements RequestStore {
     // Read after the claim, not before: the claim is what proves this call owns
     // the submission.
     const { data: token } = await this.db
-      .from('outreach_tokens').select('request_id, expert_id').eq('id', tokenId).maybeSingle();
+      .from('screening_tokens').select('request_id, expert_id').eq('id', tokenId).maybeSingle();
 
     const { error: responsesError } = token
       ? await this.db.from('screening_responses').insert(
@@ -935,7 +935,7 @@ class SupabaseRequestStore implements RequestStore {
       // a PostgREST message can quote a column value, and every value on this
       // path is confidential.
       await this.db
-        .from('outreach_tokens')
+        .from('screening_tokens')
         .update({ submitted_at: null, rate_accepted: null, rate_ask: null, availability: null })
         .eq('id', tokenId);
       console.warn('[requestStore] screening answers failed to store; screening link rolled back for retry',
@@ -953,7 +953,7 @@ class SupabaseRequestStore implements RequestStore {
     // nothing and keeps the first timestamp. The candidate is then read back
     // either way, so the caller cannot tell the two apart — which is the point.
     const { error } = await this.db
-      .from('outreach_tokens')
+      .from('screening_tokens')
       .update({ call_requested_at: new Date().toISOString() })
       .eq('id', tokenId)
       .eq('request_id', requestId)
@@ -967,7 +967,7 @@ class SupabaseRequestStore implements RequestStore {
     if (!isUuid(requestId) || !isUuid(tokenId)) return null;
 
     const { error } = await this.db
-      .from('outreach_tokens')
+      .from('screening_tokens')
       .update({ revoked_at: new Date().toISOString() })
       .eq('id', tokenId)
       .eq('request_id', requestId)

@@ -10,14 +10,14 @@
 //
 // NOT lib/outreachToken.ts. That token addresses a Matchy reply thread
 // (projectId:expertId) on the Brief → Matches → Conversations path. This one
-// addresses one row of `outreach_tokens` — one expert, one request, one
+// addresses one row of `screening_tokens` — one expert, one request, one
 // screening form — and the two purposes are separate so a token minted for one
 // can never verify as the other.
 //
 // EXPIRY IS NOT A POLICY THIS MODULE OWNS. The caller passes `expiresAtMs`, and
 // every caller passes the REQUEST'S DEADLINE: a screening link dies when the
 // client stops needing answers, not on a fixed clock. The same instant is
-// written to outreach_tokens.expires_at, so a stale link fails signature-side
+// written to screening_tokens.expires_at, so a stale link fails signature-side
 // and storage-side alike.
 //
 // REVOCATION IS NOT IN THE TOKEN EITHER. `tokenHash` (sha256 of the raw token)
@@ -41,14 +41,14 @@ const NONCE_BYTES = 16;
 export interface GeneratedScreeningToken {
   /** The full raw token — goes in the link, and is never stored. */
   token:     string;
-  /** SHA-256(token), hex — stored on outreach_tokens.token_hash. */
+  /** SHA-256(token), hex — stored on screening_tokens.token_hash. */
   tokenHash: string;
-  /** Unix ms; the same instant stored as outreach_tokens.expires_at. */
+  /** Unix ms; the same instant stored as screening_tokens.expires_at. */
   expiry:    number;
 }
 
 /**
- * Mint a screening link token for one `outreach_tokens` row.
+ * Mint a screening link token for one `screening_tokens` row.
  *
  * `tokenId` is the row's uuid (generate it first, sign it, then insert the row
  * with the hash) and `requestId` is the request the row belongs to. Carrying

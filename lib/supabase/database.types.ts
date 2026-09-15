@@ -28,7 +28,7 @@
 //   service-role   -> access_requests, user_calendar_connections,
 //                     outreach_suppressions, engagement_events,
 //                     organization_billing, system_events, product_events,
-//                     requests, objectives, outreach_tokens,
+//                     requests, objectives, screening_tokens,
 //                     screening_responses, call_outcomes
 //   project-read   -> conversation_messages (members read; writes service-role)
 // Project data is reachable only via project ownership or an explicit
@@ -647,7 +647,7 @@ export interface Database {
       // default: the app sets it (now + 14 days) so a row can never carry an
       // expiry nobody chose, which is why it is required on Insert.
       // `client_rate` is CLIENT-side dollars per hour on the $50 grid.
-      requests: {
+      expert_requests: {
         Row: {
           id: string;
           organization_id: string;
@@ -752,7 +752,7 @@ export interface Database {
       // The raw token is never stored; `token_hash` is sha256(raw) and unique.
       // `expert_email` and `rate_ask` are STAFF-ONLY and must be dropped by the
       // route before a respondent reaches a client.
-      outreach_tokens: {
+      screening_tokens: {
         Row: {
           id: string;
           request_id: string;
@@ -929,8 +929,8 @@ export type SystemEventRow = Database['public']['Tables']['system_events']['Row'
 export type SystemEventInsert = Database['public']['Tables']['system_events']['Insert'];
 
 // Screening flow (20260914000000_screening_requests.sql).
-export type RequestRow = Database['public']['Tables']['requests']['Row'];
+export type ExpertRequestRow = Database['public']['Tables']['expert_requests']['Row'];
 export type ObjectiveRow = Database['public']['Tables']['objectives']['Row'];
-export type OutreachTokenRow = Database['public']['Tables']['outreach_tokens']['Row'];
+export type ScreeningTokenRow = Database['public']['Tables']['screening_tokens']['Row'];
 export type ScreeningResponseRow = Database['public']['Tables']['screening_responses']['Row'];
 export type CallOutcomeRow = Database['public']['Tables']['call_outcomes']['Row'];

@@ -786,7 +786,7 @@ export function validateOutcomesInput(
 // ─── Expert identity ──────────────────────────────────────────────────────────
 
 /**
- * The cross-request key for one expert (outreach_tokens.expert_id).
+ * The cross-request key for one expert (screening_tokens.expert_id).
  *
  * With an address: 'em:' + the first 24 hex of sha256(lowercased, trimmed
  * address). STABLE — the same person screened for two different requests gets

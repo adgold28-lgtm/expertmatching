@@ -10,7 +10,7 @@
 --
 -- WHAT THIS CHANGES — five NEW tables, nothing existing is touched.
 --
---   1. requests           — a brief with learning objectives. Owned by one
+--   1. expert_requests    — a brief with learning objectives. Owned by one
 --                           profile inside one organization. Carries the
 --                           CLIENT-side hourly rate and the call length the
 --                           screening header shows, and a deadline that is the
@@ -25,12 +25,11 @@
 --                           which is what makes template learning possible
 --                           later. `source` says where the live text came from.
 --
---   3. outreach_tokens    — one row = one screening link = one candidate on one
---                           request. NAME COLLISION WORTH KNOWING: this is NOT
---                           lib/outreachToken.ts, which mints Matchy's reply
---                           token for a project/expert thread. This table is the
---                           screening link (lib/screeningToken.ts, HMAC purpose
---                           'screening'). The two never meet in code.
+--   3. screening_tokens    — one row = one screening link = one candidate on one
+--                           request. Named for what it is: the screening link
+--                           (lib/screeningToken.ts, HMAC purpose 'screening'),
+--                           not Matchy's reply token (lib/outreachToken.ts).
+--                           The two never meet in code.
 --
 --                           The raw token is NEVER stored: `token_hash` is
 --                           sha256(raw) and is the only handle the platform
@@ -45,7 +44,7 @@
 --                           plus the expert's one sentence of proof when yes.
 --                           `request_id` and `expert_id` are denormalised from
 --                           the token row so the stage-5 queries below need no
---                           join back through outreach_tokens.
+--                           join back through screening_tokens.
 --
 --   5. call_outcomes      — stage 5. After a call, the client marks each
 --                           objective answered / partial / unanswered. The data
@@ -67,7 +66,7 @@
 --
 --     select distinct t.*
 --       from screening_responses r
---       join outreach_tokens t on t.id = r.token_id
+--       join screening_tokens t on t.id = r.token_id
 --      where r.request_id = $1
 --        and r.answer = 'yes'
 --        and r.objective_id in (
@@ -115,10 +114,10 @@
 begin;
 
 -- ═════════════════════════════════════════════════════════════════════════
--- 1. requests — a brief with learning objectives
+-- 1. expert_requests — a brief with learning objectives
 -- ═════════════════════════════════════════════════════════════════════════
 
-create table if not exists public.requests (
+create table if not exists public.expert_requests (
   id               uuid primary key default gen_random_uuid(),
   -- The account the request belongs to. Cascade: an organization that is
   -- deleted takes its requests with it.
@@ -157,7 +156,7 @@ create table if not exists public.requests (
   updated_at       timestamptz not null default now()
 );
 
-comment on table public.requests is
+comment on table public.expert_requests is
   'A structured research request: one topic statement plus 3-6 learning '
   'objectives the client wants an expert to be able to speak to. Service-role '
   'only (RLS enabled, no policies) — access is owner-or-platform-admin, '
@@ -166,10 +165,10 @@ comment on table public.requests is
   'screening link minted for this request.';
 
 -- The two list views: an organization's requests, and one owner's requests.
-create index if not exists idx_requests_org_created
-  on public.requests (organization_id, created_at);
-create index if not exists idx_requests_owner_created
-  on public.requests (owner_id, created_at);
+create index if not exists idx_expert_requests_org_created
+  on public.expert_requests (organization_id, created_at);
+create index if not exists idx_expert_requests_owner_created
+  on public.expert_requests (owner_id, created_at);
 
 -- ═════════════════════════════════════════════════════════════════════════
 -- 2. objectives — one learning objective, and the question it became
@@ -177,7 +176,7 @@ create index if not exists idx_requests_owner_created
 
 create table if not exists public.objectives (
   id                 uuid primary key default gen_random_uuid(),
-  request_id         uuid not null references public.requests(id) on delete cascade,
+  request_id         uuid not null references public.expert_requests(id) on delete cascade,
   -- 0-based display order. Unique per request, so a reorder is a real write
   -- and two rows can never claim the same slot.
   position           integer not null,
@@ -213,16 +212,16 @@ comment on table public.objectives is
 -- objectives uses.
 
 -- ═════════════════════════════════════════════════════════════════════════
--- 3. outreach_tokens — one screening link, one candidate, one request
+-- 3. screening_tokens — one screening link, one candidate, one request
 -- ═════════════════════════════════════════════════════════════════════════
 --
--- NOT lib/outreachToken.ts. See the header. The raw token exists for exactly
--- as long as it takes to put it in an email or on a staff screen; only its
--- sha256 is ever written here.
+-- The screening link, not Matchy's reply token (see the header). The raw token
+-- exists for exactly as long as it takes to put it in an email or on a staff
+-- screen; only its sha256 is ever written here.
 
-create table if not exists public.outreach_tokens (
+create table if not exists public.screening_tokens (
   id                uuid primary key default gen_random_uuid(),
-  request_id        uuid not null references public.requests(id) on delete cascade,
+  request_id        uuid not null references public.expert_requests(id) on delete cascade,
   -- 'em:<24 hex>' or 'anon:<12 hex>' — lib/screeningValidation.normalizeExpertId.
   -- The cross-request key every stage-5 query joins on. Not a FK: there is no
   -- expert table.
@@ -260,7 +259,7 @@ create table if not exists public.outreach_tokens (
   created_at        timestamptz not null default now()
 );
 
-comment on table public.outreach_tokens is
+comment on table public.screening_tokens is
   'One screening link: one candidate on one request. NOT the Matchy reply token '
   '(lib/outreachToken.ts) — this is lib/screeningToken.ts, HMAC purpose '
   '"screening". The raw token is never stored; token_hash is the only handle. '
@@ -268,10 +267,10 @@ comment on table public.outreach_tokens is
   'requests.deadline. expert_email and rate_ask are STAFF-ONLY. Service-role '
   'only (RLS enabled, no policies).';
 
-create index if not exists idx_outreach_tokens_request_created
-  on public.outreach_tokens (request_id, created_at);
-create index if not exists idx_outreach_tokens_expert
-  on public.outreach_tokens (expert_id);
+create index if not exists idx_screening_tokens_request_created
+  on public.screening_tokens (request_id, created_at);
+create index if not exists idx_screening_tokens_expert
+  on public.screening_tokens (expert_id);
 
 -- ═════════════════════════════════════════════════════════════════════════
 -- 4. screening_responses — one answer per (link, objective)
@@ -279,11 +278,11 @@ create index if not exists idx_outreach_tokens_expert
 
 create table if not exists public.screening_responses (
   id           uuid primary key default gen_random_uuid(),
-  token_id     uuid not null references public.outreach_tokens(id) on delete cascade,
+  token_id     uuid not null references public.screening_tokens(id) on delete cascade,
   objective_id uuid not null references public.objectives(id) on delete cascade,
   -- Denormalised from the token row so the stage-5 queries index straight off
   -- this table. Written by lib/requestStore.submitScreening, never by a client.
-  request_id   uuid not null references public.requests(id) on delete cascade,
+  request_id   uuid not null references public.expert_requests(id) on delete cascade,
   expert_id    text not null,
   answer       text not null check (answer in ('yes','no','unsure')),
   -- The expert's own sentence, shown to the client UNSUMMARISED. Required by
@@ -302,7 +301,7 @@ comment on table public.screening_responses is
   'One expert answer to one objective on one screening link: yes / no / unsure '
   'plus the expert''s own sentence of proof behind a yes. Negatives are kept '
   'deliberately — they are what makes gap re-matching work. request_id and '
-  'expert_id are denormalised from outreach_tokens for indexing. Service-role '
+  'expert_id are denormalised from screening_tokens for indexing. Service-role '
   'only (RLS enabled, no policies).';
 
 -- Coverage for one request, and the gap re-match join.
@@ -318,8 +317,8 @@ create index if not exists idx_screening_responses_expert
 
 create table if not exists public.call_outcomes (
   id           uuid primary key default gen_random_uuid(),
-  request_id   uuid not null references public.requests(id) on delete cascade,
-  token_id     uuid not null references public.outreach_tokens(id) on delete cascade,
+  request_id   uuid not null references public.expert_requests(id) on delete cascade,
+  token_id     uuid not null references public.screening_tokens(id) on delete cascade,
   objective_id uuid not null references public.objectives(id) on delete cascade,
   -- Denormalised, same reason as screening_responses: reliability is a query
   -- over expert_id across every request.
@@ -351,12 +350,12 @@ create index if not exists idx_call_outcomes_request
 -- ═════════════════════════════════════════════════════════════════════════
 --
 -- public.set_updated_at already exists (20260831000000_supabase_cutover_
--- foundation.sql). outreach_tokens and screening_responses have no updated_at:
+-- foundation.sql). screening_tokens and screening_responses have no updated_at:
 -- a token's lifecycle is recorded as distinct stamps (submitted_at, revoked_at,
 -- call_requested_at) and a response is written once and never edited.
 
-create or replace trigger trg_requests_updated
-  before update on public.requests
+create or replace trigger trg_expert_requests_updated
+  before update on public.expert_requests
   for each row execute function public.set_updated_at();
 
 create or replace trigger trg_objectives_updated
@@ -375,9 +374,9 @@ create or replace trigger trg_call_outcomes_updated
 -- No policies are created for any of these tables on purpose — see the table
 -- comments and the header. lib/requestStore.ts is the only path in.
 
-alter table public.requests            enable row level security;
+alter table public.expert_requests            enable row level security;
 alter table public.objectives          enable row level security;
-alter table public.outreach_tokens     enable row level security;
+alter table public.screening_tokens     enable row level security;
 alter table public.screening_responses enable row level security;
 alter table public.call_outcomes       enable row level security;
 

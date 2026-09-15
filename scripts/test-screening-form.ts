@@ -9,7 +9,7 @@
 // built from a request stuffed with client identifiers and asserts that not one
 // of them survives: not the owner's address, not the organization id, not the
 // request id, not the candidate's name, address or row id, and not the CLIENT
-// -side rate. A new field on `requests` that reaches an expert fails here
+// -side rate. A new field on `expert_requests` that reaches an expert fails here
 // before it reaches anyone.
 //
 // OFFLINE. No network, no Supabase, no Redis, no Resend, no model. The token

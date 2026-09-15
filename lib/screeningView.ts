@@ -10,7 +10,7 @@
 //
 // So every view below is built FIELD BY FIELD. There is no spread of a stored
 // record anywhere in this file, and that is deliberate rather than stylistic: a
-// spread is how a new staff-only column on `outreach_tokens` silently reaches a
+// spread is how a new staff-only column on `screening_tokens` silently reaches a
 // client the day it is added. Adding a field to a wire shape has to be a
 // decision someone typed.
 //
