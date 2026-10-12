@@ -248,6 +248,7 @@ function containsExpertSurname(text: string, fullName: string | undefined): bool
   if (parts.length === 0) return false;
   const last = parts[parts.length - 1];
   if (last.length < 2) return false;
+  // nosemgrep: javascript.lang.security.audit.detect-non-literal-regexp.detect-non-literal-regexp -- input is escaped
   return new RegExp(`\\b${escapeRegExp(last)}\\b`, 'i').test(text);
 }
 
@@ -271,6 +272,7 @@ function containsKnownFigure(text: string, figures: DraftContext['knownClientFig
     const separated = n.toLocaleString('en-US');
     const forms = separated === plain ? [plain] : [plain, separated];
     for (const form of forms) {
+      // nosemgrep: javascript.lang.security.audit.detect-non-literal-regexp.detect-non-literal-regexp -- input is escaped
       const re = new RegExp(`(?<![\\d,.])${escapeRegExp(form)}(?![\\d,]|\\.\\d)`);
       if (re.test(text)) return true;
     }

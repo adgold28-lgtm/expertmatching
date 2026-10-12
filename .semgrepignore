@@ -1,0 +1,10 @@
+# Semgrep ignore list. NOTE: when this file exists it replaces semgrep's
+# built-in default ignores, so the usual noise directories are listed here too.
+.git/
+node_modules/
+.next/
+audit-*/
+
+# Test scripts carry deliberately fake secrets and tokens as fixtures
+# (e.g. a dummy OAuth token and webhook HMAC keys). Not shipped code.
+scripts/test-*.ts
