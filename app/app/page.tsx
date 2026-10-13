@@ -295,6 +295,13 @@ export default function AppPage() {
             >
               New Project
             </button>
+            <Link
+              href="/requests"
+              className="text-[10px] uppercase font-medium px-4 py-2 transition-colors border hover:text-gold"
+              style={{ color: 'rgba(198,167,94,0.6)', borderColor: 'rgba(198,167,94,0.25)', letterSpacing: '0.14em' }}
+            >
+              Requests
+            </Link>
             {canManageTeam && (
               <Link
                 href="/settings/team"

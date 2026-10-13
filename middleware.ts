@@ -44,6 +44,8 @@ const PUBLIC_PATHS = new Set([
 const PUBLIC_PREFIXES = [
   '/schedule/',              // expert-facing time picker — gated by the signed picker token
   '/api/schedule/',          // the picker's read/book endpoint — same token gate
+  '/s/',                     // expert screening form — gated by the signed screening token
+  '/api/s/',                 // the form's read/submit endpoint — same token gate
   // The Google Calendar OAuth round-trip an expert can start from the picker.
   // The PAGES under /availability/ are gone (the picker replaced them); these
   // two API routes keep the path only because the Google console's authorized
