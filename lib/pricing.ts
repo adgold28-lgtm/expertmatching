@@ -1,3 +1,13 @@
+
+/**
+ * The longest call this product will bill, in minutes (8 hours). It is the
+ * validation ceiling on POST …/complete and the clamp on the duration the Zoom
+ * meeting.ended webhook derives: a meeting left open, or an event carrying a
+ * stale start_time, must not become an unbounded off-session charge on the
+ * client's saved card.
+ */
+export const MAX_BILLABLE_MINUTES = 480;
+
 // lib/pricing.ts — the single source of truth for money rules.
 //
 // Two independent things are priced here:

@@ -88,6 +88,18 @@ eq('a row we have never seen (no pe) still resolves',
 eq('a null row still resolves',
   durationOf(resolveMeetingEnd({ start_time: started, end_time: ended47 }, NOW, null)), 47);
 
+section('resolveMeetingEnd: an 8-hour ceiling (an open meeting is not an unbounded charge)');
+
+// The Zoom path charges the client's saved card off-session, so its minutes are
+// bounded exactly like POST …/complete (1 to 480). A meeting left open for a
+// week, or a replay carrying a stale start_time, bills the ceiling.
+eq('a meeting left open for a week bills 480 minutes',
+  durationOf(resolveMeetingEnd({ start_time: '2026-09-02T14:00:00Z', end_time: '2026-09-09T14:00:00Z' }, NOW, scheduledRow)), 480);
+eq('exactly eight hours is allowed',
+  durationOf(resolveMeetingEnd({ start_time: '2026-09-09T06:00:00Z', end_time: '2026-09-09T14:00:00Z' }, NOW, scheduledRow)), 480);
+eq('a booked duration past the ceiling is clamped too',
+  durationOf(resolveMeetingEnd({ end_time: ended47 }, NOW, { status: 'scheduled', booking: { durationMin: 10_000 } })), 480);
+
 section('resolveMeetingEnd: the completion guard (a redelivery is a no-op)');
 
 const alreadyEnded: MeetingEndRow = { status: 'scheduled', zoomMeetingEndedAt: NOW - 60_000 };
