@@ -516,9 +516,12 @@ function maskName(text: string, fullName: string): string {
 
   const patterns: RegExp[] = [];
   if (parts.length >= 2) {
+    // nosemgrep: javascript.lang.security.audit.detect-non-literal-regexp.detect-non-literal-regexp -- input is escaped
     patterns.push(new RegExp(`\\b${escape(first)}\\s+${escape(last)}\\b`, 'gi'));
+    // nosemgrep: javascript.lang.security.audit.detect-non-literal-regexp.detect-non-literal-regexp -- input is escaped
     patterns.push(new RegExp(`\\b${escape(last)}\\s*,\\s*${escape(first)}\\b`, 'gi'));
   }
+  // nosemgrep: javascript.lang.security.audit.detect-non-literal-regexp.detect-non-literal-regexp -- input is escaped
   if (last.length >= 3) patterns.push(new RegExp(`\\b${escape(last)}\\b`, 'gi'));
 
   let out = text;
@@ -550,11 +553,13 @@ export function maskCompany(text: string, company: string): string {
   if (!clean) return text;
 
   const escape = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  // nosemgrep: javascript.lang.security.audit.detect-non-literal-regexp.detect-non-literal-regexp -- input is escaped
   const patterns: RegExp[] = [new RegExp(`\\b${escape(clean)}(?:'s)?\\b`, 'gi')];
 
   for (const word of clean.split(/[\s,&/-]+/)) {
     const bare = word.replace(/[^A-Za-z0-9]/g, '');
     if (bare.length < 4 || GENERIC_COMPANY_WORDS.has(bare.toLowerCase())) continue;
+    // nosemgrep: javascript.lang.security.audit.detect-non-literal-regexp.detect-non-literal-regexp -- input is escaped
     patterns.push(new RegExp(`\\b${escape(bare)}(?:'s)?\\b`, 'gi'));
   }
 

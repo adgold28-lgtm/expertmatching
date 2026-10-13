@@ -97,6 +97,7 @@ function wordsOf(value: string | undefined): string[] {
 
 function containsWord(text: string, term: string): boolean {
   const escaped = term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  // nosemgrep: javascript.lang.security.audit.detect-non-literal-regexp.detect-non-literal-regexp -- input is escaped
   return new RegExp(`\\b${escaped}\\b`, 'i').test(text);
 }
 

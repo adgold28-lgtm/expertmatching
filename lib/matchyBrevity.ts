@@ -94,6 +94,7 @@ function escapeRegExp(value: string): string {
  */
 const ABBREVIATION_PATTERNS: readonly RegExp[] = [...ABBREVIATIONS]
   .sort((a, b) => b.length - a.length)
+  // nosemgrep: javascript.lang.security.audit.detect-non-literal-regexp.detect-non-literal-regexp -- input is escaped
   .map(abbr => new RegExp(`\\b${escapeRegExp(abbr)}`, 'gi'));
 
 /** Replaces the dots inside known abbreviations with the sentinel. */
