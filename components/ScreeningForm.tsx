@@ -245,7 +245,7 @@ export default function ScreeningForm({ token }: Props) {
           <span className="text-navy text-xl">✓</span>
         </div>
         <h1 className="font-display text-2xl text-navy mb-3">
-          Thanks — {sentCoverage.yes} of {sentCoverage.total} sent.
+          Thanks. {sentCoverage.yes} of {sentCoverage.total} sent.
         </h1>
         <p className="text-sm text-muted leading-relaxed">
           The client sees exactly what you wrote, in your words.

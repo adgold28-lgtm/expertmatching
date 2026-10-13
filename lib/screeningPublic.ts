@@ -238,7 +238,7 @@ export function buildScreeningLinkEmail(input: ScreeningLinkEmailInput): Screeni
     `${capitalise(input.firmPhrase)} is looking for an expert on ${topic} and would pay `
       + `$${input.expertRate}/hr for a ${input.callLengthMin}-minute call.`,
     `Before anyone books time, ${countPhrase(input.itemCount).toLowerCase()} quick yes/no questions tell them `
-      + 'exactly what you can speak to — it takes about a minute:',
+      + 'exactly what you can speak to. It takes about a minute:',
     input.link,
     `The link works until ${formatDeadline(input.deadline)} and is yours alone.`,
   ];
