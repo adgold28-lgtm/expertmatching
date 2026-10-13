@@ -36,32 +36,34 @@ export interface CacheStore {
 
 // ─── Pseudonymization helpers ────────────────────────────────────────────────
 
+// HMAC key for every pseudonymization hash below. Read from LOG_HASH_SECRET.
+// Production hard-fails without it. Outside production a random per-process
+// secret is generated once (never a hardcoded string), so dev hashes are
+// unguessable but only stable for the lifetime of the process.
+let _devSecret: Buffer | null = null;
+function logHashSecret(): string | Buffer {
+  const secret = process.env.LOG_HASH_SECRET;
+  if (secret) return secret;
+  if (process.env.NODE_ENV === 'production') {
+    throw new Error('[contactCache] FATAL: LOG_HASH_SECRET not set in production');
+  }
+  if (!_devSecret) {
+    console.warn('[contactCache] LOG_HASH_SECRET not set — using a random per-process dev secret');
+    _devSecret = randomBytes(32);
+  }
+  return _devSecret;
+}
+
 // 12-char HMAC truncation for audit log identifiers. The one implementation:
 // app/api/inbound-email/route.ts and the interview-guide route both import it.
-// Hard-fails in production without LOG_HASH_SECRET rather than hashing under a
-// guessable fallback.
 export function pseudonymize(value: string): string {
-  const secret = process.env.LOG_HASH_SECRET;
-  if (!secret) {
-    if (process.env.NODE_ENV === 'production') {
-      throw new Error('[contactCache] FATAL: LOG_HASH_SECRET not set in production');
-    }
-    return createHmac('sha256', 'dev-insecure-fallback').update(value).digest('hex').slice(0, 12);
-  }
-  return createHmac('sha256', secret).update(value).digest('hex').slice(0, 12);
+  return createHmac('sha256', logHashSecret()).update(value).digest('hex').slice(0, 12);
 }
 
 // 32-char HMAC for Redis storage keys — more entropy than the 12-char audit hash.
 // Raw names/domains are NEVER used in Redis key names.
 function storageKeyHash(value: string): string {
-  const secret = process.env.LOG_HASH_SECRET;
-  if (!secret) {
-    if (process.env.NODE_ENV === 'production') {
-      throw new Error('[contactCache] FATAL: LOG_HASH_SECRET not set in production');
-    }
-    return createHmac('sha256', 'dev-insecure-fallback').update(value).digest('hex').slice(0, 32);
-  }
-  return createHmac('sha256', secret).update(value).digest('hex').slice(0, 32);
+  return createHmac('sha256', logHashSecret()).update(value).digest('hex').slice(0, 32);
 }
 
 // ─── In-memory implementation (dev only) ─────────────────────────────────────

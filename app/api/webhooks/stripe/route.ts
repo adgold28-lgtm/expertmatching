@@ -3,6 +3,7 @@
 //
 // Handles:
 //   checkout.session.completed            → paymentStatus='paid' + expert payout
+//   checkout.session.async_payment_succeeded → settled payment + expert payout
 //   checkout.session.async_payment_failed → paymentStatus='failed'
 //   payment_intent.succeeded              → paymentStatus='paid' + expert payout
 //                                           (off-session auto-charge path)
@@ -20,7 +21,7 @@
 //
 // EVENTS THAT MUST BE ENABLED ON THE STRIPE ENDPOINT for the branches below to
 // ever run: checkout.session.completed, checkout.session.async_payment_failed,
-// payment_intent.succeeded, payment_intent.payment_failed,
+// checkout.session.async_payment_succeeded, payment_intent.succeeded, payment_intent.payment_failed,
 // customer.subscription.updated, customer.subscription.deleted,
 // invoice.payment_failed, charge.refunded, charge.dispute.created, and
 // account.updated on CONNECTED accounts.
@@ -62,9 +63,11 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: verified.error }, { status: 400 });
   }
 
-  // Signature verified — everything below writes. The event is de-duplicated
-  // and dispatched in ./handlers.ts, which always resolves (a failing branch
-  // logs and is dropped) so Stripe always sees 200.
-  const outcome = await handleStripeEvent(verified.event);
-  return NextResponse.json(outcome);
+  try {
+    const outcome = await handleStripeEvent(verified.event);
+    return NextResponse.json(outcome);
+  } catch {
+    // Never return provider errors, payloads, or credentials to the caller.
+    return NextResponse.json({ error: 'webhook_processing_failed' }, { status: 500 });
+  }
 }

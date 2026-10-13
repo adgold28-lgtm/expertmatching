@@ -50,7 +50,17 @@ export type ProductEventType =
   | 'candidate_unpassed'
   // the paywall
   | 'restricted_action_attempted' // payload.action, payload.kind
-  | 'went_live';
+  | 'went_live'
+  // the Structured Request & Screening Flow (docs/SCREENING_FLOW_PLAN.md).
+  // NOTE the project_id column stays null for every one of these: a request is
+  // not a project. Counts and short enum strings only, as everywhere else here
+  // — never the topic, an objective, a name or an expert's own words.
+  | 'request_created'
+  | 'screening_set_generated'     // payload.source: model | fallback
+  | 'screening_set_approved'
+  | 'screening_link_minted'
+  | 'screening_submitted'         // payload.yes, payload.total
+  | 'call_requested';
 
 export interface TrackProductEventInput {
   type:            ProductEventType;

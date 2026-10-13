@@ -57,6 +57,7 @@ const RUNTIME_BUILTINS = new Set(['NODE_ENV', 'NEXT_RUNTIME']);
 function sourceFiles(dir: string, out: string[] = []): string[] {
   for (const entry of readdirSync(dir)) {
     if (entry === 'node_modules' || entry.startsWith('.')) continue;
+    // nosemgrep: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal -- dev-only script walking the repo tree, no user input
     const full = join(dir, entry);
     if (statSync(full).isDirectory()) sourceFiles(full, out);
     else if (/\.(ts|tsx)$/.test(entry)) out.push(full);
@@ -67,7 +68,9 @@ function sourceFiles(dir: string, out: string[] = []): string[] {
 function readVariables(): Set<string> {
   const found = new Set<string>();
   const files = [
+    // nosemgrep: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal -- dev-only script walking the repo tree, no user input
     ...SCAN_ROOTS.flatMap(d => sourceFiles(join(REPO_ROOT, d))),
+    // nosemgrep: javascript.lang.security.audit.path-traversal.path-join-resolve-traversal.path-join-resolve-traversal -- dev-only script walking the repo tree, no user input
     ...SCAN_FILES.map(f => join(REPO_ROOT, f)),
   ];
   for (const file of files) {

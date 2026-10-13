@@ -434,6 +434,7 @@ function buildDenyMatcher(denyTerms: readonly string[] | undefined): DenyMatcher
     const tokens = term.split(/\s+/).map(comparable).filter(Boolean);
     if (tokens.length === 0) continue;
     if (tokens.length > 1) {
+      // nosemgrep: javascript.lang.security.audit.detect-non-literal-regexp.detect-non-literal-regexp -- input is escaped
       phrases.push(new RegExp(`\\b${tokens.map(escape).join('\\s+')}(?:'s|')?\\b`, 'gi'));
     }
     for (const t of tokens) {

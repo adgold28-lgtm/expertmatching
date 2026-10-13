@@ -17,6 +17,7 @@
 // legal. No I/O, no clock of its own, no env: `now` is always supplied.
 
 import { createHmac, timingSafeEqual } from 'crypto';
+import { MAX_BILLABLE_MINUTES } from '../../../../lib/pricing';
 
 /**
  * How old a signed Zoom delivery may be before it is refused, in seconds.
@@ -89,14 +90,14 @@ export function resolveMeetingEnd(
   if (Number.isFinite(startTs)) {
     return {
       skip:              false,
-      actualDurationMin: Math.max(1, Math.ceil((endTs - startTs) / 60000)),
+      actualDurationMin: Math.min(MAX_BILLABLE_MINUTES, Math.max(1, Math.ceil((endTs - startTs) / 60000))),
       endedAt:           now,
     };
   }
 
   const booked = existing?.booking?.durationMin;
   if (typeof booked === 'number' && Number.isFinite(booked) && booked > 0) {
-    return { skip: false, actualDurationMin: Math.max(1, Math.ceil(booked)), endedAt: now };
+    return { skip: false, actualDurationMin: Math.min(MAX_BILLABLE_MINUTES, Math.max(1, Math.ceil(booked))), endedAt: now };
   }
 
   return { skip: true, reason: 'no_duration' };

@@ -373,6 +373,7 @@ async function resolvePartialNameCandidate(
   if (title) queries.push(`"${surname}" "${title.slice(0, 40)}"`);
   queries.push(`"${surname}" researcher professor scientist`);
 
+  // nosemgrep: javascript.lang.security.audit.detect-non-literal-regexp.detect-non-literal-regexp -- input is escaped
   const namePattern = new RegExp(
     `([A-Z][a-z]{2,20})\\s+${escapeRegExp(surname)}\\b`,
     'g',

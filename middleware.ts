@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { isAuthEnabled } from './lib/auth';
+import { isAuthEnabled, statusMayUseProduct } from './lib/auth';
 import { updateSession } from './lib/supabase/middleware';
 
 // -----------------------------------------------------------------------------
@@ -44,6 +44,8 @@ const PUBLIC_PATHS = new Set([
 const PUBLIC_PREFIXES = [
   '/schedule/',              // expert-facing time picker — gated by the signed picker token
   '/api/schedule/',          // the picker's read/book endpoint — same token gate
+  '/s/',                     // expert screening form — gated by the signed screening token
+  '/api/s/',                 // the form's read/submit endpoint — same token gate
   // The Google Calendar OAuth round-trip an expert can start from the picker.
   // The PAGES under /availability/ are gone (the picker replaced them); these
   // two API routes keep the path only because the Google console's authorized
@@ -112,9 +114,19 @@ export async function middleware(request: NextRequest): Promise<NextResponse> {
       role?:                string;
     };
 
-    // Disabled accounts are kicked to login.
-    if (meta.status === 'disabled') {
-      return NextResponse.redirect(new URL('/login', request.url));
+    // Keep the outer project-route gate consistent with the route guards.
+    if (!statusMayUseProduct(meta.status)) {
+      // PUBLIC_PATHS first, and returned rather than fallen through: a blocked
+      // session must be able to reach the way OUT. Without this, /login
+      // redirects to /login (ERR_TOO_MANY_REDIRECTS — PUBLIC_PATHS is only
+      // consulted in the no-session branch below, and APP_REDIRECT_PATHS would
+      // bounce it to /app anyway) while /api/auth/logout answers 403, so the
+      // user cannot clear the cookie that is blocking them. The onboarding gate
+      // immediately below already makes the same allowance.
+      if (PUBLIC_PATHS.has(pathname)) return response;
+      return pathname.startsWith('/api/')
+        ? NextResponse.json({ error: 'forbidden' }, { status: 403 })
+        : NextResponse.redirect(new URL('/login', request.url));
     }
 
     // Internal tools are admin-only and never indexed.

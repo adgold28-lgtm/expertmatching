@@ -12,6 +12,7 @@
 import {
   shouldSkipBilling,
   isRepeatCallForBilledRow,
+  completionReplay,
   resolveCallId,
   type BillingGuardView,
 } from '../lib/createAndSendInvoice';
@@ -161,6 +162,27 @@ eq('no call identity → a stable fallback, never "undefined"',
   chargeIdempotencyKey(pid, 'exp-1', null), `charge:${pid}:exp-1:nocall`);
 eq('undefined is the same fallback',
   chargeIdempotencyKey(pid, 'exp-1', undefined), `charge:${pid}:exp-1:nocall`);
+
+// ── completionReplay: a re-completion never rewrites a billed call's ledger ──
+
+section('completionReplay (POST …/complete on an already-billed call)');
+{
+  const billedA = { paymentStatus: 'paid' as const, stripePaymentIntentId: 'pi_1', billedCallId: 'call-A', invoiceAmount: 1300, callDurationMin: 60 };
+  eq('an unbilled row is a new completion',
+    completionReplay({ paymentStatus: undefined, stripePaymentIntentId: undefined, billedCallId: undefined, invoiceAmount: undefined, callDurationMin: undefined }, 'call-A', 1300, 60), 'new');
+  eq('the same call with the same numbers is a harmless replay',
+    completionReplay(billedA, 'call-A', 1300, 60), 'same');
+  eq('the same call with a longer duration is refused',
+    completionReplay(billedA, 'call-A', 1950, 90), 'conflict');
+  eq('the same call with a different amount alone is refused',
+    completionReplay(billedA, 'call-A', 1400, 60), 'conflict');
+  eq('a genuine second call (different id) is new',
+    completionReplay(billedA, 'call-B', 650, 30), 'new');
+  eq('a legacy billed row with no billedCallId fails closed on a changed number',
+    completionReplay({ ...billedA, billedCallId: undefined }, 'call-A', 1950, 90), 'conflict');
+  eq('an auto-charge in flight (intent, not yet paid) is billed too',
+    completionReplay({ ...billedA, paymentStatus: undefined }, 'call-A', 1950, 90), 'conflict');
+}
 
 // ── Result ───────────────────────────────────────────────────────────────────
 

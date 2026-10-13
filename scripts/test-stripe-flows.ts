@@ -435,6 +435,7 @@ async function main(): Promise<void> {
       contactEmail:      'expert@example.com',
       expertRate:        EXPERT_RATE,
       actualDurationMin: DURATION,
+      paymentStatus: 'paid',
       billedCallId:      CALL_ID,
       booking:           { icsUid: CALL_ID } as PayoutRow['booking'],
       ...opts.expert,
@@ -455,6 +456,7 @@ async function main(): Promise<void> {
     };
     env.deps = {
       getProject: async () => ({ experts: [row] }),
+      getEntitlementsForProject: async () => ({ canCharge: true }),
       updateExpertStatus: async (_p, _e, patch) => { env.patches.push(patch); Object.assign(row, patch); return row; },
       getConnectAccountId: async () => (opts.account === undefined ? 'acct_expert' : opts.account),
       // The real functions, driven through their own Stripe seam, so the amount
@@ -595,14 +597,14 @@ async function main(): Promise<void> {
           retrieve: async () => ({ metadata: opts.intentMetadata ?? null }),
         },
       },
-      // A faithful stand-in for SET NX EX: first claim wins, later ones are
-      // duplicates. redisDown models the documented fail-OPEN.
+      // Only successful processing marks an event done. Redis-down still processes.
       claimEvent: async eventId => {
         if (opts.redisDown) return 'process';
         if (claimed.has(eventId)) return 'duplicate';
-        claimed.add(eventId);
         return 'process';
       },
+      completeEvent: async eventId => { if (!opts.redisDown) claimed.add(eventId); },
+      releaseEvent: async () => {},
       updateExpertStatus: async (_p, _e, patch) => { env.patches.push(patch); return null; },
       getProject: async () => ({ experts: [{ expert: { id: EXPERT_ID }, paymentStatus: opts.paymentStatus ?? null }] }),
       runExpertPayout: async (projectId, expertId) => {
@@ -619,6 +621,92 @@ async function main(): Promise<void> {
 
   const paidIntent = (id = 'pi_new_1') =>
     stripeEvent('evt_paid_1', 'payment_intent.succeeded', { id, metadata: { projectId: PROJECT_ID, expertId: EXPERT_ID } });
+
+  section('payout retry requires settled client payment and entitlement');
+  for (const paymentStatus of ['unpaid', 'failed', 'refunded', 'invoice_sent', null, undefined] as const) {
+    const payout = payoutEnv({ expert: { paymentStatus } });
+    await runExpertPayout(PROJECT_ID, EXPERT_ID, payout.deps);
+    eq(`no transfer for ${paymentStatus}`, payout.transfers.length, 0);
+    eq(`no onboarding mail for ${paymentStatus}`, payout.reminders.length, 0);
+    eq(`no state mutation for ${paymentStatus}`, payout.patches.length, 0);
+  }
+  {
+    const payout = payoutEnv();
+    payout.deps.getEntitlementsForProject = async () => ({ canCharge: false });
+    await runExpertPayout(PROJECT_ID, EXPERT_ID, payout.deps);
+    eq('trial cannot transfer even with a stale paid row', payout.transfers.length, 0);
+    eq('trial sends no payout setup mail', payout.reminders.length, 0);
+  }
+  {
+    const payout = payoutEnv({ onboarded: false });
+    await runExpertPayout(PROJECT_ID, EXPERT_ID, payout.deps);
+    payout.row.paymentStatus = 'refunded';
+    payout.onboardingComplete.value = true;
+    await runExpertPayout(PROJECT_ID, EXPERT_ID, payout.deps);
+    eq('refund before late onboarding stops the eventual transfer', payout.transfers.length, 0);
+  }
+
+  section('a blocked payout that is still owed stays visible to the sweeps');
+  {
+    // getEntitlementsForProject fails closed, so a Supabase outage looks exactly
+    // like a restricted trial. Either way the row must keep the one field both
+    // sweeps and the stale-owed alarm select on.
+    const payout = payoutEnv({ expert: { expertOnboardingStatus: undefined } });
+    payout.deps.getEntitlementsForProject = async () => ({ canCharge: false });
+    await runExpertPayout(PROJECT_ID, EXPERT_ID, payout.deps);
+    eq('no transfer',                        payout.transfers.length, 0);
+    eq('no onboarding mail',                 payout.reminders.length, 0);
+    eq('the row is parked as pending',       payout.patches[0]?.expertOnboardingStatus, 'pending');
+    check('the hold does not burn an attempt', payout.patches[0]?.payoutAttempts === undefined);
+    eq('and it reaches the attention feed',  payout.failures[0], 'payout_held:account_not_chargeable');
+  }
+  {
+    // A long-stuck row must not write one attention row per nightly sweep.
+    const payout = payoutEnv({ expert: { expertOnboardingStatus: 'pending' } });
+    payout.deps.getEntitlementsForProject = async () => ({ canCharge: false });
+    await runExpertPayout(PROJECT_ID, EXPERT_ID, payout.deps);
+    await runExpertPayout(PROJECT_ID, EXPERT_ID, payout.deps);
+    eq('already held — no repeat write',  payout.patches.length, 0);
+    eq('already held — no repeat alert',  payout.failures.length, 0);
+  }
+  {
+    // A replay (webhook redelivery, account.updated, a sweep) for a call that
+    // was ALREADY transferred must be a no-op even when the entitlement read
+    // fails closed. The hold must not rewrite 'complete' to 'pending' on a row
+    // that carries a transfer id: no sweep selects such a row, so the status
+    // would read "pending" forever for an expert who was paid.
+    const payout = payoutEnv({ expert: {
+      expertOnboardingStatus: 'complete', stripeTransferId: 'tr_1',
+      billedCallId: CALL_ID, paidCallIds: [CALL_ID],
+    } });
+    payout.deps.getEntitlementsForProject = async () => ({ canCharge: false });
+    await runExpertPayout(PROJECT_ID, EXPERT_ID, payout.deps);
+    eq('paid call + closed entitlement: no transfer',      payout.transfers.length, 0);
+    eq('paid call + closed entitlement: no status write',  payout.patches.length, 0);
+    eq('paid call + closed entitlement: no false alert',   payout.failures.length, 0);
+    eq('paid call + closed entitlement: still complete',   payout.row.expertOnboardingStatus, 'complete');
+  }
+  {
+    // createAndSendInvoice resets the shared row to 'unpaid' when a SECOND call
+    // is billed. An earlier call's stalled payout is still owed.
+    const payout = payoutEnv({ expert: { paymentStatus: 'unpaid', expertOnboardingStatus: 'failed' } });
+    await runExpertPayout(PROJECT_ID, EXPERT_ID, payout.deps);
+    eq('a re-billed row does not transfer', payout.transfers.length, 0);
+    eq('but the owed payout is held, not dropped', payout.failures[0], 'payout_held:payment_not_settled');
+  }
+  {
+    // A refund with nothing owed stays silent: no hold, no attention noise.
+    const payout = payoutEnv({ expert: { paymentStatus: 'refunded', expertOnboardingStatus: undefined } });
+    await runExpertPayout(PROJECT_ID, EXPERT_ID, payout.deps);
+    eq('a refunded call owes nothing',   payout.patches.length, 0);
+    eq('and raises nothing',             payout.failures.length, 0);
+  }
+  {
+    // Already transferred: not owed, whatever the status field says.
+    const payout = payoutEnv({ expert: { paymentStatus: 'refunded', expertOnboardingStatus: 'pending', stripeTransferId: 'tr_done' } });
+    await runExpertPayout(PROJECT_ID, EXPERT_ID, payout.deps);
+    eq('a transferred row is never re-held', payout.failures.length, 0);
+  }
 
   section('payment_intent.succeeded → paid → payout');
   {
@@ -670,6 +758,7 @@ async function main(): Promise<void> {
     await handleStripeEvent(stripeEvent('evt_cs', 'checkout.session.completed', {
       metadata: { projectId: PROJECT_ID, expertId: EXPERT_ID },
       payment_intent: 'pi_link_1',
+      payment_status: 'paid',
     }), env.deps);
     eq('the payment-link path also records paid', env.patches[0]?.paymentStatus, 'paid');
     eq('with the session\'s intent id',           env.patches[0]?.stripePaymentIntentId, 'pi_link_1');

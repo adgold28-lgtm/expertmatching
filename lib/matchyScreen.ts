@@ -210,12 +210,16 @@ function findNameMatches(text: string, fullName: string): string[] {
   const last  = parts[parts.length - 1];
 
   if (parts.length >= 2) {
+    // nosemgrep: javascript.lang.security.audit.detect-non-literal-regexp.detect-non-literal-regexp -- input is escaped
     patterns.push(new RegExp(`\\b${escapeRegExp(first)}\\s+${escapeRegExp(last)}\\b`, 'gi'));
+    // nosemgrep: javascript.lang.security.audit.detect-non-literal-regexp.detect-non-literal-regexp -- input is escaped
     patterns.push(new RegExp(`\\b${escapeRegExp(last)}\\s*,\\s*${escapeRegExp(first)}\\b`, 'gi'));
   }
   // A surname of 3+ letters is identifying on its own.
+  // nosemgrep: javascript.lang.security.audit.detect-non-literal-regexp.detect-non-literal-regexp -- input is escaped
   if (last.length >= 3) patterns.push(new RegExp(`\\b${escapeRegExp(last)}\\b`, 'gi'));
   if (parts.length === 1 && first.length >= 3) {
+    // nosemgrep: javascript.lang.security.audit.detect-non-literal-regexp.detect-non-literal-regexp -- input is escaped
     patterns.push(new RegExp(`\\b${escapeRegExp(first)}\\b`, 'gi'));
   }
 
@@ -237,10 +241,12 @@ function findFirmMatches(text: string, firmName: string): string[] {
 
   const GENERIC_TAIL = /\b(capital|partners|holdings|group|advisors|management|ventures|associates|llc|inc|lp|llp|company|co)\b/i;
 
+  // nosemgrep: javascript.lang.security.audit.detect-non-literal-regexp.detect-non-literal-regexp -- input is escaped
   const patterns = [new RegExp(`\\b${escapeRegExp(name)}\\b`, 'gi')];
 
   const words = name.split(/\s+/).filter(Boolean);
   if (words.length >= 2 && GENERIC_TAIL.test(words[words.length - 1]) && words[0].length >= 4) {
+    // nosemgrep: javascript.lang.security.audit.detect-non-literal-regexp.detect-non-literal-regexp -- input is escaped
     patterns.push(new RegExp(`\\b${escapeRegExp(words[0])}\\b`, 'gi'));
   }
 

@@ -1,0 +1,154 @@
+[
+  {
+    "suite": "test-auth-guards.ts",
+    "exit": 0
+  },
+  {
+    "suite": "test-auth-request-cache.ts",
+    "exit": 0
+  },
+  {
+    "suite": "test-availability-windows.ts",
+    "exit": 0
+  },
+  {
+    "suite": "test-billing-guard.ts",
+    "exit": 0
+  },
+  {
+    "suite": "test-booking-ics.ts",
+    "exit": 0
+  },
+  {
+    "suite": "test-brevity.ts",
+    "exit": 0
+  },
+  {
+    "suite": "test-contact-discovery.ts",
+    "exit": 0
+  },
+  {
+    "suite": "test-conversations-redaction.ts",
+    "exit": 0
+  },
+  {
+    "suite": "test-email-clean.ts",
+    "exit": 0
+  },
+  {
+    "suite": "test-email-domains.ts",
+    "exit": 0
+  },
+  {
+    "suite": "test-entitlements.ts",
+    "exit": 0
+  },
+  {
+    "suite": "test-expert-route-authz.ts",
+    "exit": 0
+  },
+  {
+    "suite": "test-freebusy-inversion.ts",
+    "exit": 0
+  },
+  {
+    "suite": "test-hmac-tokens.ts",
+    "exit": 0
+  },
+  {
+    "suite": "test-inbound-claim.ts",
+    "exit": 0
+  },
+  {
+    "suite": "test-intro-personalization.ts",
+    "exit": 0
+  },
+  {
+    "suite": "test-matchy-ask.ts",
+    "exit": 0
+  },
+  {
+    "suite": "test-matchy-classify.ts",
+    "exit": 0
+  },
+  {
+    "suite": "test-matchy-client.ts",
+    "exit": 0
+  },
+  {
+    "suite": "test-matchy-draft.ts",
+    "exit": 0
+  },
+  {
+    "suite": "test-matchy-screen.ts",
+    "exit": 0
+  },
+  {
+    "suite": "test-matchy-templates.ts",
+    "exit": 0
+  },
+  {
+    "suite": "test-nudges.ts",
+    "exit": 0
+  },
+  {
+    "suite": "test-org-billing.ts",
+    "exit": 0
+  },
+  {
+    "suite": "test-payout-state.ts",
+    "exit": 0
+  },
+  {
+    "suite": "test-pricing.ts",
+    "exit": 0
+  },
+  {
+    "suite": "test-project-update.ts",
+    "exit": 0
+  },
+  {
+    "suite": "test-scheduling.ts",
+    "exit": 0
+  },
+  {
+    "suite": "test-send-chokepoint.ts",
+    "exit": 0
+  },
+  {
+    "suite": "test-signup-token.ts",
+    "exit": 0
+  },
+  {
+    "suite": "test-sourcing-idempotency.ts",
+    "exit": 0
+  },
+  {
+    "suite": "test-stripe-flows.ts",
+    "exit": 0
+  },
+  {
+    "suite": "test-stripe-recovery.ts",
+    "exit": 0
+  },
+  {
+    "suite": "test-walkthrough.ts",
+    "exit": 0
+  },
+  {
+    "suite": "test-webhook-signature.ts",
+    "exit": 0
+  },
+  {
+    "suite": "test-zoom-webhook.ts",
+    "exit": 0
+  },
+  {
+    "suite": "check-redaction.ts",
+    "exit": 0
+  },
+  {
+    "suite": "check-env-drift.ts",
+    "exit": 0
+  }
+]

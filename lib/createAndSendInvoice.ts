@@ -369,6 +369,29 @@ export function shouldSkipBilling(pe: BillingGuardView, callId: string | null): 
 }
 
 /**
+ * What a POST …/complete means for a row that may already be billed:
+ *   'new'      — this call is not billed yet (or is a genuine second call)
+ *   'same'     — this call is billed with exactly these numbers: a harmless replay
+ *   'conflict' — this call is billed with DIFFERENT numbers
+ *
+ * The complete route persists callDurationMin / invoiceAmount before billing,
+ * and billing then skips an already-billed call, so without this a second click
+ * with a different duration rewrote the ledger while the charge stayed at the
+ * first amount. The expert payout reads callDurationMin when Zoom recorded no
+ * actualDurationMin, so the expert could be paid for minutes the client was
+ * never charged. Same billing identity as shouldSkipBilling. Pure.
+ */
+export function completionReplay(
+  pe:          BillingGuardView & Pick<ProjectExpert, 'invoiceAmount' | 'callDurationMin'>,
+  callId:      string | null,
+  amount:      number,
+  durationMin: number,
+): 'new' | 'same' | 'conflict' {
+  if (!shouldSkipBilling(pe, callId)) return 'new';
+  return pe.invoiceAmount === amount && pe.callDurationMin === durationMin ? 'same' : 'conflict';
+}
+
+/**
  * True when the row is already billed but for a DIFFERENT call — the repeat
  * consultation case, where the stale `paid` has to be cleared before charging
  * so the payment webhook's `paid` write refers to the new call.

@@ -291,7 +291,9 @@ async function main(): Promise<void> {
   check('an added candidate cannot start as completed', inject.status === 200 && c?.status === 'discovered', `status ${inject.status} ${c?.status}`);
   const send = await req(fresh, 'POST', `/api/projects/${projectId}/experts/exp-a/messages`, { text: 'Tuesday works.' });
   const sendBody = await json(send);
-  check('client message is stored HELD, never sent', (send.status === 201 && !!sendBody?.message?.held) || (send.status >= 400 && send.status < 500), `status ${send.status} held=${sendBody?.message?.held}`);
+  // The route answers 200 { ok, held, message } for a held send and 201 { message } for a real one
+  // (messages/route.ts header), so a held reply is the 200 shape.
+  check('client message is stored HELD, never sent', (send.status === 200 && !!sendBody?.held && !!sendBody?.message?.held) || (send.status >= 400 && send.status < 500), `status ${send.status} held=${sendBody?.held ?? sendBody?.message?.held}`);
   const approve = await req(fresh, 'POST', `/api/projects/${projectId}/experts/exp-a/outreach/approve`, {});
   check('approve outreach refused in walkthrough/trial', approve.status === 409 || approve.status === 422 || approve.status === 404, `status ${approve.status}`);
   const complete = await req(fresh, 'POST', `/api/projects/${projectId}/experts/exp-a/complete`, { callDurationMin: 60, invoiceAmount: 1600 });

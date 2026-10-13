@@ -263,6 +263,7 @@ export function reasonFromWords(low: string): RejectionReason {
 /** What the slot picker will honour from a preferences line, read back honestly. */
 export function preferencesReadBack(low: string): string {
   const days = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday'].filter(d =>
+    // nosemgrep: javascript.lang.security.audit.detect-non-literal-regexp.detect-non-literal-regexp -- pattern is built from the constant weekday list above, not from input
     new RegExp(`\\b${d}s?\\b|\\b${d.slice(0, 3)}s?\\b`).test(low) && !new RegExp(`\\b(not|no|never)\\s+${d}s?\\b`).test(low));
   const parts: string[] = [];
   if (days.length) parts.push(days.map(d => d[0].toUpperCase() + d.slice(1) + 's').join(' and '));
