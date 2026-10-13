@@ -53,7 +53,7 @@
 
 import { NextRequest } from 'next/server';
 import { updateExpertStatus, addExpertNote, removeExpertFromProject, getProjectForUser, rateFieldsFor } from '../../../../../../lib/projectStore';
-import { expertRateFor, isValidClientRateUsd, CLIENT_RATE_FLOOR_USD, CLIENT_RATE_ROUNDING_USD } from '../../../../../../lib/pricing';
+import { expertRateFor, isValidClientRateUsd, CLIENT_RATE_FLOOR_USD, CLIENT_RATE_ROUNDING_USD, MAX_BILLABLE_MINUTES } from '../../../../../../lib/pricing';
 import { guardMutatingRequest, requireProjectOwner } from '../../../../../../lib/projectsGuard';
 import { getSessionUser } from '../../../../../../lib/auth';
 import { sanitizeText, LIMITS } from '../../../../../../lib/projectValidation';
@@ -318,7 +318,7 @@ export async function PUT(
       input.expertRate = rates.expertRate;
       input.clientRate = rates.clientRate;
     }
-    if (typeof body.callDurationMin === 'number' && Number.isInteger(body.callDurationMin) && body.callDurationMin >= 1 && body.callDurationMin <= 480) {
+    if (typeof body.callDurationMin === 'number' && Number.isInteger(body.callDurationMin) && body.callDurationMin >= 1 && body.callDurationMin <= MAX_BILLABLE_MINUTES) {
       input.callDurationMin = body.callDurationMin;
     }
     if (typeof body.invoiceAmount === 'number' && Number.isFinite(body.invoiceAmount)) {

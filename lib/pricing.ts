@@ -1,13 +1,3 @@
-
-/**
- * The longest call this product will bill, in minutes (8 hours). It is the
- * validation ceiling on POST …/complete and the clamp on the duration the Zoom
- * meeting.ended webhook derives: a meeting left open, or an event carrying a
- * stale start_time, must not become an unbounded off-session charge on the
- * client's saved card.
- */
-export const MAX_BILLABLE_MINUTES = 480;
-
 // lib/pricing.ts — the single source of truth for money rules.
 //
 // Two independent things are priced here:
@@ -24,6 +14,16 @@ export const MAX_BILLABLE_MINUTES = 480;
 //
 // Pure functions only — no I/O, no env reads — so scripts/test-pricing.ts can
 // exercise every boundary without a database or Stripe.
+
+/**
+ * The longest call this product will bill, in minutes (2 hours, founder
+ * 2026-10-13). It is the validation ceiling on POST …/complete and on the staff
+ * duration edit, and the clamp on the duration the Zoom meeting.ended webhook
+ * derives: a meeting left open, or an event carrying a stale start_time, must
+ * not become an unbounded off-session charge on the client's saved card. A
+ * call that genuinely runs longer bills two hours.
+ */
+export const MAX_BILLABLE_MINUTES = 120;
 
 // ─── Seat tiers ───────────────────────────────────────────────────────────────
 

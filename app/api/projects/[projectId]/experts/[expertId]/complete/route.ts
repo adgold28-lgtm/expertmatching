@@ -62,7 +62,7 @@ export async function POST(
     callDurationMin === null || !Number.isInteger(callDurationMin) ||
     callDurationMin < 1 || callDurationMin > MAX_BILLABLE_MINUTES
   ) {
-    return NextResponse.json({ error: 'invalid_callDurationMin', message: 'callDurationMin must be 1–480' }, { status: 400 });
+    return NextResponse.json({ error: 'invalid_callDurationMin', message: `callDurationMin must be 1–${MAX_BILLABLE_MINUTES}` }, { status: 400 });
   }
   if (
     invoiceAmount === null || !Number.isInteger(invoiceAmount) ||

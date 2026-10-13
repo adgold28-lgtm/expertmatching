@@ -21,6 +21,7 @@ import {
   resolveMeetingEnd,
   type MeetingEndRow,
 } from '../app/api/webhooks/zoom/meetingEnd';
+import { MAX_BILLABLE_MINUTES } from '../lib/pricing';
 import { check, eq, summary } from './testHarness';
 
 function section(title: string): void {
@@ -88,17 +89,23 @@ eq('a row we have never seen (no pe) still resolves',
 eq('a null row still resolves',
   durationOf(resolveMeetingEnd({ start_time: started, end_time: ended47 }, NOW, null)), 47);
 
-section('resolveMeetingEnd: an 8-hour ceiling (an open meeting is not an unbounded charge)');
+section('resolveMeetingEnd: a 2-hour ceiling (an open meeting is not an unbounded charge)');
 
 // The Zoom path charges the client's saved card off-session, so its minutes are
-// bounded exactly like POST …/complete (1 to 480). A meeting left open for a
-// week, or a replay carrying a stale start_time, bills the ceiling.
-eq('a meeting left open for a week bills 480 minutes',
-  durationOf(resolveMeetingEnd({ start_time: '2026-09-02T14:00:00Z', end_time: '2026-09-09T14:00:00Z' }, NOW, scheduledRow)), 480);
-eq('exactly eight hours is allowed',
-  durationOf(resolveMeetingEnd({ start_time: '2026-09-09T06:00:00Z', end_time: '2026-09-09T14:00:00Z' }, NOW, scheduledRow)), 480);
+// bounded exactly like POST …/complete (1 to MAX_BILLABLE_MINUTES = 120). A
+// meeting left open for a week, or a replay carrying a stale start_time, bills
+// the ceiling; anything under it bills as recorded.
+eq('the ceiling is two hours', MAX_BILLABLE_MINUTES, 120);
+eq('a 90-minute call is untouched',
+  durationOf(resolveMeetingEnd({ start_time: '2026-09-09T12:30:00Z', end_time: '2026-09-09T14:00:00Z' }, NOW, scheduledRow)), 90);
+eq('exactly two hours is allowed',
+  durationOf(resolveMeetingEnd({ start_time: '2026-09-09T12:00:00Z', end_time: '2026-09-09T14:00:00Z' }, NOW, scheduledRow)), 120);
+eq('two hours and one minute bills two hours',
+  durationOf(resolveMeetingEnd({ start_time: '2026-09-09T11:59:00Z', end_time: '2026-09-09T14:00:00Z' }, NOW, scheduledRow)), 120);
+eq('a meeting left open for a week bills two hours',
+  durationOf(resolveMeetingEnd({ start_time: '2026-09-02T14:00:00Z', end_time: '2026-09-09T14:00:00Z' }, NOW, scheduledRow)), 120);
 eq('a booked duration past the ceiling is clamped too',
-  durationOf(resolveMeetingEnd({ end_time: ended47 }, NOW, { status: 'scheduled', booking: { durationMin: 10_000 } })), 480);
+  durationOf(resolveMeetingEnd({ end_time: ended47 }, NOW, { status: 'scheduled', booking: { durationMin: 10_000 } })), 120);
 
 section('resolveMeetingEnd: the completion guard (a redelivery is a no-op)');
 
