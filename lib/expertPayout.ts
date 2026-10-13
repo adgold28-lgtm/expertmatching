@@ -441,6 +441,22 @@ export async function runExpertPayout(
       return;
     }
 
+    // Idempotency FIRST: a call that was already transferred is a no-op before
+    // anything else is read, so a replay during an entitlement outage cannot
+    // rewrite a paid row's status (the hold below would otherwise park a
+    // 'complete' row carrying a transfer id as 'pending', which no sweep reads).
+    //
+    // Idempotency, per CALL: this call is in paidCallIds (or the row predates
+    // that list and has a transfer id). Webhook replays and both retry sweeps
+    // land here, so a second run for the same call must be a no-op. A genuine
+    // second call carries a different id and is paid. (stripeConnect's transfer
+    // also carries a call-keyed idempotency key for the racing case.)
+    const callId = payoutCallId(pe);
+    if (payoutAlreadySent(pe, callId)) {
+      console.log('[stripe] payout-already-sent', { projectId, expertId });
+      return;
+    }
+
     // Retries and account.updated enter here independently of the payment
     // webhook. A refund or trial restriction must stop both transfers and mail.
     const entitlements = await d.getEntitlementsForProject(projectId);
@@ -453,17 +469,6 @@ export async function runExpertPayout(
       // the reconcile stale-owed alarm select on — the expert became invisible
       // rather than merely unpaid.
       await holdPayout(projectId, expertId, pe, 'account_not_chargeable', d);
-      return;
-    }
-
-    // Idempotency, per CALL: this call is in paidCallIds (or the row predates
-    // that list and has a transfer id). Webhook replays and both retry sweeps
-    // land here, so a second run for the same call must be a no-op. A genuine
-    // second call carries a different id and is paid. (stripeConnect's transfer
-    // also carries a call-keyed idempotency key for the racing case.)
-    const callId = payoutCallId(pe);
-    if (payoutAlreadySent(pe, callId)) {
-      console.log('[stripe] payout-already-sent', { projectId, expertId });
       return;
     }
 

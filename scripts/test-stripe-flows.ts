@@ -670,6 +670,23 @@ async function main(): Promise<void> {
     eq('already held — no repeat alert',  payout.failures.length, 0);
   }
   {
+    // A replay (webhook redelivery, account.updated, a sweep) for a call that
+    // was ALREADY transferred must be a no-op even when the entitlement read
+    // fails closed. The hold must not rewrite 'complete' to 'pending' on a row
+    // that carries a transfer id: no sweep selects such a row, so the status
+    // would read "pending" forever for an expert who was paid.
+    const payout = payoutEnv({ expert: {
+      expertOnboardingStatus: 'complete', stripeTransferId: 'tr_1',
+      billedCallId: CALL_ID, paidCallIds: [CALL_ID],
+    } });
+    payout.deps.getEntitlementsForProject = async () => ({ canCharge: false });
+    await runExpertPayout(PROJECT_ID, EXPERT_ID, payout.deps);
+    eq('paid call + closed entitlement: no transfer',      payout.transfers.length, 0);
+    eq('paid call + closed entitlement: no status write',  payout.patches.length, 0);
+    eq('paid call + closed entitlement: no false alert',   payout.failures.length, 0);
+    eq('paid call + closed entitlement: still complete',   payout.row.expertOnboardingStatus, 'complete');
+  }
+  {
     // createAndSendInvoice resets the shared row to 'unpaid' when a SECOND call
     // is billed. An earlier call's stalled payout is still owed.
     const payout = payoutEnv({ expert: { paymentStatus: 'unpaid', expertOnboardingStatus: 'failed' } });
