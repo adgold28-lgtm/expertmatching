@@ -95,6 +95,12 @@ function omitKeys<T extends object>(obj: T, keys: readonly PropertyKey[]): T {
 const INTERNAL_PROJECT_EXPERT_KEYS: readonly (keyof ProjectExpert)[] = [
   // Contact path — the whole point of the platform is that clients don't get this
   'contactEmail',
+  // Hard-bounced addresses and the delivery-event stamps (lib/deliveryEvents.ts).
+  // Addresses are contact data; the stamps are machinery the client never sees —
+  // the thread shows a plain Matchy line instead.
+  'bouncedEmails',
+  'contactBouncedAt',
+  'complaintAt',
   'emailVerificationStatus',
   'emailProvider',
   'emailCheckedAt',

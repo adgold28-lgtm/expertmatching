@@ -446,7 +446,9 @@ export interface ProjectExpert {
   // charge.dispute.created branches. It is terminal for the client side of the
   // engagement; the expert payout is NOT reversed automatically (see the
   // TODO(founder decision) in app/api/webhooks/stripe/route.ts).
-  paymentStatus?:        'unpaid' | 'invoice_sent' | 'paid' | 'failed' | 'refunded' | null;
+  // 'waived': the client is not charged for this call (the ten-minute mismatch
+  // guarantee, lib/mismatchGuarantee.ts); the expert is still paid 15 minutes.
+  paymentStatus?:        'unpaid' | 'invoice_sent' | 'paid' | 'failed' | 'refunded' | 'waived' | null;
   paidAt?:               number | null;
   // The CALL the current paymentStatus / stripePaymentIntentId refer to
   // (booking.icsUid, else zoomMeetingId, else the manual id below). Written by
@@ -525,6 +527,19 @@ export interface ProjectExpert {
    * write it. Cleared when `whyThem` is set.
    */
   introNeedsWhyThem?: boolean;
+  // ── Delivery events (lib/deliveryEvents.ts, 2026-10-14) ───────────────────
+  // Addresses that hard-bounced for this engagement. STAFF ONLY (redactExpert):
+  // they are contact addresses. Contact discovery never picks one again.
+  bouncedEmails?: string[];
+  /** Unix ms of the last hard bounce on this engagement. Staff only. */
+  contactBouncedAt?: number | null;
+  /** Unix ms the expert marked Matchy's mail as spam. Staff only. */
+  complaintAt?: number | null;
+  // ── Ten-minute mismatch guarantee (lib/mismatchGuarantee.ts, 2026-10-14) ──
+  /** Unix ms the client flagged this call as a mismatch inside its first ten minutes. */
+  mismatchFlaggedAt?: number | null;
+  /** The call (booking.icsUid) the flag applies to: the client is not charged for it. */
+  mismatchCallId?: string | null;
   /**
    * Unix ms when the rate was agreed (the client accepted a counter, or the
    * expert said yes to the offer). Once set, the per-expert client rate is

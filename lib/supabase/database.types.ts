@@ -89,7 +89,13 @@ export type EngagementEventType =
   | 'time_declined'
   // Wave 5 (supabase/migrations/20260910000000_call_cancelled_event.sql)
   | 'call_cancelled'
-  | 'no_show';
+  | 'no_show'
+  // Launch pack (supabase/migrations/20261014000000_launch_pack.sql). Until the
+  // migration is applied these are dropped with a warning by emitEngagementEvent;
+  // the state that matters lives on project_experts.data, never only here.
+  | 'intro_bounced'
+  | 'complaint_received'
+  | 'mismatch_flagged';
 
 export interface Database {
   public: {
@@ -418,6 +424,38 @@ export interface Database {
       };
       // Service-role only (RLS enabled, no authenticated policies).
       // Global do-not-contact list; email is normalized lowercase.
+      // A firm's own do-not-contact list (20261014000000_launch_pack.sql,
+      // lib/doNotContact.ts). Service role only.
+      organization_do_not_contact: {
+        Row: {
+          id: string;
+          organization_id: string;
+          kind: 'email' | 'domain' | 'company' | 'person';
+          value: string;
+          value_normalized: string;
+          added_by: string | null;
+          created_at: string;
+        };
+        Insert: {
+          id?: string;
+          organization_id: string;
+          kind: 'email' | 'domain' | 'company' | 'person';
+          value: string;
+          value_normalized: string;
+          added_by?: string | null;
+          created_at?: string;
+        };
+        Update: {
+          id?: string;
+          organization_id?: string;
+          kind?: 'email' | 'domain' | 'company' | 'person';
+          value?: string;
+          value_normalized?: string;
+          added_by?: string | null;
+          created_at?: string;
+        };
+        Relationships: [];
+      };
       outreach_suppressions: {
         Row: {
           email: string;
