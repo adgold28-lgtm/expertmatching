@@ -22,6 +22,11 @@
  *                       expert or their employer is refused and replaced by the
  *                       deterministic one, both where it is generated and again
  *                       at render time (audit H-18)
+ *   vetting card      → the derived `vetting` field reaches every non-admin
+ *                       payload in words only: no digit, name, employer,
+ *                       address, link or dollar sign, at any status, even from
+ *                       a record loaded with all of them; a stored copy of the
+ *                       key is replaced, never passed through
  */
 
 import type { Expert, ProjectExpert, ExpertStatus, SchedulingState, BookingState } from '../types';
@@ -513,6 +518,83 @@ check('adjacent sourcing candidates get the same re-check',
         sourcingAdjacent: [{ ...SAMPLE_EXPERT, anonymizedDescriptor: LEAKY_DESCRIPTOR }],
       }, { role: 'user' }).sourcingAdjacent?.[0].anonymizedDescriptor
         === fallbackDescriptor(SAMPLE_EXPERT));
+
+// ─── The vetting card (lib/vettingCard.ts) ────────────────────────────────────
+//
+// `vetting` is derived from the RAW record inside redactExpertForViewer, so a
+// client gets bands built from a title and evidence they never receive. The
+// card's contract is words only: no year, no number, no company and no name.
+// The fixture below is loaded with every one of those, in the title, the
+// descriptor, the evidence and the conflict note, at every status.
+
+console.log("\nrole 'user' — the vetting card carries no identifying data");
+{
+  const NOW = Date.UTC(2026, 9, 14, 12);
+  const VETTING_FORBIDDEN = /scott|smithers|bayview|austin|veterinary partners|sequoia|@|https?:|\$|\d/i;
+  const loaded = (status: ExpertStatus): ProjectExpert => ({
+    ...projectExpertAt(status),
+    expert: {
+      ...SAMPLE_EXPERT,
+      title: 'Former President & CEO, Bayview Veterinary Partners (2015-2021)',
+      anonymizedDescriptor: LEAKY_DESCRIPTOR,
+      evidenceItems: [
+        ...(SAMPLE_EXPERT.evidenceItems ?? []),
+        { id: 'ev-2', sourceLabel: 'Profile', claim: 'Scott Smithers served as CEO of Bayview Veterinary Partners from 2015 to 2021.', relevance: 'Tenure.' },
+        { id: 'ev-3', sourceLabel: 'Profile', claim: 'Reach him at scott@bayviewvet.example or 512-555-0142.', relevance: 'Contact.' },
+      ],
+    },
+    followupSentAt:  1_757_000_000_000,
+    replyDetectedAt: 1_757_000_100_000,
+    replyIntent:     'conflict',
+    conflictNote:    'Scott Smithers is under an NDA with Bayview until 2027, call 512-555-0142.',
+    conflictRisk:    'medium',
+  });
+
+  const allStatuses: ExpertStatus[] = [
+    'bookmarked', 'outreach_drafted', 'contacted', 'replied', 'followup_sent', 'rate_negotiation',
+    'conflict_flagged', 'scheduling_sent', 'scheduled', 'completed', 'rejected', 'rejected_after_outreach',
+  ];
+  for (const status of allStatuses) {
+    const view = redactExpertForViewer(loaded(status), { role: 'user' }, NOW);
+    const card = JSON.stringify(view.vetting ?? null);
+    check(`${status}: vetting is attached`, !!view.vetting);
+    check(`${status}: vetting has no digit, name, employer, address, link or dollar sign`,
+          !VETTING_FORBIDDEN.test(card), card);
+  }
+
+  const view = redactExpertForViewer(loaded('contacted'), { role: 'user' }, NOW);
+  check('the client never received the title or the evidence the bands were read from',
+        view.expert.title === '' && view.expert.evidenceItems === undefined);
+  check('yet the tenure band is there, in words',            view.vetting?.tenure === 'three to ten years');
+  check('and how long ago they left, in words',              view.vetting?.sinceLeft === 'more than three years ago');
+  check('the leaky descriptor is not the employer type',     view.vetting?.employerType === 'Operating company in veterinary services');
+  check('the leaky conflict note is dropped, the flag kept', view.vetting?.conflict.flagged === true
+                                                          && view.vetting?.conflict.summary === null);
+  check('the risk staff recorded is shown',                  view.vetting?.conflict.risk === 'medium');
+
+  const forged = redactExpertForViewer({
+    ...loaded('contacted'),
+    vetting: {
+      roleLevel: 'CEO of Bayview, Scott Smithers', employerType: 'Bayview Veterinary Partners',
+      employment: 'current', tenure: 'over ten years', sinceLeft: 'still there',
+      conflict: { status: 'answered', flagged: false, summary: 'Call 512-555-0142', risk: null },
+    },
+  }, { role: 'user' }, NOW);
+  check('a vetting key sitting in a stored blob is replaced, never passed through',
+        !VETTING_FORBIDDEN.test(JSON.stringify(forged.vetting)));
+
+  const asAdmin = redactExpertForViewer(loaded('contacted'), { role: 'admin' }, NOW);
+  check('staff keep the raw object (the card derives the same field from it in the browser)',
+        asAdmin.vetting === undefined && asAdmin.expert.title.startsWith('Former President'));
+
+  const payload = redactProjectForViewer({
+    ...project, experts: allStatuses.map(loaded),
+  }, { role: 'user' });
+  check('every expert in a non-admin project payload carries the card',
+        payload.experts.every(pe => !!pe.vetting));
+  check('no card in a non-admin project payload names anyone or carries a figure',
+        payload.experts.every(pe => !VETTING_FORBIDDEN.test(JSON.stringify(pe.vetting))));
+}
 
 // ─── Result ───────────────────────────────────────────────────────────────────
 

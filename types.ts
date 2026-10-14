@@ -344,6 +344,39 @@ export interface AvailabilitySlot {
   confidence?: 'high' | 'medium' | 'low';       // LLM parsing confidence
 }
 
+// ─── The vetting card (lib/vettingCard.ts) ────────────────────────────────────
+// DERIVED, never stored: lib/redactExpert computes it from the raw record on the
+// way to the browser. Words only, by contract: no year, no number, no company
+// and no person's name in any field. A band the record does not support is null
+// and the card reads "Not in public records".
+
+export type VettingTenureBand =
+  'under a year' | 'one to three years' | 'three to ten years' | 'over ten years';
+export type VettingSinceLeftBand =
+  'still there' | 'left within the last year' | 'one to three years ago' | 'more than three years ago';
+
+/** The conflict and NDA questions (Matchy's follow-up): asked yet, and what came back. */
+export interface VettingConflict {
+  status:  'not_asked' | 'waiting' | 'answered';
+  /** True when their answer raised a restriction (an NDA, an employer rule, a current engagement). */
+  flagged: boolean;
+  /** Matchy's one-line read of the restriction, already masked. Null when there is none it may show. */
+  summary: string | null;
+  /** Staff's screening assessment, when one is recorded. */
+  risk:    'low' | 'medium' | 'high' | null;
+}
+
+export interface ExpertVetting {
+  /** "Vice president", "C-suite executive": a level, never the title itself. */
+  roleLevel:    string | null;
+  /** "Regional veterinary clinic group", "Operating company": never the employer's name. */
+  employerType: string | null;
+  employment:   'current' | 'former' | null;
+  tenure:       VettingTenureBand | null;
+  sinceLeft:    VettingSinceLeftBand | null;
+  conflict:     VettingConflict;
+}
+
 export interface ProjectExpert {
   expert: Expert;
   status: ExpertStatus;
@@ -362,7 +395,9 @@ export interface ProjectExpert {
    * directly). Never carries an address — just which line Matchy should show.
    */
   matchyOutcome?: MatchyOutcome;
-  contactedAt?: number;     // unix ms timestamp when status first became 'contacted'
+  /** The vetting card, derived by lib/redactExpert for the browser. Never stored. */
+  vetting?: ExpertVetting;
+  contactedAt?: number;    // unix ms timestamp when status first became 'contacted'
   // `contactCandidates` (every address discovery turned up, best-first) was
   // removed 2026-09-09 (W4-1): nothing has written it since discovery moved to
   // a single address. lib/redactExpert.ts still strips the key by name so a

@@ -64,6 +64,7 @@ import {
 import MatchyLine from './MatchyLine';
 import ClientReadyCard from './ClientReadyCard';
 import MatchyAskCard, { type AskActionPayload } from './MatchyAskCard';
+import VettingCard from './VettingCard';
 import { CLIENT_STATUS_META, hasConversation } from './matchyStatus';
 import { WALKTHROUGH_HELD_SUMMARY, heldLabel } from '../lib/walkthrough';
 import { askMatchy, findingNoun, isRateLocked, type AskAction, type AskCard, type AskJump } from '../lib/matchyIntent';
@@ -1105,6 +1106,10 @@ export default function ConversationThread({
           </span>
         </div>
       </div>
+
+      {/* ── Vetting (public records + the conflict answers) ──
+            Bands in words until the booking; collapsed to one line by default. */}
+      <VettingCard projectExpert={pe} isAdmin={isAdmin} />
 
       {/* ── Your rate for this expert (Matchy 2.0) ──
             The band in the settings strip is the default and the limit; this
