@@ -62,7 +62,8 @@ import {
   type CancelledBy,
   type LateCancelFee,
 } from './callPolicies';
-import { applyClientLateCancelMoney } from './lateCancelBilling';
+import { applyClientLateCancelMoney, lateCancelCallId } from './lateCancelBilling';
+import { chargeIsForFlaggedCall } from './mismatchGuarantee';
 import { removeExpertForFault } from './expertRemoval';
 import { getFirm, getUser } from './firmStore';
 import { appendMessage } from './conversations';
@@ -743,7 +744,12 @@ export async function cancelCall(input: CancelCallInput): Promise<CancelCallResu
       pe:      fresh,
       booking: cancelled,
       clientZone,
-      feeDollars: outcome.clientCharged ? fee.clientCharge : null,
+      // A call the client already flagged under the ten-minute guarantee is
+      // never charged, so its cancellation email names no fee either
+      // (lib/lateCancelBilling.applyClientLateCancelMoney charges nothing for it).
+      feeDollars: outcome.clientCharged && !chargeIsForFlaggedCall(fresh, lateCancelCallId(fresh))
+        ? fee.clientCharge
+        : null,
     });
 
     // ── The thread, and the event ──────────────────────────────────────
