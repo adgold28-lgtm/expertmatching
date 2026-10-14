@@ -513,7 +513,12 @@ async function releaseClaim(
       email1SentAt: typeof previous.email1SentAt === 'number' && previous.email1SentAt > 0
         ? previous.email1SentAt
         : 0,
-      ...(previous.outreachStep ? { outreachStep: previous.outreachStep } : {}),
+      // EXACTLY what was there, nothing included. Written unconditionally: the
+      // claim set 'email1', and a row that had no step before must not keep
+      // it, or introAlreadySent reads the held intro as sent and the next
+      // approve answers "sent" having sent nothing. (A key present with
+      // `undefined` is removed by lib/projectStore's merge.)
+      outreachStep: previous.outreachStep,
     });
   } catch (err) {
     console.error('[outreachSteps] claim not released:',
