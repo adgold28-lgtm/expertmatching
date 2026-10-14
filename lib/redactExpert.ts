@@ -358,6 +358,8 @@ const MATCHY_OUTCOMES: ReadonlySet<string> = new Set<MatchyOutcome>([
   'intro_sent', 'intro_drafted', 'intro_failed', 'contact_found',
   'contact_not_found', 'contact_suppressed', 'contact_check_unavailable',
   'contact_discovery_unavailable', 'walkthrough_held',
+  // lib/deliveryEvents.ts — which plain line to show, nothing more.
+  'intro_undelivered', 'address_not_working', 'no_other_address', 'contact_lost', 'contact_stopped',
 ]);
 
 /**

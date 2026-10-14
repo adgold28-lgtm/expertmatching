@@ -233,6 +233,16 @@ check('a verified result beats a higher-scored catch-all', pickBestCandidate([
   result('dana.reyes@acmecoatings.com', 'verified', { confidence: 55 }),
 ])?.email === 'dana.reyes@acmecoatings.com');
 
+// Hard bounces (lib/deliveryEvents.ts) are excluded, case-insensitively, however
+// well they score. scripts/test-delivery-events.ts covers the cache side.
+check('an excluded (bounced) address is never picked', pickBestCandidate([
+  result('Dana.Reyes@AcmeCoatings.com', 'verified', { confidence: 99 }),
+  result('d.reyes@acmecoatings.com',    'catchall', { confidence: 60 }),
+], ['dana.reyes@acmecoatings.com'])?.email === 'd.reyes@acmecoatings.com');
+check('only excluded candidates → nothing', pickBestCandidate([
+  result('dana.reyes@acmecoatings.com', 'verified'),
+], [' DANA.REYES@acmecoatings.com ']) === null);
+
 // ─── 4. The kill switch ───────────────────────────────────────────────────────
 
 section('4. CONTACT_ENRICHMENT_ENABLED gates everything');

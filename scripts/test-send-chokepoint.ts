@@ -24,8 +24,10 @@
 // { ok: false } shape; `send: true` is the decision that reaches Resend at all.
 
 import { readFileSync } from 'fs';
-import { resolveSendGate, dispositionOf, type SendGateFacts, withFromDisplayName } from '../lib/emailSequence';
-import { introAlreadySent } from '../lib/outreachSteps';
+import { resolveSendGate, dispositionOf, type SendGateFacts, type SendOutcome, withFromDisplayName } from '../lib/emailSequence';
+import { introAlreadySent, runSequenceStep, type SequenceStepDeps } from '../lib/outreachSteps';
+import type { UpdateExpertInput } from '../lib/projectStore';
+import type { Project, ProjectExpert } from '../types';
 import type { SuppressionCheck } from '../lib/outreachSuppressions';
 import type { DoNotContactCheck } from '../lib/doNotContact';
 import { check, eq, summary } from './testHarness';
@@ -165,6 +167,24 @@ check('a queued email2 marker is not an intro marker',
 const claimedByA = { email1SentAt: Date.now(), outreachStep: 'email1' as const };
 check('the second concurrent job refuses to send', introAlreadySent(claimedByA) === true);
 
+// A HARD BOUNCE (lib/deliveryEvents.ts): the bounced intro reached nobody, so
+// exactly one intro may go to a DIFFERENT address found afterwards. The full
+// story is in scripts/test-delivery-events.ts; these pin the rule here too.
+const bouncedRow = {
+  email1SentAt:     1757000000000,
+  outreachStep:     'email1' as const,
+  bouncedEmails:    ['old@acmecoatings.example'],
+  contactBouncedAt: 1757000060000,
+};
+check('after a bounce, a new address may get one intro',
+  introAlreadySent({ ...bouncedRow, contactEmail: 'new@acmecoatings.example' }) === false);
+check('after a bounce, the bounced address may not',
+  introAlreadySent({ ...bouncedRow, contactEmail: 'OLD@acmecoatings.example' }) === true);
+check('after a bounce, with no address on file, the claim stands',
+  introAlreadySent(bouncedRow) === true);
+check('once the new intro is claimed, a second one is refused',
+  introAlreadySent({ ...bouncedRow, contactEmail: 'new@acmecoatings.example', email1SentAt: 1757000120000 }) === true);
+
 // ─── Matchy 2.0's new surfaces do not open a second door ─────────────────────
 //
 // A source-level check, deliberately: the gates above are only the chokepoint
@@ -237,5 +257,88 @@ check('quoted From name is unwrapped',
 check('bare From keeps a bare reply-to',
   withFromDisplayName('asher@expertmatch.fit', 'reply+x@reply.expertmatch.fit') === 'reply+x@reply.expertmatch.fit');
 
-summary();
+// ─── A held intro leaves the row exactly where it was ────────────────────────
+//
+// runSequenceStep for real, through its deps seam: an in-memory row whose
+// writes merge the way lib/projectStore.applyExpertInput merges them (a key
+// present with `undefined` overwrites), a stub sender, no Redis. The claim
+// writes outreachStep 'email1' BEFORE the send; when the chokepoint holds the
+// send, releaseClaim must put back what was there, INCLUDING NOTHING.
+// Otherwise the row keeps 'email1', introAlreadySent reads it as sent, and the
+// next approve answers "sent" having sent nothing.
+
+async function heldIntroChecks(): Promise<void> {
+  section('runSequenceStep — a held intro does not read as sent');
+
+  // buildIntroEmail signs an opt-out link; a throwaway secret, invented here.
+  process.env.AVAILABILITY_TOKEN_SECRET ??= 'test-only-secret-0123456789abcdef0123456789';
+
+  const PROJECT = 'a'.repeat(24);
+  const EXPERT  = 'exp_held';
+  let row: ProjectExpert = {
+    expert: {
+      id: EXPERT, name: 'Dana Reyes', title: 'VP Operations', company: 'Acme Coatings', location: 'Ohio',
+      category: 'Operator', justification: 'Ran coatings operations.', relevance_score: 90,
+      source_url: 'https://acmecoatings.example/team', source_label: 'Company site', source_links: [],
+    } as ProjectExpert['expert'],
+    status:        'bookmarked',
+    contactEmail:  'dana.reyes@acmecoatings.example',
+    expertRate:    650,
+    clientRate:    1300,
+    whyThem:       'You ran coatings operations at Acme for six years',
+    introDomain:   'industrial coatings',
+    outreachToken: 'tok_held',
+    addedAt:       1,
+    updatedAt:     1,
+  };
+  const project = (): Project => ({
+    id: PROJECT, name: 'Coatings', researchQuestion: 'Coatings margins', industry: 'Chemicals',
+    function: 'Operations', geography: 'US', seniority: 'Senior', createdAt: 1, updatedAt: 1,
+    experts: [row], ownerEmail: 'owner@pe.example', collaborators: [], firmDomain: 'pe.example', walkthrough: false,
+  } as Project);
+
+  let outcome: SendOutcome = { sent: false, held: 'suppressed' };
+  const sent: string[] = [];
+  const deps: Partial<SequenceStepDeps> = {
+    getProject: async () => structuredClone(project()),
+    updateExpertStatus: async (_p, _e, input: UpdateExpertInput) => {
+      const { expertPatch: _patch, ...fields } = input;
+      row = { ...row, ...fields, updatedAt: row.updatedAt + 1 } as ProjectExpert;
+      return structuredClone(project());
+    },
+    sendSequenceEmail: async (to: string) => {
+      if (outcome.sent) sent.push(to);
+      return outcome;
+    },
+    redis: () => null,
+    now:   () => 1_760_000_000_000,
+  };
+
+  const step = { projectId: PROJECT, expertId: EXPERT, step: 'intro' as const, token: 'tok_held' };
+
+  const held = await runSequenceStep(step, deps);
+  check('held: the step answers ok', held.ok === true);
+  check('held: not reported as already sent', held.ok === true && held.alreadySent !== true);
+  eq('held: nothing went', sent.length, 0);
+  eq('held: the row is a draft again', row.status, 'outreach_drafted');
+  eq('held: email1SentAt released', row.email1SentAt ?? 0, 0);
+  eq("held: outreachStep is back to what it was (nothing), not 'email1'", row.outreachStep, undefined);
+  check('held: introAlreadySent reads it as NOT sent', introAlreadySent(row) === false);
+
+  // The later approve: the hold has cleared, and the intro must actually go.
+  outcome = { sent: true };
+  const approved = await runSequenceStep(step, deps);
+  check('approve after a hold: not "already sent"', approved.ok === true && approved.alreadySent !== true);
+  eq('approve after a hold: the intro actually went', sent.length, 1);
+  eq('approve after a hold: claimed for real', row.outreachStep, 'email1');
+
+  const again = await runSequenceStep(step, deps);
+  check('and a second approve is refused', again.ok === true && again.alreadySent === true);
+  eq('…sending nothing', sent.length, 1);
+}
+
+heldIntroChecks().then(() => summary(), err => {
+  console.error('test-send-chokepoint crashed:', err);
+  process.exit(1);
+});
 

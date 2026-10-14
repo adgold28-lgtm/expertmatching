@@ -199,7 +199,14 @@ export type MatchyOutcome =
   // Walkthrough mode: the client bookmarked an expert we have no address for.
   // Matchy did NOT go looking (a provider call spends credits) and nothing was
   // sent. See lib/walkthrough.ts.
-  | 'walkthrough_held';
+  | 'walkthrough_held'
+  // Delivery events (lib/deliveryEvents.ts, 2026-10-14). Named for what the
+  // client is told, never for how we learned it.
+  | 'intro_undelivered'
+  | 'address_not_working'
+  | 'no_other_address'
+  | 'contact_lost'
+  | 'contact_stopped';
 
 export type ExpertStatus =
   | 'discovered'

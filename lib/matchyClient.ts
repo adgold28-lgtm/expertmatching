@@ -47,7 +47,19 @@ export type BookmarkOutcome =
   | 'walkthrough_held'
   // Async results from the discovery job, read back off the record.
   | 'contact_found'
-  | 'contact_discovery_unavailable';
+  | 'contact_discovery_unavailable'
+  // Delivery events (lib/deliveryEvents.ts), read back off the record. The
+  // names say what the client is told, never how we learned it.
+  /** The intro did not arrive; Matchy is searching for another address. */
+  | 'intro_undelivered'
+  /** The address on file stopped working before this engagement used it. */
+  | 'address_not_working'
+  /** That search (or the retry cap) ended with no new address. */
+  | 'no_other_address'
+  /** A later email did not arrive after the expert had replied; staff have it. */
+  | 'contact_lost'
+  /** The expert asked not to be written to. Matchy has stopped for good. */
+  | 'contact_stopped';
 
 /** One thing the compliance screen wants removed before a message can go. */
 export interface ScreenFinding {
@@ -489,6 +501,19 @@ export function bookmarkLine(outcome: BookmarkOutcome, firstName: string): strin
     // Walkthrough: say what would happen, and that it did not.
     case 'walkthrough_held':
       return `Walkthrough mode. I would look up an address and send ${firstName} the intro here. Nothing was sent.`;
+    // Delivery events. What happened and what is next, never how we know:
+    // scripts/test-delivery-events.ts holds these to no machinery words and no
+    // em dash. Once a new intro goes out, the line is the ordinary 'intro_sent'.
+    case 'intro_undelivered':
+      return `The intro to ${firstName} didn't reach them. I'm looking for another address.`;
+    case 'address_not_working':
+      return `The address I had for ${firstName} isn't working. I'm looking for another.`;
+    case 'no_other_address':
+      return `I couldn't find another address for ${firstName}. Bookmark again to retry, or pass.`;
+    case 'contact_lost':
+      return `My last email to ${firstName} didn't reach them. Staff are looking into it.`;
+    case 'contact_stopped':
+      return `${firstName} asked not to be contacted. I've stopped.`;
   }
 }
 
@@ -503,10 +528,10 @@ export function matchyLineFor(
 ): { text: string; tone: 'default' | 'quiet' } | null {
   const outcome = pe.matchyOutcome;
   if (!outcome || !isBookmarkOutcome(outcome)) return null;
-  // These three only describe an engagement that never got off the ground. Once
-  // the expert has moved on, a stale one would contradict the pipeline.
-  if (pe.status !== 'bookmarked'
-    && (outcome === 'contact_not_found' || outcome === 'contact_check_unavailable' || outcome === 'walkthrough_held')) {
+  // These only describe an engagement that never got off the ground (or went
+  // back to the start after an intro did not arrive). Once the expert has moved
+  // on, a stale one would contradict the pipeline.
+  if (pe.status !== 'bookmarked' && BOOKMARKED_ONLY_OUTCOMES.has(outcome)) {
     return null;
   }
   return {
@@ -519,6 +544,13 @@ const BOOKMARK_OUTCOMES: ReadonlySet<string> = new Set<BookmarkOutcome>([
   'intro_sent', 'intro_drafted', 'contact_discovery_started', 'contact_not_found',
   'contact_suppressed', 'contact_check_unavailable', 'intro_failed',
   'contact_found', 'contact_discovery_unavailable', 'walkthrough_held',
+  'intro_undelivered', 'address_not_working', 'no_other_address', 'contact_lost', 'contact_stopped',
+]);
+
+/** Outcomes that are only true while the engagement sits at 'bookmarked'. */
+const BOOKMARKED_ONLY_OUTCOMES: ReadonlySet<BookmarkOutcome> = new Set<BookmarkOutcome>([
+  'contact_not_found', 'contact_check_unavailable', 'walkthrough_held',
+  'intro_undelivered', 'address_not_working', 'no_other_address',
 ]);
 function isBookmarkOutcome(value: string): value is BookmarkOutcome {
   return BOOKMARK_OUTCOMES.has(value);
