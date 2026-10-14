@@ -25,6 +25,13 @@
 // and the receipt say "Late cancellation (15 min)" rather than claiming a call
 // was completed. Nothing else about the path changes.
 //
+// NOT EVERY CALL IS CHARGED (2026-10-14). A call the client flagged under the
+// ten-minute mismatch guarantee (lib/mismatchGuarantee.ts) is never charged by
+// this path, nor is its late-cancel fee: the callers check the flag first, and
+// this is the backstop for a flag that lands between their read and this one.
+// The refusal comes back as `waived: true` so the caller settles the waiver
+// (lib/lateCancelBilling.settleMismatchFlag) instead of reporting a failure.
+//
 // Required env vars:
 //   STRIPE_SECRET_KEY    — server-side Stripe key
 //   RESEND_API_KEY       — invoice / receipt email (optional; skipped if absent)
@@ -46,6 +53,7 @@ import type { ChargeResult, ChargeSavedCardParams } from './chargeSavedCard';
 import { getEntitlementsForProject, recordRestrictedAttempt } from './entitlements';
 import type { Entitlements, RefusalContext } from './entitlements';
 import { getFromAddress } from './mailFrom';
+import { chargeIsForFlaggedCall } from './mismatchGuarantee';
 
 // ─── Email HTML/text builders (shared with complete route) ────────────────────
 
@@ -284,7 +292,7 @@ export interface InvoiceProjectView {
     Pick<
       ProjectExpert,
       'paymentStatus' | 'stripePaymentIntentId' | 'stripePaymentLinkUrl'
-      | 'billedCallId' | 'booking' | 'zoomMeetingId' | 'callId'
+      | 'billedCallId' | 'booking' | 'zoomMeetingId' | 'callId' | 'mismatchCallId'
     > & { expert: { id: string; name: string } }
   >;
 }
@@ -352,6 +360,10 @@ export function resolveCallId(
  * AND that billing belongs to THIS call. A different billedCallId means a
  * genuine second call, which is billed again.
  *
+ * 'waived' (the ten-minute mismatch guarantee) counts as billed: that call is
+ * settled at zero and must never be charged afterwards. A DIFFERENT call on a
+ * waived row is still a genuine second call.
+ *
  * Migration-free compatibility: rows written before `billedCallId` existed have
  * none, and there is no backfill. An already-billed row with no billedCallId is
  * therefore treated as billed for whatever call is being asked about, so
@@ -361,7 +373,7 @@ export function resolveCallId(
  * proved and money is a fail-closed path.
  */
 export function shouldSkipBilling(pe: BillingGuardView, callId: string | null): boolean {
-  const alreadyBilled = pe.paymentStatus === 'paid' || !!pe.stripePaymentIntentId;
+  const alreadyBilled = pe.paymentStatus === 'paid' || pe.paymentStatus === 'waived' || !!pe.stripePaymentIntentId;
   if (!alreadyBilled) return false;
   if (pe.billedCallId === undefined || pe.billedCallId === null) return true;
   if (!callId) return true;
@@ -397,7 +409,7 @@ export function completionReplay(
  * so the payment webhook's `paid` write refers to the new call.
  */
 export function isRepeatCallForBilledRow(pe: BillingGuardView, callId: string | null): boolean {
-  const alreadyBilled = pe.paymentStatus === 'paid' || !!pe.stripePaymentIntentId;
+  const alreadyBilled = pe.paymentStatus === 'paid' || pe.paymentStatus === 'waived' || !!pe.stripePaymentIntentId;
   return alreadyBilled && !shouldSkipBilling(pe, callId);
 }
 
@@ -420,6 +432,11 @@ export interface InvoiceResult {
   paymentLinkUrl:  string | null;
   /** Present only on the auto-charge path. */
   paymentIntentId: string | null;
+  /**
+   * True when nothing was charged because the call is flagged under the
+   * ten-minute mismatch guarantee. The caller settles the waiver.
+   */
+  waived?:         boolean;
 }
 
 /**
@@ -460,6 +477,18 @@ export async function createAndSendInvoice(
       return null;
     }
 
+    // The call being billed — see resolveCallId.
+    const resolvedCallId = resolveCallId(pe, callId);
+
+    // The ten-minute mismatch guarantee: a flagged call, and any fee derived
+    // from it, is never charged. Checked before anything else touches Stripe
+    // or the row. The callers check first; this is the backstop for a flag
+    // that landed after their read.
+    if (chargeIsForFlaggedCall(pe, resolvedCallId)) {
+      console.log('[stripe] mismatch-waived-skip', { projectId });
+      return { charged: false, paymentLinkUrl: null, paymentIntentId: null, waived: true };
+    }
+
     // Account boundary (lib/entitlements.ts): an organization with no card on
     // file is never charged and never emailed an invoice. A trial cannot book
     // a call in the first place; this is the backstop for every caller.
@@ -475,7 +504,6 @@ export async function createAndSendInvoice(
     //    genuine second call with the same expert is. (An 'invoice_sent'
     //    engagement with no intent still re-runs, so a lost payment-link email
     //    can be regenerated.)
-    const resolvedCallId = resolveCallId(pe, callId);
     if (shouldSkipBilling(pe, resolvedCallId)) {
       console.log('[stripe] already-billed-skip', { projectId });
       return {

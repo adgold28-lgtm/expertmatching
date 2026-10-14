@@ -15,6 +15,11 @@
 // and passes it down. Re-completing the same call reuses the persisted id and
 // is therefore a no-op for billing; a genuine second call mints a new one.
 //
+// A call the client flagged under the ten-minute mismatch guarantee is never
+// charged here: it is marked completed and settled at zero, and the expert is
+// paid 15 minutes (lib/lateCancelBilling.settleMismatchFlag). The response
+// carries `waived: true` and no payment link.
+//
 // NEVER log: expert names, client names, emails, or card details.
 // Amounts are safe to log.
 
@@ -25,6 +30,8 @@ import { requireProjectOwner } from '../../../../../../../lib/projectsGuard';
 import { getProjectForUser, updateExpertStatus } from '../../../../../../../lib/projectStore';
 import type { UpdateExpertInput } from '../../../../../../../lib/projectStore';
 import { createAndSendInvoice, completionReplay } from '../../../../../../../lib/createAndSendInvoice';
+import { chargeIsForFlaggedCall } from '../../../../../../../lib/mismatchGuarantee';
+import { settleMismatchFlag } from '../../../../../../../lib/lateCancelBilling';
 import { getEntitlementsForProject, activationRequired } from '../../../../../../../lib/entitlements';
 import { getAuthUserIdByEmail } from '../../../../../../../lib/supabase/admin';
 
@@ -116,6 +123,24 @@ export async function POST(
   const existingCallId = pe.booking?.icsUid ?? pe.zoomMeetingId ?? pe.callId ?? null;
   const callId = existingCallId
     ?? `manual:${params.projectId}:${params.expertId}:${Date.now()}`;
+
+  // 5c'. The ten-minute mismatch guarantee (lib/mismatchGuarantee.ts). The
+  //      client flagged this call inside its first ten minutes, so completing
+  //      it charges nothing: the call is recorded as completed and the waiver
+  //      settles it, paying the expert 15 minutes. Checked before the replay
+  //      guard below because a waived call is never billed, with any numbers.
+  if (chargeIsForFlaggedCall(pe, callId)) {
+    try {
+      const flaggedPatch: UpdateExpertInput = { status: 'completed', callDurationMin };
+      await updateExpertStatus(params.projectId, params.expertId, flaggedPatch);
+      await settleMismatchFlag(params.projectId, params.expertId);
+      return NextResponse.json({ success: true, charged: false, paymentLinkUrl: null, waived: true });
+    } catch (err) {
+      console.error('[stripe] complete route (waived) error:',
+        err instanceof Error ? err.message.slice(0, 120) : 'unknown');
+      return NextResponse.json({ error: 'internal_error' }, { status: 500 });
+    }
+  }
 
   // 5c. A re-completion of a call that is already billed never rewrites its
   //     ledger. Step 6 persists the duration and amount before billing skips
