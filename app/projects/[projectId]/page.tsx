@@ -14,6 +14,7 @@ import {
   type ExpertSortKey,
 } from '../../../lib/seniorityClassifier';
 import ProjectExpertCard from '../../../components/ProjectExpertCard';
+import BulkBookmarkMatches from '../../../components/BulkBookmarkMatches';
 import { downloadProjectBriefPdf } from '../../../lib/exportBrief';
 import ConversationsPanel from '../../../components/ConversationsPanel';
 import { useFocusTrap } from '../../../lib/useFocusTrap';
@@ -1714,10 +1715,17 @@ function ProjectPageInner() {
                     }
                   />
                 ) : (
-                  <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-5">
-                    {visibleSourceExperts.map(pe => (
+                  // Select mode lives here (owner or staff only): tick several
+                  // cards, bookmark them through the same single-expert route.
+                  <BulkBookmarkMatches
+                    projectId={projectId}
+                    shown={visibleSourceExperts}
+                    all={project.experts}
+                    canSelect={canSend}
+                    onExpertUpdate={handleExpertUpdate}
+                    onBatchEnd={clientView ? () => { void refreshProject(); } : undefined}
+                    renderCard={(pe, selection) => (
                       <ProjectExpertCard
-                        key={pe.expert.id}
                         projectExpert={pe}
                         projectId={projectId}
                         query={project.researchQuestion}
@@ -1726,9 +1734,10 @@ function ProjectPageInner() {
                         canBookmark={canSend}
                         isAdmin={isAdmin}
                         onOpenConversation={id => { setSelectedThread(id); navigateTo('conversations'); }}
+                        {...selection}
                       />
-                    ))}
-                  </div>
+                    )}
+                  />
                 )}
               </>
             )}
