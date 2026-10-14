@@ -59,13 +59,8 @@ import {
 const ID_RE        = /^[a-f0-9]{24}$/;
 const EXPERT_ID_RE = /^[a-zA-Z0-9\-_]+$/;
 
-/**
- * The product_events type for a claim. product_events.type is free text in the
- * database; lib/productEvents.ProductEventType is the TypeScript list of known
- * kinds, owned elsewhere in this launch pack. Widened here rather than edited
- * there: add 'mismatch_flagged' to that union at merge and drop the widening.
- */
-const MISMATCH_PRODUCT_EVENT = 'mismatch_flagged' as string as ProductEventType;
+/** The product_events type for a claim (lib/productEvents.ProductEventType). */
+const MISMATCH_PRODUCT_EVENT: ProductEventType = 'mismatch_flagged';
 
 /** The written line for each refusal. Plain, short, no machinery. */
 const REFUSAL_COPY: Record<MismatchRefusal, string> = {

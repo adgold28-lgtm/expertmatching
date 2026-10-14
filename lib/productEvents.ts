@@ -50,6 +50,7 @@ export type ProductEventType =
   | 'candidate_unpassed'
   // the compliance log (GET …/messages/export, GET …/conversations/export)
   | 'conversation_exported'       // payload.scope: thread | project, payload.format, payload.messages, payload.threads
+  | 'mismatch_flagged'            // the ten-minute mismatch guarantee was used (lib/mismatchGuarantee.ts)
   // the paywall
   | 'restricted_action_attempted' // payload.action, payload.kind
   | 'went_live'

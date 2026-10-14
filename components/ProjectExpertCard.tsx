@@ -7,6 +7,7 @@ import ExpertCard from './ExpertCard';
 import { STATUS_META, EXPERT_STATUSES } from '../lib/expertPipeline';
 import { CLIENT_STATUS_META, hasConversation } from './matchyStatus';
 import MatchyLine from './MatchyLine';
+import VettingCard from './VettingCard';
 import {
   bookmarkExpert,
   unbookmarkExpert,
@@ -413,6 +414,10 @@ export default function ProjectExpertCard({
             )}
           </div>
         )}
+
+        {/* ── Vetting, in one line: what public records and their answers say,
+              before anyone books (components/VettingCard.tsx). ── */}
+        <VettingCard projectExpert={projectExpert} isAdmin={isAdmin} compact />
 
         {/* ── Matchy's line — the outcome of the last thing it did here ── */}
         {shownNote && (

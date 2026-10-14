@@ -1326,7 +1326,10 @@ export default function ConversationThread({
             </span>
           )}
           {pe.paymentStatus === 'failed' && (
-            <span className="text-[11px] text-red-600">Card declined — update your card.</span>
+            <span className="text-[11px] text-red-600">Card declined. Update your card.</span>
+          )}
+          {pe.paymentStatus === 'waived' && (
+            <span className="text-[11px] text-muted">No charge for this call.</span>
           )}
           {(pe.paymentStatus === 'unpaid' || pe.paymentStatus === 'invoice_sent') && charged != null && (
             <span className="text-[11px] text-muted">Charging {formatRate(charged)}.</span>
