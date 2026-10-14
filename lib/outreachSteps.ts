@@ -39,7 +39,8 @@ import {
 import { generateWhyThem, introDomainFor, whyThemFromEvidence } from './introPersonalization';
 import type { FirmTypeValue, FirmSizeValue } from './supabase/database.types';
 import { generateOutreachToken } from './outreachToken';
-import { getUpstashClient } from './upstashRedis';
+import { getUpstashClient, type UpstashRedis } from './upstashRedis';
+import { normalizeEmail } from './outreachSuppressions';
 
 const REPLY_TOKEN_TTL_S = 90 * 24 * 60 * 60;
 
@@ -99,6 +100,32 @@ export type SequenceStepError =
   | 'expert_rate_not_set'
   | 'step_failed';
 
+/**
+ * Everything runSequenceStep reaches outside itself. Production never passes
+ * it; scripts/test-send-chokepoint.ts and scripts/test-delivery-events.ts run
+ * the real claim / send / release sequence against an in-memory row and a
+ * stub sender, so the ORDER of the writes can be asserted with no database,
+ * no Redis and no Resend. Method syntax so a stub may narrow a parameter type.
+ */
+export interface SequenceStepDeps {
+  getProject(projectId: string): Promise<Project | null>;
+  updateExpertStatus(projectId: string, expertId: string, input: UpdateExpertInput): Promise<Project>;
+  sendSequenceEmail: typeof sendSequenceEmail;
+  /** The send lock and the reply-token index. Null means no Redis. */
+  redis(): Pick<UpstashRedis, 'set' | 'del'> | null;
+  now(): number;
+}
+
+function defaultSequenceStepDeps(): SequenceStepDeps {
+  return {
+    getProject,
+    updateExpertStatus,
+    sendSequenceEmail,
+    redis: getUpstashClient,
+    now:   Date.now,
+  };
+}
+
 export type SequenceStepResult =
   /**
    * `alreadySent` marks the send-once refusal: the intro was already delivered
@@ -108,6 +135,11 @@ export type SequenceStepResult =
   | { ok: true;  project: Project; alreadySent?: true }
   | { ok: false; error: SequenceStepError; status: number };
 
+/** The send-once facts introAlreadySent reads. The bounce fields are optional. */
+export type IntroClaimFacts =
+  Pick<ProjectExpert, 'email1SentAt' | 'outreachStep'>
+  & Partial<Pick<ProjectExpert, 'contactEmail' | 'bouncedEmails' | 'contactBouncedAt'>>;
+
 /**
  * Has the intro already gone to this expert?
  *
@@ -116,13 +148,70 @@ export type SequenceStepResult =
  * from the pipeline's side; a row that carries one without the other is a
  * half-written claim, which still means "an intro may be in flight".
  *
- * Pure — tested by scripts/test-send-chokepoint.ts.
+ * ONE EXCEPTION, AND IT IS NARROW: an intro that HARD-BOUNCED never reached
+ * anyone (lib/deliveryEvents.ts). When the standing claim predates the last
+ * bounce and the address on file now is a different one, that address has not
+ * had an intro, so one may go to it. See claimPredatesBounce. A second intro to
+ * the SAME address is still refused: a bounced address is in `bouncedEmails`,
+ * which this rule never lets through, and the new address's own claim postdates
+ * the bounce the moment it is written.
+ *
+ * Pure — tested by scripts/test-send-chokepoint.ts and
+ * scripts/test-delivery-events.ts.
  */
-export function introAlreadySent(
-  pe: Pick<ProjectExpert, 'email1SentAt' | 'outreachStep'>,
-): boolean {
-  return (typeof pe.email1SentAt === 'number' && pe.email1SentAt > 0)
+export function introAlreadySent(pe: IntroClaimFacts): boolean {
+  const claimed = (typeof pe.email1SentAt === 'number' && pe.email1SentAt > 0)
     || pe.outreachStep === 'email1';
+  if (!claimed) return false;
+  return !claimPredatesBounce(pe);
+}
+
+/**
+ * True only when the intro claim on this row was made for an address that has
+ * since hard-bounced, and the address on file now is a different one:
+ *
+ *   - an address is on file and is NOT one of the bounced addresses
+ *   - `email1SentAt` is a real instant at or before `contactBouncedAt`
+ *
+ * Anything less certain (no address, a half-written claim with no instant, no
+ * bounce recorded) is false, which keeps the claim standing. Pure.
+ */
+export function claimPredatesBounce(pe: IntroClaimFacts): boolean {
+  const address = normalizeEmail(pe.contactEmail ?? '');
+  if (!address) return false;
+
+  const bounced = (pe.bouncedEmails ?? [])
+    .filter((e): e is string => typeof e === 'string')
+    .map(normalizeEmail);
+  if (bounced.length === 0 || bounced.includes(address)) return false;
+
+  const claimedAt = typeof pe.email1SentAt === 'number' ? pe.email1SentAt : 0;
+  const bouncedAt = typeof pe.contactBouncedAt === 'number' ? pe.contactBouncedAt : 0;
+  return claimedAt > 0 && bouncedAt > 0 && claimedAt <= bouncedAt;
+}
+
+/**
+ * The Redis key of the atomic intro lock for one (project, expert).
+ *
+ * `generation` is how many addresses have hard-bounced on the engagement. The
+ * first intro uses the bare key it always has; the intro to a replacement
+ * address uses its own, so a lock left by the bounced send (it holds for
+ * INTRO_LOCK_TTL_S, and bounces often arrive within seconds) cannot swallow the
+ * one retry. Two concurrent callers after the same bounce still share a key.
+ * Carries no address. Pure.
+ */
+export function introLockKey(projectId: string, expertId: string, generation = 0): string {
+  const base = `intro-lock:${projectId}:${expertId}`;
+  return generation > 0 ? `${base}:${Math.floor(generation)}` : base;
+}
+
+/** How many distinct addresses have hard-bounced on this engagement. Pure. */
+function bounceGeneration(pe: Pick<ProjectExpert, 'bouncedEmails'>): number {
+  const seen = new Set<string>();
+  for (const e of pe.bouncedEmails ?? []) {
+    if (typeof e === 'string' && e.trim()) seen.add(normalizeEmail(e));
+  }
+  return seen.size;
 }
 
 /**
@@ -142,10 +231,14 @@ export function introAlreadySent(
  * after the send and is now best-effort: it can no longer turn a delivered
  * email into a `step_failed` that invites a retry.
  */
-export async function runSequenceStep(input: SequenceStepInput): Promise<SequenceStepResult> {
+export async function runSequenceStep(
+  input: SequenceStepInput,
+  deps:  Partial<SequenceStepDeps> = {},
+): Promise<SequenceStepResult> {
+  const d = { ...defaultSequenceStepDeps(), ...deps };
   const { projectId, expertId, step, token } = input;
 
-  const project = await getProject(projectId);
+  const project = await d.getProject(projectId);
   if (!project) return { ok: false, error: 'project_not_found', status: 404 };
 
   const pe = project.experts.find(e => e.expert.id === expertId);
@@ -177,6 +270,9 @@ export async function runSequenceStep(input: SequenceStepInput): Promise<Sequenc
     // all arrive here. Checked before the draft branch too — re-drafting an
     // intro that already went out would drag the row back to
     // 'outreach_drafted' and offer the client a button that sends a second.
+    // The one intro to a REPLACEMENT address after a hard bounce is let
+    // through by introAlreadySent itself (claimPredatesBounce); a bounced
+    // address never is.
     if (introAlreadySent(pe)) {
       console.info('[outreachSteps] intro already sent — nothing sent', JSON.stringify({ step }));
       return { ok: true, project, alreadySent: true };
@@ -200,7 +296,7 @@ export async function runSequenceStep(input: SequenceStepInput): Promise<Sequenc
     // write it, whatever `draftOnly` says. Nothing leaves the building, so
     // no claim is taken either.
     if (!whyThem) {
-      return { ok: true, project: await hold(projectId, expertId, activeToken, { introArm: arm, introDomain: domain }) };
+      return { ok: true, project: await hold(d, projectId, expertId, activeToken, { introArm: arm, introDomain: domain }) };
     }
 
     const introFields: UpdateExpertInput = {
@@ -229,13 +325,13 @@ export async function runSequenceStep(input: SequenceStepInput): Promise<Sequenc
       // line at all: hold it for a person, never send it.
       if (!(err instanceof IntroRubricError)) throw err;
       console.warn('[outreachSteps] intro held: rubric', JSON.stringify({ rule: err.rule }));
-      return { ok: true, project: await hold(projectId, expertId, activeToken, introFields) };
+      return { ok: true, project: await hold(d, projectId, expertId, activeToken, introFields) };
     }
 
     // Review-first (or walkthrough): write the draft and stop. Nothing
     // leaves the building.
     if (input.draftOnly) {
-      return { ok: true, project: await draft(projectId, expertId, activeToken, email.subject, email.text, introFields) };
+      return { ok: true, project: await draft(d, projectId, expertId, activeToken, email.subject, email.text, introFields) };
     }
 
     // TWO CLAIMS, AND THEY DO DIFFERENT JOBS.
@@ -255,7 +351,8 @@ export async function runSequenceStep(input: SequenceStepInput): Promise<Sequenc
     // send so that a claim we could not record means not sending at all.
     // Both are released again (releaseClaim) when the send is held or throws,
     // so a genuine failure leaves the expert exactly where they were.
-    const lock = await claimIntroLock(projectId, expertId);
+    const lockKey = introLockKey(projectId, expertId, bounceGeneration(pe));
+    const lock    = await claimIntroLock(d, lockKey);
     if (lock === 'held_by_other') {
       console.info('[outreachSteps] intro already in flight — nothing sent', JSON.stringify({ step }));
       return { ok: true, project, alreadySent: true };
@@ -263,7 +360,7 @@ export async function runSequenceStep(input: SequenceStepInput): Promise<Sequenc
 
     let claimed: Project;
     try {
-      claimed = await updateExpertStatus(projectId, expertId, {
+      claimed = await d.updateExpertStatus(projectId, expertId, {
         // The rubric fields ride on the claim, so the arm, the line and the
         // domain that produced THIS email are recorded in the same write that
         // says it went (docs/OUTREACH_EMAIL_RUBRIC.md).
@@ -272,12 +369,16 @@ export async function runSequenceStep(input: SequenceStepInput): Promise<Sequenc
         outreachStep:    'email1',
         outreachSubject: email.subject,
         outreachDraft:   email.text,
-        email1SentAt:    Date.now(),
-        contactedAt:     pe.contactedAt ?? Date.now(),
+        // A FRESH instant on every claim, the replacement intro after a hard
+        // bounce included: it is what makes this send postdate
+        // `contactBouncedAt`, so the row stops reading as bounced
+        // (lib/outreachStats.ts) and introAlreadySent refuses a second one.
+        email1SentAt:    d.now(),
+        contactedAt:     pe.contactedAt ?? d.now(),
         outreachToken:   activeToken,
       });
     } catch (err) {
-      await releaseIntroLock(projectId, expertId);
+      await releaseIntroLock(d, lockKey);
       console.error('[outreachSteps] intro claim failed — nothing sent:',
         err instanceof Error ? err.message.slice(0, 120) : 'unknown');
       return { ok: false, error: 'step_failed', status: 500 };
@@ -287,15 +388,15 @@ export async function runSequenceStep(input: SequenceStepInput): Promise<Sequenc
     // so the sender must not append a second one.
     let introOutcome: SendOutcome;
     try {
-      introOutcome = await sendSequenceEmail(expertEmail, email.subject, email.text, activeToken, 'intro', {
+      introOutcome = await d.sendSequenceEmail(expertEmail, email.subject, email.text, activeToken, 'intro', {
         footerIncluded: true,
         html:           email.html,
       });
     } catch (err) {
       // Resend refused. Release both claims so the client can try again, then
       // report the failure the way this function always has.
-      await releaseClaim(projectId, expertId, pe);
-      await releaseIntroLock(projectId, expertId);
+      await releaseClaim(d, projectId, expertId, pe);
+      await releaseIntroLock(d, lockKey);
       console.error('[outreachSteps] intro send failed:',
         err instanceof Error ? err.message.slice(0, 120) : 'unknown');
       return { ok: false, error: 'step_failed', status: 500 };
@@ -306,9 +407,9 @@ export async function runSequenceStep(input: SequenceStepInput): Promise<Sequenc
     // released and the row lands on exactly the state the draftOnly branch
     // writes rather than claiming 'contacted'.
     if (!introOutcome.sent) {
-      await releaseClaim(projectId, expertId, pe);
-      await releaseIntroLock(projectId, expertId);
-      return { ok: true, project: await draft(projectId, expertId, activeToken, email.subject, email.text, introFields) };
+      await releaseClaim(d, projectId, expertId, pe);
+      await releaseIntroLock(d, lockKey);
+      return { ok: true, project: await draft(d, projectId, expertId, activeToken, email.subject, email.text, introFields) };
     }
 
     // The email is gone and the claim that records it is already durable. The
@@ -316,7 +417,7 @@ export async function runSequenceStep(input: SequenceStepInput): Promise<Sequenc
     // back to the HMAC token payload when the key is missing — so a failure
     // here must not undo a delivered email or answer `step_failed`.
     try {
-      const redis = getUpstashClient();
+      const redis = d.redis();
       if (redis) {
         await redis.set(
           `reply-token:${activeToken}`,
@@ -346,16 +447,17 @@ export async function runSequenceStep(input: SequenceStepInput): Promise<Sequenc
  * always effectively done, rather than refusing every intro whenever Redis is
  * down.
  *
- * Never logs the key's contents; the key itself carries no address.
+ * Never logs the key's contents; the key itself carries no address
+ * (introLockKey).
  */
 async function claimIntroLock(
-  projectId: string,
-  expertId:  string,
+  d:       SequenceStepDeps,
+  lockKey: string,
 ): Promise<'claimed' | 'held_by_other' | 'no_lock'> {
-  const redis = getUpstashClient();
+  const redis = d.redis();
   if (!redis) return 'no_lock';
   try {
-    const result = await redis.set(`intro-lock:${projectId}:${expertId}`, '1', {
+    const result = await redis.set(lockKey, '1', {
       ex: INTRO_LOCK_TTL_S,
       nx: true,
     });
@@ -372,11 +474,11 @@ async function claimIntroLock(
  * is not stuck behind the TTL. A failure here costs at most INTRO_LOCK_TTL_S of
  * waiting and can never cause a second email, so it is swallowed.
  */
-async function releaseIntroLock(projectId: string, expertId: string): Promise<void> {
-  const redis = getUpstashClient();
+async function releaseIntroLock(d: SequenceStepDeps, lockKey: string): Promise<void> {
+  const redis = d.redis();
   if (!redis) return;
   try {
-    await redis.del(`intro-lock:${projectId}:${expertId}`);
+    await redis.del(lockKey);
   } catch {
     // The TTL cleans up.
   }
@@ -390,18 +492,27 @@ async function releaseIntroLock(projectId: string, expertId: string): Promise<vo
  * next attempt is allowed through either way — 0 is kept for consistency
  * with the rest of this file's claim/release pairing.
  *
+ * AN INTRO TO A REPLACEMENT ADDRESS (lib/deliveryEvents.ts) restores the
+ * instant of the BOUNCED intro instead of 0: the row then reads exactly as it
+ * did before this attempt (claim predates the bounce, so the retry is still
+ * allowed), and the bounced intro stays on the record. A first intro had no
+ * instant, so it still gets 0.
+ *
  * Best effort: a failure here leaves the row claimed, which refuses the next
  * send rather than duplicating one. That is the right way to fail.
  */
 async function releaseClaim(
+  d:         SequenceStepDeps,
   projectId: string,
   expertId:  string,
   previous:  ProjectExpert,
 ): Promise<void> {
   try {
-    await updateExpertStatus(projectId, expertId, {
+    await d.updateExpertStatus(projectId, expertId, {
       status:       previous.status,
-      email1SentAt: 0,
+      email1SentAt: typeof previous.email1SentAt === 'number' && previous.email1SentAt > 0
+        ? previous.email1SentAt
+        : 0,
       ...(previous.outreachStep ? { outreachStep: previous.outreachStep } : {}),
     });
   } catch (err) {
@@ -420,6 +531,7 @@ async function releaseClaim(
  * line, domain) so a later approve reuses them instead of recomputing.
  */
 async function draft(
+  d:         SequenceStepDeps,
   projectId: string,
   expertId:  string,
   token:     string,
@@ -427,7 +539,7 @@ async function draft(
   text:      string,
   extra:     UpdateExpertInput = {},
 ): Promise<Project> {
-  return updateExpertStatus(projectId, expertId, {
+  return d.updateExpertStatus(projectId, expertId, {
     ...extra,
     status:          'outreach_drafted',
     outreachSubject: subject,
@@ -444,12 +556,13 @@ async function draft(
  * approve route refuses to send past without a line.
  */
 async function hold(
+  d:         SequenceStepDeps,
   projectId: string,
   expertId:  string,
   token:     string,
   extra:     UpdateExpertInput,
 ): Promise<Project> {
-  return updateExpertStatus(projectId, expertId, {
+  return d.updateExpertStatus(projectId, expertId, {
     ...extra,
     status:            'outreach_drafted',
     outreachToken:     token,

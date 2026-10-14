@@ -26,6 +26,13 @@
 // validation and must not be a role address (info@, sales@, noreply@…) — we
 // write to a person, never to a shared inbox.
 //
+// EXCLUSIONS (2026-10-14, lib/deliveryEvents.ts): an address that hard-bounced
+// for an engagement is in its `bouncedEmails`, and the search for a replacement
+// passes that list as `exclude`. Neither the cache nor any provider can then
+// hand it back: a cached hit for an excluded address reads as a miss, and
+// pickBestCandidate skips it. "Never sends to more than one address; bounces
+// trigger the next candidate" (docs/MATCHY_SPEC.md, workflow step 2).
+//
 // NEVER LOG: the email, the expert's name, the company, the domain. Counts,
 // outcomes and durations only.
 
@@ -53,9 +60,11 @@ import { getProject, updateExpertStatus } from './projectStore';
 import { isWalkthrough } from './walkthrough';
 import { getEntitlementsForProject, recordRestrictedAttempt } from './entitlements';
 import { runSequenceStep } from './outreachSteps';
-import { isSuppressed } from './outreachSuppressions';
+import { isSuppressed, normalizeEmail } from './outreachSuppressions';
 import { emitEngagementEvent } from './engagementEvents';
 import { getFirm } from './firmStore';
+import { appendMessage } from './conversations';
+import { bookmarkLine, firstNameOf } from './matchyClient';
 
 // ─── Result shape ─────────────────────────────────────────────────────────────
 
@@ -93,6 +102,13 @@ export interface DiscoverContactInput {
   title?:       string;
   sourceUrl?:   string;
   sourceLinks?: string[];
+  /**
+   * Addresses this search must never return: the engagement's hard bounces
+   * (`ProjectExpert.bouncedEmails`). Compared trimmed and lowercased. A cached
+   * answer naming one is treated as a miss; a provider result naming one is
+   * skipped.
+   */
+  exclude?:     readonly string[];
 }
 
 // ─── Budgets ──────────────────────────────────────────────────────────────────
@@ -181,6 +197,28 @@ export function isValidEmailSyntax(email: string): boolean {
 /** An address we are willing to write to: valid, and a person, not an inbox. */
 export function isUsableAddress(email: string): boolean {
   return isValidEmailSyntax(email) && !isRoleAddress(email);
+}
+
+/**
+ * The exclusion list as this module compares it: trimmed, lowercased, empties
+ * dropped, duplicates removed. Pure.
+ */
+export function normalizeExclusions(exclude: readonly (string | null | undefined)[] | null | undefined): string[] {
+  const out: string[] = [];
+  for (const raw of exclude ?? []) {
+    if (typeof raw !== 'string') continue;
+    const normalized = normalizeEmail(raw);
+    if (normalized && !out.includes(normalized)) out.push(normalized);
+  }
+  return out;
+}
+
+/** True when `email` is on the exclusion list, case and whitespace ignored. Pure. */
+export function isExcludedAddress(email: string | null | undefined, exclude: readonly string[] | null | undefined): boolean {
+  if (typeof email !== 'string') return false;
+  const normalized = normalizeEmail(email);
+  if (!normalized) return false;
+  return normalizeExclusions(exclude).includes(normalized);
 }
 
 // ─── Name ─────────────────────────────────────────────────────────────────────
@@ -323,12 +361,18 @@ export const MIN_CONFIDENCE = 50;
 
 /**
  * Best sendable address out of one provider's results, or null.
+ * `exclude` (hard-bounced addresses) is never picked, however good it looks.
  * Pure — exported so scripts/test-contact-discovery.ts can pin the ordering.
  */
-export function pickBestCandidate(results: ProviderEmailResult[]): ProviderEmailResult | null {
+export function pickBestCandidate(
+  results: ProviderEmailResult[],
+  exclude: readonly string[] = [],
+): ProviderEmailResult | null {
+  const excluded = normalizeExclusions(exclude);
   const usable = results.filter(r =>
     typeof r.email === 'string' &&
     isUsableAddress(r.email) &&
+    !excluded.includes(normalizeEmail(r.email)) &&
     !r.isWebmail &&
     !r.isDisposable &&
     r.isValidFormat !== false &&
@@ -366,6 +410,28 @@ function cacheVersion(): string {
   return process.env.CONTACT_CACHE_VERSION ?? 'v2';
 }
 
+/** The providers the chain will ask, in order: only the configured ones. */
+function configuredProviders(): ContactProvider[] {
+  return [snovProvider, hunterProvider].filter(p => p.isConfigured());
+}
+
+/**
+ * The cached answer, as this search may use it. A "found" whose address is
+ * excluded (it hard-bounced) is a MISS, not a hit: the search goes on to the
+ * providers and whatever they answer overwrites the stale entry. Pure.
+ */
+export function cachedAnswerFor(
+  hit: ContactEnrichment | null,
+  exclude: readonly string[] = [],
+): 'found' | 'not_found' | 'excluded' | 'miss' {
+  if (!hit) return 'miss';
+  if (hit.lookup_status === 'not_found') return 'not_found';
+  if (hit.lookup_status === 'found' && hit.best_email && isUsableAddress(hit.best_email.email)) {
+    return isExcludedAddress(hit.best_email.email, exclude) ? 'excluded' : 'found';
+  }
+  return 'miss';
+}
+
 // ─── The chain ────────────────────────────────────────────────────────────────
 
 /** True only when enrichment is explicitly switched on. */
@@ -374,12 +440,44 @@ export function isDiscoveryEnabled(): boolean {
 }
 
 /**
+ * Everything discoverContact reaches outside itself. Production never passes
+ * it; scripts/test-delivery-events.ts injects providers and a cache so the
+ * exclusion rule is exercised with no network and no credits. Method syntax so a
+ * stub may narrow a parameter type.
+ */
+export interface DiscoveryDeps {
+  /** The providers to ask, in order. Default: the configured Snov, then Hunter. */
+  providers:   ContactProvider[];
+  /** Null means "no cache": the chain runs and remembers nothing. */
+  cacheStore:  CacheStore | null;
+  /** One credit from the global daily budget. Default fails open. */
+  withinGlobalBudget(): Promise<boolean>;
+  /** The company-domain fallback when no source link names one. */
+  domainSearch(company: string, timeoutMs: number): Promise<string | null>;
+  /** Whether that fallback is available at all. */
+  domainSearchConfigured(): boolean;
+  /** Overrides CONTACT_ENRICHMENT_ENABLED. Production never sets it. */
+  enabled?: boolean;
+}
+
+/**
  * Finds at most one address for one expert. Never throws: every failure is an
  * attempt row plus a terminal outcome, because the job around this has to write
  * something the client's status line can render.
+ *
+ * `input.exclude` is honoured at both places an address can come from: the
+ * cache (an excluded hit is a miss) and the providers (pickBestCandidate).
  */
-export async function discoverContact(input: DiscoverContactInput): Promise<DiscoveryResult> {
+export async function discoverContact(
+  input: DiscoverContactInput,
+  deps:  Partial<DiscoveryDeps> = {},
+): Promise<DiscoveryResult> {
+  const exclude  = normalizeExclusions(input.exclude);
   const attempts: DiscoveryAttempt[] = [];
+  const budgetOk     = deps.withinGlobalBudget ?? withinGlobalBudget;
+  const domainSearch = deps.domainSearch
+    ?? ((company: string, timeoutMs: number) => hunterDomainSearch(company, undefined, timeoutMs));
+  const canDomainSearch = deps.domainSearchConfigured ?? (() => hunterProvider.isConfigured());
   const startedAt = Date.now();
   const remaining = (): number => TOTAL_BUDGET_MS - (Date.now() - startedAt);
 
@@ -387,7 +485,7 @@ export async function discoverContact(input: DiscoverContactInput): Promise<Disc
     attempts.push({ provider, outcome, ms: Date.now() - since });
   };
 
-  if (!isDiscoveryEnabled()) {
+  if (!(deps.enabled ?? isDiscoveryEnabled())) {
     return { outcome: 'unavailable', attempts };
   }
 
@@ -408,13 +506,13 @@ export async function discoverContact(input: DiscoverContactInput): Promise<Disc
 
   let domain = derived.domain;
 
-  if (!domain && (input.company ?? '').trim() && hunterProvider.isConfigured()) {
+  if (!domain && (input.company ?? '').trim() && canDomainSearch()) {
     const searchAt = Date.now();
     const budget   = Math.min(PROVIDER_TIMEOUT_MS, remaining());
     if (budget <= 0) {
       record('hunter_domain_search', 'skipped_budget', searchAt);
     } else {
-      const found = await hunterDomainSearch(input.company, undefined, budget);
+      const found = await domainSearch(input.company, budget);
       if (found && !isDisallowedDomain(found)) {
         domain = normalizeDomain(found);
         record('hunter_domain_search', 'found', searchAt);
@@ -444,18 +542,21 @@ export async function discoverContact(input: DiscoverContactInput): Promise<Disc
   // them is refused the outcome is 'unavailable' with reason 'budget', never
   // 'not_found', so nothing negative is cached and a retry tomorrow is free to
   // ask again.
-  const providers = [snovProvider, hunterProvider].filter(p => p.isConfigured());
+  const providers = deps.providers ?? configuredProviders();
 
-  const store    = cacheStoreOrNull();
+  const store    = deps.cacheStore !== undefined ? deps.cacheStore : cacheStoreOrNull();
   const cacheKey = makeCacheKey(name.first, name.last, domain, providerSignature(providers), cacheVersion());
 
   // 1. Cache. A stored 'not_found' is an answer too — it is what stops a
-  //    re-bookmark spending credits on the same person twice in a week.
+  //    re-bookmark spending credits on the same person twice in a week. A
+  //    stored address that has since hard-bounced for this engagement is NOT
+  //    an answer: it reads as a miss, and the providers' reply overwrites it.
   if (store) {
     const cacheAt = Date.now();
     try {
-      const hit = await store.get(cacheKey);
-      if (hit && hit.lookup_status === 'found' && hit.best_email && isUsableAddress(hit.best_email.email)) {
+      const hit    = await store.get(cacheKey);
+      const answer = cachedAnswerFor(hit, exclude);
+      if (answer === 'found' && hit?.best_email) {
         record('cache', 'hit_found', cacheAt);
         logCounts(input.projectId, 'found', attempts);
         return {
@@ -466,12 +567,12 @@ export async function discoverContact(input: DiscoverContactInput): Promise<Disc
           attempts,
         };
       }
-      if (hit && hit.lookup_status === 'not_found') {
+      if (answer === 'not_found') {
         record('cache', 'hit_not_found', cacheAt);
         logCounts(input.projectId, 'not_found', attempts);
         return { outcome: 'not_found', attempts };
       }
-      record('cache', 'miss', cacheAt);
+      record('cache', answer === 'excluded' ? 'hit_excluded' : 'miss', cacheAt);
     } catch {
       record('cache', 'error', cacheAt);
     }
@@ -504,7 +605,7 @@ export async function discoverContact(input: DiscoverContactInput): Promise<Disc
     // stop outreach, and the providers' own credit balances are the backstop.
     // Only an answer of "over budget" refuses (Session 7 rule: paid credential
     // paths fail closed, expert-facing work fails open — this is the latter).
-    if (!(await withinGlobalBudget())) {
+    if (!(await budgetOk())) {
       budgetRefusals++;
       record(provider.name, 'skipped_spend_budget', providerAt);
       continue;
@@ -521,7 +622,10 @@ export async function discoverContact(input: DiscoverContactInput): Promise<Disc
         signal:    controller.signal,
       });
 
-      const best = pickBestCandidate(results);
+      // An excluded (hard-bounced) address is never picked. A provider that
+      // offers only that one has, for this engagement, found nobody — and the
+      // negative written below replaces the stale cached "found".
+      const best = pickBestCandidate(results, exclude);
       if (best) {
         record(provider.name, 'found', providerAt);
         await writeCache(store, cacheKey, domain, name, best);
@@ -641,6 +745,89 @@ async function writeCache(
   }
 }
 
+// ─── Invalidation (hard bounces) ──────────────────────────────────────────────
+
+/** The domain part of an address, lowercased, or null. Pure. */
+function domainOfAddress(email: string): string | null {
+  const at = email.lastIndexOf('@');
+  if (at < 0) return null;
+  const domain = email.slice(at + 1).trim().toLowerCase();
+  return domain.includes('.') ? domain : null;
+}
+
+export interface CachedContactSubject {
+  name:         string;
+  company?:     string;
+  sourceUrl?:   string;
+  sourceLinks?: string[];
+}
+
+/**
+ * Every cache key a lookup for this person could have been stored under,
+ * without a network call: the domain the source links name, and the domain of
+ * each bounced address (a provider answers for the domain it was asked about,
+ * so the address's own domain is where a Hunter domain-search lookup was
+ * filed). Pure, given the env-derived provider signature and cache version.
+ */
+export function cacheKeysForContact(
+  subject:   CachedContactSubject,
+  addresses: readonly string[],
+  providers: ContactProvider[] = configuredProviders(),
+): string[] {
+  const name = splitName(subject.name ?? '');
+  if (!name) return [];
+
+  const domains: string[] = [];
+  const derived = deriveCompanyDomain({
+    company:     subject.company,
+    sourceUrl:   subject.sourceUrl,
+    sourceLinks: subject.sourceLinks,
+  }).domain;
+  for (const domain of [derived, ...addresses.map(domainOfAddress)]) {
+    if (domain && !domains.includes(domain)) domains.push(domain);
+  }
+
+  const signature = providerSignature(providers);
+  const version   = cacheVersion();
+  return domains.map(domain => makeCacheKey(name.first, name.last, domain, signature, version));
+}
+
+/**
+ * Forget any cached "found" answer for this person that names one of
+ * `addresses` (their hard bounces), so the next search, for this project or any
+ * other, asks the providers again instead of handing back a dead address.
+ * An entry naming a different address, or a cached not_found, is left alone.
+ *
+ * Best effort and never throws: discovery's own exclusion rule (cachedAnswerFor)
+ * already refuses an excluded hit, so a failed delete costs a provider credit
+ * on some later search, never a send to the bounced address. Returns how many
+ * entries were dropped.
+ */
+export async function invalidateCachedContact(
+  subject:   CachedContactSubject,
+  addresses: readonly string[],
+  deps:      { cacheStore?: CacheStore | null; providers?: ContactProvider[] } = {},
+): Promise<number> {
+  const excluded = normalizeExclusions(addresses);
+  if (excluded.length === 0) return 0;
+
+  const store = deps.cacheStore !== undefined ? deps.cacheStore : cacheStoreOrNull();
+  if (!store) return 0;
+
+  let dropped = 0;
+  for (const key of cacheKeysForContact(subject, excluded, deps.providers)) {
+    try {
+      const hit = await store.get(key);
+      if (cachedAnswerFor(hit, excluded) !== 'excluded') continue;
+      await store.delete(key);
+      dropped++;
+    } catch {
+      // A cache that will not answer is a slower next search, nothing more.
+    }
+  }
+  return dropped;
+}
+
 /**
  * A search that found nobody is the one an operator has to be able to explain
  * — a missing key, an exhausted quota and a genuinely unlisted expert all look
@@ -724,10 +911,43 @@ export type DiscoveryJobOutcome =
   | 'intro_drafted'
   | 'intro_failed'
   | 'contact_not_found'
+  /**
+   * The search for a REPLACEMENT address found nobody new: the engagement has
+   * hard bounces (`bouncedEmails`, lib/deliveryEvents.ts). Its own outcome so
+   * the client's line says "another address", not "an address".
+   */
+  | 'no_other_address'
   | 'contact_suppressed'
   | 'contact_check_unavailable'
   | 'contact_discovery_unavailable'
   | 'expert_not_found';
+
+/**
+ * The line Matchy puts on the thread when a search for a REPLACEMENT address
+ * (after a hard bounce) ends, or null when the thread already shows it.
+ *
+ *   intro_sent     the usual sent line: the new address has the intro
+ *   intro_drafted  nothing: the thread's own "Intro drafted" block says it
+ *   no_other_address / contact_not_found
+ *                  "I couldn't find another address for {first}. ..."
+ *   anything else  the same line the bookmark would have shown
+ *
+ * A first search (no bounces) writes no note: the bookmark's own response line
+ * covers it, as it always has. Pure; every line comes from lib/matchyClient.ts
+ * so the voice is the one the rest of the product uses.
+ */
+export function afterBounceNote(outcome: DiscoveryJobOutcome, firstName: string): string | null {
+  switch (outcome) {
+    case 'intro_drafted':
+    case 'expert_not_found':
+      return null;
+    case 'contact_not_found':
+    case 'no_other_address':
+      return bookmarkLine('no_other_address', firstName);
+    default:
+      return bookmarkLine(outcome, firstName);
+  }
+}
 
 /**
  * One discovery attempt for one bookmarked expert, start to finish:
@@ -760,7 +980,22 @@ export async function runContactDiscoveryJob(job: ContactDiscoveryJob): Promise<
     const orgId = firm?.id ?? null;
     const tier  = pe.expert.seniorityTier ?? 'senior';
 
-    let contactEmail = pe.contactEmail;
+    // Hard bounces on this engagement (lib/deliveryEvents.ts). None of them is
+    // ever looked up or written to again, and their presence makes this a
+    // search for a REPLACEMENT: each way it can end is said on the thread, in
+    // Matchy's voice, because the thread last said "I'm looking for another
+    // address" and must not be left saying it.
+    const bounced     = normalizeExclusions(pe.bouncedEmails);
+    const afterBounce = bounced.length > 0;
+    const finish = async (outcome: DiscoveryJobOutcome): Promise<DiscoveryJobOutcome> => {
+      if (afterBounce) await noteAfterBounce(projectId, expertId, outcome, pe.expert.name);
+      return outcome;
+    };
+
+    // An address on file that is one of the bounced ones is no address at all.
+    let contactEmail = pe.contactEmail && !isExcludedAddress(pe.contactEmail, bounced)
+      ? pe.contactEmail
+      : undefined;
 
     // Already have an address (the bookmark raced us, or a human filled it in):
     // skip discovery entirely and go straight to the intro. No credit spent.
@@ -780,6 +1015,7 @@ export async function runContactDiscoveryJob(job: ContactDiscoveryJob): Promise<
         title:       pe.expert.title,
         sourceUrl:   pe.expert.source_url,
         sourceLinks: (pe.expert.source_links ?? []).map(link => link.url),
+        exclude:     bounced,
       });
 
       if (result.outcome === 'unavailable') {
@@ -798,24 +1034,28 @@ export async function runContactDiscoveryJob(job: ContactDiscoveryJob): Promise<
             attempt, tier, steps: result.attempts.length,
           },
         });
-        return 'contact_discovery_unavailable';
+        return finish('contact_discovery_unavailable');
       }
 
-      if (result.outcome === 'not_found' || !result.email) {
-        await writeOutcome(projectId, expertId, 'contact_not_found');
+      // isExcludedAddress here is belt and braces: discoverContact already
+      // refuses an excluded address from the cache and from every provider.
+      if (result.outcome === 'not_found' || !result.email || isExcludedAddress(result.email, bounced)) {
+        const notFound: DiscoveryJobOutcome = afterBounce ? 'no_other_address' : 'contact_not_found';
+        await writeOutcome(projectId, expertId, notFound);
         await emitEngagementEvent({
           projectId, expertId, orgId,
           type:    'contact_not_found',
           payload: {
-            stage:   'discovery',
-            reason:  'not_found',
+            stage:       'discovery',
+            reason:      'not_found',
             attempt,
             tier,
-            steps:   result.attempts.length,
-            totalMs: result.attempts.reduce((sum, a) => sum + a.ms, 0),
+            steps:       result.attempts.length,
+            totalMs:     result.attempts.reduce((sum, a) => sum + a.ms, 0),
+            replacement: afterBounce,
           },
         });
-        return 'contact_not_found';
+        return finish(notFound);
       }
 
       contactEmail = result.email;
@@ -857,7 +1097,7 @@ export async function runContactDiscoveryJob(job: ContactDiscoveryJob): Promise<
         type:    'contact_not_found',
         payload: { stage: 'suppression', attempt, tier, suppressed: suppression.ok && suppression.suppressed },
       });
-      return outcome;
+      return finish(outcome);
     }
 
     // The intro — the same call the bookmark route makes when it already has an
@@ -889,7 +1129,7 @@ export async function runContactDiscoveryJob(job: ContactDiscoveryJob): Promise<
     if (!sendResult.ok) {
       console.warn('[contactDiscovery] intro not sent', JSON.stringify({ projectId, reason: sendResult.error }));
       await writeOutcome(projectId, expertId, 'intro_failed');
-      return 'intro_failed';
+      return finish('intro_failed');
     }
 
     // Send-once guard refused: the intro already went out on an earlier call
@@ -921,6 +1161,7 @@ export async function runContactDiscoveryJob(job: ContactDiscoveryJob): Promise<
           expertRate: pe.expertRate ?? 0,
           clientRate: pe.clientRate ?? 0,
           introArm:   sentPe?.introArm ?? null,
+          ...(afterBounce && { replacement: true }),
         },
       });
     }
@@ -928,7 +1169,7 @@ export async function runContactDiscoveryJob(job: ContactDiscoveryJob): Promise<
     // runSequenceStep owns `status`; contactStatus records how it ended so the
     // Matchy line can say it even after a page reload.
     await writeOutcome(projectId, expertId, sent ? 'intro_sent' : 'intro_drafted');
-    return sent ? 'intro_sent' : 'intro_drafted';
+    return finish(sent ? 'intro_sent' : 'intro_drafted');
   } catch (err) {
     console.error('[contactDiscovery] job failed', JSON.stringify({
       projectId,
@@ -937,6 +1178,28 @@ export async function runContactDiscoveryJob(job: ContactDiscoveryJob): Promise<
     await writeOutcome(projectId, expertId, 'contact_not_found');
     return 'contact_not_found';
   }
+}
+
+/**
+ * Puts afterBounceNote's line on the thread as a Matchy message. Never throws
+ * (appendMessage resolves null on failure): a missing note is a stale line, not
+ * a lost send.
+ */
+async function noteAfterBounce(
+  projectId:  string,
+  expertId:   string,
+  outcome:    DiscoveryJobOutcome,
+  expertName: string | undefined,
+): Promise<void> {
+  const line = afterBounceNote(outcome, firstNameOf(expertName));
+  if (!line) return;
+  await appendMessage({
+    projectId, expertId,
+    direction: 'outbound',
+    author:    'matchy',
+    bodyClean: line,
+    summary:   line,
+  });
 }
 
 /** Writes the terminal outcome. Swallows write errors — nothing left to retry. */

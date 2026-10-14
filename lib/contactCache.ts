@@ -21,6 +21,11 @@ import { getUpstashClient, type UpstashRedis } from './upstashRedis';
 //
 // Read/written by: lib/contactDiscovery.ts only. Never touched from a client
 // component — this module is server-side.
+//
+// DELETION (2026-10-14, lib/deliveryEvents.ts): a cached "found" answer whose
+// address then HARD-BOUNCED must not be handed out again, so the store can now
+// drop one entry. lib/contactDiscovery.invalidateCachedContact is the caller; it
+// deletes only an entry whose stored address is one of the bounced ones.
 
 // acquireLock/releaseLock are optional and NOTHING calls them today: the
 // discovery chain does not take a lock around a lookup, so two jobs for the same
@@ -28,6 +33,8 @@ import { getUpstashClient, type UpstashRedis } from './upstashRedis';
 export interface CacheStore {
   get(key: string): Promise<ContactEnrichment | null>;
   set(key: string, value: ContactEnrichment, ttlMs: number): Promise<void>;
+  /** Forget one entry. Deleting a key that is not there is not an error. */
+  delete(key: string): Promise<void>;
   // acquireLock returns a lockId if acquired, or null if the key is already locked.
   // releaseLock requires the same lockId — prevents a different owner from unlocking.
   acquireLock?(key: string, ttlMs: number): Promise<string | null>;
@@ -83,6 +90,10 @@ class InMemoryCacheStore implements CacheStore {
     this.data.set(key, value);
   }
 
+  async delete(key: string): Promise<void> {
+    this.data.delete(key);
+  }
+
   async acquireLock(key: string, _ttlMs: number): Promise<string | null> {
     if (this.locks.has(key)) return null;
     const lockId = randomBytes(8).toString('hex');
@@ -119,6 +130,11 @@ class UpstashCacheStore implements CacheStore {
     const sk     = storageKeyHash(key);
     const ttlSec = Math.max(1, Math.ceil(ttlMs / 1000));
     await this.redis.set(`cache:${sk}`, JSON.stringify(value), { ex: ttlSec });
+  }
+
+  async delete(key: string): Promise<void> {
+    const sk = storageKeyHash(key);
+    await this.redis.del(`cache:${sk}`);
   }
 
   // SET lock:{hash} {requestId} EX {ttl} NX — atomic, expires automatically

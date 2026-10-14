@@ -147,6 +147,24 @@ check('a queued email2 marker is not an intro marker',
 const claimedByA = { email1SentAt: Date.now(), outreachStep: 'email1' as const };
 check('the second concurrent job refuses to send', introAlreadySent(claimedByA) === true);
 
+// A HARD BOUNCE (lib/deliveryEvents.ts): the bounced intro reached nobody, so
+// exactly one intro may go to a DIFFERENT address found afterwards. The full
+// story is in scripts/test-delivery-events.ts; these pin the rule here too.
+const bouncedRow = {
+  email1SentAt:     1757000000000,
+  outreachStep:     'email1' as const,
+  bouncedEmails:    ['old@acmecoatings.example'],
+  contactBouncedAt: 1757000060000,
+};
+check('after a bounce, a new address may get one intro',
+  introAlreadySent({ ...bouncedRow, contactEmail: 'new@acmecoatings.example' }) === false);
+check('after a bounce, the bounced address may not',
+  introAlreadySent({ ...bouncedRow, contactEmail: 'OLD@acmecoatings.example' }) === true);
+check('after a bounce, with no address on file, the claim stands',
+  introAlreadySent(bouncedRow) === true);
+check('once the new intro is claimed, a second one is refused',
+  introAlreadySent({ ...bouncedRow, contactEmail: 'new@acmecoatings.example', email1SentAt: 1757000120000 }) === true);
+
 // ─── Matchy 2.0's new surfaces do not open a second door ─────────────────────
 //
 // A source-level check, deliberately: the gates above are only the chokepoint
@@ -220,4 +238,3 @@ check('bare From keeps a bare reply-to',
   withFromDisplayName('asher@expertmatch.fit', 'reply+x@reply.expertmatch.fit') === 'reply+x@reply.expertmatch.fit');
 
 summary();
-
