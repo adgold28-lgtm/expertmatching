@@ -48,6 +48,7 @@ import {
   formatSlot,
   viewerZoneLabel,
   bookingIcsUrl,
+  flagMismatch,
   PREFERENCES_MAX,
   setClientRate,
   passExpert,
@@ -68,6 +69,7 @@ import { CLIENT_STATUS_META, hasConversation } from './matchyStatus';
 import { WALKTHROUGH_HELD_SUMMARY, heldLabel } from '../lib/walkthrough';
 import { askMatchy, findingNoun, isRateLocked, type AskAction, type AskCard, type AskJump } from '../lib/matchyIntent';
 import { rejectionLabel } from '../lib/rejectionReasons';
+import { mismatchEligibility, mismatchWindowState, type MismatchWindowState } from '../lib/mismatchGuarantee';
 
 // ─── Props ────────────────────────────────────────────────────────────────────
 
@@ -492,6 +494,16 @@ export default function ConversationThread({
   const [cancelBusy,  setCancelBusy]  = useState(false);
   const [cancelError, setCancelError] = useState('');
 
+  // ── The ten-minute mismatch guarantee (booked-call card) ──
+  // `mismatchPhase` is which side of the window the booked call is on, by this
+  // screen's clock; it ticks on its own, so the offer appears at the start and
+  // goes at minute ten without a reload. The confirm step and the error are
+  // keyed by expert, so switching threads can never carry one across.
+  const [mismatchPhase,      setMismatchPhase]      = useState<MismatchWindowState | null>(null);
+  const [mismatchConfirmFor, setMismatchConfirmFor] = useState<string | null>(null);
+  const [mismatchBusy,       setMismatchBusy]       = useState(false);
+  const [mismatchError,      setMismatchError]      = useState<{ expertId: string; text: string } | null>(null);
+
   // ── Ask Matchy (Matchy 2.0) ──
   // One card at a time, never stored. `askDraft` is the draft route's answer,
   // shown behind "Use this". `askNote` is the one quiet line left behind after
@@ -759,6 +771,35 @@ export default function ConversationThread({
     }
   }
 
+  // ── The ten-minute mismatch guarantee ──
+  // The window is the booked start to ten minutes after it on this screen's
+  // clock; the server adds a minute of grace for skew. Same-value updates bail
+  // out, so the tick re-renders the thread only when the phase changes.
+  const mismatchStart = pe.booking && !pe.booking.cancelledAt ? pe.booking.startUtc : null;
+  useEffect(() => {
+    if (!mismatchStart) { setMismatchPhase(null); return; }
+    const tick = () => setMismatchPhase(mismatchWindowState(Date.now(), mismatchStart, 0));
+    tick();
+    const interval = setInterval(tick, 15_000);
+    return () => clearInterval(interval);
+  }, [mismatchStart]);
+
+  /** Flags the booked call. Only ever sent after the confirm step. */
+  async function runFlagMismatch() {
+    if (mismatchBusy) return;
+    setMismatchBusy(true);
+    setMismatchError(null);
+    const res = await flagMismatch(projectId, expertId);
+    setMismatchBusy(false);
+    if (!res.ok) {
+      setMismatchError({ expertId, text: res.message });
+      return;
+    }
+    setMismatchConfirmFor(null);
+    setThreadPE(res.projectExpert);
+    onExpertUpdate(res.projectExpert);
+  }
+
   /** Review-first: the intro is written and waiting on the client. */
   async function approveIntro(line?: string) {
     setApproving(true);
@@ -1019,6 +1060,75 @@ export default function ConversationThread({
   // 'rejected_after_outreach' as well, so this is belt and braces against a
   // payload that has one field and not the other.
   const showBooked   = booking !== null && !booking.cancelledAt && status === 'scheduled';
+
+  // ── The ten-minute mismatch guarantee ──────────────────────────────────────
+  // Owner (or staff) only. The offer shows while the window is open and the
+  // call can still be flagged (lib/mismatchGuarantee.mismatchEligibility, with
+  // no grace, so the button never outlives the copy). Once flagged, one line
+  // says so. A call that ended inside the window keeps a small card of its own
+  // until the window closes, because the booked card goes when it completes.
+  const mismatchFlagged = booking !== null && !!booking.icsUid && pe.mismatchCallId === booking.icsUid;
+  const mismatchOffer   = canSend && mismatchPhase === 'open' && !mismatchFlagged
+    && mismatchEligibility(pe, Date.now(), 0).ok;
+  const showMismatchAfterEnd = canSend && !showBooked && booking !== null && !booking.cancelledAt
+    && status === 'completed' && mismatchPhase === 'open' && (mismatchFlagged || mismatchOffer);
+
+  /** The guarantee's line, its button and its confirm step. */
+  function mismatchBlock() {
+    if (mismatchFlagged) {
+      return <MatchyLine>{"Flagged. You won't be charged for this call."}</MatchyLine>;
+    }
+    const confirming = mismatchConfirmFor === expertId;
+    const error      = mismatchError?.expertId === expertId ? mismatchError.text : '';
+    return (
+      <div className="space-y-2">
+        {confirming ? (
+          <>
+            <MatchyLine>{"You won't be charged for this call. The expert is still paid for their time."}</MatchyLine>
+            <div className="flex flex-col sm:flex-row gap-2 sm:pl-[52px]">
+              <button
+                type="button"
+                onClick={() => { void runFlagMismatch(); }}
+                disabled={mismatchBusy}
+                className="w-full sm:w-auto inline-flex items-center justify-center gap-1.5 text-[10px] uppercase tracking-widest bg-navy text-cream px-3 py-2 hover:bg-navy/90 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                style={{ letterSpacing: '0.1em' }}
+              >
+                {mismatchBusy && <Spinner />}
+                {mismatchBusy ? 'Working…' : 'Flag it'}
+              </button>
+              <button
+                type="button"
+                onClick={() => { setMismatchConfirmFor(null); setMismatchError(null); }}
+                disabled={mismatchBusy}
+                className="w-full sm:w-auto text-[10px] uppercase tracking-widest text-muted hover:text-navy border border-frame px-3 py-2 disabled:opacity-40 transition-colors"
+                style={{ letterSpacing: '0.1em' }}
+              >
+                Never mind
+              </button>
+            </div>
+          </>
+        ) : (
+          <div className="flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-3">
+            <p className="flex-1 min-w-0 text-[11px] leading-relaxed text-ink">
+              {"Not the right expert? Flag it in the first ten minutes and you won't be charged."}
+            </p>
+            <button
+              type="button"
+              onClick={() => { setMismatchConfirmFor(expertId); setMismatchError(null); }}
+              className="w-full sm:w-auto shrink-0 text-[10px] uppercase tracking-widest text-navy border border-navy/30 hover:border-navy px-3 py-2 transition-colors"
+              style={{ letterSpacing: '0.1em' }}
+            >
+              Flag a mismatch
+            </button>
+          </div>
+        )}
+        {error && (
+          <p role="alert" className="text-[11px] text-status-danger">{error}</p>
+        )}
+      </div>
+    );
+  }
+
   const showProposed = !showBooked
     && (status === 'scheduling_sent' || outcome === 'times_proposed' || outcome === 'link_sent');
   // Terms are settled and nothing has been proposed yet — or the last attempt
@@ -1455,7 +1565,12 @@ export default function ConversationThread({
               </a>
             </div>
 
-            {canSend && (
+            {/* The ten-minute mismatch guarantee: the offer while the window is
+                open, then one line once flagged. A flagged call is settled, so
+                Move and Cancel go with it. */}
+            {canSend && (mismatchFlagged || mismatchOffer) && mismatchBlock()}
+
+            {canSend && !mismatchFlagged && (
               <div className="space-y-2">
                 {outcome === 'reschedule_requested' ? (
                   <MatchyLine tone="quiet">Finding a new time with {firstName}.</MatchyLine>
@@ -1545,6 +1660,21 @@ export default function ConversationThread({
                 {scheduleFeedback()}
               </div>
             )}
+          </div>
+        )}
+
+        {/* ── A booked call that ended inside its first ten minutes: the
+              booked card has gone, the guarantee has not. Shown only until the
+              window closes. ── */}
+        {showMismatchAfterEnd && (
+          <div className="border border-green-300 bg-green-50 px-3.5 py-3 space-y-2.5">
+            <p
+              className="text-[10px] uppercase tracking-widest text-green-800 font-semibold"
+              style={{ letterSpacing: '0.16em' }}
+            >
+              Call ended
+            </p>
+            {mismatchBlock()}
           </div>
         )}
 

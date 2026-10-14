@@ -346,6 +346,19 @@ export function bookingIcsUrl(projectId: string, expertId: string): string {
   return `${expertBase(projectId, expertId)}/booking/ics`;
 }
 
+/**
+ * The ten-minute mismatch guarantee: flags the booked call so the client is
+ * not charged for it (the expert is still paid). Owner or staff only. A second
+ * flag for the same call is a 200 with the same state; a 409 outside the window
+ * carries a written `message`, which this returns as is.
+ */
+export function flagMismatch(
+  projectId: string,
+  expertId:  string,
+): Promise<MatchyResult<{ projectExpert: ProjectExpertWithCounter }>> {
+  return request(`${expertBase(projectId, expertId)}/mismatch`, { method: 'POST', body: {} });
+}
+
 // ─── Matchy 2.0: the per-expert rate, the pass, the draft ─────────────────────
 
 /**
