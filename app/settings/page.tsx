@@ -125,6 +125,15 @@ export default function SettingsPage() {
             .
           </p>
         )}
+
+        {/* Everyone sees the link: members get the count, the champion edits. */}
+        <p className={`${canManageTeam ? 'mt-3' : 'mt-8'} text-xs text-muted`}>
+          Companies or people your firm must not contact?{' '}
+          <Link href="/settings/do-not-contact" className="text-navy underline underline-offset-2 hover:opacity-70 transition-opacity">
+            Do-not-contact list
+          </Link>
+          .
+        </p>
       </main>
     </div>
   );
