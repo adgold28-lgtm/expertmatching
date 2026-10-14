@@ -1,6 +1,6 @@
 'use client';
 
-import { Fragment, useCallback, useEffect, useMemo, useState, useSyncExternalStore, type ReactNode } from 'react';
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
 import type { ProjectExpert } from '../types';
 import {
   BULK_BOOKMARK_CONCURRENCY,
@@ -134,6 +134,15 @@ export default function BulkBookmarkMatches({
   const count      = queue.length;
   const progressed = batch.total > 0 ? Math.round((batch.done / batch.total) * 100) : 0;
 
+  // When a batch ends, what is left to try stays selected. Done here rather
+  // than at the end of bookmarkSelected so it also lands when this grid was
+  // unmounted (Conversations) and remounted while the batch ran.
+  const wasRunning = useRef(batch.running);
+  useEffect(() => {
+    if (wasRunning.current && !batch.running) setSelected(batch.retry);
+    wasRunning.current = batch.running;
+  }, [batch.running, batch.retry]);
+
   // Leaving the page mid-batch would drop the rest silently; ask first.
   useEffect(() => {
     if (!batch.running) return;
@@ -204,7 +213,6 @@ export default function BulkBookmarkMatches({
       summary: summarizeBulkBookmark(result),
       retry,
     });
-    setSelected(retry);
     onBatchEnd?.();
   }
 
