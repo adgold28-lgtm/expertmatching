@@ -50,6 +50,7 @@ section('toHeldReason — narrows what came out of jsonb');
 
 eq('walkthrough narrows',        toHeldReason('walkthrough'), 'walkthrough');
 eq('disabled narrows',           toHeldReason('disabled'),    'disabled');
+eq('do_not_contact narrows',     toHeldReason('do_not_contact'), 'do_not_contact');
 eq('unknown string is null',     toHeldReason('whatever'),    null);
 eq('undefined is null',          toHeldReason(undefined),     null);
 eq('non-string is null',         toHeldReason(true),          null);
@@ -123,7 +124,7 @@ check('walkthrough: the engagement still moves — a practised decision has to '
   + 'leave the project where it really would be', wt.advance === true);
 check('walkthrough: nothing was delivered', wt.delivered === false);
 
-for (const reason of ['trial', 'disabled'] as const) {
+for (const reason of ['trial', 'disabled', 'do_not_contact'] as const) {
   const d = dispositionOf({ kind: 'outcome', outcome: { sent: false, held: reason } });
   eq(`${reason}: the reason is stored on the message`, d.held, reason);
   check(`${reason}: the rate is NOT written, no event is emitted, no times are proposed`,

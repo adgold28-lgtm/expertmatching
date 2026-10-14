@@ -29,6 +29,14 @@ import { getProject } from './projectStore';
 import { isWalkthrough, type HeldReason } from './walkthrough';
 import { getEntitlementsForProject, recordRestrictedAttempt } from './entitlements';
 import { isSuppressed, type SuppressionCheck } from './outreachSuppressions';
+import { getServiceRoleClient } from './supabase/admin';
+import {
+  checkDoNotContact,
+  checkWithoutDatabase,
+  supabaseDoNotContactStore,
+  type DoNotContactCheck,
+} from './doNotContact';
+import type { Project } from '../types';
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -67,7 +75,10 @@ export interface SendSequenceEmailOptions {
  * switched live (lib/walkthrough.ts), 'trial' when the organization has no card
  * on file (lib/entitlements.ts), 'disabled' when DISABLE_EMAILS is set,
  * 'suppressed' when the address is on the global do-not-contact list, or the
- * list could not be read (lib/outreachSuppressions.ts, fail-closed).
+ * list could not be read (lib/outreachSuppressions.ts, fail-closed),
+ * 'do_not_contact' when the address, its domain, or the expert's name or
+ * company is on the client firm's own list, or that list could not be read
+ * (lib/doNotContact.ts, fail-closed; a table not yet created reads as empty).
  *
  * EVERY CALLER READS THIS. lib/outreachSteps.ts, lib/matchyScheduling.ts,
  * app/api/jobs/send-nudge and app/api/inbound-email fall back to a drafted or
@@ -95,6 +106,14 @@ export interface SendGateFacts {
   canOutreach:   boolean | null;
   /** lib/outreachSuppressions.isSuppressed() on the recipient address. */
   suppression:   SuppressionCheck | null;
+  /**
+   * lib/doNotContact.checkDoNotContact() on the recipient address and the
+   * expert's name and company, against the list of the firm that owns the
+   * project. A message addressed to the project's own client is answered
+   * `{ ok: true, match: null }` without a read: the firm's list is about who
+   * the firm may not reach, and the client is the firm.
+   */
+  doNotContact:  DoNotContactCheck | null;
 }
 
 export type SendGateDecision =
@@ -102,12 +121,12 @@ export type SendGateDecision =
   | { send: false; held: HeldReason };
 
 /**
- * THE GATE, as a pure function: the four rules that decide whether an email may
+ * THE GATE, as a pure function: the five rules that decide whether an email may
  * leave the building, in the order the chokepoint applies them.
  *
- * Fails closed on every unknown: a missing entitlement answer and an
- * unreadable suppression list both hold. Tested by
- * scripts/test-send-chokepoint.ts.
+ * Fails closed on every unknown: a missing entitlement answer, an unreadable
+ * suppression list and an unreadable firm list all hold. Tested by
+ * scripts/test-send-chokepoint.ts and scripts/test-do-not-contact.ts.
  */
 export function resolveSendGate(facts: SendGateFacts): SendGateDecision {
   if (facts.disableEmails)        return { send: false, held: 'disabled' };
@@ -116,7 +135,26 @@ export function resolveSendGate(facts: SendGateFacts): SendGateDecision {
   if (facts.suppression === null || !facts.suppression.ok || facts.suppression.suppressed) {
     return { send: false, held: 'suppressed' };
   }
+  if (facts.doNotContact === null || !facts.doNotContact.ok || facts.doNotContact.match !== null) {
+    return { send: false, held: 'do_not_contact' };
+  }
   return { send: true };
+}
+
+/**
+ * True when `to` is the project's own client (its owner, or the client contact
+ * on the brief) rather than the expert. lib/expertRemoval sends the client an
+ * apology through this chokepoint on the expert's token; the firm's
+ * do-not-contact list must not hold a message to the firm itself.
+ */
+export function isClientRecipient(
+  to:      string,
+  project: Pick<Project, 'ownerEmail' | 'clientEmail'>,
+): boolean {
+  const address = to.trim().toLowerCase();
+  if (!address) return false;
+  return [project.ownerEmail, project.clientEmail]
+    .some(client => !!client && client.trim().toLowerCase() === address);
 }
 
 /** What a caller may do with the engagement after one send attempt. */
@@ -162,7 +200,7 @@ export function dispositionOf(attempt: SendAttempt): SendDisposition {
 
 /**
  * THE CHOKEPOINT. Every outbound expert email in the product goes through here,
- * which is why all four gates live here and not only at the call sites: no
+ * which is why all five gates live here and not only at the call sites: no
  * route, present or future, can leak an email past them.
  *
  * The project is resolved from the reply token (the one thing every caller
@@ -170,12 +208,21 @@ export function dispositionOf(attempt: SendAttempt): SendDisposition {
  * throws rather than sending, because a message we cannot attribute to a
  * project is a message we cannot prove is allowed to go.
  *
- * THE GLOBAL DO-NOT-CONTACT LIST IS CHECKED HERE (H-3), last of the four, so an
+ * THE GLOBAL DO-NOT-CONTACT LIST IS CHECKED HERE (H-3), fourth of the five, so an
  * expert who clicks the footer opt-out mid-thread cannot receive a client
  * reply, a rate line, an auto follow-up or a scheduling proposal either. The
  * call-site checks in bookmark, outreach/approve, messages/[id]/send,
  * jobs/send-nudge and lib/contactDiscovery stay as early-exit UX: they answer
  * 409 with a written explanation instead of storing a held message.
+ *
+ * THE FIRM'S OWN DO-NOT-CONTACT LIST IS CHECKED HERE TOO, fifth and last
+ * (lib/doNotContact.ts): the recipient address, its domain, and the expert's
+ * name and company, against the list of the organization that owns the
+ * project. The expert comes from the reply token, like the project. Read fresh
+ * on every send, so a removal takes effect at once. A table that does not
+ * exist yet reads as an empty list; any other read failure holds. The bookmark
+ * route checks name and company before discovery spends anything; this is the
+ * check nothing can route around.
  *
  * The gates are ordered cheapest-first and each one short-circuits the lookup
  * the next would need, so a walkthrough project still costs no entitlement read
@@ -204,7 +251,8 @@ export async function sendSequenceEmail(
 
   // Resolve the project before Resend is ever touched. The token is the only
   // handle a caller is guaranteed to have, and it is project+expert scoped.
-  const project = disableEmails ? null : await resolveSendProject(replyToken);
+  const resolved    = disableEmails ? null : await resolveSendProject(replyToken);
+  const project     = resolved?.project ?? null;
   const walkthrough = project !== null && isWalkthrough(project);
 
   // The account boundary (lib/entitlements.ts): a trial, or any organization
@@ -221,11 +269,19 @@ export async function sendSequenceEmail(
     ? await isSuppressed(to)
     : null;
 
+  // The firm's own list, keyed on the address AND the expert. Only read once
+  // every earlier gate has passed; checkFirmList never throws and reports an
+  // unreadable list as unavailable, which resolveSendGate holds.
+  const doNotContact = resolved && suppression?.ok && !suppression.suppressed
+    ? await checkFirmList(resolved.project, resolved.expertId, to)
+    : null;
+
   const gate = resolveSendGate({
     disableEmails,
     walkthrough,
     canOutreach: entitlements === null ? null : entitlements.canOutreachExperts,
     suppression,
+    doNotContact,
   });
 
   if (!gate.send) {
@@ -269,15 +325,36 @@ export async function sendSequenceEmail(
 }
 
 /**
- * The project behind a reply token, or a throw. Split out only so the gate
- * facts above can be gathered in one readable pass; the rule is unchanged —
- * a message we cannot attribute to a project is never sent.
+ * The project and expert behind a reply token, or a throw. Split out only so
+ * the gate facts above can be gathered in one readable pass; the rule is
+ * unchanged — a message we cannot attribute to a project is never sent.
  */
-async function resolveSendProject(replyToken: string) {
+async function resolveSendProject(replyToken: string): Promise<{ project: Project; expertId: string }> {
   const verified = verifyOutreachToken(replyToken);
   const project  = verified.ok ? await getProject(verified.data.projectId) : null;
-  if (!project) {
+  if (!verified.ok || !project) {
     throw new Error('[emailSequence] send refused: unresolvable project');
   }
-  return project;
+  return { project, expertId: verified.data.expertId };
+}
+
+/**
+ * The firm-list fact for one send. A message to the project's own client skips
+ * the read (see isClientRecipient). No service-role client holds in
+ * production (checkWithoutDatabase). The expert's name and company come off the
+ * project record; an expert no longer on the project is still checked on the
+ * address and its domain.
+ */
+async function checkFirmList(project: Project, expertId: string, to: string): Promise<DoNotContactCheck> {
+  if (isClientRecipient(to, project)) return { ok: true, match: null };
+
+  const admin = getServiceRoleClient();
+  if (!admin) return checkWithoutDatabase();
+
+  const pe = project.experts.find(e => e.expert.id === expertId);
+  return checkDoNotContact(supabaseDoNotContactStore(admin), project.id, {
+    email:   to,
+    name:    pe?.expert.name ?? null,
+    company: pe?.expert.company ?? null,
+  });
 }
