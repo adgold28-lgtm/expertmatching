@@ -16,6 +16,7 @@ import {
 import ProjectExpertCard from '../../../components/ProjectExpertCard';
 import { downloadProjectBriefPdf } from '../../../lib/exportBrief';
 import ConversationsPanel from '../../../components/ConversationsPanel';
+import ProjectStatsPanel from '../../../components/ProjectStatsPanel';
 import { useFocusTrap } from '../../../lib/useFocusTrap';
 import { hasConversation } from '../../../components/matchyStatus';
 import { isWalkthrough } from '../../../lib/walkthrough';
@@ -1738,6 +1739,8 @@ function ProjectPageInner() {
         {/* 3 — Conversations */}
         {viewStep === 'conversations' && (
           <div className="space-y-6">
+            <ProjectStatsPanel projectId={projectId} project={project} />
+
             <p className="text-sm text-muted leading-relaxed max-w-xl" style={{ fontWeight: 300 }}>
               <strong className="font-medium text-navy">We&apos;ve reached out.</strong>{' '}
               Replies land here — we&apos;ll tell you when there&apos;s something to decide.
