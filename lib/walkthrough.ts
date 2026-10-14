@@ -33,6 +33,21 @@ export function isWalkthrough(project: Pick<Project, 'walkthrough'>): boolean {
 export const WALKTHROUGH_HELD_SUMMARY = 'Held. Walkthrough mode sends nothing.';
 
 /**
+ * The thread summary for a held send, by reason. Walkthrough keeps its line;
+ * every other hold names its own cause, so a do-not-contact or opted-out hold
+ * never reads as "walkthrough mode" to the client.
+ */
+export function heldSummary(reason: HeldReason | string | null | undefined): string {
+  switch (reason) {
+    case 'do_not_contact': return "Not sent. They're on your firm's do-not-contact list.";
+    case 'suppressed':     return 'Not sent. They asked not to be contacted.';
+    case 'trial':          return 'Held until your account is activated.';
+    case 'disabled':       return 'Held. Sending is switched off.';
+    default:               return WALKTHROUGH_HELD_SUMMARY;
+  }
+}
+
+/**
  * Why a send did not happen.
  *   'walkthrough' — the project has not been switched live
  *   'disabled'    — DISABLE_EMAILS=true, the environment-wide kill switch

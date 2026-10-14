@@ -129,9 +129,14 @@ export default function ProjectExpertCard({
 
     if (!res.ok) {
       onUpdate(before);
-      console.error('bookmark failed', res.message);
+      // A refusal the client can act on gets one line; nothing else does.
+      // The do-not-contact refusal carries its own wording from the route.
+      setMatchyNote(res.error === 'do_not_contact'
+        ? { text: res.message || "On your firm's do-not-contact list.", tone: 'alert' }
+        : { text: `Couldn't bookmark ${firstNameOf(expert.name)}. Try again.`, tone: 'alert' });
       return;
     }
+    setMatchyNote(null);
     onUpdate(res.projectExpert);
   }
 

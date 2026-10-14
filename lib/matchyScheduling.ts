@@ -66,7 +66,7 @@ import { cleanEmailBody } from './emailClean';
 import { emitEngagementEvent } from './engagementEvents';
 import { getFirm } from './firmStore';
 import { sendSequenceEmail } from './emailSequence';
-import { isWalkthrough, WALKTHROUGH_HELD_SUMMARY, type HeldReason } from './walkthrough';
+import { isWalkthrough, heldSummary, type HeldReason } from './walkthrough';
 import { openai } from './openai';
 import {
   proposeTimesEmail,
@@ -1060,7 +1060,7 @@ export async function proposeTimes(input: ProposeTimesInput): Promise<ProposeTim
     author:    'matchy',
     bodyClean: storedBody,
     summary:   held
-      ? WALKTHROUGH_HELD_SUMMARY
+      ? heldSummary(heldReason)
       : proposals.length === 0
         ? 'Sent a link so they can pick a time.'
         : reason === 'reschedule'

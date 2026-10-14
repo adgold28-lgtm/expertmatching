@@ -69,7 +69,7 @@ import {
 } from '../../../../lib/matchyScheduling';
 import { noTimesLeftEmail, threadSubject } from '../../../../lib/schedulingTemplates';
 import { sendSequenceEmail } from '../../../../lib/emailSequence';
-import { isWalkthrough, WALKTHROUGH_HELD_SUMMARY } from '../../../../lib/walkthrough';
+import { isWalkthrough, heldSummary, toHeldReason, type HeldReason } from '../../../../lib/walkthrough';
 import { cleanEmailBody } from '../../../../lib/emailClean';
 import { cancelWindow as windowFor, type CancelWindow } from '../../../../lib/callPolicies';
 import type { AvailabilitySlot, Project, ProjectExpert, ProposedSlot } from '../../../../types';
@@ -192,6 +192,12 @@ async function moreWindowsFor(
 }
 
 // ─── GET ──────────────────────────────────────────────────────────────────────
+
+
+/** Why a send did not happen: the chokepoint's own reason, else walkthrough (nothing was attempted). */
+function heldReasonOf(outcome: { sent: boolean; held?: unknown }): HeldReason {
+  return toHeldReason(outcome.held) ?? 'walkthrough';
+}
 
 export async function GET(
   request: NextRequest,
@@ -542,7 +548,7 @@ async function sendNoTimesLeft(project: Project, pe: ProjectExpert, rawToken: st
     bodyClean: cleanEmailBody(email.text),
     summary:   outcome.sent
       ? 'No overlap left. Asked them to send windows that work.'
-      : WALKTHROUGH_HELD_SUMMARY,
-    ...(outcome.sent ? {} : { held: 'walkthrough' as const }),
+      : heldSummary(heldReasonOf(outcome)),
+    ...(outcome.sent ? {} : { held: heldReasonOf(outcome) }),
   });
 }

@@ -22,10 +22,12 @@
 //   lib/firmStore, lib/projectStore, lib/conversations, lib/orgBilling,
 //   lib/entitlements, lib/productEvents, lib/engagementEvents, lib/attention,
 //   lib/expertPayout, lib/calendarConnections, lib/outreachSuppressions,
-//   lib/zoomLookup, lib/authLinks
+//   lib/zoomLookup, lib/authLinks, lib/doNotContact, lib/deliveryEvents,
+//   lib/heldIntros, lib/outreachStats
 //   app/api/auth/set-password, app/api/request-access, app/api/admin/requests,
 //   app/api/settings/payment-method, app/api/jobs/reconcile,
-//   app/api/jobs/schedule-nudges, scripts/seed-admin
+//   app/api/jobs/schedule-nudges, app/api/org/do-not-contact,
+//   app/api/admin/held-intros, app/api/admin/outreach-stats, scripts/seed-admin
 // Two of those are reachable WITHOUT a session — /api/request-access (public)
 // and /api/auth/set-password (token-gated) — so their input validation is the
 // only thing standing between an anonymous caller and a privileged write.
