@@ -51,6 +51,13 @@ import {
   expertRemovedApologyEmail,
 } from '../lib/schedulingTemplates';
 import { createProject, updateExpertStatus } from '../lib/projectStore';
+import { lateCancelCallId } from '../lib/lateCancelBilling';
+import {
+  MISMATCH_GRACE_MS,
+  MISMATCH_WINDOW_MS,
+  chargeIsForFlaggedCall,
+  mismatchWindowState,
+} from '../lib/mismatchGuarantee';
 import type { BookingState, Expert } from '../types';
 import { check, eq, summary } from './testHarness';
 
@@ -166,6 +173,41 @@ for (const by of ACTORS) {
       !(outcome.clientCharged && outcome.expertRemoved));
   }
 }
+
+// ─── The ten-minute mismatch guarantee against the cancel window ─────────────
+//
+// Two policies meet at the booked start: the cancel window turns 'started' and
+// the mismatch window opens, at the same instant. Each fails closed in its own
+// direction on a start it cannot read: a cancel is treated as late (the fee is
+// shown before anything moves), a flag is refused. scripts/
+// test-mismatch-guarantee.ts owns the guarantee; these checks keep the two
+// policies from drifting apart.
+
+section('the mismatch window opens the instant the call has started');
+
+eq('one ms before the start: cancel is late',            cancelWindow(startMs - 1, START), 'late');
+eq('one ms before the start: no flag yet',               mismatchWindowState(startMs - 1, START), 'not_started');
+eq('at the start: cancel says started',                  cancelWindow(startMs, START), 'started');
+eq('at the start: the flag is open',                     mismatchWindowState(startMs, START), 'open');
+const flagEnd = startMs + MISMATCH_WINDOW_MS + MISMATCH_GRACE_MS;
+eq('the last ms of grace: still open',                   mismatchWindowState(flagEnd, START), 'open');
+eq('one ms later: closed, while the call is still started', mismatchWindowState(flagEnd + 1, START), 'window_closed');
+eq('...and the cancel window has not moved',             cancelWindow(flagEnd + 1, START), 'started');
+eq('an unreadable start: cancel fails closed to late',   cancelWindow(startMs, 'not-a-date'), 'late');
+eq('an unreadable start: the flag fails closed',         mismatchWindowState(startMs, 'not-a-date'), 'window_closed');
+
+section('a flagged call\'s late-cancel fee is covered by the flag');
+
+const flaggedFee = lateCancelCallId({
+  booking: {
+    startUtc: START, endUtc: START, durationMin: 60, zoomMeetingId: null, icsUid: 'uid-flagged',
+    icsSequence: 0, bookedAt: startMs - 24 * 3_600_000, rescheduledCount: 0, history: [],
+  },
+  zoomMeetingId: null,
+});
+check('the fee id derives from the call',         flaggedFee === 'uid-flagged:late-cancel');
+check('a flag on the call covers its fee',        chargeIsForFlaggedCall({ mismatchCallId: 'uid-flagged' }, flaggedFee));
+check('a flag on another call does not',         !chargeIsForFlaggedCall({ mismatchCallId: 'uid-other' }, flaggedFee));
 
 // ─── The copy ────────────────────────────────────────────────────────────────
 

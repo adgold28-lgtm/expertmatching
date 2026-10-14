@@ -18,6 +18,14 @@
 //   3. Otherwise → mark payout pending and email a 7-day onboarding link, at
 //      most once a week and four times in total.
 //
+// THE ONE PAYOUT WITH NO CLIENT PAYMENT (2026-10-14). A call the client
+// flagged under the ten-minute mismatch guarantee (lib/mismatchGuarantee.ts)
+// is 'waived': the client pays nothing and the expert is still paid exactly
+// 15 minutes, from platform funds. 'waived' releases the payout only when the
+// payout's call is the flagged one; the per-call guard and the entitlement
+// gate apply exactly as for a paid call. No payment webhook arrives for it, so
+// lib/lateCancelBilling.settleMismatchFlag runs this directly.
+//
 // PER CALL, NOT PER ENGAGEMENT. A repeat consultation with the same expert on
 // the same project is a second payout: the guard and the Stripe idempotency key
 // both carry the call id (booking.icsUid, else the Zoom meeting id, else the id
@@ -64,6 +72,7 @@ import { expertPayoutDollars, formatUsdFromCents, MIN_BILLABLE_MINUTES } from '.
 import { getFromAddress } from './mailFrom';
 import { resolveCallId } from './createAndSendInvoice';
 import { recordSystemFailure } from './engagementEvents';
+import { isWaivedMismatchPayout, mismatchPayoutMinutes } from './mismatchGuarantee';
 
 // ─── Expert payout email ──────────────────────────────────────────────────────
 
@@ -220,7 +229,7 @@ export function isLateCancelCallId(callId: string | null | undefined): boolean {
 }
 
 /** The minutes a payout is computed over, given the call it is for. */
-export type PayoutMinutesView = Pick<ProjectExpert, 'actualDurationMin' | 'callDurationMin'>;
+export type PayoutMinutesView = Pick<ProjectExpert, 'actualDurationMin' | 'callDurationMin' | 'mismatchCallId'>;
 
 /**
  * How many minutes the expert is paid for.
@@ -230,10 +239,16 @@ export type PayoutMinutesView = Pick<ProjectExpert, 'actualDurationMin' | 'callD
  * (docs/CALL_POLICIES_DRAFT.md, founder decision 2) and never the booked
  * duration — the row still carries the hour the call was booked for, so
  * deriving the payout from it would pay a full hour for a call that never
- * happened. Pure.
+ * happened.
+ *
+ * A call the client flagged under the ten-minute mismatch guarantee
+ * (lib/mismatchGuarantee.ts) is also exactly 15 minutes, out of platform funds,
+ * however long the meeting actually ran. Pure.
  */
 export function payoutMinutesFor(pe: PayoutMinutesView, callId: string | null): number {
   if (isLateCancelCallId(callId)) return MIN_BILLABLE_MINUTES;
+  const flagged = mismatchPayoutMinutes(pe, callId);
+  if (flagged !== null) return flagged;
   return pe.actualDurationMin ?? pe.callDurationMin ?? 0;
 }
 
@@ -316,7 +331,7 @@ export interface PayoutProjectView {
         ProjectExpert,
         'contactEmail' | 'expertRate' | 'actualDurationMin' | 'callDurationMin'
         | 'stripeConnectAccountId' | 'payoutAttempts' | 'paymentStatus'
-        | 'expertOnboardingStatus'
+        | 'expertOnboardingStatus' | 'mismatchCallId'
       >
     & { expert: { id: string; name: string } }
   >;
@@ -431,7 +446,18 @@ export async function runExpertPayout(
 
     if (!pe) return;
 
-    if (pe.paymentStatus !== 'paid') {
+    // The call this payout is for. Pure, so it is safe to derive before the
+    // settlement check that needs it.
+    const callId = payoutCallId(pe);
+
+    // A client payment that has settled releases the payout. So does a call
+    // the client flagged under the ten-minute mismatch guarantee: the client
+    // pays nothing for it ('waived') and the expert is still paid 15 minutes,
+    // from platform funds, for exactly the flagged call and no other
+    // (lib/mismatchGuarantee.isWaivedMismatchPayout). No payment webhook will
+    // ever arrive for such a call, so the waiver itself triggers this run.
+    const settled = pe.paymentStatus === 'paid' || isWaivedMismatchPayout(pe, callId);
+    if (!settled) {
       // A call that was refunded, never settled, or re-billed for a NEW call
       // (createAndSendInvoice resets the shared row to 'unpaid') owes the
       // expert nothing right now. But if the row still carries an unfinished
@@ -450,8 +476,8 @@ export async function runExpertPayout(
     // that list and has a transfer id). Webhook replays and both retry sweeps
     // land here, so a second run for the same call must be a no-op. A genuine
     // second call carries a different id and is paid. (stripeConnect's transfer
-    // also carries a call-keyed idempotency key for the racing case.)
-    const callId = payoutCallId(pe);
+    // also carries a call-keyed idempotency key for the racing case.) A waived
+    // call goes through the same guard: the expert is paid for it once.
     if (payoutAlreadySent(pe, callId)) {
       console.log('[stripe] payout-already-sent', { projectId, expertId });
       return;
@@ -481,8 +507,9 @@ export async function runExpertPayout(
 
     // Compute payout server-side — NEVER trust webhook amount
     const rate        = pe.expertRate ?? 0;
-    // 15 minutes when this payout is the late-cancel / no-show fee, whatever
-    // the row says the call was booked for — see payoutMinutesFor.
+    // 15 minutes when this payout is the late-cancel / no-show fee or a call
+    // flagged under the mismatch guarantee, whatever the row says the call was
+    // booked for or ran — see payoutMinutesFor.
     const durationMin = payoutMinutesFor(pe, callId);
     // The expert is paid the rate they accepted over the billable minutes
     // (lib/pricing.ts) — never a share of what the client was charged.
