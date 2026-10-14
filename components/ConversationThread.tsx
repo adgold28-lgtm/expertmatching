@@ -65,6 +65,8 @@ import {
 import MatchyLine from './MatchyLine';
 import ClientReadyCard from './ClientReadyCard';
 import MatchyAskCard, { type AskActionPayload } from './MatchyAskCard';
+import VettingCard from './VettingCard';
+import ExportLogButton from './ExportLogButton';
 import { CLIENT_STATUS_META, hasConversation } from './matchyStatus';
 import { WALKTHROUGH_HELD_SUMMARY, heldLabel } from '../lib/walkthrough';
 import { askMatchy, findingNoun, isRateLocked, type AskAction, type AskCard, type AskJump } from '../lib/matchyIntent';
@@ -1209,12 +1211,26 @@ export default function ConversationThread({
               ?? [projectExpert.expert.title, projectExpert.expert.company].filter(Boolean).join(' · ')}
           </p>
         </div>
-        <div className="flex items-center gap-2 shrink-0">
+        <div className="flex items-start gap-2 shrink-0 flex-wrap justify-end">
+          {/* The log as this viewer reads it, for a compliance file. Same
+              access and the same redaction as the thread itself. */}
+          <ExportLogButton
+            href={`/api/projects/${projectId}/experts/${encodeURIComponent(expertId)}/messages/export`}
+            label="Export log"
+            formats={['csv', 'txt']}
+            disabled={loading || messages.length === 0}
+            disabledTitle={loading ? 'Loading the thread…' : 'Nothing to export yet.'}
+            fallbackName="conversation"
+          />
           <span className={`text-[10px] px-2 py-0.5 border font-medium uppercase tracking-wider ${statusPill.classes}`}>
             {statusPill.label}
           </span>
         </div>
       </div>
+
+      {/* ── Vetting (public records + the conflict answers) ──
+            Bands in words until the booking; collapsed to one line by default. */}
+      <VettingCard projectExpert={pe} isAdmin={isAdmin} />
 
       {/* ── Your rate for this expert (Matchy 2.0) ──
             The band in the settings strip is the default and the limit; this

@@ -24,6 +24,7 @@ import { EXPERT_STATUSES } from './expertPipeline';
 import { toInitialForm } from './nameValidation';
 import { fallbackDescriptor, descriptorIsAnonymous } from './anonymizeExpert';
 import { classifySeniority, TIER_PRICING } from './seniorityClassifier';
+import { deriveVetting } from './vettingCard';
 
 export interface Viewer {
   role: 'admin' | 'user';
@@ -291,14 +292,23 @@ function anonymizeExpert(expert: Expert): Expert {
 /**
  * Returns the ProjectExpert as this viewer is allowed to see it. Admins get the
  * object untouched (identity-equal, so callers can rely on reference equality).
+ *
+ * `vetting` (lib/vettingCard.ts) is derived HERE, from the raw record, before
+ * the title and evidence it reads are stripped: the browser cannot compute it
+ * for a client. Staff hold the raw record, so components/VettingCard.tsx
+ * derives the same card from it with the same function, and the admin object
+ * keeps its identity. `now` exists for tests; routes leave it out.
  */
-export function redactExpertForViewer(pe: ProjectExpert, viewer: Viewer): ProjectExpert {
+export function redactExpertForViewer(pe: ProjectExpert, viewer: Viewer, now: number = Date.now()): ProjectExpert {
   if (viewer.role === 'admin') return pe;
 
   const stripped = {
     ...omitKeys(pe, [...INTERNAL_PROJECT_EXPERT_KEYS, ...LEGACY_INTERNAL_PROJECT_EXPERT_KEYS]),
     ...matchyOutcomeOf(pe),
     ...redactScheduling(pe.scheduling),
+    // Bands in words, never a year, number, company or name. Always freshly
+    // derived: a `vetting` key sitting in a stored blob is overwritten.
+    vetting: deriveVetting(pe, now),
   };
   if (isIdentityRevealed(pe)) return stripped;
 

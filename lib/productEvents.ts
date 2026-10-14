@@ -48,6 +48,8 @@ export type ProductEventType =
   | 'candidate_unbookmarked'
   | 'candidate_passed'
   | 'candidate_unpassed'
+  // the compliance log (GET …/messages/export, GET …/conversations/export)
+  | 'conversation_exported'       // payload.scope: thread | project, payload.format, payload.messages, payload.threads
   // the paywall
   | 'restricted_action_attempted' // payload.action, payload.kind
   | 'went_live'
