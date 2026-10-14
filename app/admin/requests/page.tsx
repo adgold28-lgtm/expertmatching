@@ -1884,13 +1884,27 @@ export default function AdminConsolePage() {
           >
             EXPERTMATCH
           </Link>
-          <nav className="flex items-center gap-5">
+          <nav className="flex items-center gap-4 sm:gap-5 flex-wrap justify-end">
             <span
               className="text-[10px] uppercase tracking-widest text-gold/80"
               style={{ letterSpacing: '0.18em' }}
             >
               Admin console
             </span>
+            <Link
+              href="/admin/held-intros"
+              className="text-[10px] uppercase text-cream/70 hover:text-gold transition-colors"
+              style={{ letterSpacing: '0.16em' }}
+            >
+              Held intros
+            </Link>
+            <Link
+              href="/admin/outreach"
+              className="text-[10px] uppercase text-cream/70 hover:text-gold transition-colors"
+              style={{ letterSpacing: '0.16em' }}
+            >
+              Outreach scoreboard
+            </Link>
           </nav>
         </div>
       </header>

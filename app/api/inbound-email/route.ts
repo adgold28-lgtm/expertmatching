@@ -58,6 +58,11 @@
 //     only once (`followupSentAt`). On a review-first project the follow-up is
 //     DRAFTED onto the thread and waits for the client's approval.
 //
+// DELIVERY EVENTS (2026-10-14): Resend also posts email.bounced and
+// email.complained here, on the same secret. After verify → parse → claim they
+// are handed to lib/deliveryEvents.ts and never reach the reply pipeline; any
+// other event type is acknowledged and dropped. See step 5b.
+//
 // MONEY: the follow-up quotes `expertRate` because it goes to the expert. The
 // counter is stored twice — `expertCounterRate` for us and the expert,
 // `clientCounterRate` (= clientRateFor of it) for the client — and
@@ -102,6 +107,7 @@ import { bookCall, rebookCall } from '../../../lib/bookCall';
 import { isWalkthrough, WALKTHROUGH_HELD_SUMMARY } from '../../../lib/walkthrough';
 import { clientRateFor } from '../../../lib/pricing';
 import { getFirm, getUser } from '../../../lib/firmStore';
+import { handleDeliveryEvent, webhookRouteFor } from '../../../lib/deliveryEvents';
 // The one pseudonymiser (audit L-49). It hard-fails in production without
 // LOG_HASH_SECRET, where this route's private copy silently fell back.
 import { pseudonymize } from '../../../lib/contactCache';
@@ -388,6 +394,32 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
   if (claim === 'in_progress') {
     console.log('[inbound-email] delivery already in flight — asking for a retry');
     return NextResponse.json({ error: 'in_progress' }, { status: 409 });
+  }
+
+  // ── 5b. Delivery events: bounces and spam complaints ─────────────────────
+  // The same signed webhook carries Resend's email.bounced / email.complained
+  // (lib/deliveryEvents.ts owns what they do). Every other event type is
+  // acknowledged and dropped so Resend never retries it. `email.received`,
+  // and the legacy payload that carries no type, fall through to the reply
+  // pipeline below, unchanged.
+  const webhookRoute = webhookRouteFor(payload.type);
+  if (webhookRoute === 'ignore') {
+    await markDeliveryDone(claimId);
+    return NextResponse.json({ ok: true, ignored: true });
+  }
+  if (webhookRoute === 'delivery') {
+    try {
+      await handleDeliveryEvent(payload);
+    } catch (err) {
+      // Same rule as a reply that fails mid-way: release the claim and answer
+      // 500 so the redelivery lands in an unclaimed window.
+      console.error('[inbound-email] delivery event failed:',
+        err instanceof Error ? err.message.slice(0, 120) : 'unknown');
+      await releaseDelivery(claimId);
+      return NextResponse.json({ error: 'processing_failed' }, { status: 500 });
+    }
+    await markDeliveryDone(claimId);
+    return NextResponse.json({ ok: true });
   }
 
   // ── 6. Extract "to" address and reply token ───────────────────────────────

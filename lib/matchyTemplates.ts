@@ -680,6 +680,8 @@ export function introArmFor(expertId: string): IntroArm {
 export interface IntroEmailInput {
   /** The trial arm — introArmFor(expert.id), or the arm already recorded on the expert. */
   arm:             IntroArm;
+  /** Add INTRO_PAYMENT_TERMS_SENTENCE. Defaults to introPaymentTermsEnabled(). */
+  paymentTerms?:   boolean;
   /**
    * The specific domain for the subject line, lower-case, 2 to 5 words:
    * "cold-chain distribution". From the expert's evidence
@@ -727,9 +729,25 @@ function introSubject(arm: IntroArm, domain: string, rate: number): string {
   return `Expert in ${domain}: compensated $${rate}/hr for your time?`;
 }
 
-function offerSentence(_arm: IntroArm, firm: string, topic: string, rate: number): string {
+/**
+ * The payment-terms line the launch plan asks to test (founder/launch.md Test A,
+ * founder/offer.md row 20). OFF by default: the founder's rubric keeps payment
+ * mechanics out of email one ("Those go in email two, after they've said yes"),
+ * and the follow-up always carries the same terms. INTRO_PAYMENT_TERMS=on turns
+ * it on. It is the first thing dropped when the body would reach 90 words, so
+ * turning it on can never hold an intro that would otherwise have gone out.
+ */
+export const INTRO_PAYMENT_TERMS_SENTENCE =
+  "You'd be paid after the call, 15 minutes minimum even if my client doesn't show.";
+
+export function introPaymentTermsEnabled(): boolean {
+  return /^(on|1|true|yes)$/i.test((process.env.INTRO_PAYMENT_TERMS ?? '').trim());
+}
+
+function offerSentence(_arm: IntroArm, firm: string, topic: string, rate: number, paymentTerms = false): string {
   const money = `they want to compensate you $${rate}/hr for 15 to 60 minutes of your time`;
-  return `They are ${firm} looking to understand ${topic}, and ${money}. ${INTRO_SCOPE_CLAUSE} ${INTRO_QUESTION}`;
+  const terms = paymentTerms ? ` ${INTRO_PAYMENT_TERMS_SENTENCE}` : '';
+  return `They are ${firm} looking to understand ${topic}, and ${money}.${terms} ${INTRO_SCOPE_CLAUSE} ${INTRO_QUESTION}`;
 }
 
 /**
@@ -785,13 +803,21 @@ export function buildIntroEmail(input: IntroEmailInput): MatchyEmail {
   let topicWords = tidy(input.topic).split(/\s+/).filter(Boolean);
   if (topicWords.length === 0) topicWords = ['this', 'market'];
 
-  let body = '';
-  for (;;) {
-    const topic = trimDangling(topicWords.join(' ')) || 'this market';
-    body = [`Dear ${name},`, whyThem, offerSentence(arm, firm, topic, rate)].join('\n\n');
-    if (countWords(body) < INTRO_MAX_BODY_WORDS || topicWords.length <= 2) break;
-    topicWords = topicWords.slice(0, -1);
-  }
+  const wantTerms = input.paymentTerms ?? introPaymentTermsEnabled();
+  const assemble = (withTerms: boolean): string => {
+    let words = topicWords;
+    let out = '';
+    for (;;) {
+      const topic = trimDangling(words.join(' ')) || 'this market';
+      out = [`Dear ${name},`, whyThem, offerSentence(arm, firm, topic, rate, withTerms)].join('\n\n');
+      if (countWords(out) < INTRO_MAX_BODY_WORDS || words.length <= 2) break;
+      words = words.slice(0, -1);
+    }
+    return out;
+  };
+
+  let body = assemble(wantTerms);
+  if (wantTerms && countWords(body) >= INTRO_MAX_BODY_WORDS) body = assemble(false);
   if (countWords(body) >= INTRO_MAX_BODY_WORDS) throw new IntroRubricError('body over 90 words');
 
   const subject = introSubject(arm, domain, rate);
@@ -844,7 +870,7 @@ export function buildFollowUpEmail(input: FollowUpEmailInput): MatchyEmail {
     [
       `1. Any NDAs or employer restrictions that would limit discussing ${topic}?`,
       '2. Any current involvement with companies in this space we should know about?',
-      `3. We compensate experts at $${rate}/hr, billed per minute. Does that work for you?`,
+      `3. We compensate experts at $${rate}/hr, billed per minute with a 15-minute minimum (even if the client doesn't show), paid after the call. Does that work for you?`,
     ].join('\n'),
     'Answer those three and I will propose a couple of times.',
   ].join('\n\n');
@@ -852,7 +878,7 @@ export function buildFollowUpEmail(input: FollowUpEmailInput): MatchyEmail {
   const footer = buildOutreachFooter(input.recipientEmail);
 
   return {
-    subject: `Re: Paid expert call — ${topic}`,
+    subject: `Re: Paid expert call: ${topic}`,
     text:    `${signOff(body)}${footer.text}`,
     html:    toHtml(signOff(body), footer.html),
   };

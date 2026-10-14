@@ -16,10 +16,19 @@
 //     about anyone, the expert's own name, an em dash, a banned phrase, and a
 //     domain that names the company — and never repairs anything
 //   - the staff-line helpers append the clause and lint the result
+//   - the third attempt (launch pack, 2026-10-14) turns a specific sourced
+//     title and company into "Your role as … at … stood out" ("Your time as"
+//     for a Former / Ex- title) only with a public source_url, refuses
+//     generic titles and placeholder companies, passes every rubric rule in
+//     the assembled intro, and is never reached when the evidence or the
+//     model wrote a line
 
 import type { Expert, EvidenceItem } from '../types';
 import {
   whyThemFromEvidence,
+  whyThemFromTitle,
+  isGenericTitle,
+  personalizeIntro,
   secondPersonFromClaim,
   introDomainFor,
   normalizeDomain,
@@ -28,9 +37,17 @@ import {
   whyThemRejection,
   withWhyThemClause,
   WHY_THEM_CLAUSE,
+  WHY_THEM_MAX_WORDS,
 } from '../lib/introPersonalization';
-import { introRubricViolation } from '../lib/matchyTemplates';
+import { buildIntroEmail, introRubricViolation, INTRO_MAX_BODY_WORDS } from '../lib/matchyTemplates';
 import { check, eq, summary } from './testHarness';
+
+// buildIntroEmail signs a per-recipient opt-out link and reads the sender env.
+// Test-only values; they never leave this process.
+process.env.AVAILABILITY_TOKEN_SECRET ||= 'test-only-secret-for-intro-personalization';
+process.env.OUTREACH_FROM_EMAIL = 'Asher Goldstein <asher@expertmatch.fit>';
+delete process.env.OUTREACH_SIGNATURE;
+delete process.env.INTRO_PAYMENT_TERMS;
 
 function section(title: string): void {
   console.log(`\n${title}`);
@@ -234,6 +251,119 @@ eq('malformed JSON is rejected', validateModelWhyThem('not json', modelExpert), 
 eq('an array is rejected', validateModelWhyThem('[1,2]', modelExpert), null);
 eq('empty output is rejected', validateModelWhyThem('', modelExpert), null);
 
+// ─── whyThemFromTitle ────────────────────────────────────────────────────────
+
+section('whyThemFromTitle — the sourced title and company, as a fact, or nothing');
+
+const PUBLIC_URL = 'https://www.example.com/team/mark-ellison';
+
+/** An expert whose evidence cannot be turned into a line, so only the title is left. */
+function titled(overrides: Partial<Expert> = {}): Expert {
+  return expert({
+    title:         'VP of Distribution',
+    company:       'Sysco',
+    source_url:    PUBLIC_URL,
+    evidenceItems: [evidence('Former VP of Distribution at Sysco.', { evidenceType: 'role', confidence: 'high' })],
+    ...overrides,
+  });
+}
+
+const ROLE_LINE = `Your role as VP of Distribution at Sysco stood out${WHY_THEM_CLAUSE}`;
+eq('a specific title and company → "Your role as … at … stood out"', whyThemFromTitle(titled())?.whyThem, ROLE_LINE);
+eq('the line reads exactly', ROLE_LINE, "Your role as VP of Distribution at Sysco stood out, so I think you'd be a great fit for my client.");
+eq('the domain still comes from the expert\'s label', whyThemFromTitle(titled())?.domain, 'cold-chain distribution');
+eq('Former → "Your time as", prefix dropped',
+  whyThemFromTitle(titled({ title: 'Former VP Distribution' }))?.whyThem,
+  `Your time as VP Distribution at Sysco stood out${WHY_THEM_CLAUSE}`);
+eq('Ex- → "Your time as"', whyThemFromTitle(titled({ title: 'Ex-CFO' }))?.whyThem, `Your time as CFO at Sysco stood out${WHY_THEM_CLAUSE}`);
+eq('Ex with a space → "Your time as"', whyThemFromTitle(titled({ title: 'Ex Head of Logistics' }))?.whyThem, `Your time as Head of Logistics at Sysco stood out${WHY_THEM_CLAUSE}`);
+eq('Formerly → "Your time as"', whyThemFromTitle(titled({ title: 'Formerly COO' }))?.whyThem, `Your time as COO at Sysco stood out${WHY_THEM_CLAUSE}`);
+eq('Retired → "Your time as"', whyThemFromTitle(titled({ title: 'Retired Chief Supply Chain Officer' }))?.whyThem,
+  `Your time as Chief Supply Chain Officer at Sysco stood out${WHY_THEM_CLAUSE}`);
+check('"Executive Director" is not read as "Ex-"', whyThemFromTitle(titled({ title: 'Executive Director' }))?.whyThem.startsWith('Your role as Executive Director') === true);
+eq('one comma in a title is fine',
+  whyThemFromTitle(titled({ title: 'Vice President, Distribution' }))?.whyThem,
+  `Your role as Vice President, Distribution at Sysco stood out${WHY_THEM_CLAUSE}`);
+check('a company with "AT" in it is fine', whyThemFromTitle(titled({ company: 'AT&T', title: 'VP Network Operations', valueChainLabel: 'Telecom network operations' })) !== null);
+
+for (const generic of ['Consultant', 'Employee', 'Professional', 'Member', 'Owner', 'Senior Consultant', 'Business Owner',
+  'Independent Consultant', 'Team Member', 'Self-Employed', 'Former Consultant', 'Ex-Owner', 'Advisor', 'Retired']) {
+  eq(`generic title "${generic}" → null`, whyThemFromTitle(titled({ title: generic })), null);
+}
+check('isGenericTitle: specific titles are not generic',
+  !isGenericTitle('VP of Distribution') && !isGenericTitle('CFO') && !isGenericTitle('Founder') && !isGenericTitle('Management Consultant'));
+check('isGenericTitle: empty is generic', isGenericTitle('') && isGenericTitle(null) && isGenericTitle('   '));
+
+eq('missing company → null', whyThemFromTitle(titled({ company: '' })), null);
+eq('blank company → null', whyThemFromTitle(titled({ company: '   ' })), null);
+eq('missing title → null', whyThemFromTitle(titled({ title: '' })), null);
+eq('missing source_url → null', whyThemFromTitle(titled({ source_url: '' })), null);
+eq('a source_url that is not a link → null', whyThemFromTitle(titled({ source_url: 'LinkedIn profile' })), null);
+eq('a placeholder company → null', whyThemFromTitle(titled({ company: 'Self-employed' })), null);
+eq('a stealth company → null', whyThemFromTitle(titled({ company: 'Stealth Startup' })), null);
+eq('a company with no identifying word → null', whyThemFromTitle(titled({ company: 'Global Logistics Group' })), null);
+eq('a company that is a URL → null', whyThemFromTitle(titled({ company: 'sysco.com' })), null);
+eq('a title that already says where → null', whyThemFromTitle(titled({ title: 'VP at Sysco' })), null);
+eq('a title that repeats the company → null', whyThemFromTitle(titled({ title: 'Sysco Regional VP' })), null);
+eq('a title naming the expert → null', whyThemFromTitle(titled({ title: 'Ellison Family Office Principal' })), null);
+eq('several roles with a pipe → null', whyThemFromTitle(titled({ title: 'CEO | Board Member' })), null);
+eq('several roles with a slash → null', whyThemFromTitle(titled({ title: 'VP Sales/Marketing' })), null);
+eq('a bracketed title → null', whyThemFromTitle(titled({ title: 'CFO (Interim)' })), null);
+eq('two commas → null', whyThemFromTitle(titled({ title: 'VP, Sales, Distribution' })), null);
+eq('a list of three → null', whyThemFromTitle(titled({ title: 'Head of Sales and Ops' , company: 'Sysco, Gordon, and Lineage' })), null);
+eq('an em dash in the title → null (refused, not repaired)', whyThemFromTitle(titled({ title: 'VP — Distribution' })), null);
+eq('an em dash with no spaces → null', whyThemFromTitle(titled({ title: 'VP—Distribution' })), null);
+eq('a banned word in the title → null', whyThemFromTitle(titled({ title: 'Head of Compliance' })), null);
+eq('a banned phrase word in the title → null', whyThemFromTitle(titled({ title: 'Chief Insights Officer' })), null);
+eq('money in the title → null', whyThemFromTitle(titled({ title: 'VP of a $2B Division' })), null);
+eq('a very long title → null', whyThemFromTitle(titled({ title: 'Senior Vice President of Regional Southeast Food Service Distribution and Fleet Operations Strategy' })), null);
+eq('no domain → null, the intro is held', whyThemFromTitle(titled({ valueChainLabel: 'Sysco distribution', anonymizedDescriptor: undefined })), null);
+eq('a client deny term in the domain → null',
+  whyThemFromTitle(titled({ valueChainLabel: 'Lineage cold storage' }), { denyTerms: ['Lineage Logistics'] }), null);
+
+section('whyThemFromTitle — every rubric rule, in the line and in the assembled intro');
+
+const titleLines = [
+  titled(),
+  titled({ title: 'Former VP Distribution' }),
+  titled({ title: 'Ex-CFO', company: 'Bayview Veterinary Partners', valueChainLabel: 'Multi-site veterinary operations' }),
+  titled({ title: 'Chief Supply Chain Officer', company: 'The Home Depot', valueChainLabel: 'Big-box retail logistics' }),
+].map(e => whyThemFromTitle(e));
+
+titleLines.forEach((line, i) => {
+  check(`title line ${i + 1} exists`, line !== null);
+  if (!line) return;
+  eq(`title line ${i + 1}: passes whyThemRejection (opening aside)`, whyThemRejection(line.whyThem, { requireSecondPerson: false }), null);
+  eq(`title line ${i + 1}: no rubric violation`, introRubricViolation(line.whyThem), null);
+  check(`title line ${i + 1}: at most ${WHY_THEM_MAX_WORDS} words`, line.whyThem.split(/\s+/).length <= WHY_THEM_MAX_WORDS);
+  check(`title line ${i + 1}: no em dash`, !/—|--/.test(line.whyThem));
+  check(`title line ${i + 1}: ends with the rubric clause`, line.whyThem.endsWith(WHY_THEM_CLAUSE));
+  check(`title line ${i + 1}: addressed to them`, /^Your (?:role|time) as /.test(line.whyThem));
+
+  let intro: ReturnType<typeof buildIntroEmail> | null = null;
+  try {
+    intro = buildIntroEmail({
+      arm:             1,
+      domain:          line.domain,
+      whyThem:         line.whyThem,
+      firmType:        'pe_firm',
+      firmSize:        'mid_size',
+      topic:           'cold-chain economics in the Southeast',
+      expertRate:      800,
+      expertFirstName: 'Mark',
+      recipientEmail:  'mark@example.com',
+    });
+  } catch {
+    intro = null;
+  }
+  check(`title line ${i + 1}: the assembled intro passes buildIntroEmail's rubric`, intro !== null);
+  if (intro) {
+    const body = intro.text.slice(0, intro.text.lastIndexOf('\n\nAsher'));
+    check(`title line ${i + 1}: intro body under ${INTRO_MAX_BODY_WORDS} words`, body.split(/\s+/).filter(Boolean).length < INTRO_MAX_BODY_WORDS);
+    eq(`title line ${i + 1}: intro subject passes the lint`, introRubricViolation(intro.subject), null);
+  }
+});
+
 // ─── generateWhyThem with a stubbed model ────────────────────────────────────
 
 section('generateWhyThem — one call, validated, never repaired');
@@ -264,6 +394,48 @@ async function run(): Promise<void> {
     },
   });
   check('fenced call returns', fenced !== null);
+
+  // ── personalizeIntro: evidence, then the model, then the title ──
+  section('personalizeIntro — the title line is the last resort');
+
+  let modelCalls = 0;
+  const countingLlm = async (): Promise<string> => { modelCalls++; return 'not json'; };
+
+  const trusted = await personalizeIntro(titled({
+    evidenceItems: [evidence('Ran distribution in the Southeast for Sysco for six years.', { evidenceType: 'role', confidence: 'high' })],
+  }), { llm: countingLlm });
+  eq('a trusted claim wins over the title', trusted?.whyThem, GOOD_LINE);
+  eq('source: evidence', trusted?.source, 'evidence');
+  eq('the model is not called when the evidence wrote the line', modelCalls, 0);
+
+  // Evidence that converts beats a model that would also have answered.
+  const modelWins = await personalizeIntro(titled({ evidenceItems: modelExpert.evidenceItems }), {
+    llm: async () => raw("You oversaw 14 depots for Sysco, so I think you'd be a great fit for my client."),
+  });
+  // Only a medium-confidence claim: the evidence pass skips it, the model may use it.
+  const modelOnly = await personalizeIntro(titled({
+    evidenceItems: [evidence('Oversaw 14 depots and a 400-truck fleet.', { evidenceType: 'role', confidence: 'medium' })],
+  }), {
+    llm: async () => raw("You oversaw 14 depots for Sysco, so I think you'd be a great fit for my client."),
+  });
+  eq('with a trusted claim present the evidence still wins', modelWins?.source, 'evidence');
+  eq('a valid model line wins over the title', modelOnly?.source, 'model');
+  eq('the model line is used as written', modelOnly?.whyThem, "You oversaw 14 depots for Sysco, so I think you'd be a great fit for my client.");
+
+  modelCalls = 0;
+  const titleOnly = await personalizeIntro(titled(), { llm: countingLlm });
+  eq('evidence and model both fail → the title line', titleOnly?.whyThem, ROLE_LINE);
+  eq('source: title', titleOnly?.source, 'title');
+  eq('the model was tried first, once', modelCalls, 1);
+
+  const thrownModel = await personalizeIntro(titled(), { llm: async () => { throw new Error('down'); } });
+  eq('a model outage still reaches the title line', thrownModel?.source, 'title');
+
+  const held = await personalizeIntro(titled({ title: 'Consultant' }), { llm: countingLlm });
+  eq('all three fail → null (the intro is held for staff)', held, null);
+
+  const noSource = await personalizeIntro(titled({ source_url: '' }), { llm: countingLlm });
+  eq('no public record → null (held)', noSource, null);
 }
 
 // ─── Staff-line helpers ──────────────────────────────────────────────────────

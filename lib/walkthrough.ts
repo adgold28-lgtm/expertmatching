@@ -33,6 +33,21 @@ export function isWalkthrough(project: Pick<Project, 'walkthrough'>): boolean {
 export const WALKTHROUGH_HELD_SUMMARY = 'Held. Walkthrough mode sends nothing.';
 
 /**
+ * The thread summary for a held send, by reason. Walkthrough keeps its line;
+ * every other hold names its own cause, so a do-not-contact or opted-out hold
+ * never reads as "walkthrough mode" to the client.
+ */
+export function heldSummary(reason: HeldReason | string | null | undefined): string {
+  switch (reason) {
+    case 'do_not_contact': return "Not sent. They're on your firm's do-not-contact list.";
+    case 'suppressed':     return 'Not sent. They asked not to be contacted.';
+    case 'trial':          return 'Held until your account is activated.';
+    case 'disabled':       return 'Held. Sending is switched off.';
+    default:               return WALKTHROUGH_HELD_SUMMARY;
+  }
+}
+
+/**
  * Why a send did not happen.
  *   'walkthrough' — the project has not been switched live
  *   'disabled'    — DISABLE_EMAILS=true, the environment-wide kill switch
@@ -42,12 +57,19 @@ export const WALKTHROUGH_HELD_SUMMARY = 'Held. Walkthrough mode sends nothing.';
  *   'suppressed'  — the address is on the global do-not-contact list, or that
  *                   list could not be read (lib/outreachSuppressions.ts fails
  *                   closed, and so does the chokepoint that consults it)
+ *   'do_not_contact' the recipient address, its domain, or the expert's name or
+ *                   company is on the client firm's OWN do-not-contact list, or
+ *                   that list could not be read (lib/doNotContact.ts; a list
+ *                   whose table is not there yet reads as empty, any other
+ *                   failure holds)
  * Both mean "not sent"; they are distinguished so a caller can tell a product
  * state from an operational one.
  */
-export type HeldReason = 'walkthrough' | 'disabled' | 'trial' | 'suppressed';
+export type HeldReason = 'walkthrough' | 'disabled' | 'trial' | 'suppressed' | 'do_not_contact';
 
-const HELD_REASONS: ReadonlySet<string> = new Set<HeldReason>(['walkthrough', 'disabled', 'trial', 'suppressed']);
+const HELD_REASONS: ReadonlySet<string> = new Set<HeldReason>([
+  'walkthrough', 'disabled', 'trial', 'suppressed', 'do_not_contact',
+]);
 
 /** The short tag a held message wears in the thread. */
 export function heldLabel(reason: HeldReason | string | null | undefined): string {
@@ -55,6 +77,7 @@ export function heldLabel(reason: HeldReason | string | null | undefined): strin
     case 'trial':       return 'Held · activation required';
     case 'disabled':    return 'Held · sending disabled';
     case 'suppressed':  return 'Held · they opted out';
+    case 'do_not_contact': return "Not sent: on your firm's do-not-contact list";
     default:            return 'Held · walkthrough';
   }
 }

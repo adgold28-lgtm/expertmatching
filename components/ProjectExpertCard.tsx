@@ -7,6 +7,7 @@ import ExpertCard from './ExpertCard';
 import { STATUS_META, EXPERT_STATUSES } from '../lib/expertPipeline';
 import { CLIENT_STATUS_META, hasConversation } from './matchyStatus';
 import MatchyLine from './MatchyLine';
+import VettingCard from './VettingCard';
 import {
   bookmarkExpert,
   unbookmarkExpert,
@@ -28,6 +29,12 @@ import {
 // (lib/redactExpert.ts) and re-checks ownership/role on every write — this
 // component must never be the only thing standing between a client and an
 // expert's address.
+//
+// In select mode (components/BulkBookmarkMatches.tsx) the card also carries a
+// checkbox; the batch bookmarks through the same route and hands the result
+// back through `onUpdate`, so a bulk-bookmarked card looks exactly like one
+// bookmarked by its own button. `locked` holds this card's buttons while a
+// batch runs, so one expert is never bookmarked from two places at once.
 // -----------------------------------------------------------------------------
 
 // The reason list and the "needs a note" subset are shared with the thread's
@@ -54,6 +61,13 @@ interface Props {
   isAdmin?: boolean;
   /** Jump to this expert's thread after a bookmark starts the engagement. */
   onOpenConversation?: (expertId: string) => void;
+  // ── Select mode (components/BulkBookmarkMatches.tsx) ──
+  /** Show the select checkbox. Only ever true for the owner or staff on a bookmarkable card. */
+  selectable?: boolean;
+  selected?: boolean;
+  onToggleSelect?: () => void;
+  /** A bulk bookmark is running: this card's own Bookmark and Pass wait for it. */
+  locked?: boolean;
 }
 
 // ─── Component ────────────────────────────────────────────────────────────────
@@ -67,6 +81,10 @@ export default function ProjectExpertCard({
   canBookmark = true,
   isAdmin = false,
   onOpenConversation,
+  selectable = false,
+  selected = false,
+  onToggleSelect,
+  locked = false,
 }: Props) {
   const { expert, status, rejectionReason, rejectionNotes, userNotes, contactEmail } = projectExpert;
   // Prefer the tier persisted at sourcing time — lib/redactExpert.ts blanks
@@ -102,7 +120,7 @@ export default function ProjectExpertCard({
   // Silent optimistic toggle: the icon state flips immediately and flips back
   // if the server says no. No retry affordance, no outcome line.
   async function handleBookmark() {
-    if (bookmarking) return;
+    if (bookmarking || locked) return;
     setBookmarking(true);
     const before = projectExpert;
     onUpdate({ ...projectExpert, status: 'bookmarked', updatedAt: Date.now() });
@@ -112,14 +130,19 @@ export default function ProjectExpertCard({
 
     if (!res.ok) {
       onUpdate(before);
-      console.error('bookmark failed', res.message);
+      // A refusal the client can act on gets one line; nothing else does.
+      // The do-not-contact refusal carries its own wording from the route.
+      setMatchyNote(res.error === 'do_not_contact'
+        ? { text: res.message || "On your firm's do-not-contact list.", tone: 'alert' }
+        : { text: `Couldn't bookmark ${firstNameOf(expert.name)}. Try again.`, tone: 'alert' });
       return;
     }
+    setMatchyNote(null);
     onUpdate(res.projectExpert);
   }
 
   async function handleUnbookmark() {
-    if (bookmarking) return;
+    if (bookmarking || locked) return;
     setBookmarking(true);
     const before = projectExpert;
     onUpdate({ ...projectExpert, status: 'shortlisted', updatedAt: Date.now() });
@@ -223,6 +246,31 @@ export default function ProjectExpertCard({
 
   return (
     <div className="flex flex-col">
+      {/* ── Select mode: one checkbox on top of the card. The whole row is
+            the target, so it is easy to hit at phone width. ── */}
+      {selectable && (
+        <label
+          className={`flex items-center gap-2.5 border border-b-0 px-4 py-2.5 select-none transition-colors ${
+            selected ? 'border-navy bg-navy/5' : 'border-frame bg-surface hover:bg-navy/5'
+          } ${locked ? 'cursor-default opacity-60' : 'cursor-pointer'}`}
+        >
+          <input
+            type="checkbox"
+            checked={selected}
+            onChange={() => onToggleSelect?.()}
+            disabled={locked}
+            className="w-4 h-4 shrink-0 accent-navy"
+            aria-label={`Select ${firstNameOf(expert.name)} to bookmark`}
+          />
+          <span
+            className={`text-[10px] uppercase tracking-widest font-medium ${selected ? 'text-navy' : 'text-muted'}`}
+            style={{ letterSpacing: '0.14em' }}
+          >
+            {selected ? 'Selected' : 'Select'}
+          </span>
+        </label>
+      )}
+
       {/* Expert card — contact section suppressed in project context (managed by ScreeningCard/OutreachCard) */}
       {/* showRate={false}: the tier badge and the rate belong to the strip
           below, where the number is the engagement's clientRate rather than the
@@ -264,7 +312,7 @@ export default function ProjectExpertCard({
           <div className="flex gap-2">
             <button
               onClick={handleBookmark}
-              disabled={saving || bookmarking || !canBookmark}
+              disabled={saving || bookmarking || locked || !canBookmark}
               aria-pressed={false}
               aria-label="Bookmark this expert"
               className="flex-1 text-[11px] uppercase tracking-widest border-2 border-navy text-navy bg-navy/5 hover:bg-navy hover:text-cream py-2 font-medium transition-colors disabled:opacity-40"
@@ -277,7 +325,7 @@ export default function ProjectExpertCard({
                 same permission as Bookmark — the server enforces it too. */}
             <button
               onClick={() => { void handleStatusChange('rejected'); }}
-              disabled={saving || bookmarking || !canBookmark}
+              disabled={saving || bookmarking || locked || !canBookmark}
               className="flex-1 text-[11px] uppercase tracking-widest border-2 border-frame text-muted hover:text-navy hover:border-navy py-2 font-medium transition-colors disabled:opacity-40"
               style={{ letterSpacing: '0.1em' }}
               title={canBookmark ? undefined : 'Only the project owner can pass on an expert.'}
@@ -290,7 +338,7 @@ export default function ProjectExpertCard({
             {/* The toggle in its filled state. Clicking it un-bookmarks. */}
             <button
               onClick={handleUnbookmark}
-              disabled={bookmarking || !canBookmark}
+              disabled={bookmarking || locked || !canBookmark}
               aria-pressed={true}
               aria-label="Bookmark this expert"
               className="flex-1 text-[11px] uppercase tracking-widest border-2 border-navy text-navy bg-navy/5 py-2 font-medium transition-colors disabled:opacity-40"
@@ -366,6 +414,10 @@ export default function ProjectExpertCard({
             )}
           </div>
         )}
+
+        {/* ── Vetting, in one line: what public records and their answers say,
+              before anyone books (components/VettingCard.tsx). ── */}
+        <VettingCard projectExpert={projectExpert} isAdmin={isAdmin} compact />
 
         {/* ── Matchy's line — the outcome of the last thing it did here ── */}
         {shownNote && (

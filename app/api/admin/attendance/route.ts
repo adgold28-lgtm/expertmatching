@@ -20,8 +20,15 @@
 //                    from the platform; no charge, no payout
 //   neither        → engagement ends with no money at all
 //
+// THE TEN-MINUTE MISMATCH GUARANTEE holds here too, because it is enforced
+// inside applyAttendanceOutcome: when the client flagged this call inside its
+// first ten minutes (lib/mismatchGuarantee.ts), 'both' completes it and
+// 'client_no_show' ends it, and in both cases the client is charged nothing and
+// the expert is paid 15 minutes. Staff cannot override a flag into a charge
+// from this route. `waived` in the answer says that is what happened.
+//
 // Body: { projectId, expertId, outcome }
-// Answers: 200 { ok: true, outcome, charged }
+// Answers: 200 { ok: true, outcome, charged, waived }
 //          400 { error: 'invalid_json' | 'projectId_and_expertId_required'
 //                       | 'invalid_outcome' }
 //          404 { error: 'not_found' }
@@ -88,11 +95,12 @@ export async function POST(request: NextRequest): Promise<Response> {
       endedAt: pe.zoomMeetingEndedAt ?? null,
     });
 
+    const waived = result.waived === true;
     console.log('[admin/attendance] resolved', {
-      projectId, outcome: result.outcome, charged: result.charged,
+      projectId, outcome: result.outcome, charged: result.charged, waived,
     });
 
-    return Response.json({ ok: true, outcome: result.outcome, charged: result.charged });
+    return Response.json({ ok: true, outcome: result.outcome, charged: result.charged, waived });
   } catch (err) {
     console.error('[admin/attendance] error:',
       err instanceof Error ? err.message.slice(0, 120) : 'unknown');

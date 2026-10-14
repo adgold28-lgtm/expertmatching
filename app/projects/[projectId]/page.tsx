@@ -14,8 +14,10 @@ import {
   type ExpertSortKey,
 } from '../../../lib/seniorityClassifier';
 import ProjectExpertCard from '../../../components/ProjectExpertCard';
+import BulkBookmarkMatches from '../../../components/BulkBookmarkMatches';
 import { downloadProjectBriefPdf } from '../../../lib/exportBrief';
 import ConversationsPanel from '../../../components/ConversationsPanel';
+import ProjectStatsPanel from '../../../components/ProjectStatsPanel';
 import { useFocusTrap } from '../../../lib/useFocusTrap';
 import { hasConversation } from '../../../components/matchyStatus';
 import { isWalkthrough } from '../../../lib/walkthrough';
@@ -1714,10 +1716,17 @@ function ProjectPageInner() {
                     }
                   />
                 ) : (
-                  <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-5">
-                    {visibleSourceExperts.map(pe => (
+                  // Select mode lives here (owner or staff only): tick several
+                  // cards, bookmark them through the same single-expert route.
+                  <BulkBookmarkMatches
+                    projectId={projectId}
+                    shown={visibleSourceExperts}
+                    all={project.experts}
+                    canSelect={canSend}
+                    onExpertUpdate={handleExpertUpdate}
+                    onBatchEnd={clientView ? () => { void refreshProject(); } : undefined}
+                    renderCard={(pe, selection) => (
                       <ProjectExpertCard
-                        key={pe.expert.id}
                         projectExpert={pe}
                         projectId={projectId}
                         query={project.researchQuestion}
@@ -1726,9 +1735,10 @@ function ProjectPageInner() {
                         canBookmark={canSend}
                         isAdmin={isAdmin}
                         onOpenConversation={id => { setSelectedThread(id); navigateTo('conversations'); }}
+                        {...selection}
                       />
-                    ))}
-                  </div>
+                    )}
+                  />
                 )}
               </>
             )}
@@ -1738,6 +1748,8 @@ function ProjectPageInner() {
         {/* 3 — Conversations */}
         {viewStep === 'conversations' && (
           <div className="space-y-6">
+            <ProjectStatsPanel projectId={projectId} project={project} />
+
             <p className="text-sm text-muted leading-relaxed max-w-xl" style={{ fontWeight: 300 }}>
               <strong className="font-medium text-navy">We&apos;ve reached out.</strong>{' '}
               Replies land here — we&apos;ll tell you when there&apos;s something to decide.

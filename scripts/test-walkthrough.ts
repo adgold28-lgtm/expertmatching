@@ -21,7 +21,7 @@
 //     hold to store and whether the engagement may move. Walkthrough is the one
 //     hold that still moves it; a chokepoint hold never does (H-4).
 
-import { isWalkthrough, toHeldReason, WALKTHROUGH_HELD_SUMMARY } from '../lib/walkthrough';
+import { isWalkthrough, toHeldReason, WALKTHROUGH_HELD_SUMMARY, heldSummary } from '../lib/walkthrough';
 import { dispositionOf } from '../lib/emailSequence';
 import { redactMessageForViewer, type ViewerMessage } from '../lib/conversations';
 import { bookmarkLine, isHeld, isPendingApproval, type ConversationMessage } from '../lib/matchyClient';
@@ -50,6 +50,7 @@ section('toHeldReason — narrows what came out of jsonb');
 
 eq('walkthrough narrows',        toHeldReason('walkthrough'), 'walkthrough');
 eq('disabled narrows',           toHeldReason('disabled'),    'disabled');
+eq('do_not_contact narrows',     toHeldReason('do_not_contact'), 'do_not_contact');
 eq('unknown string is null',     toHeldReason('whatever'),    null);
 eq('undefined is null',          toHeldReason(undefined),     null);
 eq('non-string is null',         toHeldReason(true),          null);
@@ -123,7 +124,7 @@ check('walkthrough: the engagement still moves — a practised decision has to '
   + 'leave the project where it really would be', wt.advance === true);
 check('walkthrough: nothing was delivered', wt.delivered === false);
 
-for (const reason of ['trial', 'disabled'] as const) {
+for (const reason of ['trial', 'disabled', 'do_not_contact'] as const) {
   const d = dispositionOf({ kind: 'outcome', outcome: { sent: false, held: reason } });
   eq(`${reason}: the reason is stored on the message`, d.held, reason);
   check(`${reason}: the rate is NOT written, no event is emitted, no times are proposed`,
@@ -250,6 +251,17 @@ for (const bad of ['true', 1, 0, null, {}, []]) {
 // A rejected walkthrough must not also be silently coerced to live.
 const rejected = validateCreateProjectInput({ ...base, walkthrough: 'false' });
 check('a rejected value never becomes a project', 'errors' in rejected);
+
+// ─── heldSummary: a hold names its own reason ────────────────────────────────
+
+eq('walkthrough keeps its line',            heldSummary('walkthrough'), WALKTHROUGH_HELD_SUMMARY);
+eq('an unknown reason falls back to walkthrough', heldSummary(undefined), WALKTHROUGH_HELD_SUMMARY);
+check('a do-not-contact hold never says walkthrough', !/walkthrough/i.test(heldSummary('do_not_contact')));
+check('a do-not-contact hold names the list',  /do-not-contact list/.test(heldSummary('do_not_contact')));
+check('an opted-out hold never says walkthrough', !/walkthrough/i.test(heldSummary('suppressed')));
+for (const r of ['walkthrough', 'disabled', 'trial', 'suppressed', 'do_not_contact']) {
+  check(`heldSummary(${r}) has no em dash`, !/\u2014/.test(heldSummary(r)));
+}
 
 // ─── Result ───────────────────────────────────────────────────────────────────
 

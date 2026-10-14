@@ -15,6 +15,7 @@ import { CLIENT_STATUS_META, hasConversation } from './matchyStatus';
 import ConversationThread from './ConversationThread';
 import MatchySettingsStrip from './MatchySettingsStrip';
 import MatchyLine from './MatchyLine';
+import ExportLogButton from './ExportLogButton';
 import { isWalkthrough } from '../lib/walkthrough';
 import { clientCounterRateOf, firstNameOf, formatRate, formatSlot, schedulingLine, type ProjectExpertWithCounter } from '../lib/matchyClient';
 
@@ -211,6 +212,23 @@ export default function ConversationsPanel({
               </button>
             ))}
           </div>
+        </div>
+      )}
+
+      {/* ── Export all ──
+            Every thread in the project, exactly as this viewer reads it, for a
+            compliance file. Any project member may export what they can read. */}
+      {threads.length > 0 && (
+        <div className="flex items-start justify-between gap-3 flex-wrap">
+          <p className="text-[10px] text-muted pt-1.5">
+            The full log of every conversation here, for your compliance file.
+          </p>
+          <ExportLogButton
+            href={`/api/projects/${projectId}/conversations/export`}
+            label="Export all"
+            formats={['csv']}
+            fallbackName="conversations"
+          />
         </div>
       )}
 

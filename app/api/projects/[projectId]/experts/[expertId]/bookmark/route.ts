@@ -3,6 +3,13 @@
 // The one action that starts an engagement. From here Matchy owns the expert
 // relationship (docs/MATCHY_SPEC.md, "Workflow"):
 //
+//   0. the firm's own do-not-contact list (lib/doNotContact.ts), on the
+//      expert's name and company (and the address, if one is on file), BEFORE
+//      anything is written or spent. On a match: 409 { error: 'do_not_contact' }
+//      and nothing else happens: no status change, no event, no discovery
+//      credit, no email. The bulk-bookmark UI relies on that exact code. A list
+//      that cannot be read answers 503 and changes nothing (the gate fails
+//      closed); a list whose table does not exist yet is empty.
 //   1. status → 'bookmarked'
 //   2. seed the money: expertRate from the seniority tier if it is not already
 //      set, clientRate derived from it by lib/pricing.clientRateFor — never
@@ -59,6 +66,13 @@ import { clientRateFor, expertRateFor, clampClientRateToBand } from '../../../..
 import { getFirm } from '../../../../../../../lib/firmStore';
 import { isWalkthrough } from '../../../../../../../lib/walkthrough';
 import { trackProductEvent } from '../../../../../../../lib/productEvents';
+import { getServiceRoleClient } from '../../../../../../../lib/supabase/admin';
+import {
+  checkDoNotContact,
+  checkWithoutDatabase,
+  supabaseDoNotContactStore,
+  type DoNotContactCheck,
+} from '../../../../../../../lib/doNotContact';
 import type { ExpertStatus, ProjectExpert } from '../../../../../../../types';
 
 const ID_RE        = /^[a-f0-9]{24}$/;
@@ -126,7 +140,29 @@ export async function POST(
       );
     }
 
-    // 6. Seed the two rates. expertRate is the tier's opening offer unless a
+    // 6. The firm's own do-not-contact list, before anything is written or
+    //    spent (header, step 0). Name and company always; the address and its
+    //    domain too when one is already on file. The chokepoint checks again
+    //    on every send, address included, so a listed expert cannot be reached
+    //    by any later path either.
+    const listed = await checkFirmList(params.projectId, pe);
+    if (!listed.ok) {
+      return NextResponse.json(
+        {
+          error:   'do_not_contact_unavailable',
+          message: "Couldn't check your firm's do-not-contact list. Try again in a minute.",
+        },
+        { status: 503 },
+      );
+    }
+    if (listed.match) {
+      return NextResponse.json(
+        { error: 'do_not_contact', message: "On your firm's do-not-contact list." },
+        { status: 409 },
+      );
+    }
+
+    // 7. Seed the two rates. expertRate is the tier's opening offer unless a
     //    number was already chosen; clientRate always follows from it. When the
     //    project carries a rate band (what the client said they will pay per
     //    hour) the opening offer is pulled inside it first: the tier is only
@@ -173,7 +209,7 @@ export async function POST(
       });
     }
 
-    // 7. Contact. With an address on file the intro goes now (below). Without
+    // 8. Contact. With an address on file the intro goes now (below). Without
     //    one, Matchy goes and looks: the provider waterfall takes seconds to
     //    tens of seconds, so it runs as a background job
     //    (/api/jobs/contact-discovery) rather than on this request, and that
@@ -234,7 +270,7 @@ export async function POST(
       });
     }
 
-    // 8. Global do-not-contact list. Fails CLOSED — if we cannot verify, we do
+    // 9. Global do-not-contact list. Fails CLOSED — if we cannot verify, we do
     //    not send. The bookmark itself stands.
     const suppression = await isSuppressed(current.contactEmail);
     if (!suppression.ok || suppression.suppressed) {
@@ -260,7 +296,7 @@ export async function POST(
       payload:   { tier, verification: current.emailVerificationStatus ?? 'unknown' },
     });
 
-    // 9. Send the intro, or draft it when the project is on review-first — or
+    // 10. Send the intro, or draft it when the project is on review-first — or
     //    in walkthrough, where nothing may leave the building at all.
     const draftOnly = project.reviewFirst === true || held;
 
@@ -316,6 +352,20 @@ export async function POST(
     console.error('[bookmark] failed:', err instanceof Error ? err.message.slice(0, 120) : 'unknown');
     return NextResponse.json({ error: 'bookmark_failed' }, { status: 500 });
   }
+}
+
+/**
+ * The firm-list check for one expert on this project. Never throws: a read
+ * failure comes back `{ ok: false }` and the caller refuses the bookmark.
+ */
+async function checkFirmList(projectId: string, pe: ProjectExpert): Promise<DoNotContactCheck> {
+  const admin = getServiceRoleClient();
+  if (!admin) return checkWithoutDatabase();
+  return checkDoNotContact(supabaseDoNotContactStore(admin), projectId, {
+    email:   pe.contactEmail ?? null,
+    name:    pe.expert.name,
+    company: pe.expert.company,
+  });
 }
 
 /**

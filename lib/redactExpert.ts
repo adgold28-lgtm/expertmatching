@@ -24,6 +24,7 @@ import { EXPERT_STATUSES } from './expertPipeline';
 import { toInitialForm } from './nameValidation';
 import { fallbackDescriptor, descriptorIsAnonymous } from './anonymizeExpert';
 import { classifySeniority, TIER_PRICING } from './seniorityClassifier';
+import { deriveVetting } from './vettingCard';
 
 export interface Viewer {
   role: 'admin' | 'user';
@@ -95,6 +96,12 @@ function omitKeys<T extends object>(obj: T, keys: readonly PropertyKey[]): T {
 const INTERNAL_PROJECT_EXPERT_KEYS: readonly (keyof ProjectExpert)[] = [
   // Contact path — the whole point of the platform is that clients don't get this
   'contactEmail',
+  // Hard-bounced addresses and the delivery-event stamps (lib/deliveryEvents.ts).
+  // Addresses are contact data; the stamps are machinery the client never sees —
+  // the thread shows a plain Matchy line instead.
+  'bouncedEmails',
+  'contactBouncedAt',
+  'complaintAt',
   'emailVerificationStatus',
   'emailProvider',
   'emailCheckedAt',
@@ -285,14 +292,23 @@ function anonymizeExpert(expert: Expert): Expert {
 /**
  * Returns the ProjectExpert as this viewer is allowed to see it. Admins get the
  * object untouched (identity-equal, so callers can rely on reference equality).
+ *
+ * `vetting` (lib/vettingCard.ts) is derived HERE, from the raw record, before
+ * the title and evidence it reads are stripped: the browser cannot compute it
+ * for a client. Staff hold the raw record, so components/VettingCard.tsx
+ * derives the same card from it with the same function, and the admin object
+ * keeps its identity. `now` exists for tests; routes leave it out.
  */
-export function redactExpertForViewer(pe: ProjectExpert, viewer: Viewer): ProjectExpert {
+export function redactExpertForViewer(pe: ProjectExpert, viewer: Viewer, now: number = Date.now()): ProjectExpert {
   if (viewer.role === 'admin') return pe;
 
   const stripped = {
     ...omitKeys(pe, [...INTERNAL_PROJECT_EXPERT_KEYS, ...LEGACY_INTERNAL_PROJECT_EXPERT_KEYS]),
     ...matchyOutcomeOf(pe),
     ...redactScheduling(pe.scheduling),
+    // Bands in words, never a year, number, company or name. Always freshly
+    // derived: a `vetting` key sitting in a stored blob is overwritten.
+    vetting: deriveVetting(pe, now),
   };
   if (isIdentityRevealed(pe)) return stripped;
 
@@ -342,6 +358,8 @@ const MATCHY_OUTCOMES: ReadonlySet<string> = new Set<MatchyOutcome>([
   'intro_sent', 'intro_drafted', 'intro_failed', 'contact_found',
   'contact_not_found', 'contact_suppressed', 'contact_check_unavailable',
   'contact_discovery_unavailable', 'walkthrough_held',
+  // lib/deliveryEvents.ts — which plain line to show, nothing more.
+  'intro_undelivered', 'address_not_working', 'no_other_address', 'contact_lost', 'contact_stopped',
 ]);
 
 /**

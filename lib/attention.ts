@@ -90,6 +90,25 @@ function areaLabel(area: string): string {
   return AREA_LABELS[area] ?? 'A background job failed';
 }
 
+/**
+ * Reasons that are not failures of their area, worded on their own. The
+ * ten-minute mismatch guarantee records its claims and follow-ups under area
+ * 'invoice' (lib/mismatchGuarantee.ts, lib/lateCancelBilling.ts); "An invoice
+ * could not be raised" would misdescribe a client using the guarantee.
+ */
+const REASON_MESSAGES: Record<string, string> = {
+  mismatch_guarantee_claimed:         'A client used the ten-minute mismatch guarantee',
+  mismatch_flagged_call_ran_long:     'A call flagged as a mismatch kept running past 15 minutes',
+  mismatch_waiver_unrecorded:         'A mismatch waiver could not be recorded',
+  mismatch_refund_needs_staff:        'A mismatch refund needs a person',
+  mismatch_refund_failed:             'A mismatch refund failed and will be retried',
+  mismatch_payment_link_still_active: 'A payment link for a flagged call is still active',
+};
+
+function failureMessage(area: string, reason: string): string {
+  return REASON_MESSAGES[reason] ?? `${areaLabel(area)}: ${reason}`;
+}
+
 /** Whole minutes between two instants, floored at 0. */
 function minutesSince(from: number, now: number): number {
   return Math.max(0, Math.floor((now - from) / 60_000));
@@ -116,7 +135,7 @@ async function systemFailureItems(limit: number): Promise<AttentionItem[]> {
     return data.map(row => ({
       id:         `system_failure:${row.id}`,
       kind:       'system_failure' as const,
-      message:    `${areaLabel(row.area)} — ${row.reason}`,
+      message:    failureMessage(row.area, row.reason),
       occurredAt: row.created_at,
       ...(row.organization_id ? { organizationId: row.organization_id } : {}),
       ...(row.project_id      ? { projectId:      row.project_id      } : {}),

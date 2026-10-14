@@ -199,7 +199,14 @@ export type MatchyOutcome =
   // Walkthrough mode: the client bookmarked an expert we have no address for.
   // Matchy did NOT go looking (a provider call spends credits) and nothing was
   // sent. See lib/walkthrough.ts.
-  | 'walkthrough_held';
+  | 'walkthrough_held'
+  // Delivery events (lib/deliveryEvents.ts, 2026-10-14). Named for what the
+  // client is told, never for how we learned it.
+  | 'intro_undelivered'
+  | 'address_not_working'
+  | 'no_other_address'
+  | 'contact_lost'
+  | 'contact_stopped';
 
 export type ExpertStatus =
   | 'discovered'
@@ -344,6 +351,39 @@ export interface AvailabilitySlot {
   confidence?: 'high' | 'medium' | 'low';       // LLM parsing confidence
 }
 
+// ─── The vetting card (lib/vettingCard.ts) ────────────────────────────────────
+// DERIVED, never stored: lib/redactExpert computes it from the raw record on the
+// way to the browser. Words only, by contract: no year, no number, no company
+// and no person's name in any field. A band the record does not support is null
+// and the card reads "Not in public records".
+
+export type VettingTenureBand =
+  'under a year' | 'one to three years' | 'three to ten years' | 'over ten years';
+export type VettingSinceLeftBand =
+  'still there' | 'left within the last year' | 'one to three years ago' | 'more than three years ago';
+
+/** The conflict and NDA questions (Matchy's follow-up): asked yet, and what came back. */
+export interface VettingConflict {
+  status:  'not_asked' | 'waiting' | 'answered';
+  /** True when their answer raised a restriction (an NDA, an employer rule, a current engagement). */
+  flagged: boolean;
+  /** Matchy's one-line read of the restriction, already masked. Null when there is none it may show. */
+  summary: string | null;
+  /** Staff's screening assessment, when one is recorded. */
+  risk:    'low' | 'medium' | 'high' | null;
+}
+
+export interface ExpertVetting {
+  /** "Vice president", "C-suite executive": a level, never the title itself. */
+  roleLevel:    string | null;
+  /** "Regional veterinary clinic group", "Operating company": never the employer's name. */
+  employerType: string | null;
+  employment:   'current' | 'former' | null;
+  tenure:       VettingTenureBand | null;
+  sinceLeft:    VettingSinceLeftBand | null;
+  conflict:     VettingConflict;
+}
+
 export interface ProjectExpert {
   expert: Expert;
   status: ExpertStatus;
@@ -362,7 +402,9 @@ export interface ProjectExpert {
    * directly). Never carries an address — just which line Matchy should show.
    */
   matchyOutcome?: MatchyOutcome;
-  contactedAt?: number;     // unix ms timestamp when status first became 'contacted'
+  /** The vetting card, derived by lib/redactExpert for the browser. Never stored. */
+  vetting?: ExpertVetting;
+  contactedAt?: number;    // unix ms timestamp when status first became 'contacted'
   // `contactCandidates` (every address discovery turned up, best-first) was
   // removed 2026-09-09 (W4-1): nothing has written it since discovery moved to
   // a single address. lib/redactExpert.ts still strips the key by name so a
@@ -446,7 +488,9 @@ export interface ProjectExpert {
   // charge.dispute.created branches. It is terminal for the client side of the
   // engagement; the expert payout is NOT reversed automatically (see the
   // TODO(founder decision) in app/api/webhooks/stripe/route.ts).
-  paymentStatus?:        'unpaid' | 'invoice_sent' | 'paid' | 'failed' | 'refunded' | null;
+  // 'waived': the client is not charged for this call (the ten-minute mismatch
+  // guarantee, lib/mismatchGuarantee.ts); the expert is still paid 15 minutes.
+  paymentStatus?:        'unpaid' | 'invoice_sent' | 'paid' | 'failed' | 'refunded' | 'waived' | null;
   paidAt?:               number | null;
   // The CALL the current paymentStatus / stripePaymentIntentId refer to
   // (booking.icsUid, else zoomMeetingId, else the manual id below). Written by
@@ -525,6 +569,19 @@ export interface ProjectExpert {
    * write it. Cleared when `whyThem` is set.
    */
   introNeedsWhyThem?: boolean;
+  // ── Delivery events (lib/deliveryEvents.ts, 2026-10-14) ───────────────────
+  // Addresses that hard-bounced for this engagement. STAFF ONLY (redactExpert):
+  // they are contact addresses. Contact discovery never picks one again.
+  bouncedEmails?: string[];
+  /** Unix ms of the last hard bounce on this engagement. Staff only. */
+  contactBouncedAt?: number | null;
+  /** Unix ms the expert marked Matchy's mail as spam. Staff only. */
+  complaintAt?: number | null;
+  // ── Ten-minute mismatch guarantee (lib/mismatchGuarantee.ts, 2026-10-14) ──
+  /** Unix ms the client flagged this call as a mismatch inside its first ten minutes. */
+  mismatchFlaggedAt?: number | null;
+  /** The call (booking.icsUid) the flag applies to: the client is not charged for it. */
+  mismatchCallId?: string | null;
   /**
    * Unix ms when the rate was agreed (the client accepted a counter, or the
    * expert said yes to the offer). Once set, the per-expert client rate is

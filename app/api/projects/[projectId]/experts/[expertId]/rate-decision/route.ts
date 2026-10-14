@@ -71,7 +71,7 @@ import { sendSequenceEmail, dispositionOf, type SendAttempt } from '../../../../
 import { emitEngagementEvent } from '../../../../../../../lib/engagementEvents';
 import { redactExpertForViewer } from '../../../../../../../lib/redactExpert';
 import { getFirm } from '../../../../../../../lib/firmStore';
-import { isWalkthrough, WALKTHROUGH_HELD_SUMMARY } from '../../../../../../../lib/walkthrough';
+import { isWalkthrough, heldSummary } from '../../../../../../../lib/walkthrough';
 import { proposeTimes } from '../../../../../../../lib/matchyScheduling';
 import type { EngagementEventType } from '../../../../../../../lib/engagementEvents';
 import type { SchedulingOutcome } from '../../../../../../../types';
@@ -231,7 +231,7 @@ export async function POST(
       author:    'matchy',
       bodyClean: text,
       summary:   held
-        ? WALKTHROUGH_HELD_SUMMARY
+        ? heldSummary(held)
         : action === 'accept'
           ? 'Rate agreed. Finding a time next.'
           : 'Held at your rate. Waiting on their answer.',

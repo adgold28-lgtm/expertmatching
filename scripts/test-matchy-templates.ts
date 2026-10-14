@@ -22,6 +22,8 @@
 
 import {
   buildIntroEmail,
+  INTRO_PAYMENT_TERMS_SENTENCE,
+  introPaymentTermsEnabled,
   buildFollowUpEmail,
   firmPhrase,
   deriveTopic,
@@ -380,6 +382,43 @@ eq('lint: "15 to 60 minutes" is not a list', introRubricViolation('for 15 to 60 
 
 // ─── introArmFor ─────────────────────────────────────────────────────────────
 
+section('buildIntroEmail: the optional payment-terms line (INTRO_PAYMENT_TERMS)');
+{
+  const prevTerms = process.env.INTRO_PAYMENT_TERMS;
+  delete process.env.INTRO_PAYMENT_TERMS;
+  check('off by default: the rubric keeps payment mechanics out of email one',
+    !introFor(1).text.includes(INTRO_PAYMENT_TERMS_SENTENCE));
+  check('INTRO_PAYMENT_TERMS unset → disabled', introPaymentTermsEnabled() === false);
+  process.env.INTRO_PAYMENT_TERMS = 'on';
+  check('INTRO_PAYMENT_TERMS=on → enabled', introPaymentTermsEnabled() === true);
+  check('on: the env adds the sentence', introFor(1).text.includes(INTRO_PAYMENT_TERMS_SENTENCE));
+  if (prevTerms === undefined) delete process.env.INTRO_PAYMENT_TERMS; else process.env.INTRO_PAYMENT_TERMS = prevTerms;
+
+  for (const arm of ARMS) {
+    const withTerms = introFor(arm, { paymentTerms: true });
+    const body = bodyBeforeSignOff(withTerms.text);
+    check(`arm ${arm} + terms: the sentence follows the money`, /of your time\. You'd be paid after the call/.test(body));
+    check(`arm ${arm} + terms: still under 90 words (${wordCount(body)})`, wordCount(body) < 90);
+    check(`arm ${arm} + terms: no em dash`, !/\u2014/.test(withTerms.text) && !/\u2014/.test(withTerms.subject));
+  }
+
+  // The longest legal why-them line plus a long topic: the terms are dropped,
+  // never the intro.
+  const longWhy = 'You spent years running regional cold-chain distribution and fleet operations across the Southeast for a national foodservice distributor, so I think you\'d be a great fit for my client.';
+  const longTopic = 'cold-chain warehousing economics for regional foodservice distributors in the southeastern United States market';
+  let baseOk = true;
+  try { introFor(1, { paymentTerms: false, whyThem: longWhy, topic: longTopic }); } catch { baseOk = false; }
+  check('the long fixture is a legal intro without the terms', baseOk);
+  let tight: ReturnType<typeof introFor> | null = null;
+  let threw = false;
+  try { tight = introFor(1, { paymentTerms: true, whyThem: longWhy, topic: longTopic }); } catch { threw = true; }
+  check('a body that cannot fit the terms still goes out (terms dropped, not held)', !threw && tight !== null);
+  if (tight) {
+    const body = bodyBeforeSignOff(tight.text);
+    check(`…under 90 words (${wordCount(body)})`, wordCount(body) < 90);
+  }
+}
+
 section('introArmFor — deterministic, covers both arms, INTRO_ARM pins');
 
 const ids = Array.from({ length: 200 }, (_, i) => `expert-${i}-${(i * 7919).toString(16)}`);
@@ -446,6 +485,14 @@ for (const rate of [400, 650, 675, 800, 1200]) {
   check(`follow-up($${rate}): omits the client number`, !b.includes(`$${clientRateFor(rate)}`));
   check(`follow-up($${rate}): under 120 words (${wordCount(b)})`, wordCount(b) < 120);
 }
+{
+  const fu = buildFollowUpEmail({ topic: 'cold-chain economics', expertRate: 650, expertFirstName: 'Scott', recipientEmail: RECIPIENT });
+  check('follow-up states the 15-minute minimum', fu.text.includes('15-minute minimum'));
+  check('follow-up says the expert is paid after the call', fu.text.includes('paid after the call'));
+  check('follow-up subject has no em dash', !/\u2014/.test(fu.subject));
+  check('follow-up body has no em dash', !/\u2014/.test(fu.text));
+}
+
 
 // ─── Result ──────────────────────────────────────────────────────────────────
 

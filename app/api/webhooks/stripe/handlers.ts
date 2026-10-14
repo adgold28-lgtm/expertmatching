@@ -25,6 +25,8 @@ import { runExpertPayout, retryPendingPayoutsForAccount } from '../../../../lib/
 import { recordSubscriptionStatus } from '../../../../lib/orgBilling';
 import { recordSystemFailure } from '../../../../lib/engagementEvents';
 import { getUpstashClient } from '../../../../lib/upstashRedis';
+import { recordMismatchRefund, settleMismatchFlag } from '../../../../lib/lateCancelBilling';
+import { paymentIsForFlaggedCall, refundIsForFlaggedCall } from '../../../../lib/mismatchGuarantee';
 
 // ─── Event de-duplication (H-7 companion: branches must not run twice) ────────
 
@@ -84,9 +86,19 @@ export type RefundKind = 'refund' | 'dispute';
 export interface RefundDecision {
   /** False when the row already says 'refunded' — a replay or a second partial. */
   write:         boolean;
-  paymentStatus: 'refunded';
+  /**
+   * 'refunded' for every refund and dispute, except the refund of a call the
+   * client flagged under the ten-minute mismatch guarantee, which stays
+   * 'waived' (lib/mismatchGuarantee.ts).
+   */
+  paymentStatus: 'refunded' | 'waived';
   /** Short, id-free reason for the system_events row. */
   reason:        string;
+  /**
+   * True when the refund needs a person: a system_events row goes on the
+   * attention list. False only for the expected mismatch-guarantee refund.
+   */
+  alarm:         boolean;
 }
 
 /**
@@ -100,16 +112,33 @@ export interface RefundDecision {
  * a redelivery, does not write twice.
  *
  * PARTIAL REFUNDS are treated as full ones: the amount is not modelled on the
- * row, and a partially refunded call still needs a human. Pure.
+ * row, and a partially refunded call still needs a human.
+ *
+ * THE MISMATCH GUARANTEE (2026-10-14). `mismatchRefund` is true when the
+ * refunded charge is the one ExpertMatch itself refunded because the client
+ * flagged the call inside its first ten minutes
+ * (lib/mismatchGuarantee.refundIsForFlaggedCall). That refund is expected: the
+ * row stays (or becomes) 'waived', no alarm is raised, and nothing holds the
+ * expert's 15-minute payout. A DISPUTE on such a call is still a dispute. Pure.
  */
 export function decideRefundTransition(
-  current: ProjectExpert['paymentStatus'],
-  kind:    RefundKind,
+  current:        ProjectExpert['paymentStatus'],
+  kind:           RefundKind,
+  mismatchRefund: boolean = false,
 ): RefundDecision {
+  if (mismatchRefund && kind === 'refund') {
+    return {
+      write:         current !== 'waived',
+      paymentStatus: 'waived',
+      reason:        'mismatch_guarantee_refund',
+      alarm:         false,
+    };
+  }
   return {
     write:         current !== 'refunded',
     paymentStatus: 'refunded',
     reason:        kind === 'dispute' ? 'refund_or_dispute:dispute' : 'refund_or_dispute:refund',
+    alarm:         true,
   };
 }
 
@@ -160,10 +189,17 @@ export interface WebhookStripeClient {
   };
 }
 
-/** The parts of a Project the refund branch reads. A real Project satisfies it. */
+/**
+ * The parts of a Project the payment and refund branches read. A real Project
+ * satisfies it. The mismatch fields decide whether a payment or a refund is for
+ * a call the client flagged under the ten-minute guarantee.
+ */
 export interface WebhookProjectView {
   experts: Array<
-    Pick<ProjectExpert, 'paymentStatus'> & { expert: { id: string } }
+    Pick<
+      ProjectExpert,
+      'paymentStatus' | 'mismatchCallId' | 'billedCallId' | 'stripePaymentIntentId'
+    > & { expert: { id: string } }
   >;
 }
 
@@ -189,6 +225,40 @@ export interface StripeWebhookDeps {
   completeEvent(eventId: string): Promise<void>;
   releaseEvent(eventId: string, owner: string): Promise<void>;
   now(): number;
+}
+
+/**
+ * The ten-minute mismatch guarantee's two webhook effects. Kept apart from
+ * StripeWebhookDeps so a caller that builds that interface in full still
+ * type-checks; handleStripeEvent accepts either.
+ */
+export interface MismatchWebhookDeps {
+  /**
+   * A payment settled for a flagged call: refund it in full, keep the row
+   * 'waived', and pay the expert their 15 minutes
+   * (lib/lateCancelBilling.settleMismatchFlag with the payment's intent id).
+   */
+  settleMismatchPayment(projectId: string, expertId: string, paymentIntentId: string | null): Promise<void>;
+  /** The flagged call's refund landed: write 'waived' (lib/lateCancelBilling.recordMismatchRefund). */
+  recordMismatchRefund(projectId: string, expertId: string, paymentIntentId: string): Promise<void>;
+}
+
+type AllWebhookDeps = StripeWebhookDeps & MismatchWebhookDeps;
+
+function defaultMismatchWebhookDeps(): MismatchWebhookDeps {
+  return {
+    settleMismatchPayment: async (projectId, expertId, paymentIntentId) => {
+      const result = await settleMismatchFlag(projectId, expertId, { paymentIntentId });
+      // The refund did not go through: the payment stands for now. Throwing
+      // makes the route answer 500 so Stripe redelivers and the refund is
+      // retried; the attention row is already written.
+      if (!result.ok && result.reason !== 'needs_staff') {
+        throw new Error(`mismatch_settlement_failed:${result.reason ?? 'unknown'}`);
+      }
+    },
+    recordMismatchRefund: (projectId, expertId, paymentIntentId) =>
+      recordMismatchRefund(projectId, expertId, paymentIntentId),
+  };
 }
 
 function defaultWebhookDeps(): StripeWebhookDeps {
@@ -240,13 +310,29 @@ async function releaseStripeEvent(eventId: string, owner: string): Promise<void>
   if (redis) await redis.releaseLockIfOwner(lockKey(eventId), owner);
 }
 
-/** Records a successful client payment, then pays out the expert. */
+/**
+ * Records a successful client payment, then pays out the expert.
+ *
+ * Except for a call the client flagged under the ten-minute mismatch guarantee
+ * (lib/mismatchGuarantee.paymentIsForFlaggedCall): that payment is never
+ * recorded as 'paid'. It is refunded, the row stays 'waived', and the expert is
+ * paid 15 minutes (MismatchWebhookDeps.settleMismatchPayment). This is what
+ * catches a charge that went through while the flag was landing, and a payment
+ * link paid after the call was waived.
+ */
 async function handlePaymentSucceeded(
   projectId: string,
   expertId:  string,
   intentId:  string | null,
-  deps:      StripeWebhookDeps,
+  deps:      AllWebhookDeps,
 ): Promise<void> {
+  const project = await deps.getProject(projectId);
+  const pe      = project?.experts.find(e => e.expert.id === expertId);
+  if (pe && paymentIsForFlaggedCall(pe, intentId)) {
+    await deps.settleMismatchPayment(projectId, expertId, intentId);
+    return;
+  }
+
   // Do not pay an expert until the client payment has been durably recorded.
   await deps.updateExpertStatus(projectId, expertId, {
     paymentStatus: 'paid',
@@ -259,8 +345,19 @@ async function handlePaymentSucceeded(
 async function handlePaymentFailed(
   projectId: string,
   expertId:  string,
-  deps:      StripeWebhookDeps,
+  intentId:  string | null,
+  deps:      AllWebhookDeps,
 ): Promise<void> {
+  // A charge that was in flight when the client flagged the call failed on its
+  // own: the call is already 'waived' and no money was taken, so there is
+  // nothing to record and nothing to chase.
+  const project = await deps.getProject(projectId);
+  const pe      = project?.experts.find(e => e.expert.id === expertId);
+  if (pe && pe.paymentStatus === 'waived' && paymentIsForFlaggedCall(pe, intentId)) {
+    console.log('[stripe] mismatch-waived-payment-failed', { projectId });
+    return;
+  }
+
   await deps.updateExpertStatus(projectId, expertId, { paymentStatus: 'failed' });
   // M-43: a completed call that was never paid for is money the platform is
   // owed and an expert who will never be paid, and it used to exist only as a
@@ -293,18 +390,33 @@ async function handlePaymentFailed(
  * surfaces and the clawback is one click away from it. The route is idempotent
  * on `expertPayoutReversedAt` and keyed on the payout's own idempotency key, so
  * a double-click replays the first reversal rather than sending a second.
+ *
+ * THE MISMATCH GUARANTEE. The refund ExpertMatch issued for a call the client
+ * flagged inside its first ten minutes is expected: the row stays 'waived', no
+ * attention row is raised, and the expert's 15-minute payout is run rather than
+ * held (decideRefundTransition with `mismatchRefund`).
  */
 async function handleRefundOrDispute(
-  ref:  EngagementRef,
-  kind: RefundKind,
-  deps: StripeWebhookDeps,
+  ref:      EngagementRef,
+  kind:     RefundKind,
+  intentId: string | null,
+  deps:     AllWebhookDeps,
 ): Promise<void> {
   const { projectId, expertId } = ref;
   const project = await deps.getProject(projectId);
   const pe = project?.experts.find(e => e.expert.id === expertId);
   if (!pe) return;
-  const decision = decideRefundTransition(pe.paymentStatus ?? null, kind);
-  if (decision.write) {
+  const mismatchRefund = kind === 'refund' && refundIsForFlaggedCall(pe, intentId);
+  const decision = decideRefundTransition(pe.paymentStatus ?? null, kind, mismatchRefund);
+
+  if (mismatchRefund && intentId) {
+    if (decision.write) await deps.recordMismatchRefund(projectId, expertId, intentId);
+    await deps.runExpertPayout(projectId, expertId);
+    console.log('[stripe] mismatch-refund-recorded', { projectId });
+    return;
+  }
+
+  if (decision.write && decision.paymentStatus === 'refunded') {
     await deps.updateExpertStatus(projectId, expertId, { paymentStatus: decision.paymentStatus });
   }
 
@@ -314,6 +426,12 @@ async function handleRefundOrDispute(
     projectId,
     expertId,
   });
+}
+
+/** A Stripe expandable PaymentIntent reference, as its id. */
+function intentIdOf(value: string | Stripe.PaymentIntent | null | undefined): string | null {
+  if (!value) return null;
+  return typeof value === 'string' ? value : value.id ?? null;
 }
 
 /**
@@ -409,6 +527,10 @@ export function isUnprocessableWebhookError(err: unknown): boolean {
  *     charge.dispute.created move the engagement to 'refunded' and raise a
  *     system_events row so an operator looks. The expert's payout is NOT
  *     reversed — see the FOUNDER DECISION note on handleRefundOrDispute.
+ *   * A FLAGGED CALL IS NEVER 'paid'. A payment that settles for a call the
+ *     client flagged under the ten-minute mismatch guarantee is refunded
+ *     instead of recorded, and that refund's own charge.refunded keeps the row
+ *     'waived' without an alarm (lib/mismatchGuarantee.ts).
  *   * CHECKOUT IS NOT SETTLEMENT. checkout.session.completed only counts as
  *     paid when payment_status is 'paid'; delayed methods settle through
  *     checkout.session.async_payment_succeeded.
@@ -416,9 +538,9 @@ export function isUnprocessableWebhookError(err: unknown): boolean {
 export async function handleStripeEvent(
   event: Stripe.Event,
   /** Test seam only — see StripeWebhookDeps. The route omits it. */
-  deps?: Partial<StripeWebhookDeps>,
+  deps?: Partial<StripeWebhookDeps & MismatchWebhookDeps>,
 ): Promise<StripeEventOutcome> {
-  const d = { ...defaultWebhookDeps(), ...deps };
+  const d: AllWebhookDeps = { ...defaultWebhookDeps(), ...defaultMismatchWebhookDeps(), ...deps };
 
   const owner = randomUUID();
   const claim = await d.claimEvent(event.id, owner);
@@ -449,7 +571,7 @@ export async function handleStripeEvent(
       const expertId  = session.metadata?.expertId;
 
       if (projectId && expertId) {
-        await handlePaymentFailed(projectId, expertId, d);
+        await handlePaymentFailed(projectId, expertId, intentIdOf(session.payment_intent), d);
       }
     }
 
@@ -471,7 +593,7 @@ export async function handleStripeEvent(
       const expertId  = intent.metadata?.expertId;
 
       if (projectId && expertId) {
-        await handlePaymentFailed(projectId, expertId, d);
+        await handlePaymentFailed(projectId, expertId, intent.id, d);
       }
     }
 
@@ -481,13 +603,13 @@ export async function handleStripeEvent(
     if (event.type === 'charge.refunded') {
       const charge = event.data.object as Stripe.Charge;
       const ref    = await engagementForCharge(charge.metadata, charge.payment_intent, d);
-      if (ref) await handleRefundOrDispute(ref, 'refund', d);
+      if (ref) await handleRefundOrDispute(ref, 'refund', intentIdOf(charge.payment_intent), d);
     }
 
     if (event.type === 'charge.dispute.created') {
       const dispute = event.data.object as Stripe.Dispute;
       const ref     = await engagementForCharge(dispute.metadata, dispute.payment_intent, d);
-      if (ref) await handleRefundOrDispute(ref, 'dispute', d);
+      if (ref) await handleRefundOrDispute(ref, 'dispute', intentIdOf(dispute.payment_intent), d);
     }
 
     // ── Per-seat subscription (organization billing) ────────────────────────
