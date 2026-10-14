@@ -6,7 +6,7 @@
 // A filled-in template slot is not personalization, so this module never
 // produces a sentence from a slot. It produces one from EVIDENCE, or nothing.
 //
-// TWO ATTEMPTS, IN ORDER, THEN A PERSON:
+// THREE ATTEMPTS, IN ORDER, THEN A PERSON (personalizeIntro runs them):
 //
 //   1. whyThemFromEvidence — deterministic. Takes the expert's sourcing
 //      evidence (types.ts EvidenceItem), keeps the claims Matchy trusts (high
@@ -25,10 +25,19 @@
 //      text (no invented numbers), and the sentence must carry the company
 //      name or a distinctive word from a claim (a fact, not a slot).
 //
-//   3. Neither → null. lib/outreachSteps.ts then holds the intro with
-//      `introNeedsWhyThem` and a person writes the line. There is no third
-//      attempt and no repaired sentence: a sentence nobody checked is the
-//      failure mode this module exists to prevent.
+//   3. whyThemFromTitle — deterministic, tried only when 1 and 2 both came
+//      back empty (launch pack, 2026-10-14: fewer intros held for staff).
+//      The expert's own sourced title and company as a plain fact: "Your
+//      role as VP of Distribution at Sysco stood out" (or "Your time as …"
+//      for a Former / Ex- title) plus the rubric clause. Only when both
+//      fields are there, the title says what they did (not "Consultant" or
+//      "Owner"), and the expert came from a public record (source_url).
+//
+//   4. None → null. lib/outreachSteps.ts then holds the intro with
+//      `introNeedsWhyThem` and a person writes the line. Every attempt is
+//      checked by the same rules and none is repaired: a line that fails is
+//      a hold, because a sentence nobody checked is the failure mode this
+//      module exists to prevent.
 //
 // The DOMAIN is the 2 to 5 word phrase in the subject ("Expert in cold-chain
 // distribution: …"). It comes from the expert's value-chain label or the last
@@ -495,4 +504,127 @@ export async function generateWhyThem(
       JSON.stringify({ reason: err instanceof Error ? err.message.slice(0, 80) : 'unknown' }));
     return null;
   }
+}
+
+// ─── Attempt 3: deterministic, from the sourced title and company ─────────────
+
+/**
+ * Words that, on their own or only with each other, say nothing about what a
+ * person did. A title made only of these ("Consultant", "Business Owner",
+ * "Senior Consultant", "Team Member") is generic and refused.
+ */
+const GENERIC_TITLE_WORDS = new Set([
+  'consultant', 'consultants', 'employee', 'professional', 'member', 'owner', 'staff', 'associate',
+  'contractor', 'freelancer', 'freelance', 'self-employed', 'worker', 'volunteer', 'intern', 'student',
+  'retired', 'advisor', 'adviser', 'expert', 'specialist', 'independent', 'other', 'unknown', 'none',
+  'n/a', 'na', 'self', 'employed',
+  // Modifiers that add no specificity to the words above.
+  'senior', 'sr', 'junior', 'jr', 'lead', 'business', 'team', 'general', 'small', 'sole', 'solo',
+  'a', 'an', 'the', 'and', 'of', '&',
+]);
+
+/** Employer values that are a placeholder, not a company. */
+const PLACEHOLDER_COMPANIES = new Set([
+  'self-employed', 'self employed', 'freelance', 'freelancer', 'independent', 'independent consultant',
+  'stealth', 'stealth startup', 'stealth mode', 'stealth mode startup', 'confidential', 'undisclosed',
+  'private', 'private company', 'various', 'n/a', 'na', 'none', 'unknown', 'retired', 'consultant',
+]);
+
+/** "Former VP", "Ex-CFO", "Retired CEO", "Formerly COO" → the title without it, and the fact that it was one. */
+const FORMER_PREFIX_RE = /^(?:former(?:ly)?|ex|retired|previously|past)(?:\s*[-:]\s*|\s+)/i;
+
+/** A field that lists several things, or carries punctuation a fact line should not. */
+const SEPARATOR_RE = /[|/;•·()[\]{}@<>]|\s[-–—]\s/;
+/** A title that already names where ("VP at Sysco") would read "… at Sysco at Sysco". */
+const TITLE_AT_RE  = /\bat\b/i;
+
+const TITLE_MAX_WORDS   = 10;
+const COMPANY_MAX_WORDS = 8;
+const PUBLIC_URL_RE     = /^https?:\/\/[^\s]+$/i;
+
+/** True when a title says nothing specific: empty, or made only of generic words. */
+export function isGenericTitle(title: string | null | undefined): boolean {
+  const words = collapse(title ?? '').toLowerCase().replace(FORMER_PREFIX_RE, '')
+    .split(/[\s,]+/).map(w => w.replace(/^[.'-]+|[.'-]+$/g, '')).filter(Boolean);
+  return words.length === 0 || words.every(w => GENERIC_TITLE_WORDS.has(w));
+}
+
+/**
+ * The title-and-company line, or null. Returned only when EVERY check holds;
+ * nothing is shortened, re-cased or otherwise patched to make it pass.
+ *
+ *   - the expert has a non-empty http(s) source_url (they came from a public
+ *     record, so the title and company are something someone published)
+ *   - title and company are both present; the title is specific
+ *     (isGenericTitle) and the company is a name, not a placeholder, and has
+ *     an identifying word (distinctiveNameWords)
+ *   - neither lists several roles or carries a URL, an "at", brackets or
+ *     separators; the title does not repeat the company or name the expert
+ *   - "Former" / "Ex-" / "Retired" titles read "Your time as {title} at
+ *     {company} stood out", any other "Your role as {title} at {company}
+ *     stood out", then the rubric clause
+ *   - the whole line passes whyThemRejection (30 words, no URL, no money, no
+ *     em dash, no banned phrase or word) and a domain can be named
+ *     (introDomainFor); no domain means a hold, exactly as for attempts 1 and 2
+ */
+export function whyThemFromTitle(
+  expert: Expert,
+  options: PersonalizationOptions = {},
+): WhyThem | null {
+  if (!PUBLIC_URL_RE.test((expert.source_url ?? '').trim())) return null;
+
+  const rawTitle = collapse(expert.title ?? '');
+  const company  = collapse(expert.company ?? '');
+  if (!rawTitle || !company) return null;
+
+  const former = FORMER_PREFIX_RE.test(rawTitle);
+  const title  = rawTitle.replace(FORMER_PREFIX_RE, '').trim();
+  if (!title || isGenericTitle(title)) return null;
+  if (SEPARATOR_RE.test(title) || TITLE_AT_RE.test(title) || (title.match(/,/g) ?? []).length > 1) return null;
+  if (countWords(title) > TITLE_MAX_WORDS) return null;
+
+  if (PLACEHOLDER_COMPANIES.has(company.toLowerCase().replace(/[.!]+$/, ''))) return null;
+  if (SEPARATOR_RE.test(company) || countWords(company) > COMPANY_MAX_WORDS) return null;
+  const companyWords = distinctiveNameWords(company);
+  if (companyWords.length === 0) return null;
+
+  // "Sysco Regional VP at Sysco" says the company twice; the person's own
+  // name has no place in a sentence addressed to them.
+  const titleWords = new Set(wordsOf(title));
+  if (companyWords.some(w => titleWords.has(w))) return null;
+  const nameWords = wordsOf(expert.name ?? '').filter(w => w.length >= 3);
+  if (nameWords.some(w => titleWords.has(w))) return null;
+
+  const whyThem = `Your ${former ? 'time' : 'role'} as ${title} at ${company} stood out${WHY_THEM_CLAUSE}`;
+  if (whyThemRejection(whyThem, { requireSecondPerson: false })) return null;
+  if (!/^Your (?:role|time) as /.test(whyThem)) return null;
+
+  const domain = introDomainFor(expert, options);
+  if (!domain) return null;
+  return { whyThem, domain };
+}
+
+// ─── All three, in order ──────────────────────────────────────────────────────
+
+/** Which attempt wrote the line. Diagnostic only; never shown to anyone outside staff. */
+export type WhyThemSource = 'evidence' | 'model' | 'title';
+
+/**
+ * The why-them line and the subject's domain, from the first attempt that
+ * yields one: the evidence (deterministic), then one model call, then the
+ * sourced title and company. Null means hold the intro for staff. The title
+ * line is never reached while the evidence or the model produced a line.
+ */
+export async function personalizeIntro(
+  expert: Expert,
+  options: GenerateOptions = {},
+): Promise<(WhyThem & { source: WhyThemSource }) | null> {
+  const fromEvidence = whyThemFromEvidence(expert, options);
+  if (fromEvidence) return { ...fromEvidence, source: 'evidence' };
+
+  const fromModel = await generateWhyThem(expert, options);
+  if (fromModel) return { ...fromModel, source: 'model' };
+
+  const fromTitle = whyThemFromTitle(expert, options);
+  return fromTitle ? { ...fromTitle, source: 'title' } : null;
 }

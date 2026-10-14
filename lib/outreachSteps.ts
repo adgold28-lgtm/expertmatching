@@ -18,8 +18,10 @@
 // twice.
 //
 // The intro has one more gate than the legacy step: the rubric's personal line
-// (docs/OUTREACH_EMAIL_RUBRIC.md). When neither the evidence nor one model call
-// yields a line Matchy trusts, the intro is HELD at 'outreach_drafted' with
+// (docs/OUTREACH_EMAIL_RUBRIC.md). When none of the evidence, one model call or
+// the expert's sourced title and company (lib/introPersonalization
+// .personalizeIntro) yields a line Matchy trusts, the intro is HELD at
+// 'outreach_drafted' with
 // `introNeedsWhyThem` set — even when draftOnly is false — and a person writes
 // it through the approve route. Matchy never sends a generic first line.
 //
@@ -36,7 +38,7 @@ import {
   IntroRubricError,
   type MatchyEmail,
 } from './matchyTemplates';
-import { generateWhyThem, introDomainFor, whyThemFromEvidence } from './introPersonalization';
+import { introDomainFor, personalizeIntro } from './introPersonalization';
 import type { FirmTypeValue, FirmSizeValue } from './supabase/database.types';
 import { generateOutreachToken } from './outreachToken';
 import { getUpstashClient } from './upstashRedis';
@@ -460,8 +462,10 @@ async function hold(
 /**
  * The why-them line and the domain for one expert, in the order the rubric
  * note in docs/OUTREACH_EMAIL_RUBRIC.md describes: what is already recorded,
- * then the deterministic evidence pass, then one model call. Either field may
- * come back null; the caller decides what a missing one means.
+ * then the deterministic evidence pass, then one model call, then the
+ * expert's own sourced title and company (lib/introPersonalization
+ * .personalizeIntro). Either field may come back null; the caller decides
+ * what a missing one means.
  */
 async function resolveWhyThem(
   pe: ProjectExpert,
@@ -479,7 +483,10 @@ async function resolveWhyThem(
     return { whyThem: stored.whyThem, domain: introDomainFor(pe.expert, options) };
   }
 
-  const generated = whyThemFromEvidence(pe.expert, options) ?? await generateWhyThem(pe.expert, options);
+  const generated = await personalizeIntro(pe.expert, options);
   if (!generated) return { whyThem: null, domain: stored.domain ?? introDomainFor(pe.expert, options) };
+  // Which attempt wrote the line, so the share of title-only intros can be
+  // read off the logs. The source name only: never the line or the expert.
+  console.info('[outreachSteps] why-them line', JSON.stringify({ source: generated.source }));
   return { whyThem: generated.whyThem, domain: stored.domain ?? generated.domain };
 }
