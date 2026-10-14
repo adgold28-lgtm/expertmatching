@@ -61,6 +61,7 @@ import {
 } from '../lib/orgBilling';
 import {
   handleStripeEvent,
+  type MismatchWebhookDeps,
   type StripeWebhookDeps,
 } from '../app/api/webhooks/stripe/handlers';
 import { NO_ORG_ENTITLEMENTS } from '../lib/entitlements';
@@ -623,7 +624,9 @@ async function main(): Promise<void> {
     stripeEvent('evt_paid_1', 'payment_intent.succeeded', { id, metadata: { projectId: PROJECT_ID, expertId: EXPERT_ID } });
 
   section('payout retry requires settled client payment and entitlement');
-  for (const paymentStatus of ['unpaid', 'failed', 'refunded', 'invoice_sent', null, undefined] as const) {
+  // 'waived' with no mismatch flag is in the list on purpose: the waived
+  // exception releases a payout only for the call the client flagged.
+  for (const paymentStatus of ['unpaid', 'failed', 'refunded', 'invoice_sent', 'waived', null, undefined] as const) {
     const payout = payoutEnv({ expert: { paymentStatus } });
     await runExpertPayout(PROJECT_ID, EXPERT_ID, payout.deps);
     eq(`no transfer for ${paymentStatus}`, payout.transfers.length, 0);
@@ -1232,6 +1235,101 @@ async function main(): Promise<void> {
     eq('the engagement ends',   env.patches[0]?.status, 'rejected_after_outreach');
     eq('with no money at all',  env.invoices.length, 0);
     eq('and nobody removed',    env.removals.length, 0);
+  }
+
+  // ── 7. The ten-minute mismatch guarantee (launch pack, 2026-10-14) ─────────
+  //
+  // scripts/test-mismatch-guarantee.ts owns the feature end to end; these are
+  // the same money rules through this file's own builders. A flagged call:
+  // the client is charged nothing, the expert is paid 15 minutes, once.
+
+  section('a waived flagged call pays the expert 15 minutes, once (payoutEnv)');
+  {
+    const env = payoutEnv({ expert: { paymentStatus: 'waived', mismatchCallId: CALL_ID, actualDurationMin: DURATION } });
+    await runExpertPayout(PROJECT_ID, EXPERT_ID, env.deps);
+    eq('waived + flagged: one transfer',      env.transfers.length, 1);
+    eq('...for 15 minutes, not the hour',      env.transfers[0]?.params.amount, FEE_CENTS);
+    eq('...keyed on the flagged call',         env.transfers[0]?.key, `expert-payout:${PROJECT_ID}:${EXPERT_ID}:${CALL_ID}`);
+    await runExpertPayout(PROJECT_ID, EXPERT_ID, env.deps);
+    eq('...and a replay transfers nothing',    env.transfers.length, 1);
+  }
+  {
+    // The payout ran between the charge and its refund: still 15 minutes.
+    const env = payoutEnv({ expert: { paymentStatus: 'paid', mismatchCallId: CALL_ID, actualDurationMin: DURATION } });
+    await runExpertPayout(PROJECT_ID, EXPERT_ID, env.deps);
+    eq('paid but flagged: 15 minutes too', env.transfers[0]?.params.amount, FEE_CENTS);
+  }
+  {
+    const env = payoutEnv({ expert: { paymentStatus: 'waived', mismatchCallId: 'some-other-call' } });
+    await runExpertPayout(PROJECT_ID, EXPERT_ID, env.deps);
+    eq('waived for another call releases nothing', env.transfers.length, 0);
+  }
+
+  section('the webhook on a flagged call (webhookEnv)');
+  {
+    const env = webhookEnv();
+    const settled: Array<string | null> = [];
+    const deps: Partial<StripeWebhookDeps & MismatchWebhookDeps> = {
+      ...env.deps,
+      getProject: async () => ({ experts: [{
+        expert: { id: EXPERT_ID }, paymentStatus: 'waived',
+        mismatchCallId: CALL_ID, billedCallId: CALL_ID, stripePaymentIntentId: 'pi_new_1',
+      }] }),
+      settleMismatchPayment: async (_p, _e, intentId) => { settled.push(intentId); },
+    };
+    await handleStripeEvent(paidIntent(), deps);
+    eq('payment_intent.succeeded is never recorded paid', env.patches.length, 0);
+    eq('...it is settled against the flag (refunded)',    settled.join(','), 'pi_new_1');
+    eq('...and the ordinary payout is not run from here', env.payouts.length, 0);
+  }
+  {
+    const env = webhookEnv();
+    const recorded: string[] = [];
+    const deps: Partial<StripeWebhookDeps & MismatchWebhookDeps> = {
+      ...env.deps,
+      getProject: async () => ({ experts: [{
+        expert: { id: EXPERT_ID }, paymentStatus: 'paid',
+        mismatchCallId: CALL_ID, billedCallId: CALL_ID, stripePaymentIntentId: 'pi_new_1',
+      }] }),
+      recordMismatchRefund: async (_p, _e, intentId) => { recorded.push(intentId); },
+    };
+    await handleStripeEvent(stripeEvent('evt_ref_mm', 'charge.refunded', {
+      id: 'ch_mm', payment_intent: 'pi_new_1', metadata: { projectId: PROJECT_ID, expertId: EXPERT_ID },
+    }), deps);
+    eq('the flagged call\'s refund keeps waived',  recorded.join(','), 'pi_new_1');
+    eq('...writes no refunded',                    env.patches.length, 0);
+    eq('...raises no alarm',                       env.failures.length, 0);
+    eq('...and runs the payout rather than holding it', env.payouts.length, 1);
+  }
+
+  section('applyAttendanceOutcome charges nothing for a flagged call (feeEnv)');
+  {
+    const env = feeEnv({ expert: { mismatchCallId: CALL_ID } });
+    let payouts = 0;
+    const deps: Partial<LateCancelDeps> = {
+      ...env.deps,
+      getProject:      async () => ({ experts: [env.pe] }),
+      mutateExpert:    async (_p, _e, mutate) => { Object.assign(env.pe, mutate(env.pe)); },
+      runExpertPayout: async () => { payouts++; },
+    };
+    const res = await applyAttendanceOutcome(env.project, env.pe, 'both', { durationMin: 8 }, deps);
+    eq('both attended, flagged: nothing billed', env.invoices.length, 0);
+    eq('...reported waived',                     res.waived, true);
+    eq('...the row completes',                   env.pe.status, 'completed');
+    eq('...waived',                              env.pe.paymentStatus, 'waived');
+    eq('...and the payout runs directly',        payouts, 1);
+  }
+  {
+    const env = feeEnv({ expert: { mismatchCallId: CALL_ID } });
+    const deps: Partial<LateCancelDeps> = {
+      ...env.deps,
+      getProject:      async () => ({ experts: [env.pe] }),
+      mutateExpert:    async (_p, _e, mutate) => { Object.assign(env.pe, mutate(env.pe)); },
+      runExpertPayout: async () => {},
+    };
+    await applyAttendanceOutcome(env.project, env.pe, 'client_no_show', { durationMin: 60 }, deps);
+    eq('client no-show, flagged: no late-cancel fee', env.invoices.length, 0);
+    eq('...and no fee recorded',                      env.pe.lateCancelCallId, undefined);
   }
 }
 
