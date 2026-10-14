@@ -6,10 +6,13 @@
 // No network, no database, no email. The two things under test are the whole
 // decision layer of "may this email leave the building, and may it leave twice":
 //
-//   lib/emailSequence.resolveSendGate  — the four gates, in order, all of them
+//   lib/emailSequence.resolveSendGate  — the five gates, in order, all of them
 //                                        failing closed (DISABLE_EMAILS,
-//                                        walkthrough, entitlements, and the
-//                                        global do-not-contact list, H-3)
+//                                        walkthrough, entitlements, the
+//                                        global do-not-contact list, H-3, and
+//                                        the client firm's own list, which
+//                                        scripts/test-do-not-contact.ts covers
+//                                        in depth)
 //   lib/outreachSteps.introAlreadySent — the send-once rule for a cold intro,
 //                                        which is what stops two bookmarks or a
 //                                        double-clicked approve mailing the
@@ -24,6 +27,7 @@ import { readFileSync } from 'fs';
 import { resolveSendGate, dispositionOf, type SendGateFacts, withFromDisplayName } from '../lib/emailSequence';
 import { introAlreadySent } from '../lib/outreachSteps';
 import type { SuppressionCheck } from '../lib/outreachSuppressions';
+import type { DoNotContactCheck } from '../lib/doNotContact';
 import { check, eq, summary } from './testHarness';
 
 function section(title: string): void {
@@ -34,6 +38,10 @@ const CLEAR:      SuppressionCheck = { ok: true,  suppressed: false };
 const SUPPRESSED: SuppressionCheck = { ok: true,  suppressed: true  };
 const UNREADABLE: SuppressionCheck = { ok: false, reason: 'unavailable' };
 
+const FIRM_CLEAR:  DoNotContactCheck = { ok: true,  match: null };
+const FIRM_LISTED: DoNotContactCheck = { ok: true,  match: { kind: 'company', normalized: 'globex' } };
+const FIRM_DOWN:   DoNotContactCheck = { ok: false, reason: 'unavailable' };
+
 /** A live, activated, unsuppressed send: the only combination that goes out. */
 function live(patch: Partial<SendGateFacts> = {}): SendGateFacts {
   return {
@@ -41,6 +49,7 @@ function live(patch: Partial<SendGateFacts> = {}): SendGateFacts {
     walkthrough:   false,
     canOutreach:   true,
     suppression:   CLEAR,
+    doNotContact:  FIRM_CLEAR,
     ...patch,
   };
 }
@@ -75,7 +84,16 @@ check('the suppressed hold is its own reason',
 
 // ─── The other three gates, and their order ───────────────────────────────────
 
-section('the four gates, cheapest first, each one short-circuiting the rest');
+// ─── The firm's own list ──────────────────────────────────────────────────────
+
+section("the firm's own do-not-contact list is the fifth gate, and fails closed");
+
+eq('on the firm list → held',                 heldReason(live({ doNotContact: FIRM_LISTED })), 'do_not_contact');
+eq('firm list unreadable → held',             heldReason(live({ doNotContact: FIRM_DOWN })),   'do_not_contact');
+eq('firm list never checked → held',          heldReason(live({ doNotContact: null })),        'do_not_contact');
+eq('a global opt-out is reported before it',  heldReason(live({ suppression: SUPPRESSED, doNotContact: FIRM_LISTED })), 'suppressed');
+
+section('the five gates, cheapest first, each one short-circuiting the rest');
 
 eq('walkthrough → held',        heldReason(live({ walkthrough: true })),  'walkthrough');
 eq('no card on file → held',    heldReason(live({ canOutreach: false })), 'trial');
@@ -87,15 +105,15 @@ eq('DISABLE_EMAILS → held',     heldReason(live({ disableEmails: true })), 'di
 // is what lets sendSequenceEmail skip the entitlement read on a walkthrough
 // project and the suppression read on an unfunded one.
 eq('kill switch beats walkthrough',
-  heldReason({ disableEmails: true, walkthrough: true, canOutreach: null, suppression: null }), 'disabled');
+  heldReason({ disableEmails: true, walkthrough: true, canOutreach: null, suppression: null, doNotContact: null }), 'disabled');
 eq('walkthrough beats the account boundary',
-  heldReason({ disableEmails: false, walkthrough: true, canOutreach: false, suppression: null }), 'walkthrough');
+  heldReason({ disableEmails: false, walkthrough: true, canOutreach: false, suppression: null, doNotContact: null }), 'walkthrough');
 eq('the account boundary beats suppression',
   heldReason(live({ canOutreach: false, suppression: SUPPRESSED })), 'trial');
 
 // Everything unknown at once must still hold, never send.
 check('all facts missing → held', resolveSendGate({
-  disableEmails: false, walkthrough: false, canOutreach: null, suppression: null,
+  disableEmails: false, walkthrough: false, canOutreach: null, suppression: null, doNotContact: null,
 }).send === false);
 
 // ─── What the caller does with the answer (H-4) ───────────────────────────────
