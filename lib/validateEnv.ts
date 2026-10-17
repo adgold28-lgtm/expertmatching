@@ -81,7 +81,7 @@ export const OPTIONAL_VARS = [
   // Pin every intro to one trial arm 1-4 (lib/matchyTemplates.introArmFor);
   // unset = the deterministic per-expert split
   'INTRO_ARM',
-  'INTRO_PAYMENT_TERMS',   // 'on' adds the payment-terms sentence to the intro (default off)
+  'INTRO_PAYMENT_TERMS',   // 'off' removes the intro's payment-terms sentence (default on)
   // CAN-SPAM postal address in the footer
   'OUTREACH_POSTAL_ADDRESS',
   // One-line LLM rephrase of nudges; off unless 'true'

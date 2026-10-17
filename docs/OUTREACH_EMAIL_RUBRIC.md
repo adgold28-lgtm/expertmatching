@@ -4,7 +4,7 @@
 
 ## Purpose of email one
 
-Get a yes/no answer. Nothing else. No scheduling, no agreement, no payment details. Those go in email two, after they've said yes.
+Get a yes/no answer. Nothing else. No scheduling and no agreement; those go in email two, after they've said yes. One exception, by the founder's decision of 2026-10-17: a single payment-terms sentence (see "Payment terms" below).
 
 The email has to do two things at once: state the money, and prove a real person sent it. Money alone reads as a scam. Do not split these across variants.
 
@@ -86,6 +86,14 @@ They are a PE firm looking to understand cold-chain economics, and they want to 
 Asher
 ```
 
+## Payment terms (founder, 2026-10-17)
+
+"i like payment in the first message." Every intro carries one sentence right after the rate:
+
+> You'd be paid after the call, 15 minutes minimum even if my client doesn't show.
+
+Both halves are true of the product: experts are paid through Stripe once the client's card is charged, and the call policy pays an expert 15 minutes when the client no-shows or cancels late. The sentence is the first thing dropped if the body would reach 90 words, so it never holds an intro. `INTRO_PAYMENT_TERMS=off` removes it. The follow-up states the same terms again with the rate question.
+
 ## Trial arms (founder, 2026-09-08)
 
 Run trial emails with the price in the subject or not. Every arm keeps the "why them" line and states the hourly rate in the body (hard rule above); the only variable is the subject line. (The flat "$X for up to an hour" body framing was dropped by the founder on 2026-09-10.) Record the arm in the `intro_sent` event payload; reply rate and positive-reply rate within four business days come from `reply_received` / `intent_classified`.
@@ -100,7 +108,7 @@ Run trial emails with the price in the subject or not. Every arm keeps the "why 
 - Scope limit is one clause, not a paragraph
 - Money sentence has no ambiguity
 - Ends on the yes/no question
-- No scheduling link, agreement, or payment mechanics anywhere
+- No scheduling link or agreement anywhere; the only payment mechanics are the one payment-terms sentence
 - Real signature with LinkedIn
 - Read it out loud. If it doesn't sound like something you'd say, rewrite it.
 
