@@ -18,7 +18,8 @@
 // A call the client flagged under the ten-minute mismatch guarantee is never
 // charged here: it is marked completed and settled at zero, and the expert is
 // paid 15 minutes (lib/lateCancelBilling.settleMismatchFlag). The response
-// carries `waived: true` and no payment link.
+// carries `waived: true` and no payment link. A flagged call entered as longer
+// than ten minutes voids the flag and is billed as usual.
 //
 // NEVER log: expert names, client names, emails, or card details.
 // Amounts are safe to log.
@@ -27,10 +28,10 @@ import { NextRequest, NextResponse } from 'next/server';
 import { callChargeDollars, MAX_BILLABLE_MINUTES } from '../../../../../../../lib/pricing';
 import { routeAuthGuard, getSessionUser } from '../../../../../../../lib/auth';
 import { requireProjectOwner } from '../../../../../../../lib/projectsGuard';
-import { getProjectForUser, updateExpertStatus } from '../../../../../../../lib/projectStore';
+import { getProjectForUser, updateExpertStatus, mutateExpert } from '../../../../../../../lib/projectStore';
 import type { UpdateExpertInput } from '../../../../../../../lib/projectStore';
 import { createAndSendInvoice, completionReplay } from '../../../../../../../lib/createAndSendInvoice';
-import { chargeIsForFlaggedCall } from '../../../../../../../lib/mismatchGuarantee';
+import { chargeIsForFlaggedCall, flagVoidedByDuration } from '../../../../../../../lib/mismatchGuarantee';
 import { settleMismatchFlag } from '../../../../../../../lib/lateCancelBilling';
 import { getEntitlementsForProject, activationRequired } from '../../../../../../../lib/entitlements';
 import { getAuthUserIdByEmail } from '../../../../../../../lib/supabase/admin';
@@ -129,7 +130,17 @@ export async function POST(
   //      it charges nothing: the call is recorded as completed and the waiver
   //      settles it, paying the expert 15 minutes. Checked before the replay
   //      guard below because a waived call is never billed, with any numbers.
-  if (chargeIsForFlaggedCall(pe, callId)) {
+  let flaggedForThisCall = chargeIsForFlaggedCall(pe, callId);
+  if (flaggedForThisCall && flagVoidedByDuration(callDurationMin)) {
+    // Past ten minutes the guarantee no longer applies (founder, 2026-10-17):
+    // the flag is voided and the call is billed below like any other.
+    await mutateExpert(params.projectId, params.expertId, current => ({
+      ...current, mismatchCallId: null, mismatchVoidedAt: Date.now(), updatedAt: Date.now(),
+    }));
+    pe.mismatchCallId = null;
+    flaggedForThisCall = false;
+  }
+  if (flaggedForThisCall) {
     try {
       const flaggedPatch: UpdateExpertInput = { status: 'completed', callDurationMin };
       await updateExpertStatus(params.projectId, params.expertId, flaggedPatch);

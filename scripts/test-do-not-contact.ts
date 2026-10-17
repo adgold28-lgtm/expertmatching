@@ -287,7 +287,12 @@ section('matchExpert: companies are exact, never a substring');
   eq('Apple matches "Apple Inc."',          hit(list, { name: 'Ann Lee', company: 'Apple Inc.' }), 'company:Apple');
   eq("Apple does NOT match Applebee's",     hit(list, { name: 'Ann Lee', company: "Applebee's" }), null);
   eq('Apple does NOT match "Pineapple Co"', hit(list, { name: 'Ann Lee', company: 'Pineapple Co' }), null);
-  eq('Apple does NOT match "Apple Hospitality REIT"', hit(list, { name: 'Ann Lee', company: 'Apple Hospitality REIT' }), null);
+  // Founder's call 2026-10-17: a listed company also covers names that start
+  // with it, on whole words. Errs toward not contacting.
+  eq('Apple now also matches "Apple Hospitality REIT"', hit(list, { name: 'Ann Lee', company: 'Apple Hospitality REIT' }), 'company:Apple');
+  eq('Meta matches "Meta Platforms, Inc."',  hit(list, { name: 'Ann Lee', company: 'Meta Platforms, Inc.' }), 'company:Meta');
+  eq('a longer listed name does not block its first word', hit([entry('company', 'Meta Platforms')], { name: 'Ann Lee', company: 'Meta' }), null);
+  eq('a prefix must end on a whole word ("Met" vs "Meta")', hit([entry('company', 'Met')], { name: 'Ann Lee', company: 'Meta Platforms' }), null);
   eq('an empty company matches nothing',    hit(list, { name: 'Ann Lee', company: '' }), null);
 }
 
@@ -346,6 +351,9 @@ section('lookupValues: what the store is asked for');
     values.join('|'), 'jane@mail.acme.com|mail.acme.com|acme.com|acme|jane okafor');
   check('never the bare TLD',               !values.includes('com'));
   eq('nothing to look up for an empty expert', lookupValues({ name: '', company: '' }).length, 0);
+  const pre = lookupValues({ name: 'Ann Lee', company: 'Meta Platforms, Inc.' });
+  check('the store is asked for the whole company name', pre.includes('meta platforms'));
+  check('…and for each leading run of its words', pre.includes('meta'));
 }
 
 // ─── 5. planAdditions and counting ────────────────────────────────────────────

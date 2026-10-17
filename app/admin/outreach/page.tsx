@@ -102,13 +102,12 @@ function tableRows(reasonKeys: string[]): Row[] {
     { group: 'Sending', label: 'Bounces',      ...n(t => t.bounces) },
     { group: 'Sending', label: 'Complaints (marked as spam)', ...n(t => t.complaints) },
 
-    { group: 'Replies', label: 'Replies (any)',  ...n(t => t.replies) },
+    { group: 'Replies', label: 'Replies',        ...n(t => t.replies) },
     { group: 'Replies', label: 'Reply rate',     ...r(t => t.replyRate) },
     { group: 'Replies', label: `Replied within ${REPLY_WINDOW_BUSINESS_DAYS} business days`, ...n(t => t.repliesInWindow) },
     { group: 'Replies', label: `Rate within ${REPLY_WINDOW_BUSINESS_DAYS} business days (closed windows)`, ...r(t => t.inWindowRate) },
     { group: 'Replies', label: 'Still inside their window, no reply yet', ...n(t => t.stillInWindow) },
-    { group: 'Replies', label: 'Unclear-only replies (auto-replies land here)', ...n(t => t.unclearOnlyReplies) },
-    { group: 'Replies', label: `Readable replies within ${REPLY_WINDOW_BUSINESS_DAYS} business days`, ...n(t => t.readableRepliesInWindow) },
+    { group: 'Replies', label: 'Automatic replies left out (out of office, blocked notices)', ...n(t => t.automaticReplies) },
     {
       group: 'Replies', label: 'Median time to first reply',
       display: t => durationText(t.medianTimeToFirstReplyMs),
@@ -150,7 +149,6 @@ function buildCsv(data: OutreachStatsResponse, rows: Row[]): string {
     [],
     ['Intros with no recorded arm (in All only)', String(data.byArm.unassigned)],
     ['Test A: reply rate within 5 business days >= 15%', data.testA.replyLine],
-    ['Test A: same line, readable replies only', data.testA.replyLineReadable],
     ['Test A: agreed to a call at the offered rate >= 5', data.testA.agreedLine],
   ];
   return lines.map(cells => cells.map(csvCell).join(',')).join('\n') + '\n';
@@ -422,9 +420,8 @@ export default function OutreachScoreboardPage() {
                       {all.stillInWindow > 0 && ` ${all.stillInWindow} more ${all.stillInWindow === 1 ? 'is' : 'are'} still inside the window.`}
                     </p>
                     <p className="text-[11px] text-muted leading-relaxed">
-                      Readable replies only (auto-replies left out): {all.readableRepliesInWindow} of {all.introsSent}
-                      {' '}({pct(all.introsSent > 0 ? all.readableRepliesInWindow / all.introsSent : null)}).{' '}
-                      <span className="whitespace-nowrap">On that count: {MARK_META[data.testA.replyLineReadable].label}.</span>
+                      Out-of-office notes and blocked notices are not replies and are left out
+                      {all.automaticReplies > 0 ? ` (${all.automaticReplies} so far)` : ''}.
                     </p>
                   </div>
                   <Mark mark={data.testA.replyLine} />

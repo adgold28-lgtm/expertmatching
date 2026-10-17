@@ -51,6 +51,23 @@ export const MISMATCH_WINDOW_MS = 10 * 60_000;
  */
 export const MISMATCH_GRACE_MS = 60_000;
 
+/**
+ * The longest flagged call that is still free (founder, 2026-10-17: "a call
+ * past 10 minutes shouldn't be free"). The guarantee covers a call the client
+ * ENDS inside its first ten minutes; one that keeps going past ten minutes is
+ * billed as usual, and the flag is voided (mismatchVoidedAt).
+ */
+export const MISMATCH_MAX_FREE_MINUTES = 10;
+
+/**
+ * True when a flagged call ran long enough that the guarantee no longer
+ * applies. A missing or unreadable duration keeps the guarantee: the call
+ * cannot be shown to have run past ten minutes. Pure.
+ */
+export function flagVoidedByDuration(durationMin: number | null | undefined): boolean {
+  return typeof durationMin === 'number' && Number.isFinite(durationMin) && durationMin > MISMATCH_MAX_FREE_MINUTES;
+}
+
 /** What the expert is paid for a flagged call: the platform minimum. */
 export const MISMATCH_PAYOUT_MINUTES = MIN_BILLABLE_MINUTES;
 
@@ -131,7 +148,7 @@ export type MismatchEligibility =
 /** The fields eligibility reads. A ProjectExpert satisfies it. */
 export type MismatchEligibilityView = Pick<
   ProjectExpert,
-  'status' | 'booking' | 'zoomMeetingEndedAt' | 'mismatchCallId'
+  'status' | 'booking' | 'zoomMeetingEndedAt' | 'mismatchCallId' | 'actualDurationMin'
 >;
 
 /**
@@ -169,6 +186,7 @@ export function mismatchEligibility(
 
   if (pe.status === 'scheduled') return { ok: true, callId, already: false };
   if (pe.status === 'completed'
+      && !flagVoidedByDuration(pe.actualDurationMin)
       && endedInsideMismatchWindow(pe.zoomMeetingEndedAt, booking.startUtc, graceMs)) {
     return { ok: true, callId, already: false };
   }

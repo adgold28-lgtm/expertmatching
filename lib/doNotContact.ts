@@ -508,6 +508,14 @@ interface ExpertKeys {
   /** The address's domain and every parent with two labels or more. */
   domains: string[];
   company: string | null;
+  /**
+   * The company name and every leading run of its whole words, longest first:
+   * "meta platforms" → ["meta platforms", "meta"]. A listed company blocks any
+   * company whose name STARTS with it (founder's call, 2026-10-17): a missed
+   * match is a compliance breach, an extra one only skips an expert, and the
+   * client sees why. Whole words only, so "meta" never matches "metallica".
+   */
+  companyPrefixes: string[];
   person:  string | null;
 }
 
@@ -517,10 +525,15 @@ function expertKeys(expert: ExpertIdentity): ExpertKeys {
   const labels = host ? host.split('.') : [];
   const domains: string[] = [];
   for (let i = 0; i + 2 <= labels.length; i++) domains.push(labels.slice(i).join('.'));
+  const company = expert.company ? normalizeCompanyValue(expert.company) : null;
+  const words   = company ? company.split(' ').filter(Boolean) : [];
+  const companyPrefixes: string[] = [];
+  for (let n = words.length; n >= 1; n--) companyPrefixes.push(words.slice(0, n).join(' '));
   return {
     email,
     domains,
-    company: expert.company ? normalizeCompanyValue(expert.company) : null,
+    company,
+    companyPrefixes,
     person:  expert.name    ? normalizePersonValue(expert.name)     : null,
   };
 }
@@ -532,7 +545,7 @@ function expertKeys(expert: ExpertIdentity): ExpertKeys {
  */
 export function lookupValues(expert: ExpertIdentity): string[] {
   const keys = expertKeys(expert);
-  const values = [keys.email, ...keys.domains, keys.company, keys.person]
+  const values = [keys.email, ...keys.domains, ...keys.companyPrefixes, keys.person]
     .filter((v): v is string => !!v);
   return Array.from(new Set(values));
 }
@@ -542,7 +555,8 @@ export function lookupValues(expert: ExpertIdentity): string[] {
  *
  *   email    the address, exactly
  *   domain   the address's domain, or any subdomain of it
- *   company  the expert's company, as a whole normalized name
+ *   company  the expert's company, or any company whose name it starts
+ *            with, on whole words ("Meta" covers "Meta Platforms")
  *   person   the expert's first and last name
  */
 export function matchExpert(
@@ -559,7 +573,7 @@ export function matchExpert(
         if (keys.domains.includes(entry.normalized)) return entry;
         break;
       case 'company':
-        if (keys.company && entry.normalized === keys.company) return entry;
+        if (keys.companyPrefixes.includes(entry.normalized)) return entry;
         break;
       case 'person':
         if (keys.person && entry.normalized === keys.person) return entry;

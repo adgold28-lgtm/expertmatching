@@ -69,6 +69,7 @@ import { runExpertPayout } from './expertPayout';
 import { getStripe } from './stripe';
 import {
   chargeIsForFlaggedCall,
+  flagVoidedByDuration,
   mismatchRefundIdempotencyKey,
   mismatchSettlement,
   paymentIsForFlaggedCall,
@@ -374,17 +375,15 @@ export async function applyAttendanceOutcome(
       });
       console.log('[attendance] both-attended', { projectId, durationMin: input.durationMin });
 
-      if (flagged) {
+      if (flagged && flagVoidedByDuration(input.durationMin)) {
+        // The guarantee covers a call the client ends inside ten minutes
+        // (founder, 2026-10-17). This one kept going, so the flag is voided
+        // and the call is billed below exactly like an unflagged one.
+        await d.patchExpert(projectId, expertId, { mismatchCallId: null, mismatchVoidedAt: Date.now() });
+        console.log('[attendance] mismatch-voided-ran-long', { projectId, durationMin: input.durationMin });
+      } else if (flagged) {
         // No charge, no payment link: the waiver and the expert's 15 minutes.
         const mismatch = await settleMismatchFlag(projectId, expertId, { callEnded: true }, deps);
-        // The founder watches the claim rate; a flagged call that kept going
-        // well past the guarantee is worth a person's look (the expert is paid
-        // 15 minutes for it and the client was charged nothing).
-        if (input.durationMin > MISMATCH_PAYOUT_MINUTES) {
-          await d.recordSystemFailure({
-            area: 'invoice', reason: 'mismatch_flagged_call_ran_long', projectId, expertId,
-          });
-        }
         console.log('[attendance] mismatch-waived', { projectId, action: mismatch.action });
         return { outcome, charged: false, waived: true, mismatch };
       }

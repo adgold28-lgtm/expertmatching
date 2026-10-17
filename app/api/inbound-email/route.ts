@@ -81,6 +81,7 @@ import { cleanEmailBody } from '../../../lib/emailClean';
 import { screenMessage } from '../../../lib/matchyScreen';
 import { appendMessage, updateMessage } from '../../../lib/conversations';
 import { classifyMessage, type MatchyClassification } from '../../../lib/matchyClassify';
+import { detectAutomatedReply, automatedReplySummary, AUTO_REPLY_INTENT, type AutomatedReplyKind } from '../../../lib/autoReply';
 import { emitEngagementEvent, recordSystemFailure } from '../../../lib/engagementEvents';
 import {
   CLAIM_DONE,
@@ -535,6 +536,7 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     await handleReply({
       project, pe, token,
       rawEmail:        emailText,
+      subject:         envelope.subject,
       resendMessageId: extractResendMessageId(payload),
     });
   } catch (err) {
@@ -550,6 +552,28 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
 
 // ─── The reply pipeline ───────────────────────────────────────────────────────
 
+/**
+ * Stores an automatic reply as what it is: intent 'auto_reply' and a plain
+ * client line, no stage change, no reply event. A blocked / delivery notice
+ * also raises one staff row: our mail may not be reaching this expert.
+ */
+async function recordAutomatedReply(input: {
+  projectId: string;
+  expertId:  string;
+  storedId:  string | null;
+  kind:      AutomatedReplyKind;
+}): Promise<void> {
+  if (input.storedId) {
+    await updateMessage(input.storedId, { intent: AUTO_REPLY_INTENT, summary: automatedReplySummary(input.kind) });
+  }
+  if (input.kind === 'delivery_notice') {
+    await recordSystemFailure({
+      area: 'mail', reason: 'blocked_notice_on_reply', projectId: input.projectId, expertId: input.expertId,
+    });
+  }
+  console.log('[inbound-email] automatic reply', { kind: input.kind });
+}
+
 interface HandleReplyInput {
   project:  Project;
   pe:       ProjectExpert;
@@ -557,9 +581,11 @@ interface HandleReplyInput {
   rawEmail: string;
   /** The sender's Message-ID, stored on the row as a second dedupe signal. */
   resendMessageId: string | null;
+  /** The subject line, for lib/autoReply's prefix check. */
+  subject?: string | null;
 }
 
-async function handleReply({ project, pe, token, rawEmail, resendMessageId }: HandleReplyInput): Promise<void> {
+async function handleReply({ project, pe, token, rawEmail, subject, resendMessageId }: HandleReplyInput): Promise<void> {
   const projectId = project.id;
   const expertId  = pe.expert.id;
   const now       = Date.now();
@@ -598,7 +624,22 @@ async function handleReply({ project, pe, token, rawEmail, resendMessageId }: Ha
     resendMessageId,
   });
 
-  await emitEngagementEvent({
+  // ── Automatic replies are not replies (lib/autoReply.ts) ────────────────
+  // An out-of-office note or a "message blocked" notice is stored for staff
+  // and summarized for the client, but it moves no stage, counts as no reply
+  // and leaves the nudges running. A STRONG signal decides here. A WEAK one
+  // (out-of-office wording a person could also write) only decides when the
+  // classifier below finds nothing to act on; while an engagement is being
+  // scheduled there is no classifier, so a weak signal is ignored there.
+  const scheduling = pe.status === 'scheduling_sent' || pe.status === 'scheduled';
+  const automated  = detectAutomatedReply({ subject, text: bodyClean });
+  if (automated?.strength === 'strong') {
+    await recordAutomatedReply({ projectId, expertId, storedId: stored?.id ?? null, kind: automated.kind });
+    return;
+  }
+  const weakAutomatic = automated?.strength === 'weak' && !scheduling;
+
+  const emitReplyReceived = () => emitEngagementEvent({
     projectId, expertId, orgId: context.orgId,
     type:    'reply_received',
     payload: {
@@ -606,6 +647,7 @@ async function handleReply({ project, pe, token, rawEmail, resendMessageId }: Ha
       hoursSinceContact: pe.contactedAt ? Math.round((now - pe.contactedAt) / 3_600_000) : 0,
     },
   });
+  if (!weakAutomatic) await emitReplyReceived();
 
   // ── Scheduling branch — runs INSTEAD of the classifier ───────────────────
   // An engagement that is waiting on a time, or already has one, is asking a
@@ -623,6 +665,15 @@ async function handleReply({ project, pe, token, rawEmail, resendMessageId }: Ha
     expertFullName:   pe.expert.name,
     clientFullName:   context.clientFullName,
   });
+
+  // A weak out-of-office signal plus nothing Matchy can act on: automatic.
+  if (weakAutomatic && automated) {
+    if (read.intent === 'unclear') {
+      await recordAutomatedReply({ projectId, expertId, storedId: stored?.id ?? null, kind: automated.kind });
+      return;
+    }
+    await emitReplyReceived();
+  }
 
   if (stored) {
     await updateMessage(stored.id, { intent: read.intent, summary: read.summary });

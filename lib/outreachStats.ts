@@ -37,10 +37,11 @@
 //   reply intents     data.replyIntent (latest), every intent_classified event,
 //                     every inbound message's intent. "Said yes", "said no",
 //                     "countered" and "raised a conflict" mean ever, not last.
-//   readable reply    a reply with an intent other than 'unclear'. The
-//                     classifier files auto-replies and out-of-office notes
-//                     under 'unclear' (lib/matchyClassify.ts), so the scoreboard
-//                     shows the reply line both with and without them.
+//   automatic reply   an inbound message stored with intent 'auto_reply': an
+//                     out-of-office note or a "message blocked" / delivery
+//                     notice (lib/autoReply.ts). Never a reply (founder,
+//                     2026-10-17): it starts no reply clock and is left out of
+//                     every reply count. Counted on its own as automaticReplies.
 //   agreed to a call  data.rateAgreedAt, a status at or past scheduling
 //                     (scheduling_sent / scheduled / completed), a booking, or a
 //                     rate_agreed / scheduled event. "At the offered rate" adds:
@@ -53,7 +54,8 @@
 //   client passed     status 'rejected_after_outreach' that is not an expert
 //                     "no", not a staff removal and not a cancelled booking;
 //                     its reason is data.rejectionReason.
-//   mismatch claim    data.mismatchFlaggedAt. Completed call: status 'completed'.
+//   mismatch claim    data.mismatchFlaggedAt, unless data.mismatchVoidedAt (the call ran
+//                     past ten minutes and was billed). Completed call: status 'completed'.
 //
 // ─── THE FIVE-BUSINESS-DAY RULE ─────────────────────────────────────────────
 //
@@ -100,11 +102,8 @@ export const TEST_A_AGREED_LINE = 5;
 /** Statuses that are only reached once the expert has accepted a rate. */
 const AGREED_STATUSES: ReadonlySet<string> = new Set(['scheduling_sent', 'scheduled', 'completed']);
 
-/** Reply intents that say something; 'unclear' (auto-replies included) does not. */
-const READABLE_INTENTS: ReadonlySet<string> = new Set([
-  'interested', 'declined', 'counter_rate', 'conflict',
-  'time_chosen', 'time_unavailable', 'reschedule',
-]);
+/** The intent lib/autoReply.ts stores on an automatic reply. Never counted as a reply. */
+const AUTO_REPLY_INTENT = 'auto_reply';
 
 /** Most decline summaries the scoreboard lists. */
 export const MAX_DECLINE_WORDS = 200;
@@ -145,6 +144,7 @@ export interface StatsExpertFields {
   contactBouncedAt?:    number | null;
   complaintAt?:         number | null;
   mismatchFlaggedAt?:   number | null;
+  mismatchVoidedAt?:    number | null;
   expertRemovedAt?:     number | null;
 }
 
@@ -197,12 +197,12 @@ export interface EngagementFacts {
   bounced:               boolean;
   complained:            boolean;
   firstReplyAt:          number | null;
-  firstReadableReplyAt:  number | null;
+  /** Only automatic replies came back (out of office, blocked notices): not a reply. */
+  automaticReplyOnly:    boolean;
   /** The last calendar day (US Eastern) of this intro's reply window. */
   windowDeadline:        CivilDate | null;
   windowClosed:          boolean;
   repliedInWindow:       boolean;
-  readableInWindow:      boolean;
   saidYes:               boolean;
   saidNo:                boolean;
   countered:             boolean;
@@ -241,12 +241,8 @@ export interface OutreachTotals {
   inWindowRate:           Ratio;
   /** Window still open, no reply yet, and not bounced: could still count. */
   stillInWindow:          number;
-  /** Replies whose every known intent is 'unclear' (auto-replies land here). */
-  unclearOnlyReplies:     number;
-  readableRepliesInWindow: number;
-  readableInWindowRate:   Ratio;
-  /** Window still open and no readable reply yet. */
-  stillInWindowReadable:  number;
+  /** Intros that got only automatic replies (out of office, blocked notices). */
+  automaticReplies:       number;
   positiveReplies:        number;
   counteredOnRate:        number;
   conflictsRaised:        number;
@@ -301,8 +297,6 @@ export type TestAMark = 'pass' | 'fail' | 'pending' | 'no_data';
 export interface TestAReadout {
   /** Line 1 on any reply. */
   replyLine:         TestAMark;
-  /** Line 1 counting only readable replies (auto-replies left out). */
-  replyLineReadable: TestAMark;
   /** Line 2: agreed to a call at the offered rate. */
   agreedLine:        TestAMark;
 }
@@ -478,6 +472,7 @@ export function statsFieldsFromRecord(status: string, rec: Record<string, unknow
     contactBouncedAt:    asNumber(rec.contactBouncedAt),
     complaintAt:         asNumber(rec.complaintAt),
     mismatchFlaggedAt:   asNumber(rec.mismatchFlaggedAt),
+    mismatchVoidedAt:    asNumber(rec.mismatchVoidedAt),
     expertRemovedAt:     asNumber(rec.expertRemovedAt),
   };
 }
@@ -578,9 +573,11 @@ export function factsForEngagement(
   const arm = toArm(pe.introArm) ?? armFromEvent;
 
   // ── Replies ──
+  // An automatic reply (out of office, a blocked notice) is not a reply.
+  const realReplies = replies.filter(r => r.intent !== AUTO_REPLY_INTENT);
   const replyStamps = [
     ...ofType('reply_received').map(e => e.at),
-    ...replies.map(r => r.at),
+    ...realReplies.map(r => r.at),
   ];
   const replyDetectedAt = stamp(pe.replyDetectedAt);
   const firstReplyAt = earliest(replyStamps) ?? replyDetectedAt;
@@ -588,14 +585,8 @@ export function factsForEngagement(
   const intents = new Set<string>();
   if (pe.replyIntent) intents.add(pe.replyIntent);
   for (const e of ofType('intent_classified')) if (e.intent) intents.add(e.intent);
-  for (const r of replies) if (r.intent) intents.add(r.intent);
+  for (const r of realReplies) if (r.intent) intents.add(r.intent);
 
-  const readableStamps = [
-    ...ofType('intent_classified').filter(e => e.intent && READABLE_INTENTS.has(e.intent)).map(e => e.at),
-    ...replies.filter(r => r.intent && READABLE_INTENTS.has(r.intent)).map(r => r.at),
-  ];
-  const firstReadableReplyAt = earliest(readableStamps)
-    ?? (pe.replyIntent && READABLE_INTENTS.has(pe.replyIntent) ? replyDetectedAt : null);
 
   // ── Delivery ──
   const bounceAt   = stamp(pe.contactBouncedAt);
@@ -608,8 +599,7 @@ export function factsForEngagement(
   const windowDeadline = introSentAt !== null ? replyWindowDeadline(introSentAt, zone) : null;
   const windowClosed   = windowDeadline !== null && civilDateIsBefore(windowDeadline, civilDateInZone(new Date(now), zone));
   const repliedInWindow  = windowDeadline !== null && firstReplyAt !== null && onOrBeforeDay(firstReplyAt, windowDeadline, zone);
-  const readableInWindow = windowDeadline !== null && firstReadableReplyAt !== null
-    && onOrBeforeDay(firstReadableReplyAt, windowDeadline, zone);
+  const automaticReplyOnly = firstReplyAt === null && replies.some(r => r.intent === AUTO_REPLY_INTENT);
 
   // ── What they said ──
   const status = pe.status;
@@ -655,11 +645,10 @@ export function factsForEngagement(
     bounced,
     complained,
     firstReplyAt,
-    firstReadableReplyAt,
+    automaticReplyOnly,
     windowDeadline,
     windowClosed,
     repliedInWindow,
-    readableInWindow,
     saidYes,
     saidNo,
     countered,
@@ -671,7 +660,8 @@ export function factsForEngagement(
     callBooked,
     firstBookedAt,
     completed,
-    mismatchClaimed: stamp(pe.mismatchFlaggedAt) !== null,
+    // A flag voided because the call ran past ten minutes was billed as usual.
+    mismatchClaimed: stamp(pe.mismatchFlaggedAt) !== null && stamp(pe.mismatchVoidedAt) === null,
   };
 }
 
@@ -723,10 +713,7 @@ export function summarizeOutreach(facts: readonly EngagementFacts[]): OutreachTo
     inWindowRate:    ratio(closed.filter(f => f.repliedInWindow).length, closed.length),
     // A bounced intro is not waiting on anyone, so it is not "still in its window".
     stillInWindow:   count(f => !f.windowClosed && !f.repliedInWindow && !f.bounced),
-    unclearOnlyReplies: count(f => f.firstReplyAt !== null && f.firstReadableReplyAt === null),
-    readableRepliesInWindow: count(f => f.readableInWindow),
-    readableInWindowRate:    ratio(closed.filter(f => f.readableInWindow).length, closed.length),
-    stillInWindowReadable:   count(f => !f.windowClosed && !f.readableInWindow && !f.bounced),
+    automaticReplies:    count(f => f.automaticReplyOnly),
     positiveReplies:     count(f => f.saidYes),
     counteredOnRate:     count(f => f.countered),
     conflictsRaised:     count(f => f.conflictRaised),
@@ -779,7 +766,6 @@ export function testAMarks(totals: OutreachTotals): TestAReadout {
       : totals.stillInWindow > 0 ? 'pending' : 'fail';
   return {
     replyLine:         replyMark(totals.repliesInWindow, totals.stillInWindow, totals.introsSent),
-    replyLineReadable: replyMark(totals.readableRepliesInWindow, totals.stillInWindowReadable, totals.introsSent),
     agreedLine,
   };
 }

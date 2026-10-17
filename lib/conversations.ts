@@ -144,7 +144,7 @@ export interface ThreadSummary {
 
 const VALID_INTENTS: readonly ReplyIntent[] = [
   'interested', 'declined', 'counter_rate', 'conflict', 'unclear',
-  'time_chosen', 'time_unavailable', 'reschedule',
+  'time_chosen', 'time_unavailable', 'reschedule', 'auto_reply',
 ];
 
 function toIntent(value: string | null): ReplyIntent | null {

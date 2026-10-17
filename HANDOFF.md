@@ -4,6 +4,13 @@
 
 Read with `CLAUDE.md` (operating rules), `TASK_QUEUE.md` (priorities), `docs/MATCHY_SPEC.md` (the contract), `docs/OUTREACH_BOT_AUDIT.md` (why Matchy replaces the outreach bot).
 
+## Session 14b (2026-10-17): the founder's decisions on the launch pack
+
+- **Automatic replies are not replies** (lib/autoReply.ts). Out-of-office notes and "message blocked" / undeliverable notices on a reply address are stored with intent `auto_reply` and a plain client line; they emit no `reply_received`, change no stage, keep the nudges running (lib/nudges.waitingSinceFor skips them) and never count in lib/outreachStats. Strong signals: subject prefix after Re:/Fwd: ("Automatic reply:", "Out of Office:", "Undeliverable:"), delivery-notice wording, "this is an automatic reply". Weak: out-of-office wording in a short body, only when the classifier says 'unclear', ignored while scheduling. The Test A "readable replies" proxy line is gone. test-auto-reply.
+- **A flagged call past ten minutes is billed as usual** (MISMATCH_MAX_FREE_MINUTES = 10, flagVoidedByDuration). The flag is voided (`mismatchCallId` null, `mismatchVoidedAt`) and the call billed like any other in the Zoom/staff attendance path and manual completion; exactly ten minutes is still free. Card copy: flag it AND end the call.
+- **Do-not-contact company prefix matching** (lead's call): a listed company also blocks companies whose name starts with it, on whole words (Meta covers Meta Platforms; never Metallica).
+- **Kept** the title-and-company why-them fallback.
+
 ## Session 14 (2026-10-14): the launch pack (Matchy items 1 to 9). Branch `feat/launch-pack`, merged to `main` by the founder's go-ahead.
 
 **Why.** The founder pack (founder/, untracked) promises things the product did not do: payment terms, a Test A read-out, bounce/complaint handling, fewer founder touches per intro, a firm do-not-contact list, live project stats, a vetting card, the ten-minute mismatch guarantee and an exportable log. Session 13 (2026-10-13) merged PR #43 (security-review fixes, screening flow, 2-hour call cap); this pack builds on it.

@@ -253,7 +253,6 @@ section('null, never zero, on an empty denominator');
   const t = summarizeOutreach([]);
   eq('reply rate on nothing', t.replyRate.rate, null);
   eq('window rate on nothing', t.inWindowRate.rate, null);
-  eq('readable window rate on nothing', t.readableInWindowRate.rate, null);
   eq('median wait on nothing', t.medianTimeToFirstReplyMs, null);
   const marks = testAMarks(t);
   eq('Test A reply line with nothing sent', marks.replyLine, 'no_data');
@@ -296,7 +295,7 @@ eq('median of none', median([]), null);
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
-section('auto-replies: readable vs any reply');
+section('automatic replies are not replies (founder, 2026-10-17)');
 
 {
   const t0 = edt('2026-10-14T10:00:00');
@@ -304,23 +303,31 @@ section('auto-replies: readable vs any reply');
     [
       eng({ email1SentAt: t0 }, P1, 'ooo-then-yes'),
       eng({ email1SentAt: t0 }, P1, 'ooo-only'),
+      eng({ email1SentAt: t0 }, P1, 'blocked-only'),
+      eng({ email1SentAt: t0 }, P1, 'unclear-human'),
     ],
     [],
     [
-      { projectId: P1, expertId: 'ooo-then-yes', at: t0 + DAY,      intent: 'unclear' },
-      { projectId: P1, expertId: 'ooo-then-yes', at: t0 + 12 * DAY, intent: 'interested' },
-      { projectId: P1, expertId: 'ooo-only',     at: t0 + DAY,      intent: 'unclear' },
+      { projectId: P1, expertId: 'ooo-then-yes',  at: t0 + DAY,      intent: 'auto_reply' },
+      { projectId: P1, expertId: 'ooo-then-yes',  at: t0 + 12 * DAY, intent: 'interested' },
+      { projectId: P1, expertId: 'ooo-only',      at: t0 + DAY,      intent: 'auto_reply' },
+      { projectId: P1, expertId: 'blocked-only',  at: t0 + DAY,      intent: 'auto_reply' },
+      // A real person asking "who is this?" is a reply, even if Matchy cannot file it.
+      { projectId: P1, expertId: 'unclear-human', at: t0 + DAY,      intent: 'unclear' },
     ],
   );
-  const [late, ooo] = fs;
-  check('an out-of-office counts as a reply in the window', late.repliedInWindow);
-  check('…but the readable reply came after the window', !late.readableInWindow);
+  const [late, ooo, blocked, human] = fs;
+  check('an out-of-office does not start the reply clock', late.firstReplyAt === t0 + 12 * DAY);
+  check('…so the real reply after the window is not in time', !late.repliedInWindow);
+  check('an out-of-office alone is not a reply', ooo.firstReplyAt === null);
+  check('…and is marked automatic-only', ooo.automaticReplyOnly);
+  check('a blocked notice alone is not a reply', blocked.firstReplyAt === null && blocked.automaticReplyOnly);
+  check('a human reply Matchy could not file still counts', human.firstReplyAt === t0 + DAY && human.repliedInWindow);
+  check('…and is not automatic', !human.automaticReplyOnly);
   const t = summarizeOutreach(fs);
-  eq('replies (any)', t.replies, 2);
-  eq('replies in window (any)', t.repliesInWindow, 2);
-  eq('readable replies in window', t.readableRepliesInWindow, 0);
-  eq('unclear-only replies', t.unclearOnlyReplies, 1);
-  check('ooo-only has no readable reply', ooo.firstReadableReplyAt === null);
+  eq('replies leave automatic ones out', t.replies, 2);
+  eq('replies in window', t.repliesInWindow, 1);
+  eq('automatic replies counted on their own', t.automaticReplies, 2);
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
