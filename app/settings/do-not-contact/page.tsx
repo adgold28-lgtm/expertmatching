@@ -87,7 +87,7 @@ const PLACEHOLDER: Record<DoNotContactKind, string> = {
 };
 
 const HINT: Record<DoNotContactKind, string> = {
-  company: 'Matches the company an expert works at, with or without Inc, LLC and the like.',
+  company: 'Matches the company an expert works at, and any company whose name starts with it (Meta also covers Meta Platforms). Inc, LLC and the like are ignored.',
   person:  'Matches first and last name. Middle names and initials are ignored.',
   email:   'Matches this one address.',
   domain:  'Matches every address at this domain, and its subdomains.',
