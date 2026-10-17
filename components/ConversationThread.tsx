@@ -115,6 +115,7 @@ const INTENT_TAG: Partial<Record<MessageIntent, string>> = {
   time_chosen:      'Picked a time',
   time_unavailable: 'Needs other times',
   reschedule:       'Wants to move the call',
+  auto_reply:       'Automatic reply',
 };
 
 function intentTag(intent: MessageIntent | null): string | null {
@@ -1078,7 +1079,7 @@ export default function ConversationThread({
   /** The guarantee's line, its button and its confirm step. */
   function mismatchBlock() {
     if (mismatchFlagged) {
-      return <MatchyLine>{"Flagged. You won't be charged for this call."}</MatchyLine>;
+      return <MatchyLine>{"Flagged. End the call now. If it runs past ten minutes, it is billed as usual."}</MatchyLine>;
     }
     const confirming = mismatchConfirmFor === expertId;
     const error      = mismatchError?.expertId === expertId ? mismatchError.text : '';
@@ -1086,7 +1087,7 @@ export default function ConversationThread({
       <div className="space-y-2">
         {confirming ? (
           <>
-            <MatchyLine>{"You won't be charged for this call. The expert is still paid for their time."}</MatchyLine>
+            <MatchyLine>{"End the call within ten minutes and you won't be charged. The expert is still paid for their time."}</MatchyLine>
             <div className="flex flex-col sm:flex-row gap-2 sm:pl-[52px]">
               <button
                 type="button"
@@ -1112,7 +1113,7 @@ export default function ConversationThread({
         ) : (
           <div className="flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-3">
             <p className="flex-1 min-w-0 text-[11px] leading-relaxed text-ink">
-              {"Not the right expert? Flag it in the first ten minutes and you won't be charged."}
+              {"Not the right expert? Flag it and end the call in the first ten minutes, and you won't be charged."}
             </p>
             <button
               type="button"

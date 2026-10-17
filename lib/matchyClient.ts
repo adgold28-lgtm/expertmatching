@@ -85,7 +85,7 @@ export interface MessageScreenResult {
  */
 export type MessageIntent =
   | 'interested' | 'declined' | 'counter_rate' | 'conflict' | 'unclear'
-  | 'time_chosen' | 'time_unavailable' | 'reschedule';
+  | 'time_chosen' | 'time_unavailable' | 'reschedule' | 'auto_reply';
 
 export interface ConversationMessage {
   id:           string;

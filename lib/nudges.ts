@@ -283,6 +283,8 @@ export interface NudgeThreadMessage {
   created_at:     string;
   /** lib/conversations.StoredScreenResult — read only for `pending` / `held`. */
   screen_result?: unknown;
+  /** The stored intent. 'auto_reply' (lib/autoReply.ts) is a machine, not the expert. */
+  intent?:        string | null;
 }
 
 /**
@@ -312,6 +314,9 @@ export function waitingSinceFor(thread: readonly NudgeThreadMessage[]): number |
   for (let i = thread.length - 1; i >= 0; i--) {
     const message = thread[i];
     if (neverSent(message)) continue;
+    // An out-of-office or "message blocked" notice is not the expert answering:
+    // the stage is still waiting on them (founder, 2026-10-17).
+    if (message.intent === 'auto_reply') continue;
 
     // Their reply. Nothing to nudge.
     if (message.direction === 'inbound' || message.author === 'expert') return null;

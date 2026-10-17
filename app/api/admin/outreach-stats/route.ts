@@ -84,6 +84,7 @@ const ENGAGEMENT_SELECT = [
   'contactBouncedAt:data->contactBouncedAt',
   'complaintAt:data->complaintAt',
   'mismatchFlaggedAt:data->mismatchFlaggedAt',
+  'mismatchVoidedAt:data->mismatchVoidedAt',
   'expertRemovedAt:data->expertRemovedAt',
   'expertName:data->expert->>name',
 ].join(', ');

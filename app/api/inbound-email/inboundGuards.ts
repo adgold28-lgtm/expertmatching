@@ -229,6 +229,8 @@ export interface InboundEnvelope {
   /** Body when the payload carried one inline; null means fetch it by emailId. */
   text: string | null;
   emailId: string | null;
+  /** The subject line, when the payload carried one (lib/autoReply reads its prefix). */
+  subject: string | null;
 }
 
 export function normalizeInboundEnvelope(payload: Record<string, unknown>): InboundEnvelope {
@@ -248,7 +250,9 @@ export function normalizeInboundEnvelope(payload: Record<string, unknown>): Inbo
   }
   const emailId = data && typeof data.email_id === 'string' ? data.email_id : null;
   const text = typeof payload.text === 'string' ? payload.text : null;
-  return { toAddress, fromField: data ? data.from : payload.from, text, emailId };
+  const subjectField = data ? data.subject : payload.subject;
+  const subject = typeof subjectField === 'string' ? subjectField : null;
+  return { toAddress, fromField: data ? data.from : payload.from, text, emailId, subject };
 }
 
 /** Very small HTML-to-text for the fallback when a reply has no text part. */

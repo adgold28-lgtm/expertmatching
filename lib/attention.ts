@@ -98,11 +98,11 @@ function areaLabel(area: string): string {
  */
 const REASON_MESSAGES: Record<string, string> = {
   mismatch_guarantee_claimed:         'A client used the ten-minute mismatch guarantee',
-  mismatch_flagged_call_ran_long:     'A call flagged as a mismatch kept running past 15 minutes',
   mismatch_waiver_unrecorded:         'A mismatch waiver could not be recorded',
   mismatch_refund_needs_staff:        'A mismatch refund needs a person',
   mismatch_refund_failed:             'A mismatch refund failed and will be retried',
   mismatch_payment_link_still_active: 'A payment link for a flagged call is still active',
+  blocked_notice_on_reply:            "An expert's mail system sent a blocked or undeliverable notice instead of a reply",
 };
 
 function failureMessage(area: string, reason: string): string {
