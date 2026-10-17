@@ -730,18 +730,19 @@ function introSubject(arm: IntroArm, domain: string, rate: number): string {
 }
 
 /**
- * The payment-terms line the launch plan asks to test (founder/launch.md Test A,
- * founder/offer.md row 20). OFF by default: the founder's rubric keeps payment
- * mechanics out of email one ("Those go in email two, after they've said yes"),
- * and the follow-up always carries the same terms. INTRO_PAYMENT_TERMS=on turns
- * it on. It is the first thing dropped when the body would reach 90 words, so
- * turning it on can never hold an intro that would otherwise have gone out.
+ * The payment-terms line (founder/launch.md Test A, founder/offer.md row 20).
+ * ON by default since the founder's decision of 2026-10-17 ("i like payment in
+ * the first message"), which supersedes the rubric's original "no payment
+ * details in email one" (docs/OUTREACH_EMAIL_RUBRIC.md records the change).
+ * INTRO_PAYMENT_TERMS=off is the kill switch. It is the first thing dropped
+ * when the body would reach 90 words, so it can never hold an intro that would
+ * otherwise have gone out.
  */
 export const INTRO_PAYMENT_TERMS_SENTENCE =
   "You'd be paid after the call, 15 minutes minimum even if my client doesn't show.";
 
 export function introPaymentTermsEnabled(): boolean {
-  return /^(on|1|true|yes)$/i.test((process.env.INTRO_PAYMENT_TERMS ?? '').trim());
+  return !/^(off|0|false|no)$/i.test((process.env.INTRO_PAYMENT_TERMS ?? '').trim());
 }
 
 function offerSentence(_arm: IntroArm, firm: string, topic: string, rate: number, paymentTerms = false): string {

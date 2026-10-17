@@ -386,12 +386,15 @@ section('buildIntroEmail: the optional payment-terms line (INTRO_PAYMENT_TERMS)'
 {
   const prevTerms = process.env.INTRO_PAYMENT_TERMS;
   delete process.env.INTRO_PAYMENT_TERMS;
-  check('off by default: the rubric keeps payment mechanics out of email one',
-    !introFor(1).text.includes(INTRO_PAYMENT_TERMS_SENTENCE));
-  check('INTRO_PAYMENT_TERMS unset → disabled', introPaymentTermsEnabled() === false);
+  // Founder, 2026-10-17: "i like payment in the first message".
+  check('on by default: the intro states the payment terms',
+    introFor(1).text.includes(INTRO_PAYMENT_TERMS_SENTENCE));
+  check('INTRO_PAYMENT_TERMS unset → enabled', introPaymentTermsEnabled() === true);
+  process.env.INTRO_PAYMENT_TERMS = 'off';
+  check('INTRO_PAYMENT_TERMS=off → disabled (the kill switch)', introPaymentTermsEnabled() === false);
+  check('off: the sentence is gone', !introFor(1).text.includes(INTRO_PAYMENT_TERMS_SENTENCE));
   process.env.INTRO_PAYMENT_TERMS = 'on';
   check('INTRO_PAYMENT_TERMS=on → enabled', introPaymentTermsEnabled() === true);
-  check('on: the env adds the sentence', introFor(1).text.includes(INTRO_PAYMENT_TERMS_SENTENCE));
   if (prevTerms === undefined) delete process.env.INTRO_PAYMENT_TERMS; else process.env.INTRO_PAYMENT_TERMS = prevTerms;
 
   for (const arm of ARMS) {
