@@ -625,7 +625,6 @@ async function main(): Promise<void> {
     eq('...and paymentStatus waived',       env.pe.paymentStatus, 'waived');
     eq('the payout ran directly, once',     env.payouts, 1);
     eq('...for 15 minutes',                 env.transfers[0]?.params.amount, PAYOUT_15_CENTS);
-    check('a short flagged call raises no extra alarm', !env.failures.includes('mismatch_flagged_call_ran_long'));
 
     const replay = await applyAttendanceOutcome(env.project, env.pe, 'both', { durationMin: 9 }, env.deps);
     eq('a staff re-run charges nothing either', env.invoices.length, 0);
@@ -633,11 +632,27 @@ async function main(): Promise<void> {
     eq('...it is still waived',                 replay.waived, true);
   }
   {
+    // Founder, 2026-10-17: "a call past 10 minutes shouldn't be free".
     const env = moneyEnv({ expert: { mismatchCallId: CALL_ID } });
-    await applyAttendanceOutcome(env.project, env.pe, 'both', { durationMin: 47 }, env.deps);
-    eq('a flagged call that ran 47 minutes is still free', env.invoices.length, 0);
-    eq('...the expert still gets 15 minutes',  env.transfers[0]?.params.amount, PAYOUT_15_CENTS);
-    check('...and staff are told it ran long', env.failures.includes('mismatch_flagged_call_ran_long'));
+    const res = await applyAttendanceOutcome(env.project, env.pe, 'both', { durationMin: 47 }, env.deps);
+    eq('a flagged call that ran 47 minutes is billed as usual', env.invoices.length, 1);
+    eq('...for all 47 minutes',                env.invoices[0]?.minutes ?? null, 47);
+    eq('...and is not waived',                 res.waived ?? false, false);
+    eq('...the flag is voided',                env.pe.mismatchCallId ?? null, null);
+    check('...and the void is stamped',        typeof env.pe.mismatchVoidedAt === 'number');
+    check('...with no waiver payout',          env.transfers.every(t => t.params.amount !== PAYOUT_15_CENTS));
+  }
+  {
+    const env = moneyEnv({ expert: { mismatchCallId: CALL_ID } });
+    const res = await applyAttendanceOutcome(env.project, env.pe, 'both', { durationMin: 11 }, env.deps);
+    eq('eleven minutes is past the ten: billed', env.invoices.length, 1);
+    eq('...not waived',                          res.waived ?? false, false);
+  }
+  {
+    const env = moneyEnv({ expert: { mismatchCallId: CALL_ID } });
+    const res = await applyAttendanceOutcome(env.project, env.pe, 'both', { durationMin: 10 }, env.deps);
+    eq('exactly ten minutes is still free',      env.invoices.length, 0);
+    eq('...waived',                              res.waived, true);
   }
   {
     const env = moneyEnv({ expert: { mismatchCallId: CALL_ID } });
@@ -1049,9 +1064,9 @@ async function main(): Promise<void> {
   {
     const ui = fs.readFileSync(path.join(__dirname, '..', 'components/ConversationThread.tsx'), 'utf8');
     for (const line of [
-      "Not the right expert? Flag it in the first ten minutes and you won't be charged.",
-      "You won't be charged for this call. The expert is still paid for their time.",
-      "Flagged. You won't be charged for this call.",
+      "Not the right expert? Flag it and end the call in the first ten minutes, and you won't be charged.",
+      "End the call within ten minutes and you won't be charged. The expert is still paid for their time.",
+      "Flagged. End the call now. If it runs past ten minutes, it is billed as usual.",
       'Flag a mismatch',
     ]) {
       check(`the card says "${line}"`, ui.includes(line));

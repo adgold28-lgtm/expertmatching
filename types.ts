@@ -236,7 +236,10 @@ export type ReplyIntent =
   | 'interested' | 'declined' | 'counter_rate' | 'conflict' | 'unclear'
   // Matchy Phase 2 (lib/matchyScheduling.ts): read off a reply while a call is
   // being scheduled or has been booked.
-  | 'time_chosen' | 'time_unavailable' | 'reschedule';
+  | 'time_chosen' | 'time_unavailable' | 'reschedule'
+  // lib/autoReply.ts: an out-of-office or "message blocked" notice. Stored on
+  // the thread row only; never written to ProjectExpert.replyIntent.
+  | 'auto_reply';
 
 // ─── Matchy Phase 2: scheduling ───────────────────────────────────────────────
 // All three states below ride in project_experts.data (jsonb) — no migration.
@@ -582,6 +585,8 @@ export interface ProjectExpert {
   mismatchFlaggedAt?: number | null;
   /** The call (booking.icsUid) the flag applies to: the client is not charged for it. */
   mismatchCallId?: string | null;
+  /** Unix ms the flag was voided because the call ran past ten minutes (billed as usual). */
+  mismatchVoidedAt?: number | null;
   /**
    * Unix ms when the rate was agreed (the client accepted a counter, or the
    * expert said yes to the offer). Once set, the per-expert client rate is
