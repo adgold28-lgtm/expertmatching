@@ -46,6 +46,7 @@ import type {
   Stripe, StripeElements, StripePaymentElement, Appearance,
 } from '@stripe/stripe-js';
 import { formatUsdFromCents } from '../../lib/pricing';
+import { SUPPORT_EMAIL } from '../../lib/contactInfo';
 import {
   GOLD, NAVY, MUTED, FAINT,
   MICRO_LS, LABEL_CLASS, BUTTON_CLASS, NOTE_CLASS,
@@ -53,9 +54,6 @@ import {
 
 type InitState =
   | 'loading' | 'ready' | 'unavailable' | 'no_organization' | 'champion_required' | 'failed';
-
-/** Where a blocked customer can reach a human. */
-const SUPPORT_EMAIL = 'ashergoldsteinbusiness@gmail.com';
 
 /** Payment Element styling — the house palette, not Stripe's default blue. */
 const STRIPE_APPEARANCE: Appearance = {

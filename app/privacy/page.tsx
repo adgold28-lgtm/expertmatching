@@ -2,6 +2,7 @@ import type { Metadata } from 'next';
 import Link from 'next/link';
 import NavBar from '../../components/NavBar';
 import MarketingFooter from '../../components/MarketingFooter';
+import { SUPPORT_EMAIL } from '../../lib/contactInfo';
 
 // Privacy Policy.
 //
@@ -369,7 +370,7 @@ export default function PrivacyPage() {
             </p>
             <p>
               Send the request to{' '}
-              <strong className="font-medium text-ink">ashergoldsteinbusiness@gmail.com</strong>. We will
+              <strong className="font-medium text-ink">{SUPPORT_EMAIL}</strong>. We will
               respond within 30 days. We may
               need to verify who you are first, particularly for a deletion request.
             </p>
@@ -410,7 +411,7 @@ export default function PrivacyPage() {
             </p>
             <p>
               Privacy questions, rights requests, and complaints go to{' '}
-              <strong className="font-medium text-ink">ashergoldsteinbusiness@gmail.com</strong>, or by post to{' '}
+              <strong className="font-medium text-ink">{SUPPORT_EMAIL}</strong>, or by post to{' '}
               <strong className="font-medium text-ink">4502 Mayflower Hill, Waterville, ME 04901</strong>.
             </p>
           </Section>
