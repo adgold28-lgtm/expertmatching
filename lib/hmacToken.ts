@@ -57,6 +57,16 @@ interface Profile {
   digest: 'base64url' | 'hex';
   /** The four token modules refuse a short secret; the two state builders never did. */
   minSecretLength: number;
+  /**
+   * Sign under a key DERIVED from the shared secret and the purpose name
+   * instead of the raw secret. The six original purposes share one raw key and
+   * three of them share one payload shape, so their separation is by payload
+   * convention only; their tokens are in the wild and cannot move. A purpose
+   * added later has no legacy tokens, so it gets a key of its own at zero
+   * migration cost: a token signed for any other purpose can never verify as
+   * it, whatever its payload looks like.
+   */
+  derivedKey?: true;
 }
 
 const PROFILES: Record<TokenPurpose, Profile> = {
@@ -64,7 +74,7 @@ const PROFILES: Record<TokenPurpose, Profile> = {
   'outreach':         { style: 'detached', digest: 'base64url', minSecretLength: 32 },
   'availability':     { style: 'detached', digest: 'base64url', minSecretLength: 32 },
   'screening':        { style: 'detached', digest: 'base64url', minSecretLength: 32 },
-  'payout':           { style: 'detached', digest: 'base64url', minSecretLength: 32 },
+  'payout':           { style: 'detached', digest: 'base64url', minSecretLength: 32, derivedKey: true },
   'onboarding-oauth': { style: 'wrapped',  digest: 'hex',       minSecretLength: 1  },
   'expert-oauth':     { style: 'wrapped',  digest: 'hex',       minSecretLength: 1  },
 };
@@ -78,7 +88,14 @@ function getSecret(purpose: TokenPurpose): string {
   return secret;
 }
 
-function digestOf(payload: string, secret: string, profile: Profile): string {
+/** The key a purpose signs with: the raw secret, or one derived for it. */
+function keyFor(purpose: TokenPurpose): string | Buffer {
+  const secret = getSecret(purpose);
+  if (!PROFILES[purpose].derivedKey) return secret;
+  return createHmac('sha256', secret).update(`purpose:${purpose}`).digest();
+}
+
+function digestOf(payload: string, secret: string | Buffer, profile: Profile): string {
   return createHmac('sha256', secret).update(payload).digest(profile.digest);
 }
 
@@ -105,7 +122,7 @@ export function constantTimeEqual(expected: string, actual: string): boolean {
  */
 export function sign(payload: string, purpose: TokenPurpose): string {
   const profile = PROFILES[purpose];
-  const secret  = getSecret(purpose);
+  const secret  = keyFor(purpose);
 
   if (profile.style === 'detached') {
     const encoded = Buffer.from(payload, 'utf8').toString('base64url');
@@ -125,8 +142,8 @@ export function sign(payload: string, purpose: TokenPurpose): string {
 export function verify(token: string, purpose: TokenPurpose): HmacVerifyResult {
   const profile = PROFILES[purpose];
 
-  let secret: string;
-  try { secret = getSecret(purpose); } catch { return { ok: false, reason: 'invalid_signature' }; }
+  let secret: string | Buffer;
+  try { secret = keyFor(purpose); } catch { return { ok: false, reason: 'invalid_signature' }; }
 
   if (profile.style === 'detached') {
     const parts = token.split(SEP);

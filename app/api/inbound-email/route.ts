@@ -485,14 +485,17 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
   }
 
   // ── 8b. The token must be THIS engagement's current one ──────────────────
-  // Step 7 proved we minted the token and it has not expired. It did not prove
-  // the token is still the one on the row: lib/outreachSteps.ts writes
-  // `outreachToken` when the intro goes out, and that is the only address
-  // Matchy ever mails from for this engagement. A token from a leaked or
-  // forwarded thread that is NOT the row's token no longer moves the thread,
-  // which is the revocation the HMAC alone cannot give. Rows written before the
-  // token was persisted have none; those keep the signature-only check and say
-  // so, once per delivery.
+  // Step 7 proved we minted the token and it has not expired. This step proves
+  // it is the token stored on the row. What that buys today is integrity, not
+  // revocation: lib/outreachSteps.ts mints ONE outreach token per engagement
+  // and every later Matchy email reuses it, so a forwarded or leaked thread
+  // carries the row's own token and passes here. Steps 9 and 10 (sender
+  // verdicts, then the From address) are the live control against a forwarded
+  // thread. This check refuses a token that verifies but was never written to
+  // this row, and it is the hook a rotate-on-event path (a new token when a
+  // contact address is replaced after a bounce, or on decline) needs before it
+  // can revoke anything. Rows written before the token was persisted have
+  // none; those keep the signature-only check and say so, once per delivery.
   if (pe.outreachToken) {
     if (!sameToken(token, pe.outreachToken)) {
       console.warn('[inbound-email] token is not the engagement\'s current token — ignored');

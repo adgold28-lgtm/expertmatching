@@ -1931,7 +1931,7 @@ export default function AdminConsolePage() {
           ) : (
             <div className="space-y-3">
               {requests.map(req => (
-                <AccessRequestCard key={req.email} req={req} onDone={afterProvisioning} />
+                <AccessRequestCard key={`${req.email}:${req.submittedAt}`} req={req} onDone={afterProvisioning} />
               ))}
             </div>
           )}

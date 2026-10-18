@@ -117,13 +117,19 @@ export async function POST(request: NextRequest): Promise<Response> {
   }
 
   // ── Recover the submission for the requester's name + firm ──────────────────
-  const { data: pending } = await db
+  // An address can have more than one pending row (a repeat submission is kept
+  // next to the first one, app/api/request-access/route.ts). maybeSingle()
+  // answers null for two rows, which would drop the submitted name and firm;
+  // the newest row carries the details the admin saw last.
+  const { data: pendingRows } = await db
     .from('access_requests')
     .select('name, firm_name, firm_type, firm_size')
     .eq('kind', 'access')
     .eq('email', email)
     .eq('status', 'requested')
-    .maybeSingle();
+    .order('created_at', { ascending: false })
+    .limit(1);
+  const pending = pendingRows?.[0] ?? null;
 
   const submitted = splitFullName(pending?.name ?? '');
   const firstName = sanitizeName(b.firstName) || submitted.firstName;

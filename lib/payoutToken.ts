@@ -10,11 +10,17 @@
 // payout route has no stored hash, so ANY expert availability token ever
 // minted for that engagement — every old picker link in the expert's inbox,
 // for seven days — opened the Stripe Connect onboarding and let its holder
-// enter bank details. The `payout:` marker and the separate purpose make the
-// two kinds non-interchangeable: a picker link no longer verifies here and a
-// payout link no longer verifies there.
+// enter bank details. So did the outreach REPLY token, which sits in the
+// Reply-To of every Matchy email for ninety days: it has the same
+// projectId:expertId:expiry:nonce shape as an expert availability token and
+// signs under the same key. The `payout:` marker and the separate purpose make
+// the kinds non-interchangeable by shape, and 'payout' additionally signs under
+// a key derived from the shared secret (lib/hmacToken.ts PROFILES.derivedKey),
+// so no token minted for any other purpose can verify here whatever its shape.
+// That derivation costs nothing because no payout token existed before this
+// module did.
 //
-// Secret: AVAILABILITY_TOKEN_SECRET, like every other token (lib/hmacToken.ts).
+// Secret: AVAILABILITY_TOKEN_SECRET via lib/hmacToken.ts, derived per purpose.
 
 import { randomBytes } from 'crypto';
 import { sign, verify } from './hmacToken';
