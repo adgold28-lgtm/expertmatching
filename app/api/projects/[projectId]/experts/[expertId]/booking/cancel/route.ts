@@ -24,7 +24,11 @@
 //   404 { error: 'project_not_found' | 'expert_not_found' }
 //
 // The engagement on the response goes through redactExpertForViewer like every
-// other client-facing expert payload.
+// other client-facing expert payload, and so does the FEE: lateCancelFee()
+// carries `expertPayout`, which is the expert's rate in disguise (15 minutes
+// of it), and the expert's rate is the one number a client must never see
+// (lib/redactExpert.ts strips `expertRate`). Non-staff get clientCharge and
+// minutes only — feeForViewer below.
 //
 // Never logs: the reason text, either address, the project name, the time.
 
@@ -34,7 +38,7 @@ import { guardMutatingRequest, guardReadRequest, requireProjectOwner } from '../
 import { getProjectForUser } from '../../../../../../../../lib/projectStore';
 import { redactExpertForViewer } from '../../../../../../../../lib/redactExpert';
 import { cancelCall } from '../../../../../../../../lib/bookCall';
-import { cancelWindow, lateCancelFee } from '../../../../../../../../lib/callPolicies';
+import { cancelWindow, lateCancelFee, type LateCancelFee } from '../../../../../../../../lib/callPolicies';
 
 const ID_RE        = /^[a-f0-9]{24}$/;
 const EXPERT_ID_RE = /^[a-zA-Z0-9\-_]+$/;
@@ -42,11 +46,20 @@ const EXPERT_ID_RE = /^[a-zA-Z0-9\-_]+$/;
 /** Longest cancellation reason a client may attach. Stored, never logged. */
 const MAX_REASON_CHARS = 500;
 
+/** The fee as this viewer may see it: staff get both sides, a client their own. */
+function feeForViewer(
+  fee:  LateCancelFee | undefined,
+  role: 'admin' | 'user',
+): LateCancelFee | Pick<LateCancelFee, 'clientCharge' | 'minutes'> | undefined {
+  if (!fee || role === 'admin') return fee;
+  return { clientCharge: fee.clientCharge, minutes: fee.minutes };
+}
+
 export async function GET(
   request: NextRequest,
   { params }: { params: { projectId: string; expertId: string } },
 ): Promise<NextResponse> {
-  const guard = guardReadRequest(request);
+  const guard = await guardReadRequest(request);
   if (guard) return guard as NextResponse;
 
   if (!ID_RE.test(params.projectId)) {
@@ -73,7 +86,7 @@ export async function GET(
 
     return NextResponse.json({
       window: cancelWindow(Date.now(), pe.booking.startUtc),
-      fee:    lateCancelFee(pe.expertRate ?? 0),
+      fee:    feeForViewer(lateCancelFee(pe.expertRate ?? 0), role),
     }, { headers: { 'Cache-Control': 'no-store' } });
   } catch (err) {
     console.error('[booking/cancel] preview failed:',
@@ -130,8 +143,9 @@ export async function POST(
       // Every refusal is a 409: the request was well formed and the caller is
       // allowed, the engagement is simply not in a state that can be cancelled
       // (or, for late_not_confirmed, not yet).
+      const fee = feeForViewer(result.fee, role);
       return NextResponse.json(
-        { error: result.error, ...(result.fee ? { fee: result.fee } : {}) },
+        { error: result.error, ...(fee ? { fee } : {}) },
         { status: 409 },
       );
     }
@@ -142,7 +156,7 @@ export async function POST(
       ok:            true,
       outcome:       result.outcome,
       window:        result.window,
-      fee:           result.fee,
+      fee:           feeForViewer(result.fee, role),
       projectExpert: redactExpertForViewer(current, { role }),
     });
   } catch (err) {

@@ -21,7 +21,7 @@
 // search. Write failures are logged and ignored. Cache trouble degrades cost and
 // latency, never correctness.
 
-import { createHmac } from 'crypto';
+import { keyHash } from './keyHash';
 import { getUpstashClient } from './upstashRedis';
 import type { SearchResult, SearchProviderName } from './searchProviders/types';
 
@@ -36,9 +36,8 @@ const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000;
 
 // 32-char HMAC key — raw query text NEVER appears in Redis key names.
 function cacheKeyHash(query: string): string {
-  const secret = process.env.LOG_HASH_SECRET ?? 'dev-insecure-fallback';
   const normalized = query.toLowerCase().trim().replace(/\s+/g, ' ');
-  return createHmac('sha256', secret).update(normalized).digest('hex').slice(0, 32);
+  return keyHash(normalized, 32);
 }
 
 export async function getCachedSearchPage(query: string): Promise<CachedSearchPage | null> {

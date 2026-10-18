@@ -28,7 +28,7 @@ import { redactProjectForViewer } from '../../../lib/redactExpert';
 import { trackProductEvent } from '../../../lib/productEvents';
 
 export async function GET(request: NextRequest) {
-  const err = guardReadRequest(request);
+  const err = await guardReadRequest(request);
   if (err) return err;
 
   try {

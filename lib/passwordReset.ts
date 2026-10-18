@@ -14,7 +14,7 @@
 // copy. Never logs email addresses.
 
 import { Resend } from 'resend';
-import { createHmac } from 'crypto';
+import { keyHash } from './keyHash';
 import { getUpstashClient } from './upstashRedis';
 import { getUser } from './firmStore';
 import { getFromAddress } from './mailFrom';
@@ -28,9 +28,7 @@ const RATE_WINDOW_MS       = 60 * 60 * 1000; // 1 hour
 
 /** HMAC-pseudonymised key — no IPs or emails in Redis key names. */
 function rlKey(kind: 'ip' | 'email', value: string): string {
-  const secret = process.env.LOG_HASH_SECRET ?? 'dev-insecure-fallback';
-  const hash   = createHmac('sha256', secret).update(value).digest('hex').slice(0, 24);
-  return `reset-rl:${kind}:${hash}`;
+  return `reset-rl:${kind}:${keyHash(value, 24)}`;
 }
 
 /**

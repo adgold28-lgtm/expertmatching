@@ -445,7 +445,7 @@ function ClientMessage({ message }: { message: ConversationMessage }) {
  */
 interface CancelPreview {
   window: 'free' | 'late' | 'started';
-  fee:    { clientCharge: number; expertPayout: number; minutes: number };
+  fee:    { clientCharge: number; minutes: number };
 }
 
 export default function ConversationThread({

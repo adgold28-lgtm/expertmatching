@@ -15,10 +15,12 @@
 // checkContentType for why that is safe.
 //
 // WHAT THESE GUARDS DO NOT DO: neither guardReadRequest nor guardMutatingRequest
-// looks at WHO is calling or WHAT they are reaching for. checkAuth returns null
-// outright whenever global auth is on, because middleware.ts has already proved
-// a session exists. Per-resource authorization is a separate, later step and is
-// the caller's job in this order:
+// looks at WHAT the caller is reaching for. checkAuth proves there is an active
+// session (lib/auth.routeAuthGuard) — the same check middleware.ts already made,
+// repeated here on purpose so a middleware bypass (the class of bug
+// CVE-2025-29927 was) never turns every project route into an open one.
+// Per-resource authorization is a separate, later step and is the caller's job
+// in this order:
 //   1. getProjectForUser(projectId, session)  → 404 if not a member (never 403,
 //      so a project you cannot reach is never confirmed to exist)
 //   2. requireProjectOwner(project, session)  → 403 for a collaborator on any
@@ -31,7 +33,7 @@
 
 import { timingSafeEqual } from 'crypto';
 import { NextRequest, NextResponse } from 'next/server';
-import { isAuthEnabled } from './auth';
+import { isAuthEnabled, routeAuthGuard } from './auth';
 import type { Project } from '../types';
 
 const MAX_BODY_BYTES = 250 * 1024; // 250 KB
@@ -58,10 +60,10 @@ function checkKillSwitch(): Response | null {
   return null;
 }
 
-function checkAuth(request: NextRequest): Response | null {
-  // When global session auth is active, middleware already verified the session
-  // cookie before this route handler was reached. No separate per-route token needed.
-  if (isAuthEnabled()) return null;
+async function checkAuth(request: NextRequest): Promise<Response | null> {
+  // Global session auth: middleware verified the cookie, and the route verifies
+  // it again (one cached Supabase read per request — lib/auth.ts memoises it).
+  if (isAuthEnabled()) return routeAuthGuard(request);
 
   // Global auth is off (dev only): fall back to PROJECTS_ADMIN_TOKEN for API access.
   const adminToken = process.env.PROJECTS_ADMIN_TOKEN;
@@ -142,10 +144,10 @@ async function readLimitedJson(
 // ─── Public API ───────────────────────────────────────────────────────────────
 
 // GET — no body
-export function guardReadRequest(request: NextRequest): Response | null {
+export async function guardReadRequest(request: NextRequest): Promise<Response | null> {
   return (
     checkKillSwitch() ??
-    checkAuth(request)
+    (await checkAuth(request))
   );
 }
 
@@ -185,7 +187,7 @@ export async function guardMutatingRequest(
 ): Promise<{ body: Record<string, unknown> } | { error: Response }> {
   const readErr =
     checkKillSwitch() ??
-    checkAuth(request) ??
+    (await checkAuth(request)) ??
     checkContentType(request);
 
   if (readErr) return { error: readErr };

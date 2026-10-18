@@ -72,7 +72,7 @@ export async function GET(
   request: NextRequest,
   { params }: { params: { projectId: string; expertId: string } },
 ): Promise<NextResponse> {
-  const guard = guardReadRequest(request);
+  const guard = await guardReadRequest(request);
   if (guard) return guard as NextResponse;
 
   const idError = badIds(params.projectId, params.expertId);

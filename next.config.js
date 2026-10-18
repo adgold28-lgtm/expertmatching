@@ -6,6 +6,14 @@ const nextConfig = {
     instrumentationHook: true,
   },
 
+  // Nothing in the app uses next/image, so the /_next/image optimizer endpoint
+  // is attack surface with no job: with `unoptimized` set the server answers
+  // 404 there instead of decoding attacker-supplied images (the 2026 AVIF
+  // advisories, GHSA-2xp9-vwfh-vxw4, were in exactly that code path).
+  images: {
+    unoptimized: true,
+  },
+
   async headers() {
     return [
       {

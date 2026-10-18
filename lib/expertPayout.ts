@@ -67,7 +67,7 @@ import {
   isOnboardingComplete,
   transferExpertPayout,
 } from './stripeConnect';
-import { generateAvailabilityToken } from './availabilityToken';
+import { generatePayoutToken } from './payoutToken';
 import { expertPayoutDollars, formatUsdFromCents, MIN_BILLABLE_MINUTES } from './pricing';
 import { getFromAddress } from './mailFrom';
 import { resolveCallId } from './createAndSendInvoice';
@@ -360,7 +360,7 @@ export interface PayoutDeps {
     projectId?:      string;
     expertId?:       string;
   }): Promise<void>;
-  generateAvailabilityToken(projectId: string, expertId: string): { token: string };
+  generatePayoutToken(projectId: string, expertId: string): { token: string };
   sendPayoutOnboardingEmail(
     expertEmail:       string,
     expertFirstName:   string,
@@ -380,7 +380,7 @@ function defaultPayoutDeps(): PayoutDeps {
     isOnboardingComplete,
     transferExpertPayout,
     recordSystemFailure,
-    generateAvailabilityToken,
+    generatePayoutToken,
     sendPayoutOnboardingEmail,
     now: Date.now,
   };
@@ -777,7 +777,7 @@ async function sendOnboardingLink(
   // attempt every night. The cap is on attempts, not on deliveries.
   await deps.updateExpertStatus(projectId, expertId, reminderPatch).catch(() => {});
 
-  const { token }     = deps.generateAvailabilityToken(projectId, expertId);
+  const { token }     = deps.generatePayoutToken(projectId, expertId);
   const baseUrl       = process.env.NEXT_PUBLIC_BASE_URL ?? process.env.NEXT_PUBLIC_APP_URL ?? 'https://expertmatch.fit';
   const onboardingUrl = `${baseUrl}/expert-onboarding/${token}`;
   await deps.sendPayoutOnboardingEmail(expertEmail, expertFirstName, expertAmountCents, onboardingUrl);

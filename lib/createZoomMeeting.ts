@@ -34,18 +34,24 @@ async function getZoomAccessToken(): Promise<string> {
   return res.data.access_token as string;
 }
 
+/**
+ * `topic` is what Zoom shows both participants and keeps in its own records.
+ * lib/bookCall.ts passes a generic line on purpose: the expert's name has no
+ * business in a third party's meeting list when our own booking email already
+ * tells the client who the call is with. (This parameter used to be ignored in
+ * favour of `Expert Call: <expert name>`.)
+ */
 export async function createZoomMeeting(
   topic:        string,
   startTimeUtc: string,  // ISO 8601
   durationMin:  number,
-  expertName:   string,
 ): Promise<ZoomMeeting | null> {
   try {
     const token = await getZoomAccessToken();
     const res = await axios.post(
       'https://api.zoom.us/v2/users/me/meetings',
       {
-        topic:      `Expert Call: ${expertName}`,
+        topic,
         type:       2,
         start_time: startTimeUtc,
         duration:   durationMin,

@@ -5,8 +5,14 @@
 // Snov is the FIRST link in the chain, so it is the one that most often spends
 // a credit: start the task, then poll for the result (up to 8 × ~800 ms) until
 // the caller's AbortSignal fires. Costs one credit per findProfessionalEmail.
-// A poll that runs out of attempts returns [] — indistinguishable from a real
-// "nobody there", so a slow Snov can put a false not_found into the cache.
+//
+// A poll that runs out of attempts, or is cut off by the caller's deadline,
+// THROWS with code 'provider_timeout'. It used to return [], which the chain
+// read as a genuine "nobody by that name at that domain" and cached as
+// not_found for seven days — so one slow Snov answer silently blocked Matchy
+// from ever reaching that expert for a week. lib/contactDiscovery.ts records
+// the throw as 'timeout', asks the next provider, and caches nothing negative
+// unless a provider actually answered.
 
 import type { ContactProvider, ContactLookupInput, ProviderEmailResult } from './types';
 import { WEBMAIL_DOMAINS } from './types';
@@ -158,9 +164,9 @@ async function pollResult(token: string, taskHash: string, signal?: AbortSignal)
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
     // The caller's deadline stops the loop as well as the request in flight —
     // otherwise an abandoned lookup keeps polling on the job's clock.
-    if (signal?.aborted) break;
+    if (signal?.aborted) throw pollTimeout('deadline');
     if (attempt > 0) await new Promise(r => setTimeout(r, intervalMs));
-    if (signal?.aborted) break;
+    if (signal?.aborted) throw pollTimeout('deadline');
 
     const { controller, cleanup } = boundedController(5_000, signal);
 
@@ -235,7 +241,15 @@ async function pollResult(token: string, taskHash: string, signal?: AbortSignal)
     }
   }
 
-  return []; // polling exhausted — treated as not_found by the route
+  throw pollTimeout('exhausted');
+}
+
+/** Snov never answered in time. Never a result, so never a cached not_found. */
+function pollTimeout(why: 'deadline' | 'exhausted'): Error {
+  return Object.assign(
+    new Error(`Snov result not ready (${why})`),
+    { code: 'provider_timeout' as const },
+  );
 }
 
 // ─── Status normalization ─────────────────────────────────────────────────────
