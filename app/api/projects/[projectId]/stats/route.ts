@@ -88,7 +88,7 @@ export async function GET(
   const authError = await routeAuthGuard(request);
   if (authError) return authError;
 
-  const err = guardReadRequest(request);
+  const err = await guardReadRequest(request);
   if (err) return err;
 
   if (!ID_RE.test(params.projectId)) {

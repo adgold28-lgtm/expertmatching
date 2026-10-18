@@ -63,7 +63,7 @@ export async function GET(
   request: NextRequest,
   { params }: { params: { projectId: string } },
 ): Promise<NextResponse> {
-  const guard = guardReadRequest(request);
+  const guard = await guardReadRequest(request);
   if (guard) return guard as NextResponse;
 
   if (!ID_RE.test(params.projectId)) {

@@ -175,7 +175,7 @@ export async function GET(
   request: NextRequest,
   { params }: { params: { projectId: string } },
 ) {
-  const err = guardReadRequest(request);
+  const err = await guardReadRequest(request);
   if (err) return err;
 
   if (!ID_RE.test(params.projectId)) {
@@ -399,7 +399,7 @@ export async function DELETE(
   request: NextRequest,
   { params }: { params: { projectId: string } },
 ) {
-  const err = guardReadRequest(request);
+  const err = await guardReadRequest(request);
   if (err) return err;
 
   if (!ID_RE.test(params.projectId)) {

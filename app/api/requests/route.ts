@@ -46,7 +46,7 @@ export async function GET(request: NextRequest) {
   const authErr = await routeAuthGuard(request);
   if (authErr) return authErr;
 
-  const guardErr = guardReadRequest(request);
+  const guardErr = await guardReadRequest(request);
   if (guardErr) return guardErr;
 
   try {
