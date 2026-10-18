@@ -18,7 +18,8 @@
 
 import { NextRequest } from 'next/server';
 import { Resend } from 'resend';
-import { createHmac } from 'crypto';
+import { keyHash } from '../../../lib/keyHash';
+import { adminNotificationEmails } from '../../../lib/adminNotifications';
 import { getServiceRoleClient } from '../../../lib/supabase/admin';
 import { getUpstashClient } from '../../../lib/upstashRedis';
 import type { FirmTypeValue, FirmSizeValue } from '../../../lib/supabase/database.types';
@@ -81,14 +82,9 @@ function escapeHtml(s: string): string {
     .replace(/'/g,  '&#39;');
 }
 
-// Admin recipients for access-request notifications. Both addresses are
-// notified so a request is never missed if one inbox is unattended.
-//
-// These are hardcoded, unlike every other admin notification in the repo, which
-// reads ADMIN_NOTIFICATION_EMAIL (see lib/firmStore.sendSeatLimitNotification).
-// Changing who is notified therefore requires a deploy, and the founder's
-// personal addresses sit in version control.
-const ADMIN_NOTIFY_EMAILS = ['adgold28@colby.edu', 'ashergoldsteinbusiness@gmail.com'];
+// Admin recipients come from ADMIN_NOTIFICATION_EMAIL (lib/adminNotifications.ts),
+// the same variable every other staff notification reads. The request itself is
+// stored above regardless, and shows in the admin Requests page.
 
 // Public, unauthenticated endpoint: cap submissions per IP and per email so it
 // cannot be used to spray invites (auto-approved domains) or flood the inbox.
@@ -98,9 +94,7 @@ const RATE_WINDOW_MS       = 60 * 60 * 1000; // 1 hour
 
 /** HMAC-pseudonymised key — no IPs or emails in Redis key names. */
 function rlKey(kind: 'ip' | 'email', value: string): string {
-  const secret = process.env.LOG_HASH_SECRET ?? 'dev-insecure-fallback';
-  const hash   = createHmac('sha256', secret).update(value).digest('hex').slice(0, 24);
-  return `access-rl:${kind}:${hash}`;
+  return `access-rl:${kind}:${keyHash(value, 24)}`;
 }
 
 /** True when the caller is over the limit. Fails open if Redis is unavailable. */
@@ -186,38 +180,57 @@ export async function POST(request: NextRequest) {
 
   // Store as pending (service-role write — access_requests has no
   // authenticated RLS policies) and notify admin.
+  //
+  // ONE OPEN REQUEST PER ADDRESS, AND THE FIRST ONE WINS. This used to delete
+  // the pending row and insert the new one, which let anyone who knew an
+  // address rewrite a stranger's pending request — name, firm, use case —
+  // before an admin had read it; the form is public and unauthenticated. A
+  // repeat submission for an address that already has a pending request now
+  // stores nothing and emails nobody. The response is identical either way, so
+  // the form still reveals nothing about any address.
+  let alreadyPending = false;
   try {
     const db = getServiceRoleClient();
     if (db) {
-      // One open request per email — replace any prior pending row.
-      await db.from('access_requests')
-        .delete()
+      const { data: existing } = await db.from('access_requests')
+        .select('id')
         .eq('kind', 'access')
         .eq('email', record.email)
-        .eq('status', 'requested');
-      await db.from('access_requests').insert({
-        kind:             'access',
-        email:            record.email,
-        requested_domain: domain || null,
-        name:             record.name,
-        firm_name:        record.firm,
-        use_case:         record.useCase,
-        firm_type:        record.firmType,
-        firm_size:        record.firmSize,
-      });
+        .eq('status', 'requested')
+        .limit(1);
+      if (existing && existing.length > 0) {
+        alreadyPending = true;
+      } else {
+        await db.from('access_requests').insert({
+          kind:             'access',
+          email:            record.email,
+          requested_domain: domain || null,
+          name:             record.name,
+          firm_name:        record.firm,
+          use_case:         record.useCase,
+          firm_type:        record.firmType,
+          firm_size:        record.firmSize,
+        });
+      }
     }
   } catch {
     // Storage failure must not fail the request — the admin email below still lands.
   }
 
+  if (alreadyPending) return Response.json({ ok: true });
+
   // Notify admin. Awaited: on Vercel a floating promise can be cut off when
   // the response returns, and a failed notification must at least be logged.
-  if (process.env.DISABLE_EMAILS !== 'true') {
+  const recipients = adminNotificationEmails();
+  if (process.env.DISABLE_EMAILS !== 'true' && recipients.length === 0) {
+    console.warn('[request-access] ADMIN_NOTIFICATION_EMAIL is not set — request stored, nobody emailed');
+  }
+  if (process.env.DISABLE_EMAILS !== 'true' && recipients.length > 0) {
     const resend = getResend();
     if (resend) {
       const { error } = await resend.emails.send({
         from:    getFromAddress(),
-        to:      ADMIN_NOTIFY_EMAILS,
+        to:      recipients,
         subject: `New access request: ${record.name} — ${record.firm}`,
         html: `<p><strong>Name:</strong> ${escapeHtml(record.name)}</p>
 <p><strong>Firm:</strong> ${escapeHtml(record.firm)}</p>

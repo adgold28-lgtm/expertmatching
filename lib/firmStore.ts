@@ -30,6 +30,7 @@ import type {
 } from './supabase/database.types';
 import { Resend } from 'resend';
 import { getFromAddress } from './mailFrom';
+import { adminNotificationEmails } from './adminNotifications';
 import { isPublicEmailDomain } from './emailDomains';
 
 // ─── Types ─────────────────────────────────────────────────────────────────────
@@ -811,16 +812,16 @@ export async function sendSeatLimitNotification(params: SeatLimitNotificationPar
   try {
     if (process.env.DISABLE_EMAILS === 'true') return;
 
-    const adminEmail = process.env.ADMIN_NOTIFICATION_EMAIL;
+    const recipients = adminNotificationEmails();
     const from       = getFromAddress();
-    if (!adminEmail) return;
+    if (recipients.length === 0) return;
 
     const resend = getAdminResend();
     if (!resend) return;
 
     await resend.emails.send({
       from,
-      to:      adminEmail,
+      to:      recipients,
       subject: `[ExpertMatch] Seat limit reached — ${params.firmDomain}`,
       text: [
         'A user attempted to sign up but the firm seat limit was reached.',
