@@ -29,7 +29,8 @@
 //
 // Never logs: message text, summaries, expert names, addresses.
 
-import { createHash, createHmac } from 'crypto';
+import { createHash } from 'crypto';
+import { keyHash } from './keyHash';
 import type { ProjectExpert } from '../types';
 import type { ConversationMessageRow } from './supabase/database.types';
 import { listThread, redactMessageForViewer, type ViewerMessage } from './conversations';
@@ -325,9 +326,7 @@ export const EXPORT_LIMIT_PER_USER_HOUR = 30;
 const ONE_HOUR_MS = 60 * 60 * 1000;
 
 function limitKey(userEmail: string): string {
-  const secret = process.env.LOG_HASH_SECRET ?? 'dev-insecure-fallback';
-  const digest = createHmac('sha256', secret).update(userEmail.trim().toLowerCase()).digest('hex').slice(0, 16);
-  return `rl:export:user:1h:${digest}`;
+  return `rl:export:user:1h:${keyHash(userEmail.trim().toLowerCase(), 16)}`;
 }
 
 export async function checkExportLimit(
