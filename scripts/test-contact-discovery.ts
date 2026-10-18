@@ -355,6 +355,57 @@ async function timeoutIsNotAnAnswer(): Promise<void> {
   });
   check('a real not_found → outcome not_found', nobody.outcome === 'not_found', `got ${nobody.outcome}`);
   check('a real not_found → IS written to the cache', answered.writes.includes('not_found'), JSON.stringify(answered.writes));
+
+  // The production chain is Snov then Hunter. A Snov timeout followed by a
+  // Hunter not_found is not an answer from everyone: nothing is cached.
+  const snovTimeout = () => providerThat('snov', async () => {
+    throw Object.assign(new Error('Snov result not ready (deadline)'), { code: 'provider_timeout' });
+  });
+  const hunterNobody = () => providerThat('hunter', async () => []);
+
+  const halfAnswered = recordingStore();
+  const slowThenNobody = await discoverContact(input, {
+    ...deps,
+    cacheStore: halfAnswered,
+    providers:  [snovTimeout(), hunterNobody()],
+  });
+  check('snov timeout + hunter not_found → outcome not_found', slowThenNobody.outcome === 'not_found', `got ${slowThenNobody.outcome}`);
+  check('snov timeout + hunter not_found → NOTHING written to the cache', halfAnswered.writes.length === 0, JSON.stringify(halfAnswered.writes));
+
+  // Snov out of credits (402), then Hunter not_found: same rule.
+  const noCredits = recordingStore();
+  await discoverContact(input, {
+    ...deps,
+    cacheStore: noCredits,
+    providers:  [
+      providerThat('snov', async () => {
+        throw Object.assign(new Error('Insufficient Snov credits'), { code: 'not_enough_credits' });
+      }),
+      hunterNobody(),
+    ],
+  });
+  check('snov out of credits + hunter not_found → NOTHING written to the cache', noCredits.writes.length === 0, JSON.stringify(noCredits.writes));
+
+  // Snov refused by the daily spend budget, Hunter asked and answered: still
+  // not everyone, still nothing cached.
+  let budgetCalls = 0;
+  const refused = recordingStore();
+  await discoverContact(input, {
+    ...deps,
+    withinGlobalBudget: async () => (++budgetCalls > 1),
+    cacheStore:         refused,
+    providers:          [providerThat('snov', async () => []), hunterNobody()],
+  });
+  check('snov budget-refused + hunter not_found → NOTHING written to the cache', refused.writes.length === 0, JSON.stringify(refused.writes));
+
+  // Both asked, both said nobody: remembered.
+  const bothNobody = recordingStore();
+  await discoverContact(input, {
+    ...deps,
+    cacheStore: bothNobody,
+    providers:  [providerThat('snov', async () => []), hunterNobody()],
+  });
+  check('snov not_found + hunter not_found → IS written to the cache', bothNobody.writes.includes('not_found'), JSON.stringify(bothNobody.writes));
 }
 
 async function main(): Promise<void> {

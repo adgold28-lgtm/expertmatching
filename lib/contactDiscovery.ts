@@ -663,11 +663,19 @@ export async function discoverContact(
     return { outcome: 'unavailable', reason: 'budget', attempts };
   }
 
-  // Every configured provider answered "nobody by that name at that domain".
-  // Only then is the negative worth remembering.
-  const providersAnswered = attempts.some(a =>
-    (a.provider === 'snov' || a.provider === 'hunter') && a.outcome === 'not_found');
-  if (providersAnswered) await writeCache(store, cacheKey, domain, name, null);
+  // Every configured provider was asked AND every one answered "nobody by that
+  // name at that domain". Only then is the negative worth remembering. A
+  // provider that timed out, errored, ran out of credits or was skipped for
+  // budget did not answer, and a negative cached over its silence would keep
+  // Matchy away from a reachable expert for NOT_FOUND_TTL. (The previous
+  // `.some` cached Hunter's not_found right after a Snov timeout, which is the
+  // production chain; the review of PR #47 caught it.)
+  const asked = attempts.filter(a => providers.some(p => p.name === a.provider));
+  const everyProviderSaidNobody =
+    providers.length > 0 &&
+    asked.length === providers.length &&
+    asked.every(a => a.outcome === 'not_found');
+  if (everyProviderSaidNobody) await writeCache(store, cacheKey, domain, name, null);
 
   logCounts(input.projectId, 'not_found', attempts);
   return { outcome: 'not_found', attempts };
