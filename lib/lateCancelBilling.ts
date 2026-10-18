@@ -77,6 +77,7 @@ import {
   MISMATCH_PAYOUT_MINUTES,
   type MismatchSettlementAction,
 } from './mismatchGuarantee';
+import { log } from './log';
 
 /** The fee is always the platform minimum — never the duration that was booked. */
 export const LATE_CANCEL_MINUTES = MIN_BILLABLE_MINUTES;
@@ -291,7 +292,7 @@ export async function applyClientLateCancelMoney(
       });
     }
 
-    console.log('[lateCancel] fee-charged', { projectId, amount, minutes: LATE_CANCEL_MINUTES });
+    log.info('[lateCancel]', 'fee-charged', { projectId, amount, minutes: LATE_CANCEL_MINUTES });
     return { ok: true, callId, amount };
   } catch (err) {
     console.error('[lateCancel] fee error:',
@@ -373,18 +374,18 @@ export async function applyAttendanceOutcome(
         actualDurationMin: input.durationMin,
         status:            'completed',
       });
-      console.log('[attendance] both-attended', { projectId, durationMin: input.durationMin });
+      log.info('[attendance]', 'both-attended', { projectId, durationMin: input.durationMin });
 
       if (flagged && flagVoidedByDuration(input.durationMin)) {
         // The guarantee covers a call the client ends inside ten minutes
         // (founder, 2026-10-17). This one kept going, so the flag is voided
         // and the call is billed below exactly like an unflagged one.
         await d.patchExpert(projectId, expertId, { mismatchCallId: null, mismatchVoidedAt: Date.now() });
-        console.log('[attendance] mismatch-voided-ran-long', { projectId, durationMin: input.durationMin });
+        log.info('[attendance]', 'mismatch-voided-ran-long', { projectId, durationMin: input.durationMin });
       } else if (flagged) {
         // No charge, no payment link: the waiver and the expert's 15 minutes.
         const mismatch = await settleMismatchFlag(projectId, expertId, { callEnded: true }, deps);
-        console.log('[attendance] mismatch-waived', { projectId, action: mismatch.action });
+        log.info('[attendance]', 'mismatch-waived', { projectId, action: mismatch.action });
         return { outcome, charged: false, waived: true, mismatch };
       }
 
@@ -396,7 +397,7 @@ export async function applyAttendanceOutcome(
           // The flag landed between our read and the biller's: it charged
           // nothing, and the waiver settles the call instead.
           const mismatch = await settleMismatchFlag(projectId, expertId, { callEnded: true }, deps);
-          console.log('[attendance] mismatch-waived', { projectId, action: mismatch.action });
+          log.info('[attendance]', 'mismatch-waived', { projectId, action: mismatch.action });
           return { outcome, charged: false, waived: true, mismatch };
         }
         return { outcome, charged: true };
@@ -413,11 +414,11 @@ export async function applyAttendanceOutcome(
         // The client flagged the call and then never joined it: still no fee.
         // The expert, who turned up, is paid 15 minutes through the waiver.
         const mismatch = await settleMismatchFlag(projectId, expertId, { callEnded: true }, deps);
-        console.log('[attendance] client-no-show-waived', { projectId, action: mismatch.action });
+        log.info('[attendance]', 'client-no-show-waived', { projectId, action: mismatch.action });
         return { outcome, charged: false, waived: true, mismatch };
       }
       const money = await applyClientLateCancelMoney(project, pe, deps);
-      console.log('[attendance] client-no-show', { projectId, charged: money.ok });
+      log.info('[attendance]', 'client-no-show', { projectId, charged: money.ok });
       return { outcome, charged: false, money, ...(money.reason === 'waived' ? { waived: true } : {}) };
     }
 
@@ -428,7 +429,7 @@ export async function applyAttendanceOutcome(
         projectId, expertId, type: 'no_show', payload: { who: 'expert' },
       });
       const removal = await d.removeExpertForFault(project, pe, 'no_show');
-      console.log('[attendance] expert-no-show', { projectId, removed: removal.ok });
+      log.info('[attendance]', 'expert-no-show', { projectId, removed: removal.ok });
       return { outcome, charged: false, removal };
     }
 
@@ -438,7 +439,7 @@ export async function applyAttendanceOutcome(
     await d.emitEngagementEvent({
       projectId, expertId, type: 'no_show', payload: { who: 'neither' },
     });
-    console.log('[attendance] neither-attended', { projectId });
+    log.info('[attendance]', 'neither-attended', { projectId });
     return { outcome, charged: false };
   } catch (err) {
     console.error('[attendance] apply error:',
@@ -610,7 +611,7 @@ export async function settleMismatchFlag(
           return { ok: false, action: action.kind, reason: 'write_failed' };
         }
         await d.runExpertPayout(projectId, expertId);
-        console.log('[mismatch] refunded', { projectId });
+        log.info('[mismatch]', 'refunded', { projectId });
         return { ok: true, action: action.kind };
       }
 
@@ -627,7 +628,7 @@ export async function settleMismatchFlag(
           return { ok: false, action: action.kind, reason: 'write_failed' };
         }
         await d.runExpertPayout(projectId, expertId);
-        console.log('[mismatch] link-cancelled', { projectId });
+        log.info('[mismatch]', 'link-cancelled', { projectId });
         return { ok: true, action: action.kind };
       }
 
@@ -636,7 +637,7 @@ export async function settleMismatchFlag(
           return { ok: false, action: action.kind, reason: 'write_failed' };
         }
         await d.runExpertPayout(projectId, expertId);
-        console.log('[mismatch] waived', { projectId });
+        log.info('[mismatch]', 'waived', { projectId });
         return { ok: true, action: action.kind };
       }
     }

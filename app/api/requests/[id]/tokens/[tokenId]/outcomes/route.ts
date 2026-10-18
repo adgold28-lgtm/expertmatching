@@ -36,6 +36,7 @@ import { guardMutatingRequest } from '../../../../../../../lib/projectsGuard';
 import { routeAuthGuard, getSessionUser } from '../../../../../../../lib/auth';
 import { validateOutcomesInput, isValid } from '../../../../../../../lib/screeningValidation';
 import { buildRequestView } from '../../../../../../../lib/screeningView';
+import { errorMessage } from '../../../../../../../lib/log';
 
 const NOT_FOUND = { error: 'not_found' } as const;
 
@@ -105,7 +106,7 @@ export async function POST(
     return Response.json({ respondent });
   } catch (err) {
     console.error('[api/requests/[id]/tokens/[tokenId]/outcomes] error:',
-      err instanceof Error ? err.message : String(err));
+      errorMessage(err));
     return Response.json(
       { error: 'failed_to_record_outcomes', message: 'We could not save what that call covered. Try again.' },
       { status: 500 },

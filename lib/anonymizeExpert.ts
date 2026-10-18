@@ -19,6 +19,7 @@ import type { Expert, SeniorityTier } from '../types';
 import { classifySeniority } from './seniorityClassifier';
 import { maskContactDetails } from './matchyScreen';
 import { getProject, updateExpertStatus } from './projectStore';
+import { errorMessage } from './log';
 
 // ─── Limits ───────────────────────────────────────────────────────────────────
 
@@ -288,7 +289,7 @@ export async function generateAnonymizedFields(expert: Expert): Promise<Anonymiz
     // No PII in logs — expert id only, never name/title/company/evidence.
     console.warn('[anonymizeExpert] generation failed', JSON.stringify({
       expertId: expert.id,
-      reason:   err instanceof Error ? err.message : 'unknown',
+      reason:   errorMessage(err),
     }));
     return { anonymizedDescriptor: fallbackDescriptor(expert), anonymizedJustification: '' };
   }
@@ -350,7 +351,7 @@ export async function backfillProjectAnonymization(projectId: string): Promise<B
       } catch (err) {
         console.warn('[anonymizeExpert] persist failed', JSON.stringify({
           expertId: expert.id,
-          reason:   err instanceof Error ? err.message : 'unknown',
+          reason:   errorMessage(err),
         }));
       }
     }

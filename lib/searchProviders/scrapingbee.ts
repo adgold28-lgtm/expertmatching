@@ -3,6 +3,7 @@
 // ScrapingBee's API design requires it; it is never exposed to the client.
 
 import type { SearchProvider, ExpertSearchInput, SearchResult } from './types';
+import { log } from '../log';
 
 export const scrapingbeeProvider: SearchProvider = {
   name: 'scrapingbee',
@@ -33,7 +34,7 @@ export const scrapingbeeProvider: SearchProvider = {
       const organic = Array.isArray(data.organic_results) ? data.organic_results as Record<string, unknown>[] : [];
 
       // Debug audit: count only — no query text or raw response logged
-      console.log('[scrapingbee] result-counts', JSON.stringify({ returned: organic.length }));
+      log.info('[scrapingbee]', 'result-counts', { returned: organic.length });
 
       return organic.map(r => ({
         title:   typeof r.title          === 'string' ? r.title          : '',

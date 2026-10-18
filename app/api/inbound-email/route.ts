@@ -115,6 +115,7 @@ import { handleDeliveryEvent, webhookRouteFor } from '../../../lib/deliveryEvent
 // LOG_HASH_SECRET, where this route's private copy silently fell back.
 import { pseudonymize } from '../../../lib/contactCache';
 import type { Project, ProjectExpert } from '../../../types';
+import { log } from '../../../lib/log';
 
 // ─── Rate limiter ─────────────────────────────────────────────────────────────
 
@@ -401,11 +402,11 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
   const claimId = deliveryId(request, payload);
   const claim   = await claimDelivery(claimId);
   if (claim === 'duplicate') {
-    console.log('[inbound-email] duplicate delivery — already handled');
+    log.info('[inbound-email]', 'duplicate delivery — already handled');
     return NextResponse.json({ ok: true, deduped: true });
   }
   if (claim === 'in_progress') {
-    console.log('[inbound-email] delivery already in flight — asking for a retry');
+    log.info('[inbound-email]', 'delivery already in flight — asking for a retry');
     return NextResponse.json({ error: 'in_progress' }, { status: 409 });
   }
 
@@ -605,7 +606,7 @@ async function recordAutomatedReply(input: {
       area: 'mail', reason: 'blocked_notice_on_reply', projectId: input.projectId, expertId: input.expertId,
     });
   }
-  console.log('[inbound-email] automatic reply', { kind: input.kind });
+  log.info('[inbound-email]', 'automatic reply', { kind: input.kind });
 }
 
 interface HandleReplyInput {
@@ -1047,14 +1048,14 @@ async function advanceInterested(
   }
 
   if (pe.followupSentAt || pe.email2SentAt) {
-    console.log('[inbound-email] follow-up already sent — nothing further', { projectId });
+    log.info('[inbound-email]', 'follow-up already sent — nothing further', { projectId });
     return;
   }
   // Only the state the intro leaves behind earns a follow-up. A yes arriving
   // after the engagement moved on (already negotiating, already scheduled) is
   // just a message on the thread.
   if (pe.status !== 'contacted' && pe.status !== 'replied') {
-    console.log('[inbound-email] status advanced past outreach — no follow-up', { projectId });
+    log.info('[inbound-email]', 'status advanced past outreach — no follow-up', { projectId });
     return;
   }
   if (!pe.contactEmail) return;

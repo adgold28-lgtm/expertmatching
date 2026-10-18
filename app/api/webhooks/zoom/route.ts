@@ -73,6 +73,7 @@ import {
   zoomUrlValidationHash,
   type ZoomParticipant,
 } from './meetingEnd';
+import { log } from '../../../../lib/log';
 
 // ─── Route handler ────────────────────────────────────────────────────────────
 
@@ -130,7 +131,7 @@ export async function POST(request: NextRequest) {
     if (match) {
       const { projectId, expertId } = match;
       await updateExpertStatus(projectId, expertId, { zoomMeetingStarted: true });
-      console.log('[zoom] meeting-started', { meetingId });
+      log.info('[zoom]', 'meeting-started', { meetingId });
     }
   }
 
@@ -171,7 +172,7 @@ export async function POST(request: NextRequest) {
         });
       }
       // Count-only: 'expert' | 'client' | 'unknown' is a fixed label.
-      console.log('[zoom] participant-joined', { meetingId, who });
+      log.info('[zoom]', 'participant-joined', { meetingId, who });
     }
   }
 
@@ -197,7 +198,7 @@ export async function POST(request: NextRequest) {
 
       if (resolved.skip) {
         // Count-only: the reason is a fixed label, never payload text.
-        console.log('[zoom] meeting-ended-skip', { meetingId, reason: resolved.reason });
+        log.info('[zoom]', 'meeting-ended-skip', { meetingId, reason: resolved.reason });
         if (resolved.reason === 'no_duration') {
           // A call we cannot measure is a call we cannot bill; surface it
           // instead of writing NaN. recordSystemFailure never throws.
@@ -210,7 +211,7 @@ export async function POST(request: NextRequest) {
         }
       } else if (!project || !pe) {
         // The lookup found the row but the project did not load — never guess.
-        console.log('[zoom] meeting-ended-skip', { meetingId, reason: 'row_not_loaded' });
+        log.info('[zoom]', 'meeting-ended-skip', { meetingId, reason: 'row_not_loaded' });
       } else {
         const { actualDurationMin, endedAt } = resolved;
         const attendance = resolveAttendance(pe.zoomAttendance);
@@ -237,7 +238,7 @@ export async function POST(request: NextRequest) {
             projectId,
             expertId,
           });
-          console.log('[zoom] meeting-ended-review', { meetingId, durationMin: actualDurationMin });
+          log.info('[zoom]', 'meeting-ended-review', { meetingId, durationMin: actualDurationMin });
         } else {
           // both / client_no_show / expert_no_show — one implementation,
           // shared with the staff override (lib/lateCancelBilling.ts).
@@ -245,7 +246,7 @@ export async function POST(request: NextRequest) {
             durationMin: actualDurationMin,
             endedAt,
           });
-          console.log('[zoom] meeting-ended', {
+          log.info('[zoom]', 'meeting-ended', {
             meetingId,
             durationMin: actualDurationMin,
             attendance:  result.outcome,

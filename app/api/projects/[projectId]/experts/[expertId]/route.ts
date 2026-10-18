@@ -65,6 +65,7 @@ import { trackProductEvent } from '../../../../../../lib/productEvents';
 // HTTP handlers and the small config allow-list.
 import { STAFF_ONLY_FIELDS, OWNER_FIELDS, classifyBodyFields, normalizeContactEmail } from '../../../../../../lib/expertFieldTiers';
 import type { ExpertStatus, RejectionReason, ValueChainPosition, ScreeningStatus, ContactStatus, SuggestedDomain, PublicContactEmail } from '../../../../../../types';
+import { errorMessage } from '../../../../../../lib/log';
 
 const ID_RE        = /^[a-f0-9]{24}$/;
 const EXPERT_ID_RE = /^[a-zA-Z0-9\-_]+$/;
@@ -406,7 +407,7 @@ export async function PUT(
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     if (msg.includes('not found')) return Response.json({ error: 'not_found' }, { status: 404 });
-    console.error('[api/projects/[id]/experts/[eid]] PUT error:', msg);
+    console.error('[api/projects/[id]/experts/[eid]] PUT error:', errorMessage(msg));
     return Response.json({ error: 'failed_to_update_expert' }, { status: 500 });
   }
 }
@@ -442,7 +443,7 @@ export async function DELETE(
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     if (msg.includes('not found')) return Response.json({ error: 'not_found' }, { status: 404 });
-    console.error('[api/projects/[id]/experts/[eid]] DELETE error:', msg);
+    console.error('[api/projects/[id]/experts/[eid]] DELETE error:', errorMessage(msg));
     return Response.json({ error: 'failed_to_remove_expert' }, { status: 500 });
   }
 }

@@ -24,6 +24,7 @@
 import { keyHash } from './keyHash';
 import { getUpstashClient } from './upstashRedis';
 import type { SearchResult, SearchProviderName } from './searchProviders/types';
+import { errorMessage } from './log';
 
 export interface CachedSearchPage {
   results:    SearchResult[];
@@ -81,6 +82,6 @@ export async function setCachedSearchPage(
   try {
     await redis.set(`search:${hash}`, JSON.stringify(payload), { ex: ttlSec });
   } catch (err) {
-    console.error('[searchCache] set failed:', err instanceof Error ? err.message : String(err));
+    console.error('[searchCache] set failed:', errorMessage(err));
   }
 }

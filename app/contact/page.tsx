@@ -2,6 +2,7 @@ import type { Metadata } from 'next';
 import Link from 'next/link';
 import NavBar from '../../components/NavBar';
 import MarketingFooter from '../../components/MarketingFooter';
+import { SUPPORT_EMAIL } from '../../lib/contactInfo';
 
 // Contact page.
 //
@@ -47,7 +48,7 @@ export default function ContactPage() {
                 Founder
               </p>
               <p className="font-display text-navy" style={{ fontSize: '1.25rem', fontWeight: 500 }}>
-                ashergoldsteinbusiness@gmail.com
+                {SUPPORT_EMAIL}
               </p>
               <p className="text-[13px] text-muted leading-relaxed mt-2" style={{ fontWeight: 300 }}>
                 Sales questions, billing questions, privacy and data requests, and anything an expert

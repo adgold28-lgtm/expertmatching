@@ -43,6 +43,7 @@ import {
   applyAttendanceOutcome,
   type AttendanceOutcome,
 } from '../../../../lib/lateCancelBilling';
+import { log } from '../../../../lib/log';
 
 const OUTCOMES: readonly AttendanceOutcome[] = ['both', 'client_no_show', 'expert_no_show', 'neither'];
 
@@ -96,7 +97,7 @@ export async function POST(request: NextRequest): Promise<Response> {
     });
 
     const waived = result.waived === true;
-    console.log('[admin/attendance] resolved', {
+    log.info('[admin/attendance]', 'resolved', {
       projectId, outcome: result.outcome, charged: result.charged, waived,
     });
 

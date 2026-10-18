@@ -35,6 +35,7 @@ import { chargeIsForFlaggedCall, flagVoidedByDuration } from '../../../../../../
 import { settleMismatchFlag } from '../../../../../../../lib/lateCancelBilling';
 import { getEntitlementsForProject, activationRequired } from '../../../../../../../lib/entitlements';
 import { getAuthUserIdByEmail } from '../../../../../../../lib/supabase/admin';
+import { errorMessage } from '../../../../../../../lib/log';
 
 const ID_RE        = /^[a-f0-9]{24}$/;
 const EXPERT_ID_RE = /^[a-zA-Z0-9\-_]+$/;
@@ -192,7 +193,7 @@ export async function POST(
     });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    console.error('[stripe] complete route error:', msg);
+    console.error('[stripe] complete route error:', errorMessage(msg));
     return NextResponse.json({ error: 'internal_error' }, { status: 500 });
   }
 }

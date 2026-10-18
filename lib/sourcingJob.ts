@@ -29,6 +29,7 @@ import {
   type BriefContext,
 } from './generateExperts';
 import { validateProjectExpert, MAX_EXPERTS_PER_PROJECT } from './projectValidation';
+import { log } from './log';
 
 export interface SourcingJob {
   projectId:        string;
@@ -216,7 +217,7 @@ export async function runSourcingJob(job: SourcingJob): Promise<void> {
 
     const gate = shouldPersistRun(project, job);
     if (!gate.persist) {
-      console.log('[sourcingJob] skipped', { projectId: job.projectId, reason: gate.reason });
+      log.info('[sourcingJob]', 'skipped', { projectId: job.projectId, reason: gate.reason });
       return;
     }
 
@@ -268,7 +269,7 @@ export async function runSourcingJob(job: SourcingJob): Promise<void> {
     // project is re-read rather than trusted from the top of the function.
     const stillOurs = await stillOwnsRun(job);
     if (!stillOurs.persist) {
-      console.log('[sourcingJob] discarded results', {
+      log.info('[sourcingJob]', 'discarded results', {
         projectId: job.projectId,
         reason:    stillOurs.reason,
         core:      experts.length,
@@ -297,7 +298,7 @@ export async function runSourcingJob(job: SourcingJob): Promise<void> {
       sourcingLimitedPool: result.limited_pool,
     });
 
-    console.log('[sourcingJob] completed', {
+    log.info('[sourcingJob]', 'completed', {
       projectId: job.projectId,
       core:      toAdd.length,
       adjacent:  adjacent.length,
@@ -348,7 +349,7 @@ async function finish(
   const projectId = job.projectId;
   const gate = await stillOwnsRun(job);
   if (!gate.persist && gate.reason !== 'read_failed') {
-    console.log('[sourcingJob] terminal status not written', { projectId, reason: gate.reason });
+    log.info('[sourcingJob]', 'terminal status not written', { projectId, reason: gate.reason });
     return;
   }
   try {

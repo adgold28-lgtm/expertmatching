@@ -53,6 +53,7 @@ import { recordSystemFailure } from '../../../../lib/engagementEvents';
 import { STUCK_SOURCING_MINUTES } from '../../../../lib/attention';
 import { sweepMembershipStatus } from '../../../../lib/membershipReconcile';
 import type { MembershipSweepResult } from '../../../../lib/membershipReconcile';
+import { log } from '../../../../lib/log';
 
 // The sweeps run in sequence and the first two talk to Stripe per row; 60s is
 // the same ceiling the other long jobs in this app use, and each sweep gets its
@@ -410,14 +411,14 @@ export async function GET(request: NextRequest): Promise<Response> {
 
   result.ranMs = Date.now() - startedAt;
 
-  console.log('[api/jobs/reconcile] done', JSON.stringify({
+  log.info('[api/jobs/reconcile]', 'done', {
     ok:       result.ok,
     seats:    result.seats,
     payouts:  result.payouts,
     sourcing: result.sourcing,
     membership: result.membership,
     ranMs:    result.ranMs,
-  }));
+  });
 
   return Response.json(result);
 }

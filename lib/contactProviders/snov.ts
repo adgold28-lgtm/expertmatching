@@ -16,6 +16,7 @@
 
 import type { ContactProvider, ContactLookupInput, ProviderEmailResult } from './types';
 import { WEBMAIL_DOMAINS } from './types';
+import { log } from '../log';
 
 // ─── Snov-internal types ──────────────────────────────────────────────────────
 
@@ -283,7 +284,7 @@ export const snovProvider: ContactProvider = {
     {
       const domainOf = (e: RawSnovEmail) => e.email.split('@')[1]?.toLowerCase() ?? '';
       const statuses = rawEmails.map(normalizeStatus);
-      console.log('[snov] result-counts', JSON.stringify({
+      log.info('[snov]', 'result-counts', {
         totalReturned:    rawEmails.length,
         webmailCount:     rawEmails.filter(e => e.is_webmail || WEBMAIL_DOMAINS.has(domainOf(e))).length,
         disposableCount:  rawEmails.filter(e => e.is_disposable).length,
@@ -296,7 +297,7 @@ export const snovProvider: ContactProvider = {
           !e.is_disposable && !e.is_gibberish && e.is_valid_format &&
           (statuses[i] === 'verified' || statuses[i] === 'catchall')
         ).length,
-      }));
+      });
     }
 
     // Filter webmail / personal addresses — security invariant enforced at provider level.

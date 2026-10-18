@@ -34,6 +34,7 @@ import { validateObjectiveEdits, isValid } from '../../../../lib/screeningValida
 import { proofPromptViolation, stemViolation } from '../../../../lib/screeningItems';
 import { buildRequestView } from '../../../../lib/screeningView';
 import type { ObjectiveItemUpdate } from '../../../../lib/requestStore';
+import { errorMessage } from '../../../../lib/log';
 
 const NOT_FOUND = { error: 'not_found' } as const;
 
@@ -57,7 +58,7 @@ export async function GET(
     const candidates = await listCandidates(found.id);
     return Response.json({ request: buildRequestView(found, candidates, { email, role }) });
   } catch (err) {
-    console.error('[api/requests/[id]] GET error:', err instanceof Error ? err.message : String(err));
+    console.error('[api/requests/[id]] GET error:', errorMessage(err));
     return Response.json(
       { error: 'failed_to_load_request', message: 'We could not load that request. Try again.' },
       { status: 500 },
@@ -150,7 +151,7 @@ export async function PATCH(
     const candidates = await listCandidates(saved.id);
     return Response.json({ request: buildRequestView(saved, candidates, { email, role }) });
   } catch (err) {
-    console.error('[api/requests/[id]] PATCH error:', err instanceof Error ? err.message : String(err));
+    console.error('[api/requests/[id]] PATCH error:', errorMessage(err));
     return Response.json(
       { error: 'failed_to_save_request', message: 'We could not save those edits. Try again.' },
       { status: 500 },

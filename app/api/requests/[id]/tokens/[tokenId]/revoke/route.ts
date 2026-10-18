@@ -31,6 +31,7 @@ import {
 import { guardMutatingRequest } from '../../../../../../../lib/projectsGuard';
 import { adminGuard, getSessionUser } from '../../../../../../../lib/auth';
 import { buildRequestView } from '../../../../../../../lib/screeningView';
+import { errorMessage } from '../../../../../../../lib/log';
 
 const NOT_FOUND = { error: 'not_found' } as const;
 
@@ -60,7 +61,7 @@ export async function POST(
     return Response.json({ respondent });
   } catch (err) {
     console.error('[api/requests/[id]/tokens/[tokenId]/revoke] error:',
-      err instanceof Error ? err.message : String(err));
+      errorMessage(err));
     return Response.json(
       { error: 'failed_to_revoke', message: 'We could not revoke that link. Try again.' },
       { status: 500 },

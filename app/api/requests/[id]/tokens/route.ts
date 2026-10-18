@@ -54,6 +54,7 @@ import { firmPhrase, firstNameOf } from '../../../../../lib/matchyTemplates';
 import { getFirmById } from '../../../../../lib/firmStore';
 import { expertRateFor } from '../../../../../lib/pricing';
 import { trackProductEvent } from '../../../../../lib/productEvents';
+import { errorMessage } from '../../../../../lib/log';
 
 /** Where this app answers. Same resolution order as lib/qstashPublish. */
 function baseUrl(): string {
@@ -197,7 +198,7 @@ export async function POST(
       { status: 201 },
     );
   } catch (err) {
-    console.error('[api/requests/[id]/tokens] error:', err instanceof Error ? err.message : String(err));
+    console.error('[api/requests/[id]/tokens] error:', errorMessage(err));
     return Response.json(
       { error: 'failed_to_mint', message: 'We could not create that screening link. Try again.' },
       { status: 500 },

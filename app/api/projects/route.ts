@@ -26,6 +26,7 @@ import { validateCreateProjectInput } from '../../../lib/projectValidation';
 import { getSessionUser } from '../../../lib/auth';
 import { redactProjectForViewer } from '../../../lib/redactExpert';
 import { trackProductEvent } from '../../../lib/productEvents';
+import { errorMessage } from '../../../lib/log';
 
 export async function GET(request: NextRequest) {
   const err = await guardReadRequest(request);
@@ -36,7 +37,7 @@ export async function GET(request: NextRequest) {
     const projects = await listProjectsForUser(email, role);
     return Response.json({ projects });
   } catch (err) {
-    console.error('[api/projects] GET error:', err instanceof Error ? err.message : String(err));
+    console.error('[api/projects] GET error:', errorMessage(err));
     return Response.json({ error: 'failed_to_list_projects' }, { status: 500 });
   }
 }
@@ -66,7 +67,7 @@ export async function POST(request: NextRequest) {
     // `{ project }` response.
     return Response.json({ project: redactProjectForViewer(project, { role }) }, { status: 201 });
   } catch (err) {
-    console.error('[api/projects] POST error:', err instanceof Error ? err.message : String(err));
+    console.error('[api/projects] POST error:', errorMessage(err));
     return Response.json({ error: 'failed_to_create_project' }, { status: 500 });
   }
 }

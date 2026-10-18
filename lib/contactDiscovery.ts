@@ -43,8 +43,8 @@ import {
   ttlForStatus,
   type CacheStore,
 } from './contactCache';
-import { snovProvider, hunterProvider } from './contactProviders';
-import { hunterDomainSearch } from './contactProviders/hunter';
+import { snovProvider } from './contactProviders/snov';
+import { hunterProvider, hunterDomainSearch } from './contactProviders/hunter';
 import type {
   ActiveProviderName,
   ContactProvider,
@@ -528,11 +528,11 @@ export async function discoverContact(
   }
 
   // ── Provider chain ────────────────────────────────────────────────────────
-  // Order is hardcoded here, NOT read from EMAIL_PROVIDER_ORDER — the
-  // lib/contactProviders/index.buildProviderWaterfall() that honours that env
-  // var has no callers. The provider names also feed the cache key, so adding a
-  // provider changes the key and old not_found entries stop suppressing the
-  // fuller chain (see lib/contactCache.makeCacheKey).
+  // Order is hardcoded here: Snov, then Hunter. (An EMAIL_PROVIDER_ORDER knob
+  // existed until 2026-10-18 but nothing read it on the live path; it is gone.)
+  // The provider names also feed the cache key, so adding a provider changes
+  // the key and old not_found entries stop suppressing the fuller chain (see
+  // lib/contactCache.makeCacheKey).
   //
   // SPEND GUARD: lib/rateLimiter.checkAndIncrementGlobalBudget runs once per
   // provider inside the loop below, so a Snov + Hunter waterfall spends two of

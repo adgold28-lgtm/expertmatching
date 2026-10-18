@@ -9,6 +9,7 @@
 
 import Exa from 'exa-js';
 import type { SearchProvider, ExpertSearchInput, SearchResult } from './types';
+import { log } from '../log';
 
 let _client: Exa | null = null;
 
@@ -36,7 +37,7 @@ export const exaProvider: SearchProvider = {
       // (expertType, industry, research question), so printing it put
       // client-confidential text in production logs (H-12) — the length is
       // enough to tell a well-formed query from an empty one.
-      console.log('[exa] search', JSON.stringify({ queryChars: query.length, maxResults: n }));
+      log.info('[exa]', 'search', { queryChars: query.length, maxResults: n });
       // Inline call so TypeScript infers the conditional return type with highlights
       const raw = await exa.searchAndContents(query, {
         numResults:   n,
@@ -53,7 +54,7 @@ export const exaProvider: SearchProvider = {
         throw wrapped;
       });
 
-      console.log('[exa] raw results:', raw.results?.length ?? 0);
+      log.info('[exa]', 'raw results', { returned: raw.results?.length ?? 0 });
       return (raw.results ?? []).map(r => {
         const snippet = r.highlights?.[0] ?? r.text?.slice(0, 300) ?? '';
         const source  = r.url ? (() => {

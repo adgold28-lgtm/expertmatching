@@ -1,6 +1,8 @@
 // Stripe Connect onboarding success page.
 // Expert lands here after completing Stripe onboarding.
 
+import { SUPPORT_EMAIL } from '../../../lib/contactInfo';
+
 export default function ExpertOnboardingReturnPage() {
   return (
     <div className="min-h-screen bg-cream flex items-center justify-center p-6">
@@ -19,8 +21,8 @@ export default function ExpertOnboardingReturnPage() {
         </p>
         <p className="text-xs text-muted">
           If you have any questions, contact us at{' '}
-          <a href="mailto:ashergoldsteinbusiness@gmail.com" className="underline underline-offset-2 hover:text-navy transition-colors">
-            ashergoldsteinbusiness@gmail.com
+          <a href={`mailto:${SUPPORT_EMAIL}`} className="underline underline-offset-2 hover:text-navy transition-colors">
+            {SUPPORT_EMAIL}
           </a>
           .
         </p>

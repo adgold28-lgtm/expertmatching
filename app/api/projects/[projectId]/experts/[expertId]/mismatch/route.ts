@@ -55,6 +55,7 @@ import {
   mismatchWindowBounds,
   type MismatchRefusal,
 } from '../../../../../../../lib/mismatchGuarantee';
+import { log } from '../../../../../../../lib/log';
 
 const ID_RE        = /^[a-f0-9]{24}$/;
 const EXPERT_ID_RE = /^[a-zA-Z0-9\-_]+$/;
@@ -179,7 +180,7 @@ export async function POST(
         projectId,
         payload:        { expertId, minutesIn },
       });
-      console.log('[mismatch] flagged', { projectId, minutesIn });
+      log.info('[mismatch]', 'flagged', { projectId, minutesIn });
     }
 
     // The money, for whatever state the call is in. Never throws; a refund

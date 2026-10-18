@@ -54,6 +54,7 @@ import { getEntitlementsForProject, recordRestrictedAttempt } from './entitlemen
 import type { Entitlements, RefusalContext } from './entitlements';
 import { getFromAddress } from './mailFrom';
 import { chargeIsForFlaggedCall } from './mismatchGuarantee';
+import { log } from './log';
 
 // ─── Email HTML/text builders (shared with complete route) ────────────────────
 
@@ -485,7 +486,7 @@ export async function createAndSendInvoice(
     // or the row. The callers check first; this is the backstop for a flag
     // that landed after their read.
     if (chargeIsForFlaggedCall(pe, resolvedCallId)) {
-      console.log('[stripe] mismatch-waived-skip', { projectId });
+      log.info('[stripe]', 'mismatch-waived-skip', { projectId });
       return { charged: false, paymentLinkUrl: null, paymentIntentId: null, waived: true };
     }
 
@@ -505,7 +506,7 @@ export async function createAndSendInvoice(
     //    engagement with no intent still re-runs, so a lost payment-link email
     //    can be regenerated.)
     if (shouldSkipBilling(pe, resolvedCallId)) {
-      console.log('[stripe] already-billed-skip', { projectId });
+      log.info('[stripe]', 'already-billed-skip', { projectId });
       return {
         charged:         !!pe.stripePaymentIntentId && !pe.stripePaymentLinkUrl,
         paymentLinkUrl:  pe.stripePaymentLinkUrl ?? null,
@@ -518,7 +519,7 @@ export async function createAndSendInvoice(
     //    follows this charge refers to the NEW call, not the old one.
     if (isRepeatCallForBilledRow(pe, resolvedCallId)) {
       await d.updateExpertStatus(projectId, expertId, { paymentStatus: 'unpaid' });
-      console.log('[stripe] repeat-call-rebill', { projectId });
+      log.info('[stripe]', 'repeat-call-rebill', { projectId });
     }
 
     const clientName    = project.clientName ?? 'there';
@@ -555,7 +556,7 @@ export async function createAndSendInvoice(
         text:    buildReceiptText(clientName, pe.expert.name, durationMin, invoiceAmount, options?.lineLabel),
       });
 
-      console.log('[stripe] auto-charge-invoice-sent', { amount: invoiceAmount, projectId });
+      log.info('[stripe]', 'auto-charge-invoice-sent', { amount: invoiceAmount, projectId });
 
       return {
         charged:         true,
@@ -566,7 +567,7 @@ export async function createAndSendInvoice(
 
     // ─── Path 2: payment link (no saved card, SCA required, or declined) ───
     if (charge.outcome !== 'no_saved_card') {
-      console.log('[stripe] falling-back-to-payment-link', {
+      log.info('[stripe]', 'falling-back-to-payment-link', {
         projectId,
         reason: charge.outcome,
       });
@@ -632,7 +633,7 @@ export async function createAndSendInvoice(
     }
 
     // 6. Log (no PII)
-    console.log('[stripe] payment-link-created', { amount: invoiceAmount, projectId });
+    log.info('[stripe]', 'payment-link-created', { amount: invoiceAmount, projectId });
 
     return {
       charged:         false,

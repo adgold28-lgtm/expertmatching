@@ -6,6 +6,7 @@
 
 import { decrypt, encrypt } from './encryption';
 import type { AvailabilitySlot } from '../types';
+import { log } from './log';
 
 const DEFAULT_WINDOW_DAYS = 14;
 
@@ -233,7 +234,7 @@ export async function fetchGoogleFreebusy(
     } catch (err) {
       if (err instanceof Error && err.message === 'UNAUTHENTICATED') {
         // Try refreshing the token
-        console.log('[freebusy] access token expired, attempting refresh');
+        log.info('[freebusy]', 'access token expired, attempting refresh');
         const refreshed = await refreshAccessToken(encryptedRefreshToken);
         if (!refreshed) return [];
 
