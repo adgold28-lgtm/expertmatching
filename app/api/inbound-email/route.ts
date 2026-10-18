@@ -71,11 +71,13 @@
 // Never logs: email content, expert email, expert name, project name, token.
 
 import { NextRequest, NextResponse } from 'next/server';
+import { timingSafeEqual } from 'crypto';
 import { Webhook } from 'svix';
 import { getProject, updateExpertStatus } from '../../../lib/projectStore';
-import { verifyOutreachToken } from '../../../lib/outreachToken';
+import { verifyOutreachToken, hashOutreachToken } from '../../../lib/outreachToken';
 import { suppress } from '../../../lib/outreachSuppressions';
 import { createRateLimiterStore } from '../../../lib/rateLimiter';
+import { keyHash } from '../../../lib/keyHash';
 import { getUpstashClient } from '../../../lib/upstashRedis';
 import { cleanEmailBody } from '../../../lib/emailClean';
 import { screenMessage } from '../../../lib/matchyScreen';
@@ -121,6 +123,13 @@ let _rlStore: ReturnType<typeof createRateLimiterStore> | null = null;
 function getRlStore() {
   if (!_rlStore) _rlStore = createRateLimiterStore();
   return _rlStore;
+}
+
+/** Constant-time: both sides are hashed first, so length says nothing either. */
+function sameToken(presented: string, stored: string): boolean {
+  const a = Buffer.from(hashOutreachToken(presented), 'hex');
+  const b = Buffer.from(hashOutreachToken(stored), 'hex');
+  return timingSafeEqual(a, b);
 }
 
 function getClientIp(request: NextRequest): string {
@@ -347,10 +356,13 @@ async function loadThreadContext(project: Project): Promise<ThreadContext> {
 
 export async function POST(request: NextRequest): Promise<NextResponse> {
   // ── 1. Rate limit by IP ──────────────────────────────────────────────────
+  // The IP is HMAC'd before it becomes a key name, like every other limiter in
+  // the repo (lib/keyHash.ts): raw addresses in key names are personal data
+  // that shows up in the Upstash console and in any SCAN output.
   const ip = getClientIp(request);
   try {
     const store = getRlStore();
-    const { count } = await store.increment(`rl:inbound-email:${ip}:1h`, 60 * 60 * 1000);
+    const { count } = await store.increment(`rl:inbound-email:${keyHash(ip, 16)}:1h`, 60 * 60 * 1000);
     if (count > 100) {
       return NextResponse.json({ error: 'rate_limited' }, { status: 429 });
     }
@@ -472,6 +484,25 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
     return NextResponse.json({ ok: true });
   }
 
+  // ── 8b. The token must be THIS engagement's current one ──────────────────
+  // Step 7 proved we minted the token and it has not expired. It did not prove
+  // the token is still the one on the row: lib/outreachSteps.ts writes
+  // `outreachToken` when the intro goes out, and that is the only address
+  // Matchy ever mails from for this engagement. A token from a leaked or
+  // forwarded thread that is NOT the row's token no longer moves the thread,
+  // which is the revocation the HMAC alone cannot give. Rows written before the
+  // token was persisted have none; those keep the signature-only check and say
+  // so, once per delivery.
+  if (pe.outreachToken) {
+    if (!sameToken(token, pe.outreachToken)) {
+      console.warn('[inbound-email] token is not the engagement\'s current token — ignored');
+      await markDeliveryDone(claimId);
+      return NextResponse.json({ ok: true });
+    }
+  } else {
+    console.warn('[inbound-email] engagement has no stored outreach token — accepting on signature alone');
+  }
+
   // ── 9. Sender authenticity — the verdicts, then the address ──────────────
   // The address comparison below stops a forward or a colleague, which is what
   // it is for, but it is not authentication: the From header is
@@ -499,15 +530,15 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
   const fromAddress    = extractFromAddress(envelope.fromField);
   const expectedSender = pe.contactEmail?.trim().toLowerCase() ?? '';
   if (!expectedSender || fromAddress !== expectedSender) {
-    const keyHash = pseudonymize(`${resolvedProjectId}:${resolvedExpertId}`);
+    const pairHash = pseudonymize(`${resolvedProjectId}:${resolvedExpertId}`);
     try {
       const store = getRlStore();
       // 30-day counter, incremented for observability only — never gates.
-      await store.increment(`rl:inbound-from-mismatch:${keyHash}`, 30 * 24 * 60 * 60 * 1000);
+      await store.increment(`rl:inbound-from-mismatch:${pairHash}`, 30 * 24 * 60 * 60 * 1000);
     } catch {
       // Non-fatal — the counter is diagnostic, not a control.
     }
-    console.warn('[inbound-email] sender does not match contact email — ignored', { keyHash });
+    console.warn('[inbound-email] sender does not match contact email — ignored', { pairHash });
     await markDeliveryDone(claimId);
     return NextResponse.json({ ok: true });
   }
