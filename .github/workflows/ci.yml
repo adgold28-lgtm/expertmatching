@@ -1,0 +1,52 @@
+# Continuous integration: the gates a developer runs before every commit
+# (CLAUDE.md, "After Every Task"), on every pull request and every push to
+# main. Typecheck, the offline test suites, the real production build and the
+# security scan, in that order, so the cheapest check fails first.
+#
+# Needs no secrets. The build mocks Google Fonts (scripts/font-mocks.js via
+# build:local), every offline suite stubs its own network and database, and the
+# security scan's npm audit only reads the public registry. The four suites that
+# need a running app or live Redis are skipped by scripts/test-offline.sh.
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      # Not SHA-pinned like checkout above only because no SHA could be verified
+      # offline when this file was written; pin it the same way when convenient.
+      - name: Set up Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Offline test suites
+        run: npm run test:offline
+
+      - name: Production build (Google Fonts mocked)
+        run: npm run build:local
+
+      - name: Security scan
+        run: npm run security
