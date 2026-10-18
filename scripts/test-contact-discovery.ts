@@ -14,6 +14,8 @@
 //      'invalid' are never sendable at all
 //   4. the kill switch — CONTACT_ENRICHMENT_ENABLED unset means 'unavailable'
 //      and zero provider calls
+//   5. the negative cache — a provider that timed out is not a provider that
+//      answered "nobody there", so nothing is remembered for seven days
 
 import {
   isRoleAddress,
@@ -26,7 +28,9 @@ import {
   discoverContact,
   MIN_CONFIDENCE,
 } from '../lib/contactDiscovery';
-import type { ProviderEmailResult, NormalizedEmailStatus } from '../lib/contactProviders/types';
+import type { ContactProvider, ProviderEmailResult, NormalizedEmailStatus } from '../lib/contactProviders/types';
+import type { CacheStore } from '../lib/contactCache';
+import type { ContactEnrichment } from '../types';
 import { check, summary } from './testHarness';
 
 function section(title: string): void {
@@ -276,8 +280,86 @@ async function killSwitch(): Promise<void> {
   else process.env.CONTACT_ENRICHMENT_ENABLED = original;
 }
 
+// ─── 5. A timeout is not an answer ───────────────────────────────────────────
+
+/** A cache that remembers what was written to it and nothing else. */
+function recordingStore(): CacheStore & { writes: string[] } {
+  const writes: string[] = [];
+  return {
+    writes,
+    async get() { return null; },
+    async set(_key: string, value: ContactEnrichment) { writes.push(value.lookup_status); },
+    async delete() { /* nothing cached */ },
+  };
+}
+
+function providerThat(name: 'snov' | 'hunter', answer: () => Promise<ProviderEmailResult[]>): ContactProvider {
+  return {
+    name,
+    isConfigured: () => true,
+    findProfessionalEmail: answer,
+    estimateCreditsPerLookup: () => 1,
+  };
+}
+
+async function timeoutIsNotAnAnswer(): Promise<void> {
+  section('5. A provider timeout never writes a negative cache entry');
+
+  const input = {
+    projectId:   'p1',
+    expertId:    'e1',
+    name:        'Dana Reyes',
+    company:     'Acme Coatings',
+    sourceLinks: ['https://www.acmecoatings.com/team'],
+  };
+  const deps = {
+    enabled:                true,
+    withinGlobalBudget:     async () => true,
+    domainSearch:           async () => null,
+    domainSearchConfigured: () => false,
+  };
+
+  // Snov's poll ran out (lib/contactProviders/snov.ts throws provider_timeout).
+  const slow = recordingStore();
+  const timedOut = await discoverContact(input, {
+    ...deps,
+    cacheStore: slow,
+    providers:  [providerThat('snov', async () => {
+      throw Object.assign(new Error('Snov result not ready (exhausted)'), { code: 'provider_timeout' });
+    })],
+  });
+  check('timeout → outcome not_found (nothing sendable today)', timedOut.outcome === 'not_found', `got ${timedOut.outcome}`);
+  check('timeout → the attempt is recorded as a timeout',
+    timedOut.attempts.some(a => a.provider === 'snov' && a.outcome === 'timeout'), JSON.stringify(timedOut.attempts));
+  check('timeout → NOTHING written to the cache', slow.writes.length === 0, JSON.stringify(slow.writes));
+
+  // The caller's deadline fired mid-poll: same rule.
+  const aborted = recordingStore();
+  const cutOff = await discoverContact(input, {
+    ...deps,
+    cacheStore: aborted,
+    providers:  [providerThat('snov', async () => {
+      throw Object.assign(new Error('aborted'), { name: 'AbortError' });
+    })],
+  });
+  check('abort → recorded as a timeout',
+    cutOff.attempts.some(a => a.provider === 'snov' && a.outcome === 'timeout'), JSON.stringify(cutOff.attempts));
+  check('abort → NOTHING written to the cache', aborted.writes.length === 0, JSON.stringify(aborted.writes));
+
+  // A provider that genuinely answered "nobody there" IS remembered.
+  const answered = recordingStore();
+  const nobody = await discoverContact(input, {
+    ...deps,
+    cacheStore: answered,
+    providers:  [providerThat('snov', async () => [])],
+  });
+  check('a real not_found → outcome not_found', nobody.outcome === 'not_found', `got ${nobody.outcome}`);
+  check('a real not_found → IS written to the cache', answered.writes.includes('not_found'), JSON.stringify(answered.writes));
+}
+
 async function main(): Promise<void> {
   await killSwitch();
+  await timeoutIsNotAnAnswer();
 
   summary();
 }

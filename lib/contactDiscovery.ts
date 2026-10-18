@@ -641,9 +641,10 @@ export async function discoverContact(
       }
       record(provider.name, 'not_found', providerAt);
     } catch (err) {
+      const code    = (err as { code?: string } | null)?.code;
       const aborted = controller.signal.aborted ||
+        code === 'provider_timeout' ||
         (err instanceof Error && (err.name === 'AbortError' || err.name === 'TimeoutError'));
-      const code = (err as { code?: string } | null)?.code;
       record(
         provider.name,
         aborted ? 'timeout' : (code === 'not_enough_credits' || code === 'provider_rate_limited' ? code : 'error'),
