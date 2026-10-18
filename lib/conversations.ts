@@ -134,14 +134,6 @@ export interface MessageViewer {
   expertCompany?: string;
 }
 
-/** The one-line read the Matches / Conversations cards show. */
-export interface ThreadSummary {
-  summary:   string | null;
-  intent:    ReplyIntent | null;
-  direction: MessageDirection;
-  createdAt: string;
-}
-
 const VALID_INTENTS: readonly ReplyIntent[] = [
   'interested', 'declined', 'counter_rate', 'conflict', 'unclear',
   'time_chosen', 'time_unavailable', 'reschedule', 'auto_reply',
@@ -380,44 +372,6 @@ export async function getMessage(
 
     if (error) return null;
     return (data ?? null) as ConversationMessageRow | null;
-  } catch {
-    return null;
-  }
-}
-
-/**
- * The latest summarized message on a thread — what the Matches and
- * Conversations cards show under an expert's name ("Interested. Free Tue/Thu
- * afternoons ET."). Already screened when it was written, so it is safe to
- * render as-is; `redactMessageForViewer` masks it again anyway.
- */
-export async function latestSummary(
-  projectId: string,
-  expertId: string,
-): Promise<ThreadSummary | null> {
-  const db = getServiceRoleClient();
-  if (!db || !projectId || !expertId) return null;
-
-  try {
-    const { data, error } = await db
-      .from('conversation_messages')
-      .select('summary, intent, direction, created_at')
-      .eq('project_id', projectId)
-      .eq('expert_id', expertId)
-      .not('summary', 'is', null)
-      .order('created_at', { ascending: false })
-      .limit(1)
-      .maybeSingle();
-
-    if (error || !data) return null;
-
-    const row = data as Pick<ConversationMessageRow, 'summary' | 'intent' | 'direction' | 'created_at'>;
-    return {
-      summary:   row.summary,
-      intent:    toIntent(row.intent),
-      direction: row.direction,
-      createdAt: row.created_at,
-    };
   } catch {
     return null;
   }

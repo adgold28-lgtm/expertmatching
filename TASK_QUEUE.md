@@ -145,7 +145,7 @@ Last updated: 2026-10-18
 - [ ] **Cancel a booking: what does it mean?** Engagement over (`rejected_after_outreach`, one-line email plus a CANCEL .ics to both) or an immediate re-propose? Zoom delete and ICS METHOD:CANCEL both exist; a new `call_canceled` event kind needs a migration. Recommendation on record: cancel means over, and anything else is "Move the call". (HANDOFF Session 6.)
 - [ ] **Calendly: remove or fix** (see NOW; recommendation is remove).
 - [ ] **Legal placeholders** in `app/terms/page.tsx` (a `[CONFIRM: legal entity name and form]` renders to visitors) and `app/privacy/page.tsx`.
-- [ ] **`EMAIL_PROVIDER_ORDER` does nothing.** Either wire it into `discoverContact` or delete the knob and its env var (audit M-23).
+- [x] **`EMAIL_PROVIDER_ORDER` does nothing.** DELETED 2026-10-18 (cleanup pass, PR 2): the knob, its env var and the unused `lib/contactProviders/index.ts` waterfall are gone; the order stays hardcoded in `discoverContact` (audit M-23).
 - [ ] **`npm run security` stops at step 1** on a pre-existing `npm audit` finding in the postcss chain under `next`, so steps 2 to 6 have never run for anyone. Fixing it needs `next@16`, a breaking major.
 
 ## NEXT (makes the product real)

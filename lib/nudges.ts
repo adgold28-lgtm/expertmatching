@@ -327,14 +327,6 @@ export function waitingSinceFor(thread: readonly NudgeThreadMessage[]): number |
   return null;
 }
 
-/** Is this engagement in a state a nudge belongs to at all? */
-export function isWaiting(
-  pe: Pick<ProjectExpert, 'status'>,
-  thread: readonly NudgeThreadMessage[],
-): boolean {
-  return nudgeStageFor(pe.status) !== null && waitingSinceFor(thread) !== null;
-}
-
 // ─── When the next one goes ───────────────────────────────────────────────────
 
 /**

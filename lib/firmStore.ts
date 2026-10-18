@@ -494,13 +494,6 @@ export async function upsertUser(
   return { metadataSynced };
 }
 
-export async function updateUserStatus(
-  email: string,
-  status: UserStatus,
-): Promise<{ metadataSynced: boolean }> {
-  return upsertUser(email, { status });
-}
-
 export async function listUsersForFirm(domain: string): Promise<UserRecord[]> {
   const db = getServiceRoleClient();
   if (!db) return [];

@@ -116,10 +116,6 @@ export const OPTIONAL_VARS = [
   'NEXT_PUBLIC_BASE_URL',
   // Bumping this string invalidates every cached contact lookup (lib/contactCache.ts)
   'CONTACT_CACHE_VERSION',
-  // Comma-separated email-provider order. Read by lib/contactProviders/index.ts,
-  // but the live discovery path hardcodes its provider list, so it has no
-  // effect today (M-23) — listed so the console does not hide it.
-  'EMAIL_PROVIDER_ORDER',
   // Global daily provider-credit budget; defaults to 500 (lib/rateLimiter.ts).
   // Documented in .env.example but absent from both lists until 2026-09-09, so
   // the console could not show it — the same defect M-51 names, two variables

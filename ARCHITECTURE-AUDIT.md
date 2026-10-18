@@ -88,7 +88,7 @@ Ids not listed here were not touched by any wave and remain open exactly as writ
 | M-15 | Interview guide does not validate the model's JSON | Fixed in 1d7f36a | none (validated by inspection) |
 | M-17 | Two concurrent sourcing starts both enqueue | Fixed in 74e9899 | `test-sourcing-idempotency` |
 | M-22 | `contactPathResolver.ts` dead with a live Redis footprint | Fixed in e71a05d | `check-env-drift` (9) |
-| M-23 | `EMAIL_PROVIDER_ORDER` has no effect; duplicate registry | Partially fixed in ae682b6 (one registry; the knob still does nothing) | none |
+| M-23 | `EMAIL_PROVIDER_ORDER` has no effect; duplicate registry | Fixed 2026-10-18 (PR 2): the knob, the unused waterfall builders and `lib/contactProviders/index.ts` are deleted; `lib/contactDiscovery.ts` imports the two providers directly | `check-env-drift` |
 | M-28 | Inbound sender check ignores SPF/DKIM | Partially fixed in c8748b2 (gate implemented, inert until Resend supplies verdicts) | `test-inbound-claim` |
 | M-29 | `outreach/approve` uses a shorter deny list | Fixed in 5e21428 | `test-send-chokepoint` |
 | M-30 | Approve-and-send is read-then-write | Fixed in 5e21428 | `test-walkthrough` |

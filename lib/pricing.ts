@@ -49,9 +49,6 @@ export const SEAT_TIERS: readonly SeatTier[] = [
   { minSeats: 21, maxSeats: null, unitPriceCents: 200_00, contactSales: true },
 ] as const;
 
-/** Seat count at and above which the site says "Talk to us". */
-export const CONTACT_SALES_FROM_SEATS = 21;
-
 /** Stable identifier of the Stripe Price that encodes SEAT_TIERS. Bump the
  *  suffix whenever the tiers change so a new Price is created and old
  *  subscriptions keep their contracted rate until migrated. */
