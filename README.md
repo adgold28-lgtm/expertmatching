@@ -78,7 +78,7 @@ One suite at a time: `npx tsx scripts/test-pricing.ts`. Four suites need a
 running app or live Redis and are skipped by test:offline; run them by hand
 against `next dev -p 3100`, for example
 `SMOKE_BASE_URL=http://localhost:3100 npx tsx scripts/test-route-authz.ts`
-(also test-auth-flows, test-auth-request-cache, test-upstash). The e2e-*.ts
+(also test-auth-flows, test-auth-request-cache, test-upstash). Those four are manual-only today and CI does not run them, so a green CI badge does not mean the login and tenant-isolation paths were exercised: run them before merging any change under middleware.ts, lib/auth.ts, lib/projectsGuard.ts or lib/projectStore.ts. A CI job for them is on TASK_QUEUE.md. The e2e-*.ts
 scripts drive a deployed environment the same way.
 
 CI (.github/workflows/ci.yml) runs typecheck, test:offline, build:local and the

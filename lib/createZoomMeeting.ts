@@ -13,8 +13,12 @@
 // Plain fetch since 2026-10-18: this was the only module that used axios, so
 // the dependency left with the rewrite. zoomRequest() keeps the two axios
 // behaviours the code relied on (a non-2xx status rejects; a JSON body is
-// parsed) and, like the axios calls before it, sets no request timeout of its
-// own: lib/bookCall.ts books first and treats a slow Zoom as "no link yet".
+// parsed) and adds the timeout axios never had. The timeout matters:
+// lib/bookCall.ts awaits createZoomMeeting() BEFORE it writes the booking, so
+// a Zoom call that hangs would run until the function is killed and the
+// booking the expert just confirmed would never be saved. With the timeout the
+// call rejects after ZOOM_TIMEOUT_MS and bookCall's `.catch(() => null)` turns
+// that into "no link yet", which is the behaviour it was always meant to have.
 
 import { errorMessage } from './log';
 
@@ -27,6 +31,9 @@ export interface ZoomMeeting {
 }
 
 type ZoomMethod = 'POST' | 'PATCH' | 'DELETE';
+
+/** Upper bound for one Zoom HTTP call (token or meeting). See the header. */
+const ZOOM_TIMEOUT_MS = 10_000;
 
 /**
  * One Zoom HTTP call. Rejects on a non-2xx status with the wording axios used
@@ -43,7 +50,8 @@ async function zoomRequest(
   const res = await fetch(url, {
     method,
     headers,
-    body: body === undefined ? undefined : JSON.stringify(body),
+    body:   body === undefined ? undefined : JSON.stringify(body),
+    signal: AbortSignal.timeout(ZOOM_TIMEOUT_MS),
   });
   if (!res.ok) throw new Error(`Request failed with status code ${res.status}`);
   const text = await res.text();

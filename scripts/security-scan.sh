@@ -43,11 +43,12 @@ cd "$ROOT"
 # ─── 1. npm audit ─────────────────────────────────────────────────────────────
 header "1. Dependency vulnerabilities (npm audit)"
 
-# Advisories the founder has accepted, decision on record in TASK_QUEUE.md
-# (2026-10-18): every one of them clears only with a breaking major upgrade
-# (Next 16 / Tailwind 4), planned as its own PR. A high or critical advisory
-# that is NOT in this list fails the scan. When the upgrade lands and
-# `npm audit` stops reporting an id, delete it here.
+# Advisories the founder accepted on 2026-10-18 (decision D6, recorded in
+# TASK_QUEUE.md): every one of them clears only with a breaking major upgrade
+# (Next 15.5 / Tailwind 4), scheduled this month as its own PR. A high or
+# critical advisory that is NOT in this list fails the scan. When the upgrade
+# lands and `npm audit` stops reporting an id, delete it here.
+# Review by 2026-11-30: if any id is still listed then, the upgrade slipped.
 ACCEPTED_ADVISORIES=(
   GHSA-vfj7-8cjw-p6xm   # braces (under tailwindcss 3): stack exhaustion on nested patterns
   GHSA-6g55-p6wh-862q   # postcss (under next): sourceMappingURL arbitrary file read
@@ -85,7 +86,12 @@ AUDIT_ROWS=$(printf '%s' "$AUDIT_JSON" | node -e '
 ')
 
 if [ "$AUDIT_ROWS" = "AUDIT_UNAVAILABLE" ]; then
-  warn "npm audit did not run (no registry access?) — rerun with network before merging"
+  if [ -n "${CI:-}" ]; then
+    # In CI a registry blip must not turn into a green badge with no dependency check.
+    fail "npm audit did not run (no registry access?) — CI cannot vouch for dependencies"
+  else
+    warn "npm audit did not run (no registry access?) — rerun with network before merging"
+  fi
 else
   NEW_ADVISORIES=""
   ACCEPTED_SEEN=0
@@ -106,7 +112,7 @@ else
       const m = JSON.parse(require("fs").readFileSync(0, "utf8")).metadata.vulnerabilities;
       console.log(`${m.total} finding(s): ${m.critical} critical, ${m.high} high, ${m.moderate} moderate, ${m.low} low`);
     ')
-    pass "No new HIGH/CRITICAL advisories ($ACCEPTED_SEEN accepted pending the Next 16 / Tailwind 4 upgrade; $TOTALS)"
+    pass "No new HIGH/CRITICAL advisories ($ACCEPTED_SEEN accepted pending the Next 15.5 / Tailwind 4 upgrade; $TOTALS)"
   fi
 fi
 
@@ -139,7 +145,7 @@ FOUND_SECRETS=0
 for PATTERN in "${SECRET_PATTERNS[@]}"; do
   MATCHES=$(grep -rn --include="*.ts" --include="*.tsx" --include="*.js" \
     -E "$PATTERN" "$ROOT/app" "$ROOT/lib" "$ROOT/components" 2>/dev/null \
-    | grep -v "\.env\.example\|\.env\.local\|\/\/ " || true)
+    | grep -v "\.env\.example\|\.env\.local" | grep -vE '^[^:]+:[0-9]+:\s*//' || true)
   if [ -n "$MATCHES" ]; then
     fail "Possible hardcoded secret matching pattern '$PATTERN':"
     echo "$MATCHES" | head -5
@@ -172,7 +178,7 @@ header "5. XSS sinks (dangerouslySetInnerHTML, eval, innerHTML)"
 XSS_HITS=$(grep -rn --include="*.ts" --include="*.tsx" \
   -E "dangerouslySetInnerHTML|\.innerHTML\s*=|eval\s*\(" \
   "$ROOT/app" "$ROOT/lib" "$ROOT/components" 2>/dev/null \
-  | grep -v "//.*dangerouslySetInnerHTML\|//.*innerHTML\|//.*eval" || true)
+  | grep -vE '^[^:]+:[0-9]+:\s*//' || true)
 
 if [ -n "$XSS_HITS" ]; then
   fail "Potential XSS sink(s) found:"
