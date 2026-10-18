@@ -36,6 +36,7 @@ import {
 } from '../../../../../../lib/calendarConnections';
 import { verifyOnboardingOAuthState } from '../../../../../../lib/onboardingOauthState';
 import { encrypt } from '../../../../../../lib/encryption';
+import { log } from '../../../../../../lib/log';
 
 const GOOGLE_TOKEN_URL = 'https://oauth2.googleapis.com/token';
 const USERINFO_URL     = 'https://www.googleapis.com/oauth2/v3/userinfo';
@@ -112,7 +113,7 @@ export async function GET(request: NextRequest): Promise<Response> {
 
   if (googleErr) {
     // Consent declined, or Google refused the request.
-    console.log('[onboarding/calendar/google/callback] oauth error from Google:', googleErr.slice(0, 120));
+    log.info('[onboarding/calendar/google/callback]', 'oauth error from Google', { error: googleErr.slice(0, 120) });
     return errorRedirect('access_denied');
   }
   if (!code || !state) return errorRedirect('invalid_callback');
@@ -193,7 +194,7 @@ export async function GET(request: NextRequest): Promise<Response> {
     return errorRedirect('server_error');
   }
 
-  console.log('[onboarding/calendar/google/callback] calendar connected', { status: 'ok' });
+  log.info('[onboarding/calendar/google/callback]', 'calendar connected', { status: 'ok' });
 
   return NextResponse.redirect(new URL('/onboarding?calendar=connected', appUrl));
 }

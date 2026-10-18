@@ -11,6 +11,7 @@
 // safe (lib/zoomLookup.ts already treats them as such).
 
 import axios from 'axios';
+import { errorMessage } from './log';
 
 export interface ZoomMeeting {
   meetingId: string;
@@ -75,7 +76,7 @@ export async function createZoomMeeting(
       startTime: d.start_time,
     };
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
+    const msg = errorMessage(err);
     console.error('[zoom] meeting-creation-failed', msg);
     return null;
   }
@@ -110,7 +111,7 @@ export async function updateZoomMeeting(
     );
     return true;
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
+    const msg = errorMessage(err);
     console.error('[zoom] meeting-update-failed', msg);
     return false;
   }
@@ -134,7 +135,7 @@ export async function deleteZoomMeeting(meetingId: string): Promise<boolean> {
     );
     return true;
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
+    const msg = errorMessage(err);
     console.error('[zoom] meeting-delete-failed', msg);
     return false;
   }

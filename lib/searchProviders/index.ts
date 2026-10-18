@@ -19,6 +19,7 @@ import { tavilyProvider }      from './tavily';
 import { scrapingbeeProvider } from './scrapingbee';
 import { exaProvider }         from './exa';
 import type { SearchProvider, ExpertSearchInput, SearchResult } from './types';
+import { errorMessage } from '../log';
 
 export { tavilyProvider, scrapingbeeProvider, exaProvider };
 
@@ -71,7 +72,7 @@ export async function searchWithFallback(input: ExpertSearchInput): Promise<Sear
     if (canFallback) {
       console.warn(
         '[search] primary provider failed, falling back to scrapingbee:',
-        err instanceof Error ? err.message : String(err),
+        errorMessage(err),
       );
       return scrapingbeeProvider.search(input);
     }

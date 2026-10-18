@@ -3,6 +3,7 @@
 // API docs: https://docs.tavily.com/docs/rest-api/api-reference
 
 import type { SearchProvider, ExpertSearchInput, SearchResult } from './types';
+import { log } from '../log';
 
 interface TavilyResultItem {
   title?:   string;
@@ -61,7 +62,7 @@ export const tavilyProvider: SearchProvider = {
       const items = Array.isArray(data.results) ? (data.results as TavilyResultItem[]) : [];
 
       // Debug audit: count only — no query text, API key, or raw response logged
-      console.log('[tavily] result-counts', JSON.stringify({ returned: items.length }));
+      log.info('[tavily]', 'result-counts', { returned: items.length });
 
       return items.map(r => ({
         title:    r.title   ?? '',

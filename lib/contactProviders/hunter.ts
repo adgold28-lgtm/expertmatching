@@ -9,6 +9,7 @@
 
 import type { ContactProvider, ContactLookupInput, ProviderEmailResult, NormalizedEmailStatus } from './types';
 import { WEBMAIL_DOMAINS } from './types';
+import { log } from '../log';
 
 // ─── Status normalization ─────────────────────────────────────────────────────
 
@@ -208,14 +209,14 @@ export const hunterProvider: ContactProvider = {
         : normalizeStatus(verificationStatus, score);
 
       // Debug audit: counts only — no email, domain, API key, or raw response logged
-      console.log('[hunter] result-counts', JSON.stringify({
+      log.info('[hunter]', 'result-counts', {
         returned:          1,
         verificationStatus: verificationStatus ?? 'unknown',
         score,
         normalizedStatus,
         isWebmail,
         isDisposable,
-      }));
+      });
 
       return [{
         email,

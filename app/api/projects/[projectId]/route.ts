@@ -38,6 +38,7 @@ import { backfillProjectAnonymization, needsAnonymization } from '../../../../li
 import { getEntitlementsForProject, activationRequired } from '../../../../lib/entitlements';
 import { trackProductEvent } from '../../../../lib/productEvents';
 import { getAuthUserIdByEmail } from '../../../../lib/supabase/admin';
+import { errorMessage } from '../../../../lib/log';
 
 /**
  * Brief fields a PUT may change. Everything here is merged into the stored
@@ -71,7 +72,7 @@ const ID_RE = /^[a-f0-9]{24}$/;
 function scheduleAnonymizationBackfill(projectId: string): void {
   void backfillProjectAnonymization(projectId).catch((err: unknown) => {
     console.warn('[api/projects/[id]] anonymization backfill failed:',
-      err instanceof Error ? err.message : String(err));
+      errorMessage(err));
   });
 }
 
@@ -211,7 +212,7 @@ export async function GET(
 
     return Response.json({ project: redactProjectForViewer(project, { role: viewRole }) });
   } catch (err) {
-    console.error('[api/projects/[id]] GET error:', err instanceof Error ? err.message : String(err));
+    console.error('[api/projects/[id]] GET error:', errorMessage(err));
     return Response.json({ error: 'failed_to_get_project' }, { status: 500 });
   }
 }
@@ -388,7 +389,7 @@ export async function PUT(
 
     return Response.json({ project: redactProjectForViewer(updated, { role }) });
   } catch (err) {
-    console.error('[api/projects/[id]] PUT error:', err instanceof Error ? err.message : String(err));
+    console.error('[api/projects/[id]] PUT error:', errorMessage(err));
     return Response.json({ error: 'failed_to_update_project' }, { status: 500 });
   }
 }
@@ -428,7 +429,7 @@ export async function DELETE(
     });
     return Response.json({ ok: true });
   } catch (err) {
-    console.error('[api/projects/[id]] DELETE error:', err instanceof Error ? err.message : String(err));
+    console.error('[api/projects/[id]] DELETE error:', errorMessage(err));
     return Response.json({ error: 'failed_to_delete_project' }, { status: 500 });
   }
 }

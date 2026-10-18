@@ -42,6 +42,7 @@ import {
   normalizeSeatCount,
   stripeVolumeTiers,
 } from './pricing';
+import { log } from './log';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -750,7 +751,7 @@ export async function syncOrgSeatQuantity(
             organizationId,
           });
         }
-        console.log('[orgBilling] seat-subscription-adopted', { organizationId, activeSeats });
+        log.info('[orgBilling]', 'seat-subscription-adopted', { organizationId, activeSeats });
         // Fall through to the live-subscription handling below, which sets the
         // quantity on the subscription we just adopted.
         live = adopted;
@@ -794,7 +795,7 @@ export async function syncOrgSeatQuantity(
           organizationId,
         });
       }
-      console.log('[orgBilling] seat-subscription-created', { organizationId, activeSeats });
+      log.info('[orgBilling]', 'seat-subscription-created', { organizationId, activeSeats });
       return { ...base, outcome: 'updated' };
     }
 
@@ -832,7 +833,7 @@ export async function syncOrgSeatQuantity(
         subscription_status:  canceling.status,
         seat_quantity_synced: 0,
       });
-      console.log('[orgBilling] seat-subscription-cancel-at-period-end', { organizationId });
+      log.info('[orgBilling]', 'seat-subscription-cancel-at-period-end', { organizationId });
       return { ...base, outcome: 'updated' };
     }
 
@@ -849,7 +850,7 @@ export async function syncOrgSeatQuantity(
         subscription_status:         resumed.status,
         seat_quantity_synced:        activeSeats,
       });
-      console.log('[orgBilling] seat-subscription-resumed', { organizationId, activeSeats });
+      log.info('[orgBilling]', 'seat-subscription-resumed', { organizationId, activeSeats });
       return { ...base, outcome: 'updated' };
     }
 
@@ -866,7 +867,7 @@ export async function syncOrgSeatQuantity(
         subscription_status:         live.status,
         seat_quantity_synced:        activeSeats,
       });
-      console.log('[orgBilling] seat-quantity-synced', { organizationId, activeSeats });
+      log.info('[orgBilling]', 'seat-quantity-synced', { organizationId, activeSeats });
       return { ...base, outcome: 'updated' };
     }
 
@@ -948,7 +949,7 @@ export async function cancelOrgSubscription(
       subscription_status:  'canceled',
       seat_quantity_synced: 0,
     });
-    console.log('[orgBilling] seat-subscription-canceled', { organizationId });
+    log.info('[orgBilling]', 'seat-subscription-canceled', { organizationId });
     return { outcome: 'canceled' };
   } catch (err) {
     logFailure('cancelOrgSubscription', err);
@@ -993,7 +994,7 @@ export async function recordSubscriptionStatus(
     if (!row) return;
 
     await patchBillingRow(row.organization_id, { subscription_status: status });
-    console.log('[orgBilling] subscription-status-mirrored', {
+    log.info('[orgBilling]', 'subscription-status-mirrored', {
       organizationId: row.organization_id,
       status,
     });

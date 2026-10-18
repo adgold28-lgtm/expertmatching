@@ -27,6 +27,7 @@ import { recordSystemFailure } from '../../../../lib/engagementEvents';
 import { getUpstashClient } from '../../../../lib/upstashRedis';
 import { recordMismatchRefund, settleMismatchFlag } from '../../../../lib/lateCancelBilling';
 import { paymentIsForFlaggedCall, refundIsForFlaggedCall } from '../../../../lib/mismatchGuarantee';
+import { log } from '../../../../lib/log';
 
 // ─── Event de-duplication (H-7 companion: branches must not run twice) ────────
 
@@ -354,7 +355,7 @@ async function handlePaymentFailed(
   const project = await deps.getProject(projectId);
   const pe      = project?.experts.find(e => e.expert.id === expertId);
   if (pe && pe.paymentStatus === 'waived' && paymentIsForFlaggedCall(pe, intentId)) {
-    console.log('[stripe] mismatch-waived-payment-failed', { projectId });
+    log.info('[stripe]', 'mismatch-waived-payment-failed', { projectId });
     return;
   }
 
@@ -412,7 +413,7 @@ async function handleRefundOrDispute(
   if (mismatchRefund && intentId) {
     if (decision.write) await deps.recordMismatchRefund(projectId, expertId, intentId);
     await deps.runExpertPayout(projectId, expertId);
-    console.log('[stripe] mismatch-refund-recorded', { projectId });
+    log.info('[stripe]', 'mismatch-refund-recorded', { projectId });
     return;
   }
 
@@ -546,7 +547,7 @@ export async function handleStripeEvent(
   const claim = await d.claimEvent(event.id, owner);
   if (claim === 'busy') throw new Error('stripe_event_busy');
   if (claim === 'duplicate') {
-    console.log('[stripe] duplicate-event-skipped', { type: event.type });
+    log.info('[stripe]', 'duplicate-event-skipped', { type: event.type });
     return { received: true, duplicate: true };
   }
 

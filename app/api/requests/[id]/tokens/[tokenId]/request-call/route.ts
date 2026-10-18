@@ -39,6 +39,7 @@ import { routeAuthGuard, getSessionUser } from '../../../../../../../lib/auth';
 import { buildRequestView } from '../../../../../../../lib/screeningView';
 import { computeCoverage } from '../../../../../../../lib/screeningCoverage';
 import { trackProductEvent } from '../../../../../../../lib/productEvents';
+import { errorMessage } from '../../../../../../../lib/log';
 
 const NOT_FOUND = { error: 'not_found' } as const;
 
@@ -116,7 +117,7 @@ export async function POST(
     return Response.json({ respondent });
   } catch (err) {
     console.error('[api/requests/[id]/tokens/[tokenId]/request-call] error:',
-      err instanceof Error ? err.message : String(err));
+      errorMessage(err));
     return Response.json(
       { error: 'failed_to_request_call', message: 'We could not request that call. Try again.' },
       { status: 500 },
