@@ -39,7 +39,8 @@ export type TokenPurpose =
   | 'availability'
   | 'screening'
   | 'onboarding-oauth'
-  | 'expert-oauth';
+  | 'expert-oauth'
+  | 'payout';
 
 export type HmacVerifyResult =
   | { ok: true;  payload: string }
@@ -63,6 +64,7 @@ const PROFILES: Record<TokenPurpose, Profile> = {
   'outreach':         { style: 'detached', digest: 'base64url', minSecretLength: 32 },
   'availability':     { style: 'detached', digest: 'base64url', minSecretLength: 32 },
   'screening':        { style: 'detached', digest: 'base64url', minSecretLength: 32 },
+  'payout':           { style: 'detached', digest: 'base64url', minSecretLength: 32 },
   'onboarding-oauth': { style: 'wrapped',  digest: 'hex',       minSecretLength: 1  },
   'expert-oauth':     { style: 'wrapped',  digest: 'hex',       minSecretLength: 1  },
 };
