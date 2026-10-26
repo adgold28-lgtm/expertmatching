@@ -1,6 +1,6 @@
-// Hunter.io Email Finder provider — one of the two links in the discovery
-// chain (lib/contactDiscovery.ts), plus the domain-search fallback that runs
-// when the local heuristic cannot derive a company domain.
+// Hunter.io Email Finder provider — the second link in the discovery chain
+// (lib/contactDiscovery.ts), after Findymail, plus the domain-search fallback
+// that runs when the local heuristic cannot derive a company domain.
 //
 // Costs: findProfessionalEmail spends one email-finder credit per call;
 // hunterDomainSearch does not.
@@ -9,6 +9,7 @@
 
 import type { ContactProvider, ContactLookupInput, ProviderEmailResult, NormalizedEmailStatus } from './types';
 import { WEBMAIL_DOMAINS } from './types';
+import { boundedController } from './deadline';
 import { log } from '../log';
 
 // ─── Status normalization ─────────────────────────────────────────────────────
@@ -42,33 +43,6 @@ function normalizeStatus(
 }
 
 // ─── Request plumbing ─────────────────────────────────────────────────────────
-
-/**
- * Aborts on whichever comes first: this provider's own timeout or the caller's
- * deadline (lib/contactDiscovery.ts passes one so a single provider can never
- * eat the whole job's wall clock). Returns the controller plus a cleanup.
- */
-function boundedController(timeoutMs: number, external?: AbortSignal): {
-  controller: AbortController;
-  cleanup:    () => void;
-} {
-  const controller = new AbortController();
-  const timer      = setTimeout(() => controller.abort(), timeoutMs);
-  const onAbort    = () => controller.abort();
-
-  if (external) {
-    if (external.aborted) controller.abort();
-    else external.addEventListener('abort', onAbort, { once: true });
-  }
-
-  return {
-    controller,
-    cleanup: () => {
-      clearTimeout(timer);
-      external?.removeEventListener('abort', onAbort);
-    },
-  };
-}
 
 /**
  * One Hunter GET. The key rides in the Authorization header, full stop.

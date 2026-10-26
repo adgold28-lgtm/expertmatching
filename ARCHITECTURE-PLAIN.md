@@ -10,7 +10,7 @@ Behind the website there are four main parts:
 
 1. **The application itself** (the pages you click on and the logic behind them), which runs on a hosting service called Vercel.
 2. **The database and login system**, provided by a service called Supabase. Every project, expert, message and payment record lives here.
-3. **A set of outside services** the application talks to: Stripe for money, Resend for email, Zoom for calls, Google for calendars, two "find this person's email" services (Snov and Hunter), a web search engine (Exa), and two AI providers (Anthropic and OpenAI).
+3. **A set of outside services** the application talks to: Stripe for money, Resend for email, Zoom for calls, Google for calendars, two "find this person's email" services (Findymail and Hunter), a web search engine (Exa), and two AI providers (Anthropic and OpenAI).
 4. **A background queue** (Upstash QStash) and a **scratchpad memory** (Upstash Redis) used for slow jobs and temporary values.
 
 The rest of this document walks through each thing a person does, in order, and says which parts are involved and what could go wrong.
@@ -54,7 +54,7 @@ So every expert comes from the public web, and the platform holds no standing ro
 
 The client **bookmarks** an expert. That is the moment of consent: from here Matchy owns the relationship.
 
-1. If the platform does not already have the expert's work email, a background job tries to find one: it works out the company's domain, checks a cache, then asks Snov and then Hunter (each call costs a credit). It keeps only professional addresses that the providers say are deliverable.
+1. If the platform does not already have the expert's work email, a background job tries to find one: it works out the company's domain, checks a cache, then asks Findymail and then Hunter (a credit is spent when a provider finds one). It keeps only professional addresses that the providers say are deliverable.
 2. Matchy sends a short introduction. The email says it is reaching out on behalf of "a mid-size private equity firm" (the firm's type and size, never its name), gives a generalised version of the topic (proper nouns and the client's own firm name are stripped out), and asks whether the expert would take a paid call. It never mentions money. Every expert email carries a physical address and a one-click opt-out link, as US anti-spam law requires, and comes from a verified expertmatch.fit address.
 3. If the expert replies "yes", Matchy sends the follow-up: three questions about conflicts and NDAs, and the rate offered to the expert.
 4. If the expert has not replied, Matchy sends one short follow-up line at 8am the expert's business morning, at most four business days in a row, never the same line twice.
@@ -153,7 +153,7 @@ The important thing to understand about how this is enforced: the database no lo
 | Google Calendar | Reads free/busy for clients and experts | Matchy cannot propose times from the calendar |
 | Calendly | Alternative calendar source | **It does not work today and never has.** Calendly's public service refuses every request the platform makes, so any expert or client who connects a Calendly link is treated as having no calendar at all. Remove it or build it properly; that is an open decision |
 | Exa | Web search behind sourcing | Sourcing fails |
-| Snov, Hunter | Find an expert's work email | More "address not found" results |
+| Findymail, Hunter | Find an expert's work email | More "address not found" results |
 | Anthropic | The AI that reads briefs and extracts experts | Sourcing fails |
 | OpenAI | The AI that reads expert replies and proposed times | Replies are stored but labelled "unclear"; scheduling falls back to simple pattern matching |
 

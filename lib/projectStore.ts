@@ -20,6 +20,7 @@
 import { randomBytes } from 'crypto';
 import type { Expert, Project, ProjectExpert, ProjectSummary, ExpertStatus, ReplyIntent, RejectionReason, ValueChainPosition, ScreeningStatus, SuggestedDomain, PublicContactEmail, AvailabilitySlot, SchedulingState, BookingState, NudgeState, IntroArm } from '../types';
 import { getServiceRoleClient } from './supabase/admin';
+import type { ContactProviderName } from './contactProviders/types';
 import type { Database, ProjectRow, ProjectExpertRow } from './supabase/database.types';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { clientRateFor } from './pricing';
@@ -67,7 +68,7 @@ export interface UpdateExpertInput {
   rejectedAt?: number;
   contactEmail?: string;
   emailVerificationStatus?: import('../types').ContactStatus;
-  emailProvider?: 'hunter' | 'snov' | 'none';
+  emailProvider?: ContactProviderName;
   emailCheckedAt?: number;
   contactStatus?: string;
   contactedAt?: number;

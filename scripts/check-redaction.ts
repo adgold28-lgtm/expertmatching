@@ -89,7 +89,7 @@ function projectExpertAt(status: ExpertStatus): ProjectExpert {
     userNotes:               'Client wants to ask about staffing.',
     contactEmail:            'scott@bayviewvet.example',
     emailVerificationStatus: 'verified',
-    emailProvider:           'snov',
+    emailProvider:           'findymail',
     contactStatus:           'reached',
     // LEGACY key (W4-1): `contactCandidates` is no longer on ProjectExpert, but
     // a row written before 2026-09-09 can still carry it in project_experts.data

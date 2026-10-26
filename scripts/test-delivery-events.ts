@@ -78,7 +78,7 @@ function section(title: string): void {
 }
 
 /** Words a client must never read (the brief's list, plus their stems). */
-const MACHINERY = /bounc|spam|complain|verif|suppress|resend|snov|hunter|confidence|provider|webhook/i;
+const MACHINERY = /bounc|spam|complain|verif|suppress|resend|snov|findymail|hunter|confidence|provider|webhook/i;
 
 // ─── Fixtures ─────────────────────────────────────────────────────────────────
 
@@ -429,7 +429,7 @@ async function main(): Promise<void> {
   section('6. Exclusion: pickBestCandidate, the cache, discoverContact');
 
   const candidate = (email: string, status: ProviderEmailResult['normalizedStatus'] = 'verified', confidence = 95): ProviderEmailResult => ({
-    email, provider: 'snov', providerStatus: status, normalizedStatus: status, confidence,
+    email, provider: 'findymail', providerStatus: status, normalizedStatus: status, confidence,
     isWebmail: false, isDisposable: false, isValidFormat: true,
   });
 
@@ -443,9 +443,9 @@ async function main(): Promise<void> {
   eq('only the excluded one → nothing',  pickBestCandidate([candidate(DANA_RAW)], [DANA]), null);
 
   const foundEntry = (email: string): ContactEnrichment => ({
-    best_email: { email, status: 'verified', is_valid_format: true, is_disposable: false, is_webmail: false, is_gibberish: false, provider: 'snov' },
+    best_email: { email, status: 'verified', is_valid_format: true, is_disposable: false, is_webmail: false, is_gibberish: false, provider: 'findymail' },
     domain_used: 'acmecoatings.com', name_used: { first: 'Dana', last: 'Reyes' },
-    looked_up_at: NOW, expires_at: NOW + 1e12, lookup_status: 'found', provider: 'snov',
+    looked_up_at: NOW, expires_at: NOW + 1e12, lookup_status: 'found', provider: 'findymail',
   });
   const notFoundEntry: ContactEnrichment = {
     best_email: null, domain_used: 'acmecoatings.com', name_used: { first: 'Dana', last: 'Reyes' },
@@ -470,7 +470,7 @@ async function main(): Promise<void> {
   }
   function fakeProvider(results: ProviderEmailResult[]): ContactProvider & { calls: number } {
     const p = {
-      name: 'snov' as const,
+      name: 'findymail' as const,
       calls: 0,
       isConfigured: () => true,
       async findProfessionalEmail() { p.calls++; return results; },

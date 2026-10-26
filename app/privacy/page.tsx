@@ -14,8 +14,8 @@ import { SUPPORT_EMAIL } from '../../lib/contactInfo';
 //
 //   [DECIDED 2026-09-06: contact-discovery vendors are named generically as "professional
 //    contact data providers" in section 05. The actual vendors in the code are
-//    Hunter.io (lib/contactProviders/hunter.ts) and Snov.io
-//    (lib/contactProviders/snov.ts). Some jurisdictions (and most enterprise
+//    Findymail (lib/contactProviders/findymail.ts) and Hunter.io
+//    (lib/contactProviders/hunter.ts). Some jurisdictions (and most enterprise
 //    DPAs) expect named subprocessors — decide whether to list them by name
 //    here or in a separate subprocessor page.]
 //

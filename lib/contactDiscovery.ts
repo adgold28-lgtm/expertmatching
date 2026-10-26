@@ -7,7 +7,7 @@
 // THE CHAIN, in order, at most one attempt each, no retries inside a job:
 //   1. cache        — lib/contactCache.ts (a previous answer for this
 //                     name+domain, including a previous "not found")
-//   2. snov         — lib/contactProviders/snov.ts
+//   2. findymail    — lib/contactProviders/findymail.ts
 //   3. hunter       — lib/contactProviders/hunter.ts (email-finder)
 //   nothing else. When there is no company domain to look up, the local
 //   heuristic runs first and Hunter's domain-search is its only fallback.
@@ -43,11 +43,12 @@ import {
   ttlForStatus,
   type CacheStore,
 } from './contactCache';
-import { snovProvider } from './contactProviders/snov';
+import { findymailProvider } from './contactProviders/findymail';
 import { hunterProvider, hunterDomainSearch } from './contactProviders/hunter';
 import type {
   ActiveProviderName,
   ContactProvider,
+  ContactProviderName,
   ProviderEmailResult,
 } from './contactProviders/types';
 import { normalizeDomain, isDisallowedDomain } from './domainSuggestions';
@@ -69,7 +70,7 @@ import { bookmarkLine, firstNameOf } from './matchyClient';
 // ─── Result shape ─────────────────────────────────────────────────────────────
 
 export interface DiscoveryAttempt {
-  /** 'cache' | 'domain_heuristic' | 'hunter_domain_search' | 'snov' | 'hunter' */
+  /** 'cache' | 'domain_heuristic' | 'hunter_domain_search' | 'findymail' | 'hunter' */
   provider: string;
   /** 'hit' | 'miss' | 'found' | 'not_found' | 'timeout' | 'error' | 'skipped_*' */
   outcome:  string;
@@ -412,7 +413,7 @@ function cacheVersion(): string {
 
 /** The providers the chain will ask, in order: only the configured ones. */
 function configuredProviders(): ContactProvider[] {
-  return [snovProvider, hunterProvider].filter(p => p.isConfigured());
+  return [findymailProvider, hunterProvider].filter(p => p.isConfigured());
 }
 
 /**
@@ -446,7 +447,7 @@ export function isDiscoveryEnabled(): boolean {
  * stub may narrow a parameter type.
  */
 export interface DiscoveryDeps {
-  /** The providers to ask, in order. Default: the configured Snov, then Hunter. */
+  /** The providers to ask, in order. Default: the configured Findymail, then Hunter. */
   providers:   ContactProvider[];
   /** Null means "no cache": the chain runs and remembers nothing. */
   cacheStore:  CacheStore | null;
@@ -528,14 +529,14 @@ export async function discoverContact(
   }
 
   // ── Provider chain ────────────────────────────────────────────────────────
-  // Order is hardcoded here: Snov, then Hunter. (An EMAIL_PROVIDER_ORDER knob
+  // Order is hardcoded here: Findymail, then Hunter. (An EMAIL_PROVIDER_ORDER knob
   // existed until 2026-10-18 but nothing read it on the live path; it is gone.)
   // The provider names also feed the cache key, so adding a provider changes
   // the key and old not_found entries stop suppressing the fuller chain (see
   // lib/contactCache.makeCacheKey).
   //
   // SPEND GUARD: lib/rateLimiter.checkAndIncrementGlobalBudget runs once per
-  // provider inside the loop below, so a Snov + Hunter waterfall spends two of
+  // provider inside the loop below, so a Findymail + Hunter waterfall spends two of
   // ENRICHMENT_DAILY_BUDGET's credits, not one — which is what the counter was
   // written for and what H-13 found nothing calling. A refusal skips that
   // provider (recorded as 'skipped_spend_budget') and moves on; if every one of
@@ -668,8 +669,8 @@ export async function discoverContact(
   // provider that timed out, errored, ran out of credits or was skipped for
   // budget did not answer, and a negative cached over its silence would keep
   // Matchy away from a reachable expert for NOT_FOUND_TTL. (The previous
-  // `.some` cached Hunter's not_found right after a Snov timeout, which is the
-  // production chain; the review of PR #47 caught it.)
+  // `.some` cached Hunter's not_found right after the first provider's timeout;
+  // the review of PR #47 caught it.)
   const asked = attempts.filter(a => providers.some(p => p.name === a.provider));
   const everyProviderSaidNobody =
     providers.length > 0 &&
@@ -688,7 +689,7 @@ export async function discoverContact(
  * found nothing calling.
  *
  * FAILS OPEN: no Redis, no store, or a store that throws all answer "allowed".
- * The ceiling exists to stop a loop burning a month of Snov and Hunter credits
+ * The ceiling exists to stop a loop burning a month of Findymail and Hunter credits
  * in minutes, not to be a hard gate on outreach, and the providers' own balances
  * are the real backstop.
  */
@@ -1069,7 +1070,7 @@ export async function runContactDiscoveryJob(job: ContactDiscoveryJob): Promise<
 
       contactEmail = result.email;
 
-      const provider = result.provider === 'snov' || result.provider === 'hunter'
+      const provider: ContactProviderName = result.provider === 'findymail' || result.provider === 'hunter'
         ? result.provider
         : 'none';
 

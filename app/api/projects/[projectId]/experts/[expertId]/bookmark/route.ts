@@ -27,7 +27,7 @@
 //      - no address → emit `contact_not_found`, status stays 'bookmarked'
 //
 // WALKTHROUGH MODE (lib/walkthrough.ts) changes two things and nothing else:
-//   - contact discovery NEVER starts. It spends a Snov/Hunter credit and the
+//   - contact discovery NEVER starts. It spends a Findymail/Hunter credit and the
 //     result could not be used for anything, so an expert with no address on
 //     file ends on outcome `walkthrough_held` with the status still
 //     'bookmarked'. No provider is called.

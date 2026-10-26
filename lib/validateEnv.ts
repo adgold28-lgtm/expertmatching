@@ -70,9 +70,8 @@ export const OPTIONAL_VARS = [
   'QSTASH_URL',
   // Contact discovery on bookmark: off unless the flag is 'true' AND a provider key exists
   'CONTACT_ENRICHMENT_ENABLED',
+  'FINDYMAIL_API_KEY',
   'HUNTER_API_KEY',
-  'SNOV_CLIENT_ID',
-  'SNOV_CLIENT_SECRET',
   // Who signs Matchy's emails (lib/senderIdentity.ts); unset = unsigned
   'OUTREACH_SIGNATURE',
   // The LinkedIn URL in the intro's signature block (lib/senderIdentity.ts,

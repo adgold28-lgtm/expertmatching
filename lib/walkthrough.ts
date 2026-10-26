@@ -4,7 +4,7 @@
 // A project starts in walkthrough. The client can bookmark, read the drafts,
 // settle a rate and write replies, and Matchy says exactly what it would say —
 // but nothing leaves the building: no Resend send, no contact-discovery provider
-// call (which spends Snov/Hunter credits). The owner flips the project to live
+// call (which spends Findymail/Hunter credits). The owner flips the project to live
 // deliberately, with a confirmation; the per-project "review before sending"
 // switch (`reviewFirst`) is then the second, softer gate.
 //

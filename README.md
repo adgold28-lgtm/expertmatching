@@ -41,7 +41,7 @@ have candidates answer them before any call is booked.
 - Resend for outbound email and the inbound-reply webhook (verified with Svix)
 - Zoom (server-to-server OAuth) and Google Calendar (free/busy) for scheduling
 - OpenAI and Anthropic for sourcing and Matchy; Exa, Tavily or ScrapingBee for
-  web search; Snov.io and Hunter.io for contact discovery
+  web search; Findymail and Hunter.io for contact discovery
 
 There is no test runner: every suite under scripts/ is a plain program run with
 `npx tsx` (see scripts/testHarness.ts), and lib/log.ts is the one logger.

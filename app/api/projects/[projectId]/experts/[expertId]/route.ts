@@ -66,6 +66,7 @@ import { trackProductEvent } from '../../../../../../lib/productEvents';
 import { STAFF_ONLY_FIELDS, OWNER_FIELDS, classifyBodyFields, normalizeContactEmail } from '../../../../../../lib/expertFieldTiers';
 import type { ExpertStatus, RejectionReason, ValueChainPosition, ScreeningStatus, ContactStatus, SuggestedDomain, PublicContactEmail } from '../../../../../../types';
 import { errorMessage } from '../../../../../../lib/log';
+import type { ContactProviderName } from '../../../../../../lib/contactProviders/types';
 
 const ID_RE        = /^[a-f0-9]{24}$/;
 const EXPERT_ID_RE = /^[a-zA-Z0-9\-_]+$/;
@@ -103,7 +104,8 @@ const VALID_CONFLICT_RISKS = new Set(['low', 'medium', 'high', 'unknown']);
 const VALID_EMAIL_VERIFICATION_STATUSES = new Set<ContactStatus>([
   'verified', 'catchall', 'risky', 'invalid', 'not_found',
 ]);
-const VALID_EMAIL_PROVIDERS = new Set(['hunter', 'snov', 'none']);
+// 'snov' stays accepted only so a row written before 2026-10-26 can be re-saved as it is.
+const VALID_EMAIL_PROVIDERS = new Set<string>(['findymail', 'hunter', 'snov', 'none'] satisfies ContactProviderName[]);
 
 // The three write tiers (STAFF_ONLY_FIELDS, OWNER_FIELDS, classifyBodyFields,
 // normalizeContactEmail) are defined in lib/expertFieldTiers.ts and imported
@@ -224,7 +226,7 @@ export async function PUT(
       if (body.emailProvider !== null && !VALID_EMAIL_PROVIDERS.has(body.emailProvider as string)) {
         return Response.json({ error: 'invalid_email_provider', field: 'emailProvider' }, { status: 400 });
       }
-      input.emailProvider = (body.emailProvider ?? undefined) as 'hunter' | 'snov' | 'none' | undefined;
+      input.emailProvider = (body.emailProvider ?? undefined) as ContactProviderName | undefined;
     }
     if (typeof body.emailCheckedAt === 'number' && Number.isFinite(body.emailCheckedAt) && body.emailCheckedAt > 0) {
       input.emailCheckedAt = body.emailCheckedAt;
