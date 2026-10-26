@@ -32,6 +32,7 @@
 // any finding. The product event carries two counts.
 
 import { NextRequest } from 'next/server';
+import { requestsFlowGuard } from '../../../../../lib/requestsFlag';
 import { getRequestForUser, listCandidates, approveRequest } from '../../../../../lib/requestStore';
 import { guardMutatingRequest } from '../../../../../lib/projectsGuard';
 import { routeAuthGuard, getSessionUser } from '../../../../../lib/auth';
@@ -65,6 +66,9 @@ export async function POST(
   request: NextRequest,
   { params }: { params: { id: string } },
 ) {
+  const hidden = requestsFlowGuard();
+  if (hidden) return hidden;
+
   const authErr = await routeAuthGuard(request);
   if (authErr) return authErr;
 

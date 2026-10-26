@@ -2,13 +2,16 @@
 // end, against a RUNNING LOCAL DEV SERVER with authentication OFF and the
 // in-memory request store (docs/SCREENING_FLOW_PLAN.md, final gate).
 //
-//   AVAILABILITY_TOKEN_SECRET=$(openssl rand -hex 32) DISABLE_EMAILS=true npx next dev -p 3100 &
+//   AVAILABILITY_TOKEN_SECRET=$(openssl rand -hex 32) DISABLE_EMAILS=true \
+//     NEXT_PUBLIC_REQUESTS_FLOW_ENABLED=true npx next dev -p 3100 &
 //   SMOKE_BASE_URL=http://localhost:3100 npx tsx scripts/e2e-screening.ts
 //
 // APP_AUTH_ENABLED stays unset (every caller is the dev admin) and no Supabase
 // variables are set (the in-memory store). The token secret is the one thing
 // the server needs that it does not have by default: without it the mint route
-// answers 500, because lib/hmacToken refuses to sign with no secret.
+// answers 500, because lib/hmacToken refuses to sign with no secret. The
+// Requests flag must be on too (lib/requestsFlag.ts, decision D4): without it
+// every /api/requests route answers 404 and the first step fails.
 //
 // WHAT THIS PROVES, over HTTP, in the order a client and an expert would hit
 // it: intake → generation (the deterministic fallback, since no model key is

@@ -152,6 +152,10 @@ export const OPTIONAL_VARS = [
   'SENTRY_ORG',
   'SENTRY_PROJECT',
   'SENTRY_AUTH_TOKEN',
+  // ── Added 2026-10-26 (D4): the structured-request flow (/requests pages,
+  // /api/requests routes, the Requests link on /app) is hidden unless this is
+  // exactly 'true' (lib/requestsFlag.ts). The expert screening form stays up.
+  'NEXT_PUBLIC_REQUESTS_FLOW_ENABLED',
 ] as const;
 
 /**

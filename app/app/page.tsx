@@ -5,6 +5,7 @@ import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { ProjectSummary, ExpertStatus } from '../../types';
 import { summaryStage, type SummaryStage } from '../../lib/expertPipeline';
+import { isRequestsFlowEnabled } from '../../lib/requestsFlag';
 
 // -----------------------------------------------------------------------------
 // /app — the client's project dashboard: list of projects (GET /api/projects),
@@ -295,13 +296,15 @@ export default function AppPage() {
             >
               New Project
             </button>
-            <Link
-              href="/requests"
-              className="text-[10px] uppercase font-medium px-4 py-2 transition-colors border hover:text-gold"
-              style={{ color: 'rgba(198,167,94,0.6)', borderColor: 'rgba(198,167,94,0.25)', letterSpacing: '0.14em' }}
-            >
-              Requests
-            </Link>
+            {isRequestsFlowEnabled() && (
+              <Link
+                href="/requests"
+                className="text-[10px] uppercase font-medium px-4 py-2 transition-colors border hover:text-gold"
+                style={{ color: 'rgba(198,167,94,0.6)', borderColor: 'rgba(198,167,94,0.25)', letterSpacing: '0.14em' }}
+              >
+                Requests
+              </Link>
+            )}
             {canManageTeam && (
               <Link
                 href="/settings/team"

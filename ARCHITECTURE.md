@@ -798,6 +798,7 @@ env-status console stops listing them the moment this ships.
 | `CONTACT_ENRICHMENT_ENABLED` | `'true'` turns on contact discovery on bookmark. |
 | `CALENDLY_ENABLED` | `'true'` re-enables the Calendly calendar option; unset or anything else hides it in the UI, refuses it on the connect route and treats an existing Calendly row as not connected (Wave 5). |
 | `FINDYMAIL_API_KEY`, `HUNTER_API_KEY` | Email-finder provider credentials. |
+| `NEXT_PUBLIC_REQUESTS_FLOW_ENABLED` | `'true'` shows the structured-request flow (/requests, /api/requests, the Requests link on /app). Anything else hides it: pages redirect to /app, the API answers 404; the expert screening form stays live (lib/requestsFlag.ts). |
 | `NEXT_PUBLIC_SENTRY_DSN` | Turns Sentry on in every runtime (lib/sentry.ts). `SENTRY_ORG`, `SENTRY_PROJECT` and `SENTRY_AUTH_TOKEN` are build-time only: with all three, `next build` uploads source maps. |
 | `ENRICHMENT_DAILY_BUDGET` | Daily cap on provider credits (default 500). Enforced since Wave 2: one credit per provider call, checked inside the waterfall. |
 | `OUTREACH_SIGNATURE` | Sign-off appended to every expert-facing email. |

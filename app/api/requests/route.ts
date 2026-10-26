@@ -27,6 +27,7 @@
 // the body — only the message of a thrown error.
 
 import { NextRequest } from 'next/server';
+import { requestsFlowGuard } from '../../../lib/requestsFlag';
 import { routeAuthGuard, getSessionUser } from '../../../lib/auth';
 import { guardReadRequest, guardMutatingRequest } from '../../../lib/projectsGuard';
 import { createRequest, listRequestsForUser } from '../../../lib/requestStore';
@@ -44,6 +45,9 @@ const NO_ORG_ERRORS = new Set([
 ]);
 
 export async function GET(request: NextRequest) {
+  const hidden = requestsFlowGuard();
+  if (hidden) return hidden;
+
   const authErr = await routeAuthGuard(request);
   if (authErr) return authErr;
 
@@ -61,6 +65,9 @@ export async function GET(request: NextRequest) {
 }
 
 export async function POST(request: NextRequest) {
+  const hidden = requestsFlowGuard();
+  if (hidden) return hidden;
+
   const authErr = await routeAuthGuard(request);
   if (authErr) return authErr;
 

@@ -23,6 +23,7 @@
 // expert wrote.
 
 import { NextRequest } from 'next/server';
+import { requestsFlowGuard } from '../../../../../../../lib/requestsFlag';
 import {
   getRequestForUser,
   listCandidates,
@@ -39,6 +40,9 @@ export async function POST(
   request: NextRequest,
   { params }: { params: { id: string; tokenId: string } },
 ) {
+  const hidden = requestsFlowGuard();
+  if (hidden) return hidden;
+
   const adminErr = await adminGuard(request);
   if (adminErr) return adminErr;
 
