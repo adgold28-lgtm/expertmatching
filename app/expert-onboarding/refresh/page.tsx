@@ -1,6 +1,8 @@
 // Stripe Connect onboarding expired-link page.
 // Expert lands here when their onboarding link has expired.
 
+import { SUPPORT_EMAIL } from '../../../lib/contactInfo';
+
 export default function ExpertOnboardingRefreshPage() {
   return (
     <div className="min-h-screen bg-cream flex items-center justify-center p-6">
@@ -15,8 +17,8 @@ export default function ExpertOnboardingRefreshPage() {
         </div>
         <p className="text-sm text-ink leading-relaxed">
           Please contact us at{' '}
-          <a href="mailto:ashergoldsteinbusiness@gmail.com" className="underline underline-offset-2 hover:text-navy transition-colors">
-            ashergoldsteinbusiness@gmail.com
+          <a href={`mailto:${SUPPORT_EMAIL}`} className="underline underline-offset-2 hover:text-navy transition-colors">
+            {SUPPORT_EMAIL}
           </a>{' '}
           for a new link.
         </p>

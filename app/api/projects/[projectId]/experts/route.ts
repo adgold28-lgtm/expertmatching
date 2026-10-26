@@ -23,6 +23,7 @@ import { validateProjectExpert, MAX_EXPERTS_PER_PROJECT } from '../../../../../l
 import { EXPERT_STATUSES } from '../../../../../lib/expertPipeline';
 import { redactProjectForViewer } from '../../../../../lib/redactExpert';
 import type { ExpertStatus } from '../../../../../types';
+import { errorMessage } from '../../../../../lib/log';
 
 const ID_RE = /^[a-f0-9]{24}$/;
 
@@ -109,7 +110,7 @@ export async function POST(
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     if (msg.includes('not found')) return Response.json({ error: 'not_found' }, { status: 404 });
-    console.error('[api/projects/[id]/experts] POST error:', msg);
+    console.error('[api/projects/[id]/experts] POST error:', errorMessage(msg));
     return Response.json({ error: 'failed_to_add_experts' }, { status: 500 });
   }
 }

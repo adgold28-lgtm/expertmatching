@@ -209,7 +209,6 @@ One sentence per first-party file. Generated files (`lib/supabase/database.types
 ├── lib/
 │   ├── contactProviders/
 │   │   ├── hunter.ts  : Hunter.io email-finder provider plus hunterDomainSearch, the company-to-domain fallback.
-│   │   ├── index.ts  : Provider registry and re-exports; its EMAIL_PROVIDER_ORDER waterfall builders have no callers.
 │   │   ├── snov.ts  : Snov.io emails-by-domain-by-name v2 provider (OAuth token cache, start/poll, status normalization).
 │   │   └── types.ts  : The ContactProvider interface, normalized status vocabulary, and the shared webmail blocklist.
 │   ├── searchProviders/
@@ -734,7 +733,7 @@ Sweeps can no longer starve each other. Each gets its own slice of the clock and
 | OpenAI (gpt-4o-mini) | Reply classification, scheduling-reply parsing, interview guide, optional nudge rephrase | `lib/matchyClassify.ts`, `lib/matchyScheduling.ts`, `app/api/projects/[id]/interview-guide`, `lib/nudges.ts` | `OPENAI_API_KEY`, `NUDGE_LLM_VARIATION` | Classification falls back to `unclear`; scheduling parser falls back to regex; guide 500s |
 | Exa (search) | Web search behind sourcing | `lib/searchProviders/exa.ts` | `EXA_API_KEY`, `SEARCH_PROVIDER` | `no_search_provider`: sourcing fails immediately. The key is in OPTIONAL_VARS; boot logs a warning when no search key at all is set, and never throws |
 | Tavily, ScrapingBee | Alternative / fallback search providers | `lib/searchProviders/*` | `TAVILY_API_KEY`, `SCRAPINGBEE_KEY`, `SEARCH_FALLBACK_ENABLED` | Only used if selected |
-| Snov.io, Hunter.io | Find an expert's work email | `lib/contactProviders/*`, `lib/contactDiscovery.ts` | `CONTACT_ENRICHMENT_ENABLED`, `SNOV_CLIENT_ID`, `SNOV_CLIENT_SECRET`, `HUNTER_API_KEY`, `ENRICHMENT_DAILY_BUDGET` | Provider skipped; `contact_not_found` sooner. Each provider call now takes a credit from the daily budget first, so an exhausted budget gives `contact_check_unavailable` with reason `budget`, which is distinguishable from "this person has no address". `EMAIL_PROVIDER_ORDER` still has no effect on the live path |
+| Snov.io, Hunter.io | Find an expert's work email | `lib/contactProviders/*`, `lib/contactDiscovery.ts` | `CONTACT_ENRICHMENT_ENABLED`, `SNOV_CLIENT_ID`, `SNOV_CLIENT_SECRET`, `HUNTER_API_KEY`, `ENRICHMENT_DAILY_BUDGET` | Provider skipped; `contact_not_found` sooner. Each provider call now takes a credit from the daily budget first, so an exhausted budget gives `contact_check_unavailable` with reason `budget`, which is distinguishable from "this person has no address". The provider order (Snov, then Hunter) is fixed in `lib/contactDiscovery.ts` |
 | Vercel Cron | Daily nudge planning and reconcile | `vercel.json` | `CRON_SECRET` | Both routes answer 503 and nothing runs, which means no payout retries, no seat sync, no stuck-sourcing cleanup and no membership-claims repair. Confirm it is set in the Vercel project |
 
 ## 8. Environment variables
@@ -765,7 +764,7 @@ env-status console stops listing them the moment this ships.
 | Variable | Purpose | Used by |
 | --- | --- | --- |
 | `NEXT_PUBLIC_SUPABASE_URL` | Supabase project URL (safe for the browser). | lib/supabase/* |
-| `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` | Supabase anon/publishable key; RLS applies to everything it does. | lib/supabase/client.ts, server.ts, middleware.ts |
+| `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` | Supabase anon/publishable key; RLS applies to everything it does. | lib/supabase/server.ts, middleware.ts |
 | `SUPABASE_SERVICE_ROLE_KEY` | Service-role key that bypasses RLS. Server only; never `NEXT_PUBLIC_`. | lib/supabase/admin.ts |
 | `STRIPE_SECRET_KEY` | Server-side Stripe API key (test or live mode). | lib/stripe.ts and every billing module |
 | `STRIPE_WEBHOOK_SECRET` | Verifies Stripe webhook signatures before any write. | app/api/webhooks/stripe |
@@ -796,7 +795,6 @@ env-status console stops listing them the moment this ships.
 | `CALENDLY_ENABLED` | `'true'` re-enables the Calendly calendar option; unset or anything else hides it in the UI, refuses it on the connect route and treats an existing Calendly row as not connected (Wave 5). |
 | `HUNTER_API_KEY`, `SNOV_CLIENT_ID`, `SNOV_CLIENT_SECRET` | Email-finder provider credentials. |
 | `ENRICHMENT_DAILY_BUDGET` | Daily cap on provider credits (default 500). Enforced since Wave 2: one credit per provider call, checked inside the waterfall. |
-| `EMAIL_PROVIDER_ORDER` | Documented as having no effect today: the live discovery path hardcodes its provider order. |
 | `OUTREACH_SIGNATURE` | Sign-off appended to every expert-facing email. |
 | `OUTREACH_POSTAL_ADDRESS` | CAN-SPAM postal address in the email footer. |
 | `NUDGE_LLM_VARIATION` | `'true'` rephrases each nudge line with one LLM call (must still pass the brevity cap). |

@@ -34,6 +34,7 @@ import {
   getOrgBillingRow,
   completeOrgBilling,
 } from '../../../../../lib/orgBilling';
+import { log } from '../../../../../lib/log';
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -110,7 +111,7 @@ export async function POST(request: NextRequest): Promise<Response> {
     const setUpByProfileId = await getAuthUserIdByEmail(sessionUser.email);
     await completeOrgBilling(organizationId, { paymentMethodId, setUpByProfileId });
 
-    console.log('[api/onboarding/billing/confirm] org-billing-complete', { organizationId });
+    log.info('[api/onboarding/billing/confirm]', 'org-billing-complete', { organizationId });
     void trackProductEvent({
       type:           'onboarding_step_completed',
       actorId:        setUpByProfileId,

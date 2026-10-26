@@ -32,6 +32,7 @@ import { guardReadRequest, guardMutatingRequest } from '../../../lib/projectsGua
 import { createRequest, listRequestsForUser } from '../../../lib/requestStore';
 import { validateIntakeInput, isValid } from '../../../lib/screeningValidation';
 import { trackProductEvent } from '../../../lib/productEvents';
+import { errorMessage } from '../../../lib/log';
 
 // The two messages lib/requestStore.createRequest throws when the signed-in
 // account is not attached to a firm yet. Both are the same problem for the
@@ -54,7 +55,7 @@ export async function GET(request: NextRequest) {
     const requests = await listRequestsForUser(email, role);
     return Response.json({ requests });
   } catch (err) {
-    console.error('[api/requests] GET error:', err instanceof Error ? err.message : String(err));
+    console.error('[api/requests] GET error:', errorMessage(err));
     return Response.json({ error: 'failed_to_list_requests' }, { status: 500 });
   }
 }
@@ -112,7 +113,7 @@ export async function POST(request: NextRequest) {
         { status: 403 },
       );
     }
-    console.error('[api/requests] POST error:', message);
+    console.error('[api/requests] POST error:', errorMessage(message));
     return Response.json({ error: 'failed_to_create_request' }, { status: 500 });
   }
 }

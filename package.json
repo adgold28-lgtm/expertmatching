@@ -6,6 +6,8 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
+    "typecheck": "tsc --noEmit",
+    "test:offline": "bash scripts/test-offline.sh",
     "security": "bash scripts/security-scan.sh",
     "build:local": "NEXT_FONT_GOOGLE_MOCKED_RESPONSES=$PWD/scripts/font-mocks.js next build"
   },
@@ -16,7 +18,6 @@
     "@supabase/ssr": "^0.10.3",
     "@supabase/supabase-js": "^2.106.2",
     "@upstash/qstash": "^2.11.0",
-    "axios": "^1.20.0",
     "exa-js": "^2.13.0",
     "next": "^14.2.35",
     "openai": "^6.37.0",

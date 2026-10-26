@@ -28,6 +28,7 @@ import { verifyAvailabilityToken, hashToken } from '../../../../../lib/availabil
 import { getProject, updateExpertStatus } from '../../../../../lib/projectStore';
 import { createRateLimiterStore } from '../../../../../lib/rateLimiter';
 import { sign } from '../../../../../lib/hmacToken';
+import { errorMessage } from '../../../../../lib/log';
 
 // Per-token rate limit: 5 OAuth initiations / 10 min.
 // Prevents nonce write-contention on repeated hits with a valid token.
@@ -158,7 +159,7 @@ export async function GET(request: NextRequest, { params }: RouteParams) {
   try {
     await updateExpertStatus(projectId, expertId, { oauthState: nonce });
   } catch (err) {
-    console.error('[google-auth] failed to store oauth state:', (err as Error).message);
+    console.error('[google-auth] failed to store oauth state:', errorMessage(err));
     return backTo(decodedToken, '?error=server_error');
   }
 

@@ -73,6 +73,7 @@ import { getFromAddress } from './mailFrom';
 import { resolveCallId } from './createAndSendInvoice';
 import { recordSystemFailure } from './engagementEvents';
 import { isWaivedMismatchPayout, mismatchPayoutMinutes } from './mismatchGuarantee';
+import { log, errorMessage } from './log';
 
 // ─── Expert payout email ──────────────────────────────────────────────────────
 
@@ -165,7 +166,7 @@ export async function sendPayoutOnboardingEmail(
   });
 
   if (error) {
-    console.error('[stripe] payout-onboarding-email error:', error.message);
+    console.error('[stripe] payout-onboarding-email error:', errorMessage(error));
   }
 }
 
@@ -413,7 +414,7 @@ async function holdPayout(
   reason:    'payment_not_settled' | 'account_not_chargeable',
   d:         PayoutDeps,
 ): Promise<void> {
-  console.log('[stripe] payout-held', { projectId, expertId, reason });
+  log.info('[stripe]', 'payout-held', { projectId, expertId, reason });
   if (pe.expertOnboardingStatus === 'pending') return;
   await d.updateExpertStatus(projectId, expertId, { expertOnboardingStatus: 'pending' }).catch(() => {});
   await d.recordSystemFailure({
@@ -479,7 +480,7 @@ export async function runExpertPayout(
     // also carries a call-keyed idempotency key for the racing case.) A waived
     // call goes through the same guard: the expert is paid for it once.
     if (payoutAlreadySent(pe, callId)) {
-      console.log('[stripe] payout-already-sent', { projectId, expertId });
+      log.info('[stripe]', 'payout-already-sent', { projectId, expertId });
       return;
     }
 
@@ -499,7 +500,7 @@ export async function runExpertPayout(
     }
 
     if (!expertEmail) {
-      console.log('[stripe] expert-email-missing', { projectId, expertId });
+      log.info('[stripe]', 'expert-email-missing', { projectId, expertId });
       return;
     }
 
@@ -736,7 +737,7 @@ export async function retryPendingPayoutsForAccount(
       if (payoutState(after?.data).stripeTransferId) paid++;
     }
 
-    if (attempted > 0) console.log('[stripe] payout-retry', { attempted, paid });
+    if (attempted > 0) log.info('[stripe]', 'payout-retry', { attempted, paid });
     return { attempted, paid };
   } catch (err) {
     console.error('[stripe] payout-retry error:',
@@ -762,7 +763,7 @@ async function sendOnboardingLink(
   // pending. Counted and dated on the row so it stops after four, a week apart.
   const now = deps.now();
   if (!shouldSendPayoutReminder(pe, now)) {
-    console.log('[stripe] payout-reminder-throttled', {
+    log.info('[stripe]', 'payout-reminder-throttled', {
       projectId,
       expertId,
       sent: pe.payoutReminderCount ?? 0,

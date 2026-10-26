@@ -332,6 +332,7 @@ import {
   hasInitialStyleName,
   isFullHumanName,
 } from './nameValidation';
+import { log, errorMessage } from './log';
 
 // ─── Partial-name resolution ──────────────────────────────────────────────────
 // For promising candidates (score ≥ 60) with an initial-style name, we run up to
@@ -548,11 +549,11 @@ briefType options:
     }
 
     // DIAGNOSTIC: log raw response shape (no content)
-    console.log('[generate-experts] vci-llm-response', JSON.stringify({
+    log.info('[generate-experts]', 'vci-llm-response', {
       responseLength:  block.text.length,
       startsWithBrace: block.text.trim().startsWith('{'),
       startsWithFence: block.text.trim().startsWith('```'),
-    }));
+    });
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     let parsed: any;
@@ -571,12 +572,12 @@ briefType options:
     }
 
     // DIAGNOSTIC: log parsed structure (no content values — only shapes)
-    console.log('[generate-experts] vci-parsed-structure', JSON.stringify({
+    log.info('[generate-experts]', 'vci-parsed-structure', {
       hasPrimaryPools:    Array.isArray(parsed.primaryExpertPools),
       primaryPoolsLength: Array.isArray(parsed.primaryExpertPools) ? parsed.primaryExpertPools.length : -1,
       hasEndMarket:       typeof parsed.endMarket === 'string',
       briefType:          parsed.briefType ?? '(missing)',
-    }));
+    });
 
     // Require at minimum: primaryExpertPools must be a non-empty array
     if (!Array.isArray(parsed.primaryExpertPools) || parsed.primaryExpertPools.length === 0) {
@@ -802,10 +803,10 @@ interface PerfLog {
   durationMs:                   number;
 }
 
-function logPerf(log: PerfLog): void {
+function logPerf(perf: PerfLog): void {
   if (process.env.NODE_ENV !== 'development') return;
   // Safe log: no research question, no brief content, no API keys, no raw LLM output
-  console.log('[generate-experts] perf-metrics', JSON.stringify(log));
+  log.info('[generate-experts]', 'perf-metrics', { ...perf });
 }
 
 // ─── Search helpers ───────────────────────────────────────────────────────────
@@ -827,7 +828,7 @@ async function runSearchQuery(query: string): Promise<SearchResult[]> {
   const cached = await getCachedSearchPage(query);
   if (cached) {
     if (process.env.NODE_ENV === 'development') {
-      console.log('[generate-experts] cache-hit', JSON.stringify({ provider: cached.provider }));
+      log.info('[generate-experts]', 'cache-hit', { provider: cached.provider });
     }
     return cached.results;
   }
@@ -862,7 +863,7 @@ async function runWithOptionalComparison(
   const canCompare    = shouldCompare && altProvider.isConfigured();
 
   if (shouldCompare && !altProvider.isConfigured()) {
-    console.log('[generate-experts] compare: alt provider not configured, skipping');
+    log.info('[generate-experts]', 'compare: alt provider not configured, skipping');
   }
 
   const output: CategoryResults[] = [];
@@ -882,7 +883,7 @@ async function runWithOptionalComparison(
     if (comparisonPromise) {
       const altResults = await comparisonPromise;
       if (altResults !== null) {
-        console.log('[generate-experts] compare', JSON.stringify({
+        log.info('[generate-experts]', 'compare', {
           primary:          primary.name,
           alt:              altProvider.name,
           query:            q.slice(0, 70),
@@ -890,7 +891,7 @@ async function runWithOptionalComparison(
           alt_count:        altResults.length,
           primary_linkedin: results.filter(r => r.url.includes('linkedin.com')).length,
           alt_linkedin:     altResults.filter(r => r.url.includes('linkedin.com')).length,
-        }));
+        });
       }
     }
 
@@ -990,12 +991,12 @@ export async function generateExperts(input: GenerateExpertsInput): Promise<Gene
 
     if (process.env.NODE_ENV === 'development' && vci) {
       // Safe log: only counts and type, no content
-      console.log('[generate-experts] value_chain_inferred', JSON.stringify({
+      log.info('[generate-experts]', 'value_chain_inferred', {
         briefType:          vci.briefType,
         primaryPoolCount:   vci.primaryExpertPools.length,
         mustSearchTerms:    vci.mustSearchTerms.length,
         excludedPoolCount:  vci.excludedOrLowPriorityPools.length,
-      }));
+      });
     }
 
     const filters = [
@@ -1621,14 +1622,14 @@ RELEVANCE SCORING GUIDANCE (0–100):
         score: (e.relevance_score as number) ?? 0,
         tier:  (e.tier as string) ?? '(missing)',
       }));
-      console.log('[generate-experts] tier-split-diagnostic', JSON.stringify({
+      log.info('[generate-experts]', 'tier-split-diagnostic', {
         vciAvailable:     vci !== null,
         briefType:        vci?.briefType ?? 'null',
         suppressionFloor: _floor,
         totalCandidates:  validatedExperts.length,
         belowFloor:       _pairs.filter(p => p.score < _floor).length,
         scoreTiers:       _pairs,
-      }));
+      });
     }
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -1764,7 +1765,7 @@ RELEVANCE SCORING GUIDANCE (0–100):
       );
     }
     // Safe error log: message only, no prompt content, no keys
-    console.error('[generate-experts] unhandled error', err instanceof Error ? err.message : String(err));
+    console.error('[generate-experts] unhandled error', errorMessage(err));
     throw new GenerateExpertsError(
       err instanceof Error ? err.message : 'Unknown error',
       'generation_failed',

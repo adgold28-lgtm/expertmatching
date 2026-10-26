@@ -39,6 +39,7 @@ import { screenMessage, type ScreenFindingKind } from '../../../../../lib/matchy
 import { getFirmById } from '../../../../../lib/firmStore';
 import { buildRequestView } from '../../../../../lib/screeningView';
 import { trackProductEvent } from '../../../../../lib/productEvents';
+import { errorMessage } from '../../../../../lib/log';
 
 /**
  * The kinds that stop an approval. Anything else screenMessage reports is
@@ -159,7 +160,7 @@ export async function POST(
     const candidates = await listCandidates(approved.id);
     return Response.json({ request: buildRequestView(approved, candidates, { email, role }) });
   } catch (err) {
-    console.error('[api/requests/[id]/approve] error:', err instanceof Error ? err.message : String(err));
+    console.error('[api/requests/[id]/approve] error:', errorMessage(err));
     return Response.json(
       { error: 'failed_to_approve', message: 'We could not approve that screening set. Try again.' },
       { status: 500 },

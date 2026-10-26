@@ -30,6 +30,7 @@ import { guardMutatingRequest } from '../../../../../lib/projectsGuard';
 import { getSessionUser } from '../../../../../lib/auth';
 import { getUser } from '../../../../../lib/firmStore';
 import { redactProjectForViewer } from '../../../../../lib/redactExpert';
+import { errorMessage } from '../../../../../lib/log';
 
 const ID_RE = /^[a-f0-9]{24}$/;
 
@@ -99,7 +100,7 @@ export async function POST(
     if (err instanceof CollaboratorNotInOrganizationError) {
       return Response.json({ error: err.code, message: err.message }, { status: 422 });
     }
-    console.error('[collaborators] POST error:', err instanceof Error ? err.message : String(err));
+    console.error('[collaborators] POST error:', errorMessage(err));
     return Response.json({ error: 'failed_to_add_collaborator' }, { status: 500 });
   }
 }
@@ -138,7 +139,7 @@ export async function DELETE(
     const updated = await removeCollaborator(params.projectId, ownerEmail, collaboratorEmail);
     return Response.json({ project: redactProjectForViewer(updated, { role }) });
   } catch (err) {
-    console.error('[collaborators] DELETE error:', err instanceof Error ? err.message : String(err));
+    console.error('[collaborators] DELETE error:', errorMessage(err));
     return Response.json({ error: 'failed_to_remove_collaborator' }, { status: 500 });
   }
 }

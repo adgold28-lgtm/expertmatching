@@ -116,10 +116,6 @@ export const OPTIONAL_VARS = [
   'NEXT_PUBLIC_BASE_URL',
   // Bumping this string invalidates every cached contact lookup (lib/contactCache.ts)
   'CONTACT_CACHE_VERSION',
-  // Comma-separated email-provider order. Read by lib/contactProviders/index.ts,
-  // but the live discovery path hardcodes its provider list, so it has no
-  // effect today (M-23) — listed so the console does not hide it.
-  'EMAIL_PROVIDER_ORDER',
   // Global daily provider-credit budget; defaults to 500 (lib/rateLimiter.ts).
   // Documented in .env.example but absent from both lists until 2026-09-09, so
   // the console could not show it — the same defect M-51 names, two variables
@@ -137,6 +133,11 @@ export const OPTIONAL_VARS = [
   // offer it, POST /api/onboarding/calendar answers 400 calendly_disabled, and
   // an existing Calendly row reads as not connected (lib/calendlyFlag.ts).
   'CALENDLY_ENABLED',
+  // ── Added 2026-10-18: the support address shown on the contact, terms and
+  // privacy pages, the Stripe Connect return pages and the billing step
+  // (lib/contactInfo.ts). Unset = the founder's address. NEXT_PUBLIC_ because
+  // client components render it, so it is inlined at build time.
+  'NEXT_PUBLIC_SUPPORT_EMAIL',
 ] as const;
 
 /**

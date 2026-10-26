@@ -30,6 +30,7 @@ import type Stripe from 'stripe';
 import { stripe } from './stripe';
 import { getUser } from './firmStore';
 import { getBillingCustomerForProject } from './orgBilling';
+import { log } from './log';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -242,12 +243,12 @@ export async function chargeSavedCard(
     );
 
     if (intent.status === 'succeeded' || intent.status === 'processing') {
-      console.log('[stripe] off-session-charge-created', { amount, projectId });
+      log.info('[stripe]', 'off-session-charge-created', { amount, projectId });
       return { outcome: 'charged', paymentIntentId: intent.id };
     }
 
     // requires_action / requires_payment_method without a thrown error.
-    console.log('[stripe] off-session-charge-unconfirmed', { amount, projectId, status: intent.status });
+    log.info('[stripe]', 'off-session-charge-unconfirmed', { amount, projectId, status: intent.status });
     return intent.status === 'requires_action'
       ? { outcome: 'requires_action', paymentIntentId: intent.id }
       : { outcome: 'declined',        paymentIntentId: intent.id };
@@ -255,11 +256,11 @@ export async function chargeSavedCard(
     const { code, paymentIntentId } = readStripeError(err);
 
     if (code === 'authentication_required') {
-      console.log('[stripe] off-session-charge-sca-required', { amount, projectId });
+      log.info('[stripe]', 'off-session-charge-sca-required', { amount, projectId });
       return { outcome: 'requires_action', paymentIntentId };
     }
     if (code === 'card_declined' || code === 'expired_card' || code === 'insufficient_funds') {
-      console.log('[stripe] off-session-charge-declined', { amount, projectId, code });
+      log.info('[stripe]', 'off-session-charge-declined', { amount, projectId, code });
       return { outcome: 'declined', paymentIntentId };
     }
 

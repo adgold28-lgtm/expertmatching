@@ -55,6 +55,7 @@ import {
 import { parseWeeklyWindows } from '../../../../lib/availabilityWindows';
 import { calendlyEnabled } from '../../../../lib/calendlyFlag';
 import type { AvailabilitySlot } from '../../../../types';
+import { log } from '../../../../lib/log';
 
 const MAX_BODY         = 16_384;  // bytes — manual slots are the largest payload
 const MAX_URL_CHARS    = 300;
@@ -226,7 +227,7 @@ export async function POST(request: NextRequest): Promise<Response> {
     return Response.json({ error: 'internal_error' }, { status: 500 });
   }
 
-  console.log('[api/onboarding/calendar] calendar connected', { provider });
+  log.info('[api/onboarding/calendar]', 'calendar connected', { provider });
   void trackProductEvent({
     type:       'onboarding_step_completed',
     actorEmail: sessionUser.email,

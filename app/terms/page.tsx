@@ -3,6 +3,7 @@ import Link from 'next/link';
 import NavBar from '../../components/NavBar';
 import MarketingFooter from '../../components/MarketingFooter';
 import { SEAT_TIERS, formatUsdFromCents, MIN_BILLABLE_MINUTES } from '../../lib/pricing';
+import { SUPPORT_EMAIL } from '../../lib/contactInfo';
 
 // Terms of Service.
 //
@@ -334,7 +335,7 @@ export default function TermsPage() {
           <Section n="15" title="Contact">
             <p>
               Questions about these terms go to{' '}
-              <strong className="font-medium text-ink">ashergoldsteinbusiness@gmail.com</strong>, or by post
+              <strong className="font-medium text-ink">{SUPPORT_EMAIL}</strong>, or by post
               to <strong className="font-medium text-ink">4502 Mayflower Hill, Waterville, ME 04901</strong>.
             </p>
             <p>

@@ -19,6 +19,7 @@ import type Stripe from 'stripe';
 import { stripe } from './stripe';
 import { getUpstashClient } from './upstashRedis';
 import { keyHash } from './keyHash';
+import { log } from './log';
 
 // ─── Redis key helper (no PII) ────────────────────────────────────────────────
 
@@ -158,7 +159,7 @@ export async function transferExpertPayout(
   );
 
   // Log only safe identifiers — never log accountId or transferId
-  console.log('[stripe-connect] transfer-initiated', { expertId, projectId });
+  log.info('[stripe-connect]', 'transfer-initiated', { expertId, projectId });
 
   return transfer.id;
 }
@@ -246,7 +247,7 @@ export async function reverseExpertPayout(
   );
 
   // Log only safe identifiers — never the transfer or reversal id.
-  console.log('[stripe-connect] payout-reversed', { expertId, projectId });
+  log.info('[stripe-connect]', 'payout-reversed', { expertId, projectId });
 
   return { ok: true, reversalId: reversal.id };
 }

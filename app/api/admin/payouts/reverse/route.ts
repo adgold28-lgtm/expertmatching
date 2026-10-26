@@ -38,6 +38,7 @@ import { getProject, mutateExpert } from '../../../../../lib/projectStore';
 import { canReversePayout, reverseExpertPayout } from '../../../../../lib/stripeConnect';
 import { recordSystemFailure } from '../../../../../lib/engagementEvents';
 import type { Project, ProjectExpert } from '../../../../../types';
+import { log } from '../../../../../lib/log';
 
 async function loadEngagement(
   projectId: string,
@@ -166,7 +167,7 @@ export async function POST(request: NextRequest): Promise<Response> {
     expertId,
   });
 
-  console.log('[api/admin/payouts/reverse] reversed', { projectId, expertId });
+  log.info('[api/admin/payouts/reverse]', 'reversed', { projectId, expertId });
 
   return Response.json({ ok: true, reversalId: result.reversalId });
 }

@@ -18,6 +18,7 @@
 // genuinely empty calendar.
 
 import type { AvailabilitySlot } from '../types';
+import { errorMessage } from './log';
 
 const MAX_SLOTS    = 50;
 const DEFAULT_DAYS = 14;
@@ -221,7 +222,7 @@ export async function fetchCalendlySlots(
 
   } catch (err) {
     // Never throw — empty array is a safe fallback
-    console.warn('[fetchCalendlySlots] error (slots will be empty):', (err as Error).message);
+    console.warn('[fetchCalendlySlots] error (slots will be empty):', errorMessage(err));
     return [];
   }
 }

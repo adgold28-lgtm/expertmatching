@@ -33,6 +33,7 @@ import { generateScreeningItems } from '../../../../../lib/screeningItems';
 import { buildRequestView } from '../../../../../lib/screeningView';
 import { trackProductEvent } from '../../../../../lib/productEvents';
 import type { ObjectiveItemUpdate } from '../../../../../lib/requestStore';
+import { errorMessage } from '../../../../../lib/log';
 
 // One model call, plus at most one regeneration round, on a request with up to
 // six objectives — the default 10 s would cut a good generation in half.
@@ -131,7 +132,7 @@ export async function POST(
         : { source: generation.source },
     });
   } catch (err) {
-    console.error('[api/requests/[id]/generate] error:', err instanceof Error ? err.message : String(err));
+    console.error('[api/requests/[id]/generate] error:', errorMessage(err));
     return Response.json(
       { error: 'generation_failed', message: 'We could not draft the screening questions. Try again.' },
       { status: 500 },

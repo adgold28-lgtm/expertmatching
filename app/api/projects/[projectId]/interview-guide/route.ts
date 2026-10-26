@@ -35,6 +35,7 @@ import { createRateLimiterStore } from '../../../../../lib/rateLimiter';
 import { pseudonymize } from '../../../../../lib/contactCache';
 import { openai } from '../../../../../lib/openai';
 import type { Expert } from '../../../../../types';
+import { errorMessage } from '../../../../../lib/log';
 
 const ID_RE = /^[a-f0-9]{24}$/;
 
@@ -186,7 +187,7 @@ Return ONLY this JSON structure:
 
     return Response.json({ guide });
   } catch (err) {
-    console.error('[api/projects/[id]/interview-guide] error:', err instanceof Error ? err.message : String(err));
+    console.error('[api/projects/[id]/interview-guide] error:', errorMessage(err));
     return Response.json({ error: 'failed_to_generate_guide' }, { status: 500 });
   }
 }

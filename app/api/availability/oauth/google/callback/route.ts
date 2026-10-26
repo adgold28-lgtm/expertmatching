@@ -22,6 +22,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getProject, updateExpertStatus } from '../../../../../../lib/projectStore';
 import { encrypt } from '../../../../../../lib/encryption';
 import { constantTimeEqual, verify } from '../../../../../../lib/hmacToken';
+import { log, errorMessage } from '../../../../../../lib/log';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -148,7 +149,7 @@ export async function GET(request: NextRequest) {
 
   if (error) {
     // User denied access or other Google error
-    console.log('[google-callback] OAuth error from Google:', error);
+    log.info('[google-callback]', 'OAuth error from Google', { error: errorMessage(error) });
     return errorRedirect('access_denied');
   }
 
@@ -197,7 +198,7 @@ export async function GET(request: NextRequest) {
   try {
     tokens = await exchangeCode(code, redirectUri);
   } catch (err) {
-    console.error('[google-callback] token exchange error:', (err as Error).message);
+    console.error('[google-callback] token exchange error:', errorMessage(err));
     return errorRedirect('token_exchange_failed');
   }
 
@@ -218,7 +219,7 @@ export async function GET(request: NextRequest) {
     encryptedAccess  = encrypt(tokens.access_token);
     encryptedRefresh = tokens.refresh_token ? encrypt(tokens.refresh_token) : undefined;
   } catch (err) {
-    console.error('[google-callback] encryption failed:', (err as Error).message);
+    console.error('[google-callback] encryption failed:', errorMessage(err));
     return errorRedirect('server_error');
   }
 
@@ -234,11 +235,11 @@ export async function GET(request: NextRequest) {
       oauthState:           null,  // clear nonce — one-time use
     });
   } catch (err) {
-    console.error('[google-callback] failed to store tokens:', (err as Error).message);
+    console.error('[google-callback] failed to store tokens:', errorMessage(err));
     return errorRedirect('server_error');
   }
 
-  console.log('[google-callback] calendar connected', { status: 'ok' });
+  log.info('[google-callback]', 'calendar connected', { status: 'ok' });
 
   // ── Back to the picker, which now knows their real free time ─────────────
   return schedulePage(stateResult.token, '?connected=1');

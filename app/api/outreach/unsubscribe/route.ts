@@ -26,6 +26,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { verifyOptOutToken } from '../../../../lib/optOutToken';
 import { suppress } from '../../../../lib/outreachSuppressions';
 import { createRateLimiterStore } from '../../../../lib/rateLimiter';
+import { log } from '../../../../lib/log';
 
 let _rlStore: ReturnType<typeof createRateLimiterStore> | null = null;
 
@@ -80,6 +81,6 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
     return NextResponse.redirect(landingUrl(request, 'error'));
   }
 
-  console.log('[outreach/unsubscribe] opt-out recorded');
+  log.info('[outreach/unsubscribe]', 'opt-out recorded');
   return NextResponse.redirect(landingUrl(request));
 }

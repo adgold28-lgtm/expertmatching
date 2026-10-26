@@ -116,11 +116,6 @@ export function formatSlotLines(slots: ProposedSlot[], tzIana: string): string {
     .join('\n');
 }
 
-/** "Times shown in America/Chicago" — the zone caption under a slot list. */
-export function zoneCaption(tzIana: string): string {
-  return `Times shown in ${tzIana}.`;
-}
-
 // ─── Assembly ─────────────────────────────────────────────────────────────────
 
 interface BodyParts {
