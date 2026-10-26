@@ -21,6 +21,22 @@
 type LogFields = Record<string, unknown>;
 type LogLevel  = 'info' | 'warn' | 'error';
 
+/** Where every log.error line is also delivered once monitoring is up. */
+export type ErrorSink = (scope: string, message: string, fields: LogFields | undefined) => void;
+
+let errorSink: ErrorSink | null = null;
+
+/**
+ * Install (or, with null, remove) the error sink. lib/sentry.ts installs one
+ * that forwards each log.error line to Sentry as a message event, so a failure
+ * a route caught and logged reaches the monitor as surely as one it did not.
+ * The logger stays free of any Sentry import: the sink is the only coupling,
+ * and a sink that throws never reaches the caller.
+ */
+export function setErrorSink(sink: ErrorSink | null): void {
+  errorSink = sink;
+}
+
 /**
  * A safe, one-line, bounded string from anything a catch block can receive.
  *
@@ -74,6 +90,10 @@ function emit(level: LogLevel, scope: string, message: string, fields?: LogField
   if (level === 'error') console.error(line);
   else if (level === 'warn') console.warn(line);
   else console.info(line);
+
+  if (level === 'error' && errorSink) {
+    try { errorSink(scope, message, fields); } catch { /* monitoring must never break the app */ }
+  }
 }
 
 export const log = {

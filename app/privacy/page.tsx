@@ -24,6 +24,10 @@ import { SUPPORT_EMAIL } from '../../lib/contactInfo';
 //    are Exa (lib/searchProviders/exa.ts), Tavily (lib/searchProviders/tavily.ts)
 //    and ScrapingBee (lib/searchProviders/scrapingbee.ts).]
 //
+//   [ADDED 2026-10-26 (D8): Sentry for error monitoring (lib/sentry.ts). Every
+//    event is scrubbed by lib/sentryScrub.ts before it is sent; the table entry
+//    below says what it does and does not receive.]
+//
 //   [DECIDED 2026-09-06: no standalone subprocessor list yet — revisit when a client's IT asks; a
 //    change-notification commitment — PE and law-firm IT diligence usually
 //    asks for one.]
@@ -95,6 +99,11 @@ const PROCESSORS: { name: string; purpose: string; data: string }[] = [
     name: 'Vercel',
     purpose: 'Hosting the website and application',
     data: 'Standard request logs, including IP address, for security and reliability.',
+  },
+  {
+    name: 'Sentry',
+    purpose: 'Error monitoring',
+    data: 'When something breaks: the stack trace, the route that failed, and counts. Request bodies, headers, cookies, identities, brief text and signed links are removed before anything is sent.',
   },
 ];
 

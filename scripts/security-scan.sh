@@ -63,6 +63,16 @@ ACCEPTED_ADVISORIES=(
   GHSA-p9j2-gv94-2wf4   # next: SSRF in rewrites (no rewrites configured)
   GHSA-p293-qw3h-jr36   # next: RCE on Windows-hosted servers (Vercel runs Linux)
   GHSA-2xp9-vwfh-vxw4   # next: RCE in the image optimizer (images.unoptimized is set)
+  # Accepted 2026-10-26: two more Next advisories published after the list
+  # above was written. Both are fixed only from next 15.5.28, which is now the
+  # version the pending upgrade must land on; neither reaches this app today.
+  GHSA-2464-fhr4-w9xw   # next: RCE in the image optimizer via SVG (images.unoptimized is set; /_next/image answers 404)
+  GHSA-p3m5-59mp-jv5r   # next: Server Actions DoS (no 'use server' anywhere in app/, lib/ or components/)
+  # Accepted 2026-10-26: zod 3 (a dependency of the openai and exa-js SDKs)
+  # can exhaust memory validating an oversized constrained collection. Here
+  # zod only parses those two vendors' own API responses, never user input;
+  # the fix is zod 4, which neither SDK accepts yet. Review with the others.
+  GHSA-mrhx-c7xc-m3w5   # zod (under openai, exa-js): memory exhaustion on oversized collections
 )
 
 AUDIT_JSON=$(npm audit --json 2>/dev/null || true)

@@ -17,11 +17,12 @@
 //    variable missing from them is invisible in the product — including the two
 //    kill switches, PROJECTS_ENABLED and DISABLE_EMAILS (M-51).
 //
-// Reads are found by scanning app/, lib/, components/, middleware.ts and
-// instrumentation.ts for `process.env.NAME` and for NAME inside a
-// `const { A, B } = process.env` destructure (lib/createZoomMeeting.ts uses the
-// second form). Pure: no network, no database, no secrets — it never reads a
-// VALUE, only the source text.
+// Reads are found by scanning app/, lib/, components/, middleware.ts,
+// instrumentation.ts, instrumentation-client.ts and next.config.js (build-time
+// reads count: an operator sets those too) for `process.env.NAME` and for NAME
+// inside a `const { A, B } = process.env` destructure (lib/createZoomMeeting.ts
+// uses the second form). Pure: no network, no database, no secrets — it never
+// reads a VALUE, only the source text.
 //
 // Exits non-zero on the first failing invariant, so it can gate a deploy.
 
@@ -45,14 +46,17 @@ function check(label: string, ok: boolean, detail?: string): void {
 // ── What counts as "read by real code" ───────────────────────────────────────
 
 const SCAN_ROOTS = ['app', 'lib', 'components'];
-const SCAN_FILES = ['middleware.ts', 'instrumentation.ts'];
+const SCAN_FILES = ['middleware.ts', 'instrumentation.ts', 'instrumentation-client.ts', 'next.config.js'];
 const REPO_ROOT  = join(__dirname, '..');
 
 /**
- * Supplied by the runtime, never by an operator, so they belong in neither
- * validateEnv nor .env.example.
+ * Supplied by the runtime or the platform, never by an operator, so they belong
+ * in neither validateEnv nor .env.example. VERCEL_ENV is production | preview |
+ * development on Vercel (lib/sentry.ts reads it for the Sentry environment);
+ * CI is set by GitHub Actions and Vercel builds (next.config.js reads it to
+ * decide whether the Sentry build plugin may print).
  */
-const RUNTIME_BUILTINS = new Set(['NODE_ENV', 'NEXT_RUNTIME']);
+const RUNTIME_BUILTINS = new Set(['NODE_ENV', 'NEXT_RUNTIME', 'VERCEL_ENV', 'CI']);
 
 function sourceFiles(dir: string, out: string[] = []): string[] {
   for (const entry of readdirSync(dir)) {

@@ -144,6 +144,14 @@ export const OPTIONAL_VARS = [
   'AVAILABILITY_TOKEN_SECRET_PREVIOUS',
   'SIGNUP_TOKEN_SECRET_PREVIOUS',
   'ENCRYPTION_KEY_PREVIOUS',
+  // ── Added 2026-10-26 (D8): error monitoring. The DSN turns Sentry on in
+  // every runtime (lib/sentry.ts); unset, nothing is initialised. The three
+  // SENTRY_* values are read at BUILD time by next.config.js to upload source
+  // maps and are never needed at run time.
+  'NEXT_PUBLIC_SENTRY_DSN',
+  'SENTRY_ORG',
+  'SENTRY_PROJECT',
+  'SENTRY_AUTH_TOKEN',
 ] as const;
 
 /**

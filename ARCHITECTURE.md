@@ -51,6 +51,7 @@ The lifecycle of a client account: access request on the public site → platfor
 | LLMs | Anthropic (`@anthropic-ai/sdk`: two Haiku calls and one Opus call per sourcing run, plus Haiku for descriptors and brief parsing); OpenAI (`openai`: gpt-4o-mini for reply classification, scheduling-reply parsing, interview guide, optional nudge variation) | `ai` and `@ai-sdk/anthropic` were uninstalled in Wave 4; both providers are called through their own SDKs |
 | Web search | Exa (`exa-js`) in production; Tavily and ScrapingBee providers exist as alternatives | The keys are in OPTIONAL_VARS; boot warns, never throws, when no search key is set at all |
 | Email finding | Findymail, Hunter.io | Optional; gated by `CONTACT_ENRICHMENT_ENABLED` |
+| Error monitoring | Sentry (`@sentry/nextjs`) | Off without `NEXT_PUBLIC_SENTRY_DSN`; no traces, no replays, no identities; every event passes `lib/sentryScrub.ts` |
 | PDF | `@react-pdf/renderer` (brief export) | |
 | Other | `axios` (Zoom calls only) | `nodemailer`, `@types/nodemailer` and `bcryptjs` were uninstalled in Wave 4; the manifest is 15 runtime dependencies |
 | Testing | No runner. `scripts/test-*.ts` executed with `npx tsx`, all sharing `scripts/testHarness.ts`; two HTTP suites against a local server; `scripts/rls/` psql harness; `scripts/e2e-matchy.ts` and `scripts/e2e-trial.ts` against a live URL | See section 9 |
@@ -289,6 +290,8 @@ One sentence per first-party file. Generated files (`lib/supabase/database.types
 │   ├── searchCache.ts  : 7-day Upstash cache of search pages, keyed by an HMAC of the normalized query.
 │   ├── sendAvailabilityRequest.ts  : Despite the name, now only sendInviteEmail and sendBookingEmail (the one path that can attach an ICS).
 │   ├── senderIdentity.ts  : Resolves the configured outreach sign-off text.
+│   ├── sentry.ts  : The one Sentry.init, shared by the browser, Node and Edge init files; installs the log.error sink; off without a DSN.
+│   ├── sentryScrub.ts  : The beforeSend hook: drops identities, headers, cookies, bodies and sensitive keys, redacts addresses and tokens in text.
 │   ├── seniorityClassifier.ts  : Tier keyword classifier, tier pricing, and the shared expert sort comparators.
 │   ├── signupToken.ts  : HMAC-SHA256 self-describing invite/reset token.
 │   ├── sourcingJob.ts  : QStash publish plus the job body that runs generateExperts and writes results onto the project.
@@ -795,6 +798,7 @@ env-status console stops listing them the moment this ships.
 | `CONTACT_ENRICHMENT_ENABLED` | `'true'` turns on contact discovery on bookmark. |
 | `CALENDLY_ENABLED` | `'true'` re-enables the Calendly calendar option; unset or anything else hides it in the UI, refuses it on the connect route and treats an existing Calendly row as not connected (Wave 5). |
 | `FINDYMAIL_API_KEY`, `HUNTER_API_KEY` | Email-finder provider credentials. |
+| `NEXT_PUBLIC_SENTRY_DSN` | Turns Sentry on in every runtime (lib/sentry.ts). `SENTRY_ORG`, `SENTRY_PROJECT` and `SENTRY_AUTH_TOKEN` are build-time only: with all three, `next build` uploads source maps. |
 | `ENRICHMENT_DAILY_BUDGET` | Daily cap on provider credits (default 500). Enforced since Wave 2: one credit per provider call, checked inside the waterfall. |
 | `OUTREACH_SIGNATURE` | Sign-off appended to every expert-facing email. |
 | `OUTREACH_POSTAL_ADDRESS` | CAN-SPAM postal address in the email footer. |
