@@ -18,19 +18,44 @@
 // password reset ('reset'); tokens minted before both fields existed verify as
 // { kind: 'invite', orgId: null }.
 //
-// Secret: process.env.SIGNUP_TOKEN_SECRET (32+ hex bytes, never logged)
+// Secret: process.env.SIGNUP_TOKEN_SECRET (32+ characters, never logged).
+//
+// ROTATION: SIGNUP_TOKEN_SECRET_PREVIOUS, same rule, is honoured by
+// verifySignupToken() only, while a rotation is in progress;
+// generateSignupToken() always signs with the current secret. Invites live 24
+// hours and reset links one hour, so the previous secret can be deleted a day
+// after the rotation (08-key-rotation-runbook, section 4).
 
-import { createHmac, createHash, timingSafeEqual, randomBytes } from 'crypto';
+import { createHmac, createHash, randomBytes } from 'crypto';
+import { constantTimeEqual } from './hmacToken';
 
 const INVITE_EXPIRY_MS = 24 * 60 * 60 * 1000;
 const RESET_EXPIRY_MS  = 60 * 60 * 1000;   // password reset links are short-lived
 const SEP              = '.';
 const NONCE_BYTES      = 16;
 
+const MIN_SECRET_LENGTH = 32;
+
+function usable(secret: string | undefined): string | null {
+  return secret && secret.length >= MIN_SECRET_LENGTH ? secret : null;
+}
+
+/** The current secret, or a throw: nothing can be minted without it. */
 function getSecret(): string {
-  const s = process.env.SIGNUP_TOKEN_SECRET;
-  if (!s || s.length < 32) throw new Error('[signupToken] SIGNUP_TOKEN_SECRET missing or too short');
+  const s = usable(process.env.SIGNUP_TOKEN_SECRET);
+  if (!s) throw new Error('[signupToken] SIGNUP_TOKEN_SECRET missing or too short');
   return s;
+}
+
+/**
+ * The secrets a token may have been signed with: the current one, then the
+ * previous one while a rotation is in progress. A previous secret that is
+ * unset, too short, or the same as the current one adds nothing.
+ */
+function verificationSecrets(): string[] {
+  const current  = getSecret();
+  const previous = usable(process.env.SIGNUP_TOKEN_SECRET_PREVIOUS);
+  return previous !== null && previous !== current ? [current, previous] : [current];
 }
 
 // ─── Public API ───────────────────────────────────────────────────────────────
@@ -117,18 +142,17 @@ export function verifySignupToken(token: string): VerifySignupTokenResult {
     return INVALID;
   }
 
-  // Constant-time HMAC check
-  let secret: string;
-  try { secret = getSecret(); } catch { return INVALID; }
+  // Constant-time HMAC check against the current secret and, during a
+  // rotation, the previous one. Every secret is checked; nothing short-circuits
+  // on the first match, so the time taken does not depend on the token.
+  let secrets: string[];
+  try { secrets = verificationSecrets(); } catch { return INVALID; }
 
-  const expectedSig = createHmac('sha256', secret).update(payloadB64).digest('base64url');
-  const expectedBuf = Buffer.from(expectedSig, 'utf8');
-  const actualBuf   = Buffer.from(sigB64,      'utf8');
-  // Pad to equal length to prevent length oracle; always run comparison
-  const paddedActual = actualBuf.length === expectedBuf.length
-    ? actualBuf
-    : Buffer.concat([actualBuf, Buffer.alloc(Math.max(0, expectedBuf.length - actualBuf.length))]);
-  const sigMatch = timingSafeEqual(expectedBuf, paddedActual) && actualBuf.length === expectedBuf.length;
+  let sigMatch = false;
+  for (const secret of secrets) {
+    const expectedSig = createHmac('sha256', secret).update(payloadB64).digest('base64url');
+    if (constantTimeEqual(expectedSig, sigB64)) sigMatch = true;
+  }
   if (!sigMatch) return INVALID;
 
   // Parse and validate payload

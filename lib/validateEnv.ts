@@ -138,6 +138,13 @@ export const OPTIONAL_VARS = [
   // (lib/contactInfo.ts). Unset = the founder's address. NEXT_PUBLIC_ because
   // client components render it, so it is inlined at build time.
   'NEXT_PUBLIC_SUPPORT_EMAIL',
+  // ── Added 2026-10-26: the previous value of each secret, set only while a
+  // rotation is in progress. Verified or decrypted against, never signed or
+  // encrypted with (lib/hmacToken.ts, lib/signupToken.ts, lib/encryption.ts).
+  // scripts/reencrypt-at-rest.ts finishes an ENCRYPTION_KEY rotation.
+  'AVAILABILITY_TOKEN_SECRET_PREVIOUS',
+  'SIGNUP_TOKEN_SECRET_PREVIOUS',
+  'ENCRYPTION_KEY_PREVIOUS',
 ] as const;
 
 /**
