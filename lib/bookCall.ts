@@ -288,7 +288,7 @@ export async function bookCall(input: BookCallInput): Promise<BookCallResult> {
   const endUtc   = new Date(startMs + durationMin * 60_000).toISOString();
 
   // ── 1. Zoom ────────────────────────────────────────────────────────────
-  const meeting = await createZoomMeeting('Expert call', startUtc, durationMin, pe.expert.name)
+  const meeting = await createZoomMeeting('Expert call', startUtc, durationMin)
     .catch(() => null);
 
   // ── 2. State ───────────────────────────────────────────────────────────
@@ -572,7 +572,10 @@ async function sendConfirmations(input: ConfirmationInput): Promise<void> {
  * UID and SEQUENCE: importing both updates one event rather than making two.
  */
 export function bookingIcsEvent(project: Project, pe: ProjectExpert): IcsEvent | null {
-  if (!pe.booking) return null;
+  // A cancelled booking has no invite to hand out. The cancel flow mails its own
+  // CANCEL copy (cancelCall below); serving the REQUEST here afterwards would
+  // name an expert whose identity the JSON has already re-anonymised.
+  if (!pe.booking || pe.booking.cancelledAt) return null;
 
   return clientIcsEvent({
     project,

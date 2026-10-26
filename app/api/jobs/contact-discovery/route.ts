@@ -48,8 +48,16 @@ export async function POST(request: NextRequest): Promise<NextResponse> {
   const body = await request.text();
 
   // ── 2. Verify QStash signature ───────────────────────────────────────────
-  // Skip verification in dev if signing keys are not configured
-  if (process.env.NODE_ENV === 'production' || process.env.QSTASH_CURRENT_SIGNING_KEY) {
+  // Unsigned jobs are accepted ONLY under `next dev` with no signing keys. Every
+  // other build — production, a preview deployment, a local `next start` — must
+  // carry the keys and verify, because /api/jobs/ is public (middleware) and an
+  // unverified job route lets anyone with the URL run contact discovery and an intro email for any project.
+  const devUnsigned = process.env.NODE_ENV === 'development' && !process.env.QSTASH_CURRENT_SIGNING_KEY;
+  if (!devUnsigned && (!process.env.QSTASH_CURRENT_SIGNING_KEY || !process.env.QSTASH_NEXT_SIGNING_KEY)) {
+    console.error('[jobs/contact-discovery] QStash signing keys missing — refusing an unsigned job');
+    return NextResponse.json({ error: 'not_configured' }, { status: 503 });
+  }
+  if (!devUnsigned) {
     try {
       const receiver  = getReceiver();
       const signature = request.headers.get('upstash-signature') ?? '';

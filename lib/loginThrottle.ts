@@ -40,7 +40,7 @@
 //
 // Reset and request-access keep their fail-open policy; only login changed.
 
-import { createHmac } from 'crypto';
+import { keyHash } from './keyHash';
 import type { UpstashRedis } from './upstashRedis';
 
 // ─── Policy ───────────────────────────────────────────────────────────────────
@@ -55,15 +55,10 @@ export const LOGIN_FAIL_WINDOW_MS = 60 * 60 * 1000; // 1 hour
 
 // ─── Key helpers (no PII in Redis key names) ──────────────────────────────────
 //
-// DUPLICATION, ON PURPOSE: lib/rateLimiter.rlKey, lib/passwordReset.rlKey and
-// app/api/request-access each carry their own copy of these four lines. This is
-// the fourth. Wave 4 should extract one helper (see the repair plan's
-// consolidation brief); doing it now would mean editing three modules this
-// brief does not own. The truncation length differs between the existing copies
-// (16 vs 24 hex chars); 16 is used here, matching lib/rateLimiter.
+// lib/keyHash.ts is the one HMAC behind every pseudonymous key name in the
+// repo. 16 hex chars here, matching lib/rateLimiter.
 function hashForKey(value: string): string {
-  const secret = process.env.LOG_HASH_SECRET ?? 'dev-insecure-fallback';
-  return createHmac('sha256', secret).update(value).digest('hex').slice(0, 16);
+  return keyHash(value, 16);
 }
 
 /**

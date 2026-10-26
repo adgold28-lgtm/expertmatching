@@ -18,14 +18,12 @@
 import type Stripe from 'stripe';
 import { stripe } from './stripe';
 import { getUpstashClient } from './upstashRedis';
-import { createHmac } from 'crypto';
+import { keyHash } from './keyHash';
 
 // ─── Redis key helper (no PII) ────────────────────────────────────────────────
 
 function connectRedisKey(email: string): string {
-  const secret = process.env.LOG_HASH_SECRET ?? 'dev-insecure-fallback';
-  const hash   = createHmac('sha256', secret).update(email).digest('hex').slice(0, 24);
-  return `expert-connect:${hash}`;
+  return `expert-connect:${keyHash(email, 24)}`;
 }
 
 // ─── Account storage ──────────────────────────────────────────────────────────

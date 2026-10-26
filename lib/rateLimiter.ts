@@ -1,4 +1,4 @@
-import { createHmac } from 'crypto';
+import { keyHash } from './keyHash';
 import { getUpstashClient, type UpstashRedis } from './upstashRedis';
 
 // Rate limiter abstraction, originally written for /api/enrich-contact.
@@ -76,8 +76,7 @@ export function createRateLimiterStore(): RateLimiterStore {
 // ─── Key helper (no PII in Redis key names) ───────────────────────────────────
 
 function rlKey(prefix: string, value: string): string {
-  const secret = process.env.LOG_HASH_SECRET ?? 'dev-insecure-fallback';
-  return `${prefix}:${createHmac('sha256', secret).update(value).digest('hex').slice(0, 16)}`;
+  return `${prefix}:${keyHash(value, 16)}`;
 }
 
 const TWENTY_FOUR_H = 24 * 60 * 60 * 1000;

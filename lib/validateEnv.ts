@@ -106,7 +106,8 @@ export const OPTIONAL_VARS = [
   'PROJECTS_ADMIN_TOKEN',
   // 'true' turns on session authentication for the app (lib/auth.ts)
   'APP_AUTH_ENABLED',
-  // Where new-account and access-request notifications go (lib/firmStore.ts)
+  // Where access-request and seat-limit notifications go: one address or a
+  // comma-separated list (lib/adminNotifications.ts). Unset = nobody emailed.
   'ADMIN_NOTIFICATION_EMAIL',
   // Kill switch: 'true' suppresses every outbound email, everywhere
   'DISABLE_EMAILS',
@@ -167,6 +168,15 @@ export function validateEnv(): void {
     console.warn(
       '[validateEnv] WARNING: no search provider key set '
       + `(${SEARCH_PROVIDER_KEYS.join(', ')}) — expert sourcing will fail with no_search_provider`,
+    );
+  }
+
+  // Access requests are stored either way, but with no recipient nobody hears
+  // about them until someone opens the admin Requests page. Loud, not fatal.
+  if (isProd && !process.env.ADMIN_NOTIFICATION_EMAIL) {
+    console.warn(
+      '[validateEnv] WARNING: ADMIN_NOTIFICATION_EMAIL is not set — access requests and '
+      + 'seat-limit alerts will be stored but nobody will be emailed',
     );
   }
 

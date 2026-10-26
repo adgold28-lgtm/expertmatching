@@ -308,6 +308,10 @@ function makeProjectExperts(experts: Array<{ expert: Expert; status?: ExpertStat
 
 function canAccess(p: { ownerEmail: string; collaborators: string[] }, email: string, role: 'admin' | 'user'): boolean {
   if (role === 'admin') return true;
+  // lib/auth.getSessionUser floors to email '' when there is no session, and a
+  // project whose owner profile is missing reads ownerEmail ''. Neither may
+  // ever equal the other.
+  if (!email) return false;
   return p.ownerEmail === email || p.collaborators.includes(email);
 }
 

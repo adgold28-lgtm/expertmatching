@@ -466,7 +466,7 @@ async function main(): Promise<void> {
       transferExpertPayout: (accountId, cents, projectId, expertId, callId) =>
         transferExpertPayout(accountId, cents, projectId, expertId, callId, connect),
       recordSystemFailure: async input => { env.failures.push(String(input.reason)); },
-      generateAvailabilityToken: () => ({ token: 'tok_test' }),
+      generatePayoutToken: () => ({ token: 'tok_test' }),
       sendPayoutOnboardingEmail: async (email, _first, cents, url) => { env.reminders.push({ email, cents, url }); },
       now: () => 1_700_000_000_000,
     };

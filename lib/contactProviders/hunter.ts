@@ -70,12 +70,14 @@ function boundedController(timeoutMs: number, external?: AbortSignal): {
 }
 
 /**
- * One Hunter GET. The key rides in the Authorization header on the first
- * attempt, so in the normal case it cannot land in a proxy or access log.
- * Hunter's older documented scheme is the `api_key` query parameter, so a 401
- * (and ONLY a 401) retries once that way rather than failing the whole lookup
- * on an auth-scheme difference — meaning on that retry path the key IS in the
- * URL and can reach an intermediary's logs. The key is never logged by us.
+ * One Hunter GET. The key rides in the Authorization header, full stop.
+ *
+ * Hunter documents three schemes — the `api_key` query parameter, the
+ * `X-API-KEY` header and `Authorization: Bearer` — and this used to fall back
+ * from the header to the query parameter on a 401. That retry put the key in
+ * a URL, where proxies and access logs keep it. A 401 now means what it says
+ * (the key is wrong or revoked) and the caller throws on it, which keeps a bad
+ * key out of the negative cache as well.
  */
 async function hunterGet(
   path:   string,
@@ -83,16 +85,10 @@ async function hunterGet(
   apiKey: string,
   signal: AbortSignal,
 ): Promise<Response> {
-  const url = `https://api.hunter.io/v2/${path}?${params.toString()}`;
-  const res = await fetch(url, {
+  return fetch(`https://api.hunter.io/v2/${path}?${params.toString()}`, {
     headers: { 'Authorization': `Bearer ${apiKey}` },
     signal,
   });
-  if (res.status !== 401) return res;
-
-  const withKey = new URLSearchParams(params);
-  withKey.set('api_key', apiKey);
-  return fetch(`https://api.hunter.io/v2/${path}?${withKey.toString()}`, { signal });
 }
 
 /**
@@ -146,9 +142,6 @@ export const hunterProvider: ContactProvider = {
 
     try {
       const params = new URLSearchParams({ domain, first_name: firstName, last_name: lastName });
-      // Key rides in the Authorization header. NOTE: hunterGet falls back to an
-      // `api_key=` query parameter if (and only if) that first call 401s, so the
-      // key is not unconditionally kept out of the URL — see hunterGet above.
       const res = await hunterGet('email-finder', params, apiKey, controller.signal);
 
       if (res.status === 429) {
@@ -159,9 +152,8 @@ export const hunterProvider: ContactProvider = {
         throw Object.assign(new Error('Insufficient Hunter credits'), { code: 'not_enough_credits' });
       }
 
-      // A 401 here means the header AND the query-parameter scheme both failed:
-      // the key is wrong, not the auth style. Throwing (rather than returning [])
-      // keeps a bad key out of the negative cache — discoverContact only caches
+      // The key is wrong or revoked. Throwing (rather than returning []) keeps
+      // a bad key out of the negative cache — discoverContact only caches
       // 'not_found' when a provider actually answered not_found.
       if (res.status === 401) {
         throw new Error('Hunter API key invalid or revoked');

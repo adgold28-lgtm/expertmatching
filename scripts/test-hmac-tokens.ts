@@ -320,6 +320,19 @@ eq('sign is deterministic for the same payload',
   sign('p:e:1:n', 'availability'), sign('p:e:1:n', 'availability'));
 check('a purpose does not accept another purpose\'s wire format',
   !verify(sign('p:e:1:n', 'availability'), 'expert-oauth').ok);
+
+// Purposes added after 2026-10 sign under a key derived from the shared secret
+// (PROFILES.derivedKey). The same payload under two purposes must not yield the
+// same token, and a payout-shaped token signed as any raw-key purpose must not
+// verify as 'payout'.
+check('payout signs under its own derived key',
+  sign('payout:p:e:1:n', 'payout') !== sign('payout:p:e:1:n', 'availability'));
+check('a payout-shaped payload signed as availability does not verify as payout',
+  !verify(sign('payout:p:e:1:n', 'availability'), 'payout').ok);
+check('a payout-shaped payload signed as outreach does not verify as payout',
+  !verify(sign('payout:p:e:1:n', 'outreach'), 'payout').ok);
+check('a payout token verifies as payout',
+  verify(sign('payout:p:e:1:n', 'payout'), 'payout').ok);
 eq('detached verify returns the raw payload',
   verify(sign('p:e:1:n', 'outreach'), 'outreach').ok
     ? (verify(sign('p:e:1:n', 'outreach'), 'outreach') as { payload: string }).payload
