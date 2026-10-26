@@ -196,4 +196,49 @@ section('Uniqueness');
   check('their hashes differ',                    a.hash  === b.hash,  false);
 }
 
+// ── Secret rotation ──────────────────────────────────────────────────────────
+section('Secret rotation (SIGNUP_TOKEN_SECRET_PREVIOUS)');
+{
+  const OLD_SECRET = process.env.SIGNUP_TOKEN_SECRET as string;
+  const NEW_SECRET = 'fedcba9876543210fedcba9876543210fedcba9876543210';
+  const before     = generateSignupToken(EMAIL, FIRM, { orgId: ORG });
+
+  // Rotate: today's secret becomes the previous one, a fresh secret is current.
+  process.env.SIGNUP_TOKEN_SECRET          = NEW_SECRET;
+  process.env.SIGNUP_TOKEN_SECRET_PREVIOUS = OLD_SECRET;
+
+  check('an invite minted before the rotation still verifies', verifySignupToken(before.token).valid, true);
+  check('…with its email intact',                              verifySignupToken(before.token).email, EMAIL);
+  check('…and its organization intact',                        verifySignupToken(before.token).orgId, ORG);
+
+  const after = generateSignupToken(EMAIL, FIRM, { orgId: ORG });
+  const [afterPayload, afterSig] = after.token.split('.');
+  check(
+    'new invites are signed with the NEW secret',
+    afterSig,
+    createHmac('sha256', NEW_SECRET).update(afterPayload).digest('base64url'),
+  );
+  check('a new invite verifies', verifySignupToken(after.token).valid, true);
+  check(
+    'a tampered old invite is still rejected during the rotation',
+    verifySignupToken(`${before.token.split('.')[0]}.${'A'.repeat(43)}`).valid,
+    false,
+  );
+  // forge() signs with whatever is current, so an OLD expired invite is built by hand.
+  const expiredOldPayload = Buffer.from(JSON.stringify({
+    email: EMAIL, firmName: FIRM, expiry: Date.now() - 1_000, nonce: 'n', kind: 'invite',
+  })).toString('base64url');
+  const expiredOld = `${expiredOldPayload}.${createHmac('sha256', OLD_SECRET).update(expiredOldPayload).digest('base64url')}`;
+  check('an expired old invite reads expired, not invalid, during the rotation', verifySignupToken(expiredOld).expired, true);
+
+  process.env.SIGNUP_TOKEN_SECRET_PREVIOUS = 'too-short';
+  check('a too-short previous secret is ignored', verifySignupToken(before.token).valid, false);
+
+  delete process.env.SIGNUP_TOKEN_SECRET_PREVIOUS;
+  check('once the previous secret is removed, old invites fail closed', verifySignupToken(before.token).valid, false);
+  check('…and new invites still verify',                               verifySignupToken(after.token).valid, true);
+
+  process.env.SIGNUP_TOKEN_SECRET = OLD_SECRET;
+}
+
 summary();

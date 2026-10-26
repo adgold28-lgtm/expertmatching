@@ -9,7 +9,7 @@ import { getUpstashClient, type UpstashRedis } from './upstashRedis';
 //     /api/expert-onboarding/[token], /api/inbound-email and
 //     /api/outreach/unsubscribe. Also the store passed to the budget check.
 //   checkAndIncrementGlobalBudget — the global daily provider-spend cap, called
-//     once per provider attempt in lib/contactDiscovery.ts (H-13) so a Snov +
+//     once per provider attempt in lib/contactDiscovery.ts (H-13) so a Findymail +
 //     Hunter waterfall consumes two credits from the budget, not one.
 //   checkDraftLimits — the two windows on Matchy's composer draft (Matchy 2.0).
 //   checkScreeningGenerateLimit — the window on turning a request's learning
@@ -82,7 +82,7 @@ function rlKey(prefix: string, value: string): string {
 const TWENTY_FOUR_H = 24 * 60 * 60 * 1000;
 
 // ─── Global provider budget (called BEFORE each provider API call) ───────────
-// Called once per provider attempt in lib/contactDiscovery.ts so a Snov +
+// Called once per provider attempt in lib/contactDiscovery.ts so a Findymail +
 // Hunter waterfall consumes 2 credits from the budget, not 1. The caller
 // fails OPEN when Redis is unreachable — a spend cap must not stop discovery.
 

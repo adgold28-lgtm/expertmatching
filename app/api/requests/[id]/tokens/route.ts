@@ -33,6 +33,7 @@
 // topic, the questions, or the link. The product event carries three booleans.
 
 import { NextRequest } from 'next/server';
+import { requestsFlowGuard } from '../../../../../lib/requestsFlag';
 import { randomUUID } from 'crypto';
 import {
   getRequestForUser,
@@ -69,6 +70,9 @@ export async function POST(
   request: NextRequest,
   { params }: { params: { id: string } },
 ) {
+  const hidden = requestsFlowGuard();
+  if (hidden) return hidden;
+
   const adminErr = await adminGuard(request);
   if (adminErr) return adminErr;
 

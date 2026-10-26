@@ -50,7 +50,8 @@ The lifecycle of a client account: access request on the public site → platfor
 | Calendars | Google Calendar OAuth (free/busy) for clients and experts; Calendly URL; manual windows | OAuth tokens AES-256-GCM encrypted at rest |
 | LLMs | Anthropic (`@anthropic-ai/sdk`: two Haiku calls and one Opus call per sourcing run, plus Haiku for descriptors and brief parsing); OpenAI (`openai`: gpt-4o-mini for reply classification, scheduling-reply parsing, interview guide, optional nudge variation) | `ai` and `@ai-sdk/anthropic` were uninstalled in Wave 4; both providers are called through their own SDKs |
 | Web search | Exa (`exa-js`) in production; Tavily and ScrapingBee providers exist as alternatives | The keys are in OPTIONAL_VARS; boot warns, never throws, when no search key is set at all |
-| Email finding | Snov.io, Hunter.io | Optional; gated by `CONTACT_ENRICHMENT_ENABLED` |
+| Email finding | Findymail, Hunter.io | Optional; gated by `CONTACT_ENRICHMENT_ENABLED` |
+| Error monitoring | Sentry (`@sentry/nextjs`) | Off without `NEXT_PUBLIC_SENTRY_DSN`; no traces, no replays, no identities; every event passes `lib/sentryScrub.ts` |
 | PDF | `@react-pdf/renderer` (brief export) | |
 | Other | `axios` (Zoom calls only) | `nodemailer`, `@types/nodemailer` and `bcryptjs` were uninstalled in Wave 4; the manifest is 15 runtime dependencies |
 | Testing | No runner. `scripts/test-*.ts` executed with `npx tsx`, all sharing `scripts/testHarness.ts`; two HTTP suites against a local server; `scripts/rls/` psql harness; `scripts/e2e-matchy.ts` and `scripts/e2e-trial.ts` against a live URL | See section 9 |
@@ -208,8 +209,9 @@ One sentence per first-party file. Generated files (`lib/supabase/database.types
 │   └── STATE_OF_THE_UNION.md  : Plain-English snapshot of the company/product for an outside reader (advisor, cofounder, YC).
 ├── lib/
 │   ├── contactProviders/
+│   │   ├── deadline.ts  : boundedController — abort on the provider's own timeout or the caller's deadline, whichever fires first.
+│   │   ├── findymail.ts  : Findymail find-email-from-name provider (one POST, verified addresses only; first in the chain).
 │   │   ├── hunter.ts  : Hunter.io email-finder provider plus hunterDomainSearch, the company-to-domain fallback.
-│   │   ├── snov.ts  : Snov.io emails-by-domain-by-name v2 provider (OAuth token cache, start/poll, status normalization).
 │   │   └── types.ts  : The ContactProvider interface, normalized status vocabulary, and the shared webmail blocklist.
 │   ├── searchProviders/
 │   │   ├── exa.ts  : Exa neural "people" search, the production provider; always-on query log, no request timeout.
@@ -235,7 +237,7 @@ One sentence per first-party file. Generated files (`lib/supabase/database.types
 │   ├── chargeSavedCard.ts  : Resolves the paying Stripe customer (org first, legacy per-user second) and runs the off-session charge.
 │   ├── computeOverlap.ts  : Pre-Phase-2 overlap engine; (RETIRED: computeOverlap() itself is uncalled) now used only for its timezone helpers.
 │   ├── contactCache.ts  : Upstash/in-memory cache of enrichment results keyed by an HMAC; optional unused distributed lock.
-│   ├── contactDiscovery.ts  : Whole find-one-address-and-write-the-intro chain: domain heuristic, cache, Snov, Hunter, plus the QStash job.
+│   ├── contactDiscovery.ts  : Whole find-one-address-and-write-the-intro chain: domain heuristic, cache, Findymail, Hunter, plus the QStash job.
 │   ├── conversations.ts  : The only sanctioned reader/writer of conversation_messages, including the per-viewer redaction gate.
 │   ├── createAndSendInvoice.ts  : Bills a completed call: saved-card charge, else Stripe payment link; sends receipt/invoice email.
 │   ├── createZoomMeeting.ts  : Zoom Server-to-Server OAuth create/update/delete primitives, all failure-tolerant.
@@ -288,6 +290,8 @@ One sentence per first-party file. Generated files (`lib/supabase/database.types
 │   ├── searchCache.ts  : 7-day Upstash cache of search pages, keyed by an HMAC of the normalized query.
 │   ├── sendAvailabilityRequest.ts  : Despite the name, now only sendInviteEmail and sendBookingEmail (the one path that can attach an ICS).
 │   ├── senderIdentity.ts  : Resolves the configured outreach sign-off text.
+│   ├── sentry.ts  : The one Sentry.init, shared by the browser, Node and Edge init files; installs the log.error sink; off without a DSN.
+│   ├── sentryScrub.ts  : The beforeSend hook: drops identities, headers, cookies, bodies and sensitive keys, redacts addresses and tokens in text.
 │   ├── seniorityClassifier.ts  : Tier keyword classifier, tier pricing, and the shared expert sort comparators.
 │   ├── signupToken.ts  : HMAC-SHA256 self-describing invite/reset token.
 │   ├── sourcingJob.ts  : QStash publish plus the job body that runs generateExperts and writes results onto the project.
@@ -512,7 +516,7 @@ flowchart TD
     BR -->|no address, walkthrough| H[contactStatus walkthrough_held, stop]
     BR -->|no address, live| Q[QStash: contact-discovery job<br/>Upstash-Retries 0]
     Q --> W[POST /api/jobs/contact-discovery]
-    W --> D[lib/contactDiscovery: domain -> Redis cache -> Snov -> Hunter]
+    W --> D[lib/contactDiscovery: domain -> Redis cache -> Findymail -> Hunter]
     D --> CE[(project_experts.contact_email)]
     D --> SUP{outreach_suppressions?}
     BR -->|address on file| SUP
@@ -541,7 +545,7 @@ Follow-up (conflict/NDA questions + the expert-side rate ask) is sent automatica
 
 Queue semantics: QStash jobs are published with retries disabled on purpose (a redelivery is a second cold email), so there is no automatic retry; failures land in `contactStatus` (`intro_failed`, `contact_not_found`) and the client can re-bookmark. There is no bounce handling yet.
 
-Provider spend: every paid contact-provider call now takes a credit from the daily ceiling first. `checkAndIncrementGlobalBudget()` runs once per provider inside the waterfall, so a Snov then Hunter attempt spends two credits, which is what `ENRICHMENT_DAILY_BUDGET` was written to count. A refusal records `skipped_spend_budget` and moves to the next provider; all refused gives `contact_check_unavailable` with reason `budget`, threaded into the `contact_not_found` event so "we could not look" is distinguishable from "there is nothing to find". It fails open when Redis is unreachable, per the expert-facing rule.
+Provider spend: every paid contact-provider call now takes a credit from the daily ceiling first. `checkAndIncrementGlobalBudget()` runs once per provider inside the waterfall, so a Findymail then Hunter attempt spends two credits, which is what `ENRICHMENT_DAILY_BUDGET` was written to count. A refusal records `skipped_spend_budget` and moves to the next provider; all refused gives `contact_check_unavailable` with reason `budget`, threaded into the `contact_not_found` event so "we could not look" is distinguishable from "there is nothing to find". It fails open when Redis is unreachable, per the expert-facing rule.
 
 ### 6.5 Expert response
 
@@ -733,7 +737,7 @@ Sweeps can no longer starve each other. Each gets its own slice of the clock and
 | OpenAI (gpt-4o-mini) | Reply classification, scheduling-reply parsing, interview guide, optional nudge rephrase | `lib/matchyClassify.ts`, `lib/matchyScheduling.ts`, `app/api/projects/[id]/interview-guide`, `lib/nudges.ts` | `OPENAI_API_KEY`, `NUDGE_LLM_VARIATION` | Classification falls back to `unclear`; scheduling parser falls back to regex; guide 500s |
 | Exa (search) | Web search behind sourcing | `lib/searchProviders/exa.ts` | `EXA_API_KEY`, `SEARCH_PROVIDER` | `no_search_provider`: sourcing fails immediately. The key is in OPTIONAL_VARS; boot logs a warning when no search key at all is set, and never throws |
 | Tavily, ScrapingBee | Alternative / fallback search providers | `lib/searchProviders/*` | `TAVILY_API_KEY`, `SCRAPINGBEE_KEY`, `SEARCH_FALLBACK_ENABLED` | Only used if selected |
-| Snov.io, Hunter.io | Find an expert's work email | `lib/contactProviders/*`, `lib/contactDiscovery.ts` | `CONTACT_ENRICHMENT_ENABLED`, `SNOV_CLIENT_ID`, `SNOV_CLIENT_SECRET`, `HUNTER_API_KEY`, `ENRICHMENT_DAILY_BUDGET` | Provider skipped; `contact_not_found` sooner. Each provider call now takes a credit from the daily budget first, so an exhausted budget gives `contact_check_unavailable` with reason `budget`, which is distinguishable from "this person has no address". The provider order (Snov, then Hunter) is fixed in `lib/contactDiscovery.ts` |
+| Findymail, Hunter.io | Find an expert's work email | `lib/contactProviders/*`, `lib/contactDiscovery.ts` | `CONTACT_ENRICHMENT_ENABLED`, `FINDYMAIL_API_KEY`, `HUNTER_API_KEY`, `ENRICHMENT_DAILY_BUDGET` | Provider skipped; `contact_not_found` sooner. Each provider call now takes a credit from the daily budget first, so an exhausted budget gives `contact_check_unavailable` with reason `budget`, which is distinguishable from "this person has no address". The provider order (Findymail, then Hunter) is fixed in `lib/contactDiscovery.ts` |
 | Vercel Cron | Daily nudge planning and reconcile | `vercel.json` | `CRON_SECRET` | Both routes answer 503 and nothing runs, which means no payout retries, no seat sync, no stuck-sourcing cleanup and no membership-claims repair. Confirm it is set in the Vercel project |
 
 ## 8. Environment variables
@@ -793,7 +797,9 @@ env-status console stops listing them the moment this ships.
 | `QSTASH_URL` | Region-pinned QStash host (this account is us-east-1; the global host 404s). Code falls back to the us-east-1 host. |
 | `CONTACT_ENRICHMENT_ENABLED` | `'true'` turns on contact discovery on bookmark. |
 | `CALENDLY_ENABLED` | `'true'` re-enables the Calendly calendar option; unset or anything else hides it in the UI, refuses it on the connect route and treats an existing Calendly row as not connected (Wave 5). |
-| `HUNTER_API_KEY`, `SNOV_CLIENT_ID`, `SNOV_CLIENT_SECRET` | Email-finder provider credentials. |
+| `FINDYMAIL_API_KEY`, `HUNTER_API_KEY` | Email-finder provider credentials. |
+| `NEXT_PUBLIC_REQUESTS_FLOW_ENABLED` | `'true'` shows the structured-request flow (/requests, /api/requests, the Requests link on /app). Anything else hides it: pages redirect to /app, the API answers 404; the expert screening form stays live (lib/requestsFlag.ts). |
+| `NEXT_PUBLIC_SENTRY_DSN` | Turns Sentry on in every runtime (lib/sentry.ts). `SENTRY_ORG`, `SENTRY_PROJECT` and `SENTRY_AUTH_TOKEN` are build-time only: with all three, `next build` uploads source maps. |
 | `ENRICHMENT_DAILY_BUDGET` | Daily cap on provider credits (default 500). Enforced since Wave 2: one credit per provider call, checked inside the waterfall. |
 | `OUTREACH_SIGNATURE` | Sign-off appended to every expert-facing email. |
 | `OUTREACH_POSTAL_ADDRESS` | CAN-SPAM postal address in the email footer. |

@@ -70,9 +70,8 @@ export const OPTIONAL_VARS = [
   'QSTASH_URL',
   // Contact discovery on bookmark: off unless the flag is 'true' AND a provider key exists
   'CONTACT_ENRICHMENT_ENABLED',
+  'FINDYMAIL_API_KEY',
   'HUNTER_API_KEY',
-  'SNOV_CLIENT_ID',
-  'SNOV_CLIENT_SECRET',
   // Who signs Matchy's emails (lib/senderIdentity.ts); unset = unsigned
   'OUTREACH_SIGNATURE',
   // The LinkedIn URL in the intro's signature block (lib/senderIdentity.ts,
@@ -138,6 +137,25 @@ export const OPTIONAL_VARS = [
   // (lib/contactInfo.ts). Unset = the founder's address. NEXT_PUBLIC_ because
   // client components render it, so it is inlined at build time.
   'NEXT_PUBLIC_SUPPORT_EMAIL',
+  // ── Added 2026-10-26: the previous value of each secret, set only while a
+  // rotation is in progress. Verified or decrypted against, never signed or
+  // encrypted with (lib/hmacToken.ts, lib/signupToken.ts, lib/encryption.ts).
+  // scripts/reencrypt-at-rest.ts finishes an ENCRYPTION_KEY rotation.
+  'AVAILABILITY_TOKEN_SECRET_PREVIOUS',
+  'SIGNUP_TOKEN_SECRET_PREVIOUS',
+  'ENCRYPTION_KEY_PREVIOUS',
+  // ── Added 2026-10-26 (D8): error monitoring. The DSN turns Sentry on in
+  // every runtime (lib/sentry.ts); unset, nothing is initialised. The three
+  // SENTRY_* values are read at BUILD time by next.config.js to upload source
+  // maps and are never needed at run time.
+  'NEXT_PUBLIC_SENTRY_DSN',
+  'SENTRY_ORG',
+  'SENTRY_PROJECT',
+  'SENTRY_AUTH_TOKEN',
+  // ── Added 2026-10-26 (D4): the structured-request flow (/requests pages,
+  // /api/requests routes, the Requests link on /app) is hidden unless this is
+  // exactly 'true' (lib/requestsFlag.ts). The expert screening form stays up.
+  'NEXT_PUBLIC_REQUESTS_FLOW_ENABLED',
 ] as const;
 
 /**

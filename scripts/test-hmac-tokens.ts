@@ -348,4 +348,66 @@ eq('verify degrades to invalid_signature without a usable secret',
   reasonOf(verify(OLD_AVAIL_EXPERT, 'availability')), 'invalid_signature');
 process.env.AVAILABILITY_TOKEN_SECRET = shortSecret;
 
+// ─── 5. Secret rotation: the previous secret verifies, never signs ───────────
+
+section('secret rotation (AVAILABILITY_TOKEN_SECRET_PREVIOUS)');
+
+const FIXTURE_SECRET = process.env.AVAILABILITY_TOKEN_SECRET as string;
+const ROTATED_SECRET = 'expertmatch-rotated-secret-9876543210';
+const payoutBefore   = sign('payout:p:e:1:n', 'payout');
+
+// Rotate: today's secret becomes the previous one, a fresh secret is current.
+process.env.AVAILABILITY_TOKEN_SECRET          = ROTATED_SECRET;
+process.env.AVAILABILITY_TOKEN_SECRET_PREVIOUS = FIXTURE_SECRET;
+
+check('after rotation, the old opt-out link still verifies',            verifyOptOutToken(OLD_OPTOUT_FUTURE).ok);
+check('after rotation, the old outreach token still verifies',          verifyOutreachToken(OLD_OUTREACH_FUTURE).ok);
+check('after rotation, the old availability token still verifies',      verifyAvailabilityToken(OLD_AVAIL_EXPERT).ok);
+check('after rotation, the old client availability token still verifies', verifyAvailabilityToken(OLD_AVAIL_CLIENT).ok);
+check('after rotation, the old onboarding OAuth state still verifies',
+  verifyOnboardingOAuthState(OLD_ONBOARDING_STATE, FIXTURE_NONCE_ON) !== null);
+check('after rotation, the old expert OAuth state still verifies',      verify(OLD_EXPERT_OAUTH_STATE, 'expert-oauth').ok);
+check('after rotation, a payout token minted before it still verifies (the derived key follows the secret)',
+  verify(payoutBefore, 'payout').ok);
+eq('old expired tokens still report expired, not invalid',
+  reasonOf(verifyOptOutToken(OLD_OPTOUT_PAST)), 'expired');
+
+check('sign() uses the new secret: the expert OAuth state bytes change',
+  sign(expertStatePayload, 'expert-oauth') !== OLD_EXPERT_OAUTH_STATE);
+check('…and what it signs verifies', verify(sign(expertStatePayload, 'expert-oauth'), 'expert-oauth').ok);
+const rotatedAvail = generateAvailabilityToken('p2', 'e2');
+check('tokens minted after the rotation verify', verifyAvailabilityToken(rotatedAvail.token).ok);
+eq('a tampered old token is still rejected during a rotation',
+  reasonOf(verifyOptOutToken(flipLastChar(OLD_OPTOUT_FUTURE))), 'invalid_signature');
+eq('a tampered old wrapped state is still rejected during a rotation',
+  reasonOf(verify(tamperWrappedSignature(OLD_EXPERT_OAUTH_STATE), 'expert-oauth')), 'invalid_signature');
+check('a payout-shaped payload signed as availability still does not verify as payout during a rotation',
+  !verify(sign('payout:p:e:1:n', 'availability'), 'payout').ok);
+
+// A previous secret too short for a token purpose counts as absent for it.
+process.env.AVAILABILITY_TOKEN_SECRET_PREVIOUS = 'too-short';
+eq('a too-short previous secret is ignored: old token → invalid_signature',
+  reasonOf(verifyAvailabilityToken(OLD_AVAIL_EXPERT)), 'invalid_signature');
+check('…while tokens under the current secret still verify', verifyAvailabilityToken(rotatedAvail.token).ok);
+
+// Rotation finished: previous secret deleted.
+delete process.env.AVAILABILITY_TOKEN_SECRET_PREVIOUS;
+eq('without the previous secret, old tokens fail closed',
+  reasonOf(verifyOptOutToken(OLD_OPTOUT_FUTURE)), 'invalid_signature');
+eq('without the previous secret, the old payout token fails closed',
+  reasonOf(verify(payoutBefore, 'payout')), 'invalid_signature');
+check('tokens under the current secret still verify', verifyAvailabilityToken(rotatedAvail.token).ok);
+
+// A previous secret without a current one is not a configuration.
+process.env.AVAILABILITY_TOKEN_SECRET_PREVIOUS = FIXTURE_SECRET;
+delete process.env.AVAILABILITY_TOKEN_SECRET;
+eq('a previous secret alone verifies nothing',
+  reasonOf(verifyOptOutToken(OLD_OPTOUT_FUTURE)), 'invalid_signature');
+let signThrew = false;
+try { sign('p:e:1:n', 'availability'); } catch { signThrew = true; }
+check('a previous secret alone signs nothing', signThrew);
+
+process.env.AVAILABILITY_TOKEN_SECRET = FIXTURE_SECRET;
+delete process.env.AVAILABILITY_TOKEN_SECRET_PREVIOUS;
+
 summary();

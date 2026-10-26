@@ -184,7 +184,7 @@ function result(
 ): ProviderEmailResult {
   return {
     email,
-    provider:       'snov',
+    provider:       'findymail',
     providerStatus: normalizedStatus,
     normalizedStatus,
     isWebmail:      false,
@@ -293,7 +293,7 @@ function recordingStore(): CacheStore & { writes: string[] } {
   };
 }
 
-function providerThat(name: 'snov' | 'hunter', answer: () => Promise<ProviderEmailResult[]>): ContactProvider {
+function providerThat(name: 'findymail' | 'hunter', answer: () => Promise<ProviderEmailResult[]>): ContactProvider {
   return {
     name,
     isConfigured: () => true,
@@ -319,18 +319,18 @@ async function timeoutIsNotAnAnswer(): Promise<void> {
     domainSearchConfigured: () => false,
   };
 
-  // Snov's poll ran out (lib/contactProviders/snov.ts throws provider_timeout).
+  // The first provider's own deadline ran out (a provider throws provider_timeout).
   const slow = recordingStore();
   const timedOut = await discoverContact(input, {
     ...deps,
     cacheStore: slow,
-    providers:  [providerThat('snov', async () => {
-      throw Object.assign(new Error('Snov result not ready (exhausted)'), { code: 'provider_timeout' });
+    providers:  [providerThat('findymail', async () => {
+      throw Object.assign(new Error('Findymail did not answer (exhausted)'), { code: 'provider_timeout' });
     })],
   });
   check('timeout → outcome not_found (nothing sendable today)', timedOut.outcome === 'not_found', `got ${timedOut.outcome}`);
   check('timeout → the attempt is recorded as a timeout',
-    timedOut.attempts.some(a => a.provider === 'snov' && a.outcome === 'timeout'), JSON.stringify(timedOut.attempts));
+    timedOut.attempts.some(a => a.provider === 'findymail' && a.outcome === 'timeout'), JSON.stringify(timedOut.attempts));
   check('timeout → NOTHING written to the cache', slow.writes.length === 0, JSON.stringify(slow.writes));
 
   // The caller's deadline fired mid-poll: same rule.
@@ -338,12 +338,12 @@ async function timeoutIsNotAnAnswer(): Promise<void> {
   const cutOff = await discoverContact(input, {
     ...deps,
     cacheStore: aborted,
-    providers:  [providerThat('snov', async () => {
+    providers:  [providerThat('findymail', async () => {
       throw Object.assign(new Error('aborted'), { name: 'AbortError' });
     })],
   });
   check('abort → recorded as a timeout',
-    cutOff.attempts.some(a => a.provider === 'snov' && a.outcome === 'timeout'), JSON.stringify(cutOff.attempts));
+    cutOff.attempts.some(a => a.provider === 'findymail' && a.outcome === 'timeout'), JSON.stringify(cutOff.attempts));
   check('abort → NOTHING written to the cache', aborted.writes.length === 0, JSON.stringify(aborted.writes));
 
   // A provider that genuinely answered "nobody there" IS remembered.
@@ -351,15 +351,15 @@ async function timeoutIsNotAnAnswer(): Promise<void> {
   const nobody = await discoverContact(input, {
     ...deps,
     cacheStore: answered,
-    providers:  [providerThat('snov', async () => [])],
+    providers:  [providerThat('findymail', async () => [])],
   });
   check('a real not_found → outcome not_found', nobody.outcome === 'not_found', `got ${nobody.outcome}`);
   check('a real not_found → IS written to the cache', answered.writes.includes('not_found'), JSON.stringify(answered.writes));
 
-  // The production chain is Snov then Hunter. A Snov timeout followed by a
+  // The production chain is Findymail then Hunter. A Findymail timeout followed by a
   // Hunter not_found is not an answer from everyone: nothing is cached.
-  const snovTimeout = () => providerThat('snov', async () => {
-    throw Object.assign(new Error('Snov result not ready (deadline)'), { code: 'provider_timeout' });
+  const findymailTimeout = () => providerThat('findymail', async () => {
+    throw Object.assign(new Error('Findymail did not answer (deadline)'), { code: 'provider_timeout' });
   });
   const hunterNobody = () => providerThat('hunter', async () => []);
 
@@ -367,26 +367,26 @@ async function timeoutIsNotAnAnswer(): Promise<void> {
   const slowThenNobody = await discoverContact(input, {
     ...deps,
     cacheStore: halfAnswered,
-    providers:  [snovTimeout(), hunterNobody()],
+    providers:  [findymailTimeout(), hunterNobody()],
   });
-  check('snov timeout + hunter not_found → outcome not_found', slowThenNobody.outcome === 'not_found', `got ${slowThenNobody.outcome}`);
-  check('snov timeout + hunter not_found → NOTHING written to the cache', halfAnswered.writes.length === 0, JSON.stringify(halfAnswered.writes));
+  check('findymail timeout + hunter not_found → outcome not_found', slowThenNobody.outcome === 'not_found', `got ${slowThenNobody.outcome}`);
+  check('findymail timeout + hunter not_found → NOTHING written to the cache', halfAnswered.writes.length === 0, JSON.stringify(halfAnswered.writes));
 
-  // Snov out of credits (402), then Hunter not_found: same rule.
+  // Findymail out of credits (402), then Hunter not_found: same rule.
   const noCredits = recordingStore();
   await discoverContact(input, {
     ...deps,
     cacheStore: noCredits,
     providers:  [
-      providerThat('snov', async () => {
-        throw Object.assign(new Error('Insufficient Snov credits'), { code: 'not_enough_credits' });
+      providerThat('findymail', async () => {
+        throw Object.assign(new Error('Insufficient Findymail credits'), { code: 'not_enough_credits' });
       }),
       hunterNobody(),
     ],
   });
-  check('snov out of credits + hunter not_found → NOTHING written to the cache', noCredits.writes.length === 0, JSON.stringify(noCredits.writes));
+  check('findymail out of credits + hunter not_found → NOTHING written to the cache', noCredits.writes.length === 0, JSON.stringify(noCredits.writes));
 
-  // Snov refused by the daily spend budget, Hunter asked and answered: still
+  // Findymail refused by the daily spend budget, Hunter asked and answered: still
   // not everyone, still nothing cached.
   let budgetCalls = 0;
   const refused = recordingStore();
@@ -394,18 +394,18 @@ async function timeoutIsNotAnAnswer(): Promise<void> {
     ...deps,
     withinGlobalBudget: async () => (++budgetCalls > 1),
     cacheStore:         refused,
-    providers:          [providerThat('snov', async () => []), hunterNobody()],
+    providers:          [providerThat('findymail', async () => []), hunterNobody()],
   });
-  check('snov budget-refused + hunter not_found → NOTHING written to the cache', refused.writes.length === 0, JSON.stringify(refused.writes));
+  check('findymail budget-refused + hunter not_found → NOTHING written to the cache', refused.writes.length === 0, JSON.stringify(refused.writes));
 
   // Both asked, both said nobody: remembered.
   const bothNobody = recordingStore();
   await discoverContact(input, {
     ...deps,
     cacheStore: bothNobody,
-    providers:  [providerThat('snov', async () => []), hunterNobody()],
+    providers:  [providerThat('findymail', async () => []), hunterNobody()],
   });
-  check('snov not_found + hunter not_found → IS written to the cache', bothNobody.writes.includes('not_found'), JSON.stringify(bothNobody.writes));
+  check('findymail not_found + hunter not_found → IS written to the cache', bothNobody.writes.includes('not_found'), JSON.stringify(bothNobody.writes));
 }
 
 async function main(): Promise<void> {

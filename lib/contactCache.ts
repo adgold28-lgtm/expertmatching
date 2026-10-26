@@ -178,7 +178,7 @@ export function makeCacheKey(
   first:             string,
   last:              string,
   domain:            string,
-  providerSignature: string,   // e.g. "snov+hunter"
+  providerSignature: string,   // e.g. "findymail+hunter"
   cacheVersion:      string,   // e.g. "v2"
 ): string {
   return [first, last, domain, providerSignature, cacheVersion]

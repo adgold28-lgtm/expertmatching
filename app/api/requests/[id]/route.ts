@@ -27,6 +27,7 @@
 // or address, or an expert's own words.
 
 import { NextRequest } from 'next/server';
+import { requestsFlowGuard } from '../../../../lib/requestsFlag';
 import { getRequestForUser, listCandidates, updateObjectiveItems } from '../../../../lib/requestStore';
 import { guardReadRequest, guardMutatingRequest } from '../../../../lib/projectsGuard';
 import { routeAuthGuard, getSessionUser } from '../../../../lib/auth';
@@ -44,6 +45,9 @@ export async function GET(
   request: NextRequest,
   { params }: { params: { id: string } },
 ) {
+  const hidden = requestsFlowGuard();
+  if (hidden) return hidden;
+
   const authErr = await routeAuthGuard(request);
   if (authErr) return authErr;
 
@@ -72,6 +76,9 @@ export async function PATCH(
   request: NextRequest,
   { params }: { params: { id: string } },
 ) {
+  const hidden = requestsFlowGuard();
+  if (hidden) return hidden;
+
   const authErr = await routeAuthGuard(request);
   if (authErr) return authErr;
 

@@ -7,10 +7,13 @@
 // mean that chain — the standalone /api/enrich-contact route they were written
 // for no longer exists.
 
-// 'none' is only used in ContactEnrichment.provider to mean "no provider found anything".
-// Real provider implementations use ActiveProviderName.
-export type ContactProviderName = 'snov' | 'hunter' | 'none';
-export type ActiveProviderName  = Exclude<ContactProviderName, 'none'>; // 'snov' | 'hunter'
+// Real provider implementations use ActiveProviderName. 'none' is only used
+// in ContactEnrichment.provider to mean "no provider found anything". 'snov' is
+// a value that rows written before 2026-10-26 still carry
+// (project_experts.data.emailProvider): Snov left the chain that day, nothing
+// produces the value any more, and nothing may be typed as sending to it.
+export type ActiveProviderName  = 'findymail' | 'hunter';
+export type ContactProviderName = ActiveProviderName | 'snov' | 'none';
 
 export interface ContactLookupInput {
   firstName: string;

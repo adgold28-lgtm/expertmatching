@@ -119,8 +119,8 @@ export type ContactStatus =
   | 'invalid'    // bad format / gibberish / disposable / not_valid
   | 'not_found'; // no displayable email returned by the provider
 
-// Provider-agnostic stored email — Snov-specific raw fields (smtp_status,
-// unknown_status_reason) are kept in the provider layer, not stored here.
+// Provider-agnostic stored email — provider-specific raw fields (Hunter's score
+// and verification status) are kept in the provider layer, not stored here.
 export interface EnrichedEmail {
   email: string;
   status: ContactStatus;
@@ -165,7 +165,7 @@ export interface SuggestedDomain {
 }
 
 // A publicly listed role-based contact email found on an official company page.
-// Never a personal email. Never used as input to Snov/Hunter.
+// Never a personal email. Never used as input to Findymail/Hunter.
 export interface PublicContactEmail {
   email:       string;
   label:       string;
@@ -396,7 +396,7 @@ export interface ProjectExpert {
   rejectedAt?: number;      // unix ms timestamp of rejection
   contactEmail?: string;
   emailVerificationStatus?: ContactStatus;  // quality of the found email
-  emailProvider?: 'hunter' | 'snov' | 'none';  // provider that found it
+  emailProvider?: ContactProviderName;  // provider that found it ('snov' only on rows from before 2026-10-26)
   emailCheckedAt?: number;  // unix ms when last lookup was performed
   contactStatus?: string;   // legacy free-text field; kept for backward compat
   /**
